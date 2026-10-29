@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "utc": "2026-10-29T08:51:37.818236+00:00",
+  "change": "audit follow-up: static UTF-16 property names and scoped native-record reconstruction coverage",
+  "target": "x86_64-pc-windows-msvc",
+  "toolchain": "nightly-2026-10-01",
+  "source_sha256": {
+    "Cargo.toml": "fb5284a76c133f6e0744e3051deec79aac72d600bad8e78561c3d445dff8d132",
+    "Cargo.lock": "8400d6ce3fd89207506d94e39434dc4cae49036a11df0cfb67033179375280f4",
+    "src/etw.rs": "03a5be84adeab8775a63521fc64f1a07df604065c0d32e0219217afa4e571e91",
+    "src/etw/pool.rs": "f559ddcc872a9938a9ed7e5b2bdb9468c2eee5d9512d39e4ce7cd92d1908d52a",
+    "src/pipeline.rs": "48959c6183a7004549270660cf48de65e8efeed2f1a053b2efda0af307b8f712"
+  },
+  "candidate_sha256": "98fdab43aa24ae1be31a7aabccbdd67a2f64c87dc1c50c428b638b3c091f5d7c",
+  "previous_candidate_sha256": "3280d954e17e1448c51fbff5b253807e473cf9be59fac18bc94dbbd51d95b841",
+  "baseline_sha256": "ca3342d848bd06b7b8e1e6ce9adc05e2157c3e86a18980e69e74b16555264347",
+  "checks": {
+    "fmt": "pass",
+    "strict_clippy_all_targets": "pass",
+    "test.log": {
+      "passed": 45,
+      "failed": 0,
+      "ignored": 1
+    },
+    "release-test.log": {
+      "passed": 45,
+      "failed": 0,
+      "ignored": 1
+    },
+    "asan.log": {
+      "passed": 45,
+      "failed": 0,
+      "ignored": 1
+    },
+    "production_release_abort": "pass"
+  },
+  "effective_release_flags": [
+    "panic=abort",
+    "overflow-checks=on",
+    "control-flow-guard=yes",
+    "stack-protector=all",
+    "ehcont-guard=yes",
+    "src-hash-algorithm=sha256",
+    "/DEBUG:NONE",
+    "strip=symbols",
+    "/CETCOMPAT",
+    "/NXCOMPAT",
+    "/DYNAMICBASE",
+    "/HIGHENTROPYVA",
+    "/GUARD:CF",
+    "/GUARD:EHCONT"
+  ],
+  "pe": {
+    "required_markers_verified": [
+      "machine (x64)",
+      "High Entropy Virtual Addresses",
+      "Dynamic base",
+      "NX compatible",
+      "Control Flow Guard",
+      "CET compatible",
+      "Security Cookie",
+      "CF instrumented",
+      "EH Continuation table present",
+      "Guard EH continuation table"
+    ],
+    "cfg_function_count": 802,
+    "pdb_codeview": false,
+    "asan_runtime_dependency": false
+  },
+  "allocator_scopes": {
+    "fixed_property_descriptor_names": {
+      "allocations": 0,
+      "reallocations": 0,
+      "deallocations": 0
+    },
+    "empty_scoped_native_view": {
+      "allocations": 0,
+      "reallocations": 0,
+      "deallocations": 0
+    },
+    "sixty_four_item_scoped_native_view": {
+      "allocations": 0,
+      "reallocations": 0,
+      "deallocations": 0
+    }
+  },
+  "asan_runtime_directory": "C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64",
+  "limits": [
+    "Allocator scopes exclude TDH calls, setup, and shutdown.",
+    "No live Windows DNS manifest/TDH integration or VM/SCM run performed.",
+    "No throughput benchmark matrix performed; five per-event property-name Vec constructions removed by inspection.",
+    "Rebuilt Rust standard-library ASan configuration retained; Windows DLLs are not instrumented.",
+    "Initial release-only test pointer-identity assumption failed and was corrected to compare terminated contents; initial failure log preserved.",
+    "Fresh final independent review pending parent coordination."
+  ]
+}

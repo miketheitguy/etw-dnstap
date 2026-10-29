@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="EtwDnstap lab">
+  <Profiles>
+    <SystemCollector Id="PooledSystem" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="128" />
+    </SystemCollector>
+    <SystemProvider Id="PooledProvider">
+      <Keywords>
+        <Keyword Value="CpuConfig" />
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+        <Keyword Value="SampledProfile" />
+        <Keyword Value="ThreadPriority" />
+        <Keyword Value="DPC" />
+        <Keyword Value="Interrupt" />
+        <Keyword Value="DiskIO" />
+        <Keyword Value="DiskIOInit" />
+        <Keyword Value="FileIO" />
+        <Keyword Value="FileIOInit" />
+        <Keyword Value="Filename" />
+        <Keyword Value="HardFaults" />
+        <Keyword Value="MemoryInfo" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="SampledProfile" />
+        <Stack Value="CSwitch" />
+        <Stack Value="ReadyThread" />
+        <Stack Value="DiskReadInit" />
+        <Stack Value="DiskWriteInit" />
+        <Stack Value="DiskFlushInit" />
+        <Stack Value="FileCreate" />
+        <Stack Value="FileRead" />
+        <Stack Value="FileWrite" />
+        <Stack Value="HardFault" />
+      </Stacks>
+    </SystemProvider>
+    <Profile Id="PooledVM.Verbose.File" Name="PooledVM" Description="Native pooled VM CPU scheduling and I/O" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="PooledSystem">
+          <SystemProviderId Value="PooledProvider" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+    <Profile Id="PooledVM.Verbose.Memory" Base="PooledVM.Verbose.File" Name="PooledVM" Description="Native pooled VM CPU scheduling and I/O" LoggingMode="Memory" DetailLevel="Verbose" />
+  </Profiles>
+</WindowsPerformanceRecorder>

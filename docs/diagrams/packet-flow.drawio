@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-10-28T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="packet-flow" name="Page-1">
+    <mxGraphModel adaptiveColors="auto" dx="1600" dy="690" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="690" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="etw-dnstap | Packet flow" style="text;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#18324b;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="30" y="20" width="1540" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Implementation and observed lab path • Windows DNS → plaintext Frame Streams TCP → DNS-collector" style="text;align=left;verticalAlign=middle;fontSize=12;fontColor=#526779;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="30" y="58" width="1540" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="win" value="Windows DNS capture guest" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#eef5fb;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="30" y="105" width="490" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="net" value="Hyper-V Default Switch" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#f5f7f9;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="550" y="105" width="390" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="ubuntu" value="Ubuntu collector guest" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#f0f7f2;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="970" y="105" width="600" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="dns" value="&lt;b&gt;DNSTap-WS2025&lt;/b&gt;&lt;br&gt;Windows Server 2025 Core&lt;br&gt;DNS Server role • 172.27.215.163/20&lt;br&gt;Zone: example.test" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="60" y="155" width="430" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="provider" value="&lt;b&gt;DNS Server ETW provider&lt;/b&gt;&lt;br&gt;GUID EB79061A-A566-4698-9119-3ED2807060E7&lt;br&gt;Events: 256 client query • 257/258 client response&lt;br&gt;260 resolver query • 261 resolver response" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="60" y="295" width="430" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="raw" value="&lt;b&gt;Capture and encoding&lt;/b&gt;&lt;br&gt;TDH reads named PacketData + metadata&lt;br&gt;DNS wire bytes preserved; no QNAME reparsing&lt;br&gt;Event time, transport and endpoint roles&lt;br&gt;Ring full drops newest; ETW/callback losses counted&lt;br&gt;Invalid events are rejected and counted" style="rounded=1;arcSize=12;fillColor=#e9f5ed;strokeColor=#4f9567;fontColor=#214c30;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="60" y="430" width="430" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="filter" value="&lt;b&gt;TCP 6000 • plaintext&lt;/b&gt;&lt;br&gt;Guest firewall allows only source&lt;br&gt;172.27.215.163; no TLS/authentication" style="rounded=1;arcSize=12;fillColor=#fff3db;strokeColor=#c6902d;fontColor=#644516;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="575" y="195" width="340" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="tcp" value="&lt;b&gt;Frame Streams TCP exchange&lt;/b&gt;&lt;br&gt;Outbound connection initiated by Windows service&lt;br&gt;READY → ACCEPT → START&lt;br&gt;protobuf:dnstap.Dnstap data frames&lt;br&gt;STOP → FINISH; 2 s deadlines; no reconnect" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="575" y="355" width="340" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="collector" value="&lt;b&gt;DNSTap-Ubuntu2604&lt;/b&gt;&lt;br&gt;Ubuntu 26.04.1 • 172.27.215.60/20&lt;br&gt;DNS-collector 3.2.3&lt;br&gt;Listener 172.27.215.60:6000" style="rounded=1;arcSize=12;fillColor=#e9f5ed;strokeColor=#4f9567;fontColor=#214c30;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="155" width="540" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="decode" value="&lt;b&gt;Frame Streams receiver&lt;/b&gt;&lt;br&gt;Control negotiation and protobuf dnstap decode&lt;br&gt;DNS message decode → JSON output" style="rounded=1;arcSize=12;fillColor=#e9f5ed;strokeColor=#4f9567;fontColor=#214c30;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="310" width="540" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="stdout" value="&lt;b&gt;Console pipeline&lt;/b&gt;&lt;br&gt;JSON on stdout → systemd journal + console" style="rounded=1;arcSize=12;fillColor=#e9f5ed;strokeColor=#4f9567;fontColor=#214c30;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="455" width="250" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pending" value="&lt;b&gt;Lab result&lt;/b&gt;&lt;br&gt;Packet delivery confirmed, including after restart.&lt;br&gt;Final stop drained cleanly; ETW session removed." style="shape=note;size=18;fillColor=#fff9dc;strokeColor=#c8ad4f;fontColor=#55491f;fontSize=12;spacing=7;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="455" width="260" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="reject" value="&lt;b&gt;Reject / count&lt;/b&gt;&lt;br&gt;Unsupported ID, malformed DNS envelope or metadata inconsistency; no output frame" style="rounded=1;arcSize=12;fillColor=#fdecec;strokeColor=#c25a5a;fontColor=#6b2525;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="60" y="565" width="430" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="b1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b84b5;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="dns" target="provider">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b84b5;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="provider" target="raw">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4f9567;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="raw" target="tcp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b84b5;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="tcp" target="filter">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#c6902d;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="filter" target="collector">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4f9567;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="collector" target="decode">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4f9567;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="decode" target="stdout">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#526f86;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="raw" target="reject">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-10-28T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="code-architecture" name="Page-1">
+    <mxGraphModel adaptiveColors="auto" dx="1880" dy="640" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1880" pageHeight="640" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="etw-dnstap | Code architecture" style="text;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#18324b;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="30" y="20" width="1820" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Component view of the current Rust implementation • output is selected at service startup" style="text;align=left;verticalAlign=middle;fontSize=12;fontColor=#526779;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="30" y="58" width="1820" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="svc" value="Windows service host" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#eef5fb;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="30" y="100" width="320" height="490" as="geometry" />
+        </mxCell>
+        <mxCell id="core" value="Capture and encode pipeline" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#f2f7fa;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="370" y="100" width="790" height="490" as="geometry" />
+        </mxCell>
+        <mxCell id="sinks" value="Output sinks" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#f4f6f8;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="100" width="680" height="490" as="geometry" />
+        </mxCell>
+        <mxCell id="m" value="&lt;b&gt;main.rs + lib.rs&lt;/b&gt;&lt;br&gt;Parse configuration; enter SCM dispatcher&lt;br&gt;Service-only runtime" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="55" y="155" width="265" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="s" value="&lt;b&gt;service.rs&lt;/b&gt;&lt;br&gt;SCM status + STOP/SHUTDOWN control&lt;br&gt;Token gate: LocalSystem + enabled service SID&lt;br&gt;Only SeChangeNotifyPrivilege is retained and enabled" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="55" y="275" width="265" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="w" value="&lt;b&gt;Lifecycle watchdogs&lt;/b&gt;&lt;br&gt;10 s startup and shutdown deadlines&lt;br&gt;Best-effort Application Event Log on failure" style="rounded=1;arcSize=12;fillColor=#fff3db;strokeColor=#c6902d;fontColor=#644516;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="55" y="455" width="265" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="p" value="&lt;b&gt;pipeline.rs controller&lt;/b&gt;&lt;br&gt;Start configured sink, queue, ETW and parser&lt;br&gt;Coordinate stop, drain, flush and counters" style="rounded=1;arcSize=12;fillColor=#f1edfa;strokeColor=#8974b4;fontColor=#392d5b;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="390" y="275" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="e" value="&lt;b&gt;etw.rs — real-time ETW&lt;/b&gt;&lt;br&gt;DNS Server provider; ProcessTrace worker&lt;br&gt;Callback copies borrowed bytes into owned events" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="390" y="430" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="q" value="&lt;b&gt;Bounded ArrayQueue&lt;/b&gt;&lt;br&gt;Full ring: drop newest&lt;br&gt;Received, dropped and ETW loss counters" style="rounded=1;arcSize=12;fillColor=#fff3db;strokeColor=#c6902d;fontColor=#644516;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="585" y="430" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="t" value="&lt;b&gt;Parser worker&lt;/b&gt;&lt;br&gt;Validate provider schema&lt;br&gt;TDH reads PacketData + event metadata" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="780" y="430" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="d" value="&lt;b&gt;dnstap encoder&lt;/b&gt;&lt;br&gt;Prost wire encoding&lt;br&gt;Preserve DNS bytes; reject invalid events" style="rounded=1;arcSize=12;fillColor=#e9f5ed;strokeColor=#4f9567;fontColor=#214c30;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="975" y="430" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="f" value="&lt;b&gt;File Frame Streams&lt;/b&gt;&lt;br&gt;Configured output choice&lt;br&gt;START → data frames → STOP&lt;br&gt;Flush and sync on orderly shutdown" style="rounded=1;arcSize=12;fillColor=#e9f5ed;strokeColor=#4f9567;fontColor=#214c30;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="170" width="200" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="n" value="&lt;b&gt;TCP Frame Streams client&lt;/b&gt;&lt;br&gt;Configured output choice&lt;br&gt;Outbound READY / ACCEPT / START&lt;br&gt;Data → STOP / FINISH; 2 s deadlines&lt;br&gt;No reconnect or resend" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1650" y="355" width="200" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="api" value="&lt;b&gt;Native boundary&lt;/b&gt;&lt;br&gt;Rust calls through windows-sys to Windows APIs&lt;br&gt;No authored C/C++ or owned C shim" style="shape=note;size=18;fillColor=#fff9dc;strokeColor=#c8ad4f;fontColor=#55491f;fontSize=12;spacing=7;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1205" y="515" width="640" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="a1" value="SCM dispatch" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b84b5;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="m" target="s">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b84b5;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="e" target="q">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4b84b5;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="q" target="t">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4f9567;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="t" target="d">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a7" value="SCM start / stop" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#526f86;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="s" target="p">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#526f86;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p" target="e">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sink-choice" value="&lt;b&gt;OutputSink&lt;/b&gt;&lt;br&gt;Configured at service startup" style="rounded=1;arcSize=12;fillColor=#f1f4f6;strokeColor=#8395a3;fontColor=#394c59;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="1185" y="300" width="200" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="a9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#526f86;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="d" target="sink-choice">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#526f86;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="sink-choice" target="f">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#526f86;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#40566a;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="sink-choice" target="n">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

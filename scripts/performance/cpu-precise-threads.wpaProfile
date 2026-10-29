@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WpaProfileContainer xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Version="2" xmlns="http://tempuri.org/SerializableElement.xsd">
+  <Content xsi:type="WpaProfile2">
+    <Sessions><Session Index="0"><FileReferences /></Session></Sessions>
+    <Views>
+      <View Guid="d6c2970c-e3ec-4137-853b-2ee7ad5574a1" Title="CPU precise thread attribution" IsVisible="true">
+        <Graphs>
+          <Graph Guid="c58f5fea-0319-4046-932d-e695ebe20b47" LayoutStyle="GraphAndLegend" Color="#FFFF0000" GraphHeight="100" IsShown="true">
+            <Preset Name="CPU Ready Wait by Process Thread" GraphChartType="StackedLine" BarGraphIntervalCount="100" GraphColumnCount="2" KeyColumnCount="2" InitialFilterShouldKeep="true">
+              <MetadataEntries>
+                <MetadataEntry Guid="5417f63c-9b79-45aa-beb9-73e3c1959221" Name="Switch-In Time" ColumnMetadata="StartTime" />
+                <MetadataEntry Guid="03a1d898-7231-4cc5-9712-4bfbf53908c7" Name="New Switch-In Time" ColumnMetadata="Duration" />
+                <MetadataEntry Guid="944ed37a-5774-421e-b2d5-84f17a4b3a05" Name="New Thread Id" ColumnMetadata="EndThreadId" />
+              </MetadataEntries>
+              <HighlightEntries />
+              <Columns>
+                <Column Guid="b065487c-5e32-4f1f-a2cd-581e086ce29e" Name="New Process" Width="200" IsVisible="true" />
+                <Column Guid="944ed37a-5774-421e-b2d5-84f17a4b3a05" Name="New Thread Id" Width="100" IsVisible="true" />
+                <Column Guid="cb796d44-2927-5ac1-d231-4b71904c18f5" Name="Thread Name" Width="160" IsVisible="true" />
+                <Column Guid="e008ed7a-15b0-40ab-854b-b5f6392f298b" Name="CPU Usage (in view)" AggregationMode="Sum" Width="120" IsVisible="true" />
+                <Column Guid="906ea81e-ab68-4dfd-9b9f-3adafab60f83" Name="Ready" AggregationMode="Sum" Width="100" IsVisible="true" />
+                <Column Guid="906ea81e-ab68-4dfd-9b9f-3adafab60f83" Name="Ready" AggregationMode="Max" Width="100" IsVisible="true" />
+                <Column Guid="6d598aa8-2ec4-46cd-b71a-88a239dfacf7" Name="Waits" AggregationMode="Sum" Width="100" IsVisible="true" />
+                <Column Guid="6d598aa8-2ec4-46cd-b71a-88a239dfacf7" Name="Waits" AggregationMode="Max" Width="100" IsVisible="true" />
+                <Column Guid="1db45bc8-4cd5-49f3-a0ec-7f861d33c7a2" Name="Count:Waits" AggregationMode="Sum" Width="100" IsVisible="true" />
+                <Column Guid="d227f58f-ec9b-4a52-8fe5-e082771c55c6" Name="Count" AggregationMode="Count" Width="100" IsVisible="true" />
+                <Column Guid="5417f63c-9b79-45aa-beb9-73e3c1959221" Name="Switch-In Time" Width="120" IsVisible="true" />
+                <Column Guid="7bb1053b-8f03-4c72-89f1-a5f8b9c45a9e" Name="Ready Time" Width="120" IsVisible="true" />
+                <Column Guid="71d9a1a9-f32c-4b0b-8f09-09b56cbbb843" Name="Last Switch-Out Time" Width="120" IsVisible="true" />
+                <Column Guid="11628f2a-3000-43af-9924-d99198ae9be2" Name="New Prev State" Width="100" IsVisible="true" />
+                <Column Guid="fe7ccd45-6275-413e-a538-3587f0eb452b" Name="New Prev Wait Reason" Width="100" IsVisible="true" />
+              </Columns>
+            </Preset>
+          </Graph>
+        </Graphs>
+        <SessionIndices><SessionIndex>0</SessionIndex></SessionIndices>
+      </View>
+    </Views>
+    <ModifiedGraphs />
+  </Content>
+</WpaProfileContainer>

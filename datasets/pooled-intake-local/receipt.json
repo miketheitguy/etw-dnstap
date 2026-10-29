@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "utc": "2026-10-29T08:28:42.787873+00:00",
+  "target": "x86_64-pc-windows-msvc",
+  "toolchain": "nightly-2026-10-01",
+  "checks": {
+    "cargo_fmt_check": "pass",
+    "cargo_clippy_locked_offline_all_targets_D_warnings": "pass",
+    "cargo_test_locked_offline": {
+      "passed": 42,
+      "failed": 0,
+      "ignored": 1
+    },
+    "cargo_test_release_unwind": {
+      "passed": 42,
+      "failed": 0,
+      "ignored": 1
+    },
+    "cargo_asan": {
+      "passed": 42,
+      "failed": 0,
+      "ignored": 1
+    },
+    "cargo_build_release_abort": "pass"
+  },
+  "source_sha256": {
+    "Cargo.toml": "fb5284a76c133f6e0744e3051deec79aac72d600bad8e78561c3d445dff8d132",
+    "Cargo.lock": "8400d6ce3fd89207506d94e39434dc4cae49036a11df0cfb67033179375280f4",
+    "src/etw.rs": "5cb02fb735017871c333424dba2691fa5b1a9fda2a3e21b994eafb49f70daca5",
+    "src/etw/pool.rs": "f559ddcc872a9938a9ed7e5b2bdb9468c2eee5d9512d39e4ce7cd92d1908d52a",
+    "src/pipeline.rs": "48959c6183a7004549270660cf48de65e8efeed2f1a053b2efda0af307b8f712",
+    "docs/pooled-intake.md": "f046412456c5d153a3fc1ce3a5730c9e11fa9b3c70d36d171452d731908e72d4"
+  },
+  "candidate_sha256": "3280d954e17e1448c51fbff5b253807e473cf9be59fac18bc94dbbd51d95b841",
+  "baseline_sha256": "ca3342d848bd06b7b8e1e6ce9adc05e2157c3e86a18980e69e74b16555264347",
+  "asan_runtime_directory": "C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64",
+  "scope": "local Rust ownership/copy/allocator/concurrency tests; no live native ETW or SCM guest run; optional synthetic benchmark ignored; independent performance matrix and final reviewer stopped",
+  "pe": {
+    "machine": "x64",
+    "dep": true,
+    "aslr": true,
+    "high_entropy_va": true,
+    "cfg_instrumented": true,
+    "cfg_function_count": 802,
+    "security_cookie": true,
+    "cet_marker": true,
+    "eh_continuation_table": true,
+    "pdb_codeview": false
+  }
+}

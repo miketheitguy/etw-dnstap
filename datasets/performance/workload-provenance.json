@@ -1,0 +1,22 @@
+{
+  "SourceRepository": "https://github.com/danielmiessler/SecLists",
+  "SourceCommit": "1e3a7423c117ea878679a29c760564fe442021c0",
+  "SourceUrl": "https://raw.githubusercontent.com/danielmiessler/SecLists/1e3a7423c117ea878679a29c760564fe442021c0/Discovery/DNS/subdomains-top1million-20000.txt",
+  "SourceLicense": "MIT; see LICENSE-SecLists",
+  "SourceSHA256": "685fad386d19c3b7ecbcd18645606bc5c47a3b2339fa3d79f44c46bd9e79c1ef",
+  "SourceLineCount": 20000,
+  "ValidUniqueNames": 5000,
+  "EligibleUniqueSourceNames": 19997,
+  "Selection": "First 5000 valid unique names after excluding blocked labels",
+  "ExcludedLabels": [
+    "wpad",
+    "isatap"
+  ],
+  "RejectedOrDuplicate": 3,
+  "AuthoritativeZone": "auth.stress.test",
+  "RecursiveZone": "rec.stress.test",
+  "AnswerIPv4": "192.0.2.53",
+  "AuthoritativeTTLSeconds": 300,
+  "RecursiveUpstreamTTLSeconds": 0,
+  "Safety": "Queries use reserved .test zones and a controlled private upstream; no public DNS load."
+}

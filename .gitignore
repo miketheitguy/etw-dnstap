@@ -1,0 +1,6 @@
+/target/
+*.dnstap
+*.etl
+__pycache__/
+*.exe
+*.log
