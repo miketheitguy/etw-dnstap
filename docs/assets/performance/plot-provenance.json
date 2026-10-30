@@ -1,0 +1,42 @@
+{
+  "renderer": "scripts/performance/plot-pooled-wpr.py",
+  "renderer_sha256": "afec974e0d07d9d5c613a1245cf7fabe67f56e593fea7b4b1bd6b9693af2fdf6",
+  "matplotlib_version": "3.11.2",
+  "python_version": "3.15.0 (tags/v3.15.0:d220409, Oct  9 2026, 11:55:56) [MSC v.1951 64 bit (AMD64)]",
+  "source_manifest_sha256": "f378d9ed00039362a08f5edb75b96828aabcefef4412c89150d7282180df34fb",
+  "source_manifest": "data/source-manifest.json",
+  "plots": [
+    {
+      "run_id": "pooled-auth-1000-300s-2",
+      "csv": "data/pooled-auth-1000-300s-2.csv",
+      "csv_sha256": "dd3207985fdb45f6ea039b632a5ebdad69f9322317a6f2fdb1a05dd6e3a22c40",
+      "svg": "pooled-auth-1000-300s-2.svg",
+      "svg_sha256": "5071022a163e42e3ece6f6df26d97d57e8790ce26e5a186c0b5c87f013eeed58",
+      "rows": 290
+    },
+    {
+      "run_id": "pooled-rec-1000-300s-2",
+      "csv": "data/pooled-rec-1000-300s-2.csv",
+      "csv_sha256": "6254daf28086f5b8af6f26c21eb8663b6ec72b03f39904a710d4dae736d6c392",
+      "svg": "pooled-rec-1000-300s-2.svg",
+      "svg_sha256": "eede6bbc878ac36a570d22f0cd69c3d3a1854b4f69ba41b9b958754e35870a41",
+      "rows": 290
+    },
+    {
+      "run_id": "pooled-auth-48000-300s-1",
+      "csv": "data/pooled-auth-48000-300s-1.csv",
+      "csv_sha256": "102e3285166b5694b070cb5576fc83e579a9323648f0aaf64d06e801599516cc",
+      "svg": "pooled-auth-48000-300s-1.svg",
+      "svg_sha256": "480ecc60eb2afd870450860b96382031efd2cebd7cad6fcc65c045b60abeaa6f",
+      "rows": 290
+    },
+    {
+      "run_id": "pooled-rec-28000-300s-1",
+      "csv": "data/pooled-rec-28000-300s-1.csv",
+      "csv_sha256": "328b016fa943edd48e64a477dfbed4930f622b0fbf3329d3551a28c07614b218",
+      "svg": "pooled-rec-28000-300s-1.svg",
+      "svg_sha256": "163ebbaa66e1ba6ae4381419a8dda1f2f7a287ed008ae50f5c534b38f6f8c4f2",
+      "rows": 290
+    }
+  ]
+}

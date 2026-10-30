@@ -1,19 +1,28 @@
 # Pooled intake measurement review
 
-This plan helps maintainers review the Python analysis of pooled Event Tracing
+This review record helps maintainers assess the Python analysis of pooled Event Tracing
 for Windows (ETW) intake metrics. You can use its checks to distinguish complete
 loss accounting from a zero-loss result. It covers analysis helpers and their
 tests; it does not run a benchmark matrix or change Rust, installed services,
 virtual machines, or preserved campaign artifacts.
 
+## Status and evidence cutoff
+
+The measurement correction and independent local review are complete. The
+finding in the next section describes the defect before that correction; the
+[verification record](#verification-record) describes the implemented result.
+The later [native VM review](pooled-vm-performance-review.md) applies the corrected
+all-category accounting to actual DNS traffic.
+
 ## Confirmed finding and evidence
 
-The receiver summary can claim `capture_pipeline_zero_loss_verified=true` for a
+Before the correction, the receiver summary could claim
+`capture_pipeline_zero_loss_verified=true` for a
 schema 2 run with 100 received events, 10 pool-exhausted events, and 90 dequeued,
-encoded, and durable events. Its predicate checks ring loss but omits pool
-exhaustion and receiver disconnection. Its capture residual is reported without
-gating the result. Conversely, the Windows analyzer rejects that reconciled
-ledger because it subtracts only ring loss. Receiver disconnection has the same
+encoded, and durable events. Its predicate checked ring loss but omitted pool
+exhaustion and receiver disconnection. It reported the capture residual without
+gating the result. Conversely, the Windows analyzer rejected that reconciled
+ledger because it subtracted only ring loss. Receiver disconnection had the same
 accounting gap. Severity: P1, measurement correctness.
 
 ## Ownership and implementation order
@@ -121,5 +130,3 @@ passes all 14 focused tests, including the statistics-query follow-up, with
 `python -B scripts/performance/metrics-ledger-test.py`.
 The metrics-only receiver comparison verifies ledger compatibility; it does not
 establish compatibility with the original deployment-metadata command inputs.
-Documentation self-check: 10/10, with no failed diagnostic rows or unverified
-behavior claims.

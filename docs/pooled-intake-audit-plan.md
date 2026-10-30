@@ -1,17 +1,27 @@
 # Pooled intake audit and remaining validation plan
 
-This plan helps maintainers assess the pooled Event Tracing for Windows (ETW)
+This audit record helps maintainers assess the pooled Event Tracing for Windows (ETW)
 candidate after source review. It separates confirmed defects, local validation,
 and remaining evidence needed for deployment or performance claims. It does not
 authorize a VM run, restart the stopped benchmark matrix, or change the installed
 service.
+
+## Status and evidence cutoff
+
+The local source, analysis, and documentation follow-up is complete, with no
+remaining blocker from its independent review. The validation requirements and
+ownership table preserve that work's scope. The separate
+[native VM campaign](pooled-vm-performance-review.md) later supplied deployment
+and performance evidence for the same reviewed candidate. Its results do not
+alter the pending-at-build status in immutable local receipts or resume the
+stopped original benchmark matrix.
 
 ## Findings and scope
 
 The fresh Astra read-only audit found no core pool memory-safety or lifetime
 defect. Its initial result was a conditional pass with the measurement defect,
 documentation mismatch, avoidable parser allocation, and reconstruction test
-coverage addressed through the work below. A conditional source pass does not
+coverage addressed by the follow-up recorded here. A conditional source pass does not
 establish native ETW delivery or production performance.
 
 The audit distinguishes these findings:
@@ -175,10 +185,18 @@ the subsequent signoff.
 The optional synthetic harness and unexecuted matrix exclude native delivery,
 TDH parsing, protobuf encoding, and output. Local allocator counters instrument
 the Rust allocator during scoped callback/recycle work, not arbitrary Windows
-DLL allocations. No pooled candidate has native VM validation, and no measured
-production improvement is claimed. Any later performance/deployment work needs
+DLL allocations. At this local-audit cutoff, no pooled candidate has native VM
+validation and no measured production improvement is claimed. Later performance/deployment work needs
 its own scope, exact binary identity, all-category loss accounting, and matched
 authoritative/recursive evidence.
+
+The later, separately authorized [native VM campaign](pooled-vm-performance-plan.md)
+and [performance review](pooled-vm-performance-review.md) record actual pooled
+candidate validation, including two clean five-minute high-rate confirmations.
+That campaign has its own backup, build/deployment identity, exact receiver and
+all-category loss gates, full native traces, qualifications, and restoration
+proofs. The local audit and original stopped benchmark matrix remain separate;
+their immutable receipts retain their accurate status at creation.
 
 ## Documentation verification
 

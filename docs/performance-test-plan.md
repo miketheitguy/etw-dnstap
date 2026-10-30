@@ -4,7 +4,22 @@ This lab procedure measures service resource use and locates throughput limits f
 maintainers of `etw-dnstap`. The two measured workloads each run for 300 seconds.
 Record results separately from this plan; pilot data is not a measured result.
 
+## Status and scope
+
+This is the method and decision record for the original unpaced experiment,
+completed on October 28, 2026 PDT (October 29 UTC). The
+[three-run review](performance-review-2026-10-28.md) retains its overload and
+upstream-fixture findings. Its 1,024-entry allocation-based ring and schema 1
+ledgers are historical; use the [pooled VM plan](pooled-vm-performance-plan.md)
+for the later pooled campaign and all-category accounting.
+
+The commands here contain recorded lab addresses and campaign IDs. Before
+another experiment, verify the guests and create fresh backups and run IDs;
+the fixed helper paths are not a portable deployment procedure.
+
 ## Lab and prerequisites
+
+The recorded experiment requires the following environment and safeguards:
 
 - Windows VM: `DNSTap-WS2025`, GUID
   `24bafedb-0998-4430-a0c6-7e90350cd9ac`, Windows Server 2025 Core,
@@ -87,6 +102,8 @@ per query assumption.
 
 ## Delegated work and acceptance
 
+The original experiment assigned the following work and acceptance gates:
+
 | Chunk | Assigned model / effort | Owned work | Acceptance evidence |
 | --- | --- | --- | --- |
 | Coordination | GPT-6-Astra / high | Plan, boundaries, evidence review, final decisions | Gates before measured runs and explicit fixture repair decision |
@@ -98,12 +115,20 @@ per query assumption.
 All source, script, and documentation edits are assigned to the Sol workers.
 The Astra coordinator and independent reviewer inspect evidence and decisions.
 
-Use the client command pattern below, replacing `MODE`, `NAMES`, `THREADS`,
-and `RUN_DIRECTORY` with the recorded values:
+Use this client command pattern with the recorded values:
 
 ```powershell
-tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.exe --server 172.27.215.163:53 --names NAMES --mode MODE --threads THREADS --duration 300 --inflight 256 --timeout-ms 2000 --output-dir RUN_DIRECTORY
+$dnsStress = 'tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.exe'
+& $dnsStress --server 172.27.215.163:53 --names NAMES --mode MODE `
+  --threads THREADS --duration 300 --inflight 256 --timeout-ms 2000 `
+  --output-dir RUN_DIRECTORY
 ```
+
+Replace `MODE` with `authoritative` or `recursive`, `NAMES` with its generated
+names-file path, `THREADS` with the selected worker count, and `RUN_DIRECTORY`
+with a fresh result directory. This historical experiment deliberately omits
+`--qps`; the [client guide](../tools/dns-stress/README.md#run-a-measured-scenario)
+starts with a capped example.
 
 Run the checked-in Windows helpers from elevated Windows PowerShell 5.1:
 
@@ -152,7 +177,7 @@ Any writer error terminates capture and invalidates the measured run. Lines are
 flushed each second; final metrics are synchronized to disk. An interrupted
 process may lack a final sample.
 
-For a stable final sample, check these independent ledgers:
+For a stable final sample from this schema 1 binary, check these independent ledgers:
 
 ```text
 received = ring_dropped + callback_errors + dequeued + queue_backlog

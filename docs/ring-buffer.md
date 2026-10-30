@@ -57,6 +57,10 @@ WPA evidence and limitations. Measure loss,
 queue high water, and memory on the intended DNS host before selecting capacity
 for another workload.
 
+The later [pooled VM campaign](pooled-vm-performance-review.md) measures the
+bounded pooled implementation. Keep its results separate from this historical
+allocation-based capacity experiment, especially when comparing CPU or memory.
+
 ## Completion and resource ownership
 
 Orderly shutdown stops capture and joins the native `ProcessTrace` worker before

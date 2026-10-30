@@ -1,11 +1,19 @@
 # Ring-buffer capacity fix: plan and validation gates
 
+This historical plan helps maintainers review the October 29, 2026 UTC
+capacity experiment and its acceptance decisions. The experiment is complete;
+the [validation report](ring-buffer-fix-validation.md) preserves its outcome.
+References to deployment approval and the installed service describe that
+campaign. The later pooled implementation and VM validation are documented in
+[Pooled ETW intake](pooled-intake.md) and the
+[pooled VM review](pooled-vm-performance-review.md).
+
 Target: zero observed ring drops during separate 300-second authoritative and
 recursive-request tests at a **global 1,000 QPS ceiling**, while preserving the
 bounded ring, SCM-only security profile and existing ownership/shutdown rules.
 The claim is limited to those measured five-minute workloads, not every load.
 
-**Current approved final candidate is capacity-only v2, default 8,192 slots.**
+**The campaign's approved final candidate is capacity-only v2, default 8,192 slots.**
 The wake-only v1 at 1,024 failed its authoritative gate and is retained as an
 experiment, not the production fix. Its recursive run was completed only for
 the user's matched CPU comparison. No official wake-v1 acceptance run occurred.
@@ -17,6 +25,8 @@ sole Ubuntu owner declares the isolated upstream/receiver ready. Candidate
 deployment also requires the production-code security/review gate.
 
 ## Delegation and context
+
+The recorded work assignments were:
 
 | Chunk | Model / effort | Owner / context | Outputs and acceptance |
 | --- | --- | --- | --- |
@@ -157,6 +167,10 @@ The same compiled host Rust client must target the VM explicitly:
 --server 172.27.215.163:53 --names NAMES --mode MODE --threads 2 --duration 300 --inflight 256 --timeout-ms 2000 --output-dir NEW_RUN_DIRECTORY --qps 1000
 ```
 
+This is an argument vector. Replace `NAMES` with the generated names-file path,
+`MODE` with `authoritative` or `recursive`, and `NEW_RUN_DIRECTORY` with a
+fresh result directory when constructing the recorded client invocation.
+
 `--qps 1000` is a global ceiling: two workers each request a 2 ms interval.
 It permits paired microbursts and does not guarantee exactly 300,000 sends.
 Record the expanded command, executable and names hashes, actual sends/rate,
@@ -180,7 +194,7 @@ For every candidate acceptance run require:
 
 After the client and response drain, allow at least three seconds for receiver
 counter publication, stop the service to drain the native consumer/parser,
-then settle the end byte-offset marker. Check only stable final ledgers:
+then settle the end byte-offset marker. Check only stable final schema 1 ledgers:
 
 ```text
 received = ring_dropped + callback_errors + dequeued + queue_backlog

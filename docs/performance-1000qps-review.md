@@ -1,5 +1,11 @@
 # Performance repeat at global 1,000 QPS
 
+This historical review helps maintainers compare the original paced workloads
+on the unchanged 1,024-entry ring. The runs and restoration occurred on
+October 29, 2026 UTC. Binary, test, and installed-state descriptions apply at
+that cutoff. Later results are in the [capacity validation](ring-buffer-fix-validation.md)
+and [pooled VM review](pooled-vm-performance-review.md).
+
 Both 300-second runs achieved **999.69 QPS** with zero client errors. The
 unchanged service nevertheless lost **24.78% of authoritative capture records**
 and **37.27% of recursive-workload capture records**, entirely at its bounded
@@ -46,7 +52,8 @@ windows follow client sending timestamps; final ledgers and byte-offset
 receiver markers also include the subsequent ETW/parser drain. Monotonic
 client duration is authoritative: recorded wall ends were 2 ms and 5 ms earlier
 than their computed nominal ends, whereas monotonic elapsed-with-drain was
-300.0004281 and 300.0004343 seconds. The nominal UTC windows below are useful
+300.0004281 and 300.0004343 seconds. The nominal UTC windows in
+[Client and capture results](#client-and-capture-results) are useful
 for counter alignment; these millisecond differences do not imply a negative
 drain or a shortened sending interval.
 
@@ -111,7 +118,7 @@ a client-response flag error. The receiver's Boolean fields were present.
 
 ## Resource use
 
-Process CPU below is percent of **one logical CPU**; divide by two for this
+Process CPU in this section is percent of **one logical CPU**; divide by two for this
 guest's capacity. Maxima/p95 describe interval-average samples, not
 instantaneous peaks. MiB means 1,048,576 bytes.
 

@@ -1,9 +1,16 @@
 # DNS service to DNS-collector lab validation
 
-This record describes validation of the SCM-only Windows service against
+This historical record helps maintainers assess initial live validation of the
+Service Control Manager (SCM)-only Windows service against
 DNS-collector 3.2.3 in two Hyper-V guests. It separates verified guest readiness
 from live packet-delivery results. The session date is October 28, 2026 in
 America/Los_Angeles; evidence timestamps after midnight use October 29 UTC.
+
+The binary hashes, test counts, PIDs, and guest state in this record describe
+that session's cutoff. Later builds and performance work are recorded in the
+[documentation index](README.md#review-earlier-decisions-and-validation) and
+[completed pooled VM review](pooled-vm-performance-review.md). These small probes
+establish the listed payload and lifecycle observations, not load capacity.
 
 ## Verified environment
 
@@ -92,7 +99,7 @@ The deployment profile requires LocalSystem, an enabled unrestricted
 `SeChangeNotifyPrivilege`. The Application Event Log source `EtwDnstap`
 must be registered before starting the service. The program checks the effective token
 before opening the receiver or output. Guest installation and live token
-acceptance are recorded with the results below rather than inferred from unit
+acceptance are recorded in [Live results](#live-results) rather than inferred from unit
 tests. The observed service SID type is 1, RequiredPrivileges contains only
 `SeChangeNotifyPrivilege`, and the quoted service binary path selects
 `--receiver 172.27.215.60:6000 --session-name EtwDnstap-Lab`. The SCM ACL permits
@@ -242,6 +249,7 @@ table `inet dnstap_lab` remains. Resolver evidence lives in `resolver-byte-proof
 `collector-resolver.jsonl`, `upstream-dns.jsonl`, and
 `dnstap-resolver-proof.pcap` under `target/lab-ubuntu/`. Windows query and
 forwarder cleanup evidence is `target/lab-windows/resolver-query.json`.
+
 ## Evidence locations
 
 Session evidence lives under ignored `target/` paths and is not committed to

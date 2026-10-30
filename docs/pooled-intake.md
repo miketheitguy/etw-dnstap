@@ -132,10 +132,12 @@ five `TdhGetProperty` calls, with property result buffers allocated by the parse
 The copy from native ETW callback storage into owned storage remains required.
 Pooling removes repeated storage allocation; it is not literal zero-copy.
 Neither a higher maximum throughput nor a smaller safe queue follows from this
-design alone. The preserved ArrayQueue production baseline passed its stated
-1,000 QPS, 300-second authoritative and recursive runs with zero ring loss. That
-evidence applies to the baseline binary, not to this candidate or its separate
-jumbo budget. No installed VM or capacity default changes as part of this work.
+design alone. The preserved ArrayQueue baseline had zero ring loss in its stated
+1,000 QPS, 300-second authoritative and recursive runs. The recursive run retained
+one RA-check failure. Those results apply to the baseline binary and do not
+validate the pooled candidate or its separate jumbo budget. The implementation
+follow-up itself made no VM or capacity-default change; the later native
+campaign is recorded in [Validation scope](#validation-scope).
 
 ## Metrics schema 2
 
@@ -213,6 +215,15 @@ The follow-up local [receipt](../datasets/pooled-intake-local/audit-fixes-v1/rec
 records 45 passing tests and one ignored manual benchmark in development,
 release-unwind, and ASan configurations. It preserves the initial 42-test
 candidate separately and does not claim native TDH or VM validation.
+
+The separate [native VM performance review](pooled-vm-performance-review.md)
+records the reviewed candidate's actual DNS/ETW runs, bounded overload discovery,
+and full five-minute authoritative/recursive confirmations. Its all-category
+record ledgers, actual upstream mix, strict DNS/lifecycle outcomes, resource
+coverage, and native WPR gates determine those claims. This later campaign does
+not change the preserved local receipts or restart the stopped original matrix.
+Instrumentation and receiver storage differ from the historical capacity-only
+baseline; those single trials do not establish a causal CPU saving from pooling.
 
 ## Native and library contracts
 

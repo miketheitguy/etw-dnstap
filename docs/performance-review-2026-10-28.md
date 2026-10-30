@@ -1,5 +1,11 @@
 # DNS capture performance review — 2026-10-28
 
+This historical report helps maintainers interpret the original unpaced
+experiment on the 1,024-entry allocation-based ring. All binary identities,
+test counts, and installed-state descriptions apply at its recorded restoration
+cutoff. For the later bounded pooled campaign, see the
+[pooled VM review](pooled-vm-performance-review.md).
+
 The instrumented service remained small and completed all three 300-second
 captures cleanly, but it did not retain full-fidelity DNS telemetry at the
 offered load. In the authoritative run, DNS completed 53.95 million queries
@@ -15,6 +21,8 @@ No service throughput optimization, capacity change, privilege expansion, or
 Windows DNS cache-policy change was made between measured runs.
 
 ## Configuration and reproducibility
+
+The measured configuration is:
 
 - Windows: `DNSTap-WS2025`, GUID
   `24bafedb-0998-4430-a0c6-7e90350cd9ac`, Windows Server 2025 Core,
@@ -57,7 +65,7 @@ read-only review used GPT-6-Astra/high.
 
 ## Client results
 
-All timestamps below are UTC on **2026-10-29** (the evening of October 28 PDT).
+All timestamps in this section are UTC on **2026-10-29** (the evening of October 28 PDT).
 The sending windows are exactly 300 seconds; response drain and service/ETW
 shutdown occur afterward. Per-run `invocation.json`, `summary.json`,
 `metrics.jsonl`, host samples, and exit records are under
@@ -166,7 +174,7 @@ positive client responses had TTL 0.
 
 Process CPU is summed across processors: **100% means one logical CPU**.
 Divide by two for percentage of this guest's capacity. Means and p95 values
-below are duration weighted over valid interval-average rates; maxima are
+in this section are duration weighted over valid interval-average rates; maxima are
 observed interval averages, not instantaneous peaks.
 
 | Run | Service CPU mean / p95 / max, one-CPU % | Service mean, guest % | DNS CPU mean, one-CPU % | Guest total CPU mean |
@@ -210,7 +218,7 @@ bytes, available memory, paging, and network/UDP/TCP counters.
 The corrected recursive run kept the upstream and receiver lightly loaded:
 approximately 5.69% and 13.65% of one CPU respectively, with approximately
 6.05 MB and 74.73 MB RSS. Receiver disk busy time was approximately 0.96%.
-The receiver reported zero worker discards. Byte values labeled MB/GB above are
+The receiver reported zero worker discards. Byte values labeled MB/GB in this section are
 decimal; service memory in the table is MiB.
 
 ## Counter, trace, and interpretation limits
@@ -264,7 +272,7 @@ These Ready/Wait sums are associated with switch-ins in the
 selected view: a first interval can cross its beginning and a tail without an
 in-view switch-in can be absent. They are not asserted to be exactly clipped
 occupancy fractions or directly compared with the different five-second xperf
-view above. The large Ready durations provide scheduling-pressure evidence;
+view described in this section. The large Ready durations provide scheduling-pressure evidence;
 they do not identify a contended application lock. Raw CSV and the aggregate
 are under `target/performance/review/wpa-auth-precise` and
 `target/performance/review/auth-cpu-ready-wait-threads.json`.
@@ -311,7 +319,14 @@ hardening profile without changing compiler/linker security settings or the
 abort-on-panic strategy. A metrics write-error/JSON-escaping test and live SCM
 smoke run verified failure propagation and durable final ledger behavior.
 
-## Recommended next measurements
+## Follow-up measurements proposed at this cutoff
+
+The original review proposed these investigations. The
+[1,000 QPS repeat](performance-1000qps-review.md),
+[capacity experiment](ring-buffer-fix-validation.md), and
+[pooled campaign](pooled-vm-performance-review.md) record subsequent work;
+their results do not change this report's measurements or establish a causal
+explanation for the original loss:
 
 1. Find the zero-capture-loss offered-rate ceiling with a paced load ramp and
    the same stage ledger. These overload results do not establish that ceiling.

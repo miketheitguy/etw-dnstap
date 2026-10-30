@@ -2,13 +2,24 @@
 
 `etw-dnstap` is a Windows service for administrators who need to capture Windows
 DNS Server query and response packets as a dnstap TCP stream or Frame Streams
-file. Capture
-starts only through the Service Control Manager (SCM), under service name
+file. Capture starts only through the Service Control Manager (SCM), under service name
 `EtwDnstap`. The executable has no foreground capture mode; `--help` and
 `--version` print command metadata without starting capture.
 
-The service enables the `Microsoft-Windows-DNSServer` ETW provider in its own
+The service enables the `Microsoft-Windows-DNSServer` Event Tracing for Windows
+(ETW) provider in its own
 real-time session. It does not enable or alter the Event Viewer analytical log.
+
+To start, follow these tasks in order:
+
+1. [Build and check](#build-and-check) the executable on Windows x64.
+2. [Provision a service](#provision-a-service) with protected storage and the
+   required service identity.
+3. [Configure capture](#configure-capture) for a file or
+   [send to DNS-collector](#send-to-dns-collector).
+
+See the [documentation index](docs/README.md) for architecture, measurement
+terms, the completed native performance campaign, and historical reports.
 
 ## Build and check
 
@@ -55,9 +66,11 @@ Use a Windows Server host with the DNS Server role installed. This version
 accepts only an SCM-issued LocalSystem process token with an enabled,
 non-deny-only `NT SERVICE\EtwDnstap` group and exactly the enabled
 `SeChangeNotifyPrivilege`. Configure an unrestricted service SID and the SCM
-privilege allowlist before the first start. The narrow privilege profile still
-needs validation against the real DNS provider in your deployment; the tests
-do not demonstrate that an installed service can receive packets.
+privilege allowlist before the first start. Validate this profile against the
+real DNS provider in your deployment. Unit tests do not establish live provider
+delivery; the [Windows Server 2025 lab record](docs/lab-validation.md) and
+[pooled VM campaign](docs/pooled-vm-performance-review.md) record successful
+native capture under this profile in the stated lab.
 
 The service does not accept network connections. The network sink initiates an
 outbound TCP connection. This application selects LocalSystem with the token
@@ -73,47 +86,86 @@ alternate data streams, dot components, and reparse-point ancestors. These
 checks complement protected directory ACLs; they do not replace them or protect
 against a trusted administrator replacing directories during startup.
 
-For a **new installation**, run the following commands in an elevated Windows
-PowerShell 5.1 session. `New-EventLog` is a Windows PowerShell command. The example
-creates new directories and does not overwrite an existing service configuration:
+For a **new installation**, complete the following steps from the repository
+root in an elevated Windows PowerShell 5.1 session. `New-EventLog` requires
+Windows PowerShell. Use the release executable from [Build and check](#build-and-check).
+This procedure expects the service and both destination directories to be absent.
 
-```powershell
-$installDirectory = 'C:\Program Files\EtwDnstap'
-$captureDirectory = 'C:\ProgramData\EtwDnstap'
-New-Item -ItemType Directory -Path $installDirectory -ErrorAction Stop
-New-Item -ItemType Directory -Path $captureDirectory -ErrorAction Stop
-icacls.exe $installDirectory /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
-icacls.exe $captureDirectory /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
-Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
-$imagePath = '"C:\Program Files\EtwDnstap\etw-dnstap.exe" --output "C:\ProgramData\EtwDnstap\capture" --capacity 8192'
-New-Service -Name EtwDnstap -BinaryPathName $imagePath -StartupType Manual -DependsOn DNS
-sc.exe sidtype EtwDnstap unrestricted
-sc.exe privs EtwDnstap SeChangeNotifyPrivilege
-New-EventLog -LogName Application -Source EtwDnstap
-sc.exe qsidtype EtwDnstap
-sc.exe qprivs EtwDnstap
-sc.exe qc EtwDnstap
-sc.exe sdshow EtwDnstap
-```
+1. Create and protect the installation and capture directories:
 
-Confirm that each command succeeds, the account is LocalSystem, and only SYSTEM
-and administrators can change the service configuration, start/stop it, or
-write its executable and capture directories. Preserve existing identity,
-privileges, ACLs, and recovery policy when repairing an existing installation.
-The commands shown here were not executed as part of the repository checks.
+   ```powershell
+   $installDirectory = 'C:\Program Files\EtwDnstap'
+   $captureDirectory = 'C:\ProgramData\EtwDnstap'
+   New-Item -ItemType Directory -Path $installDirectory -ErrorAction Stop
+   New-Item -ItemType Directory -Path $captureDirectory -ErrorAction Stop
+   icacls.exe $installDirectory /inheritance:r /grant:r `
+       '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+   icacls.exe $captureDirectory /inheritance:r /grant:r `
+       '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+   ```
 
-To capture, check status, and stop, run:
+2. Copy the executable and register the service with a file-output destination:
 
-```powershell
-sc.exe start EtwDnstap
-sc.exe query EtwDnstap
-sc.exe stop EtwDnstap
-```
+   ```powershell
+   Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
+   $imagePath = '"{0}\etw-dnstap.exe" --output "{1}\capture" --capacity 8192' -f `
+       $installDirectory, $captureDirectory
+   New-Service -Name EtwDnstap -BinaryPathName $imagePath `
+       -StartupType Manual -DependsOn DNS
+   ```
 
-Each start creates a new file such as
+3. Configure the service SID, privilege allowlist, and Event Log source:
+
+   ```powershell
+   sc.exe sidtype EtwDnstap unrestricted
+   sc.exe privs EtwDnstap SeChangeNotifyPrivilege
+   New-EventLog -LogName Application -Source EtwDnstap
+   ```
+
+4. Inspect the registered identity and access controls:
+
+   ```powershell
+   sc.exe qsidtype EtwDnstap
+   sc.exe qprivs EtwDnstap
+   sc.exe qc EtwDnstap
+   sc.exe sdshow EtwDnstap
+   ```
+
+   Confirm that each command succeeds, the account is LocalSystem, and only
+   SYSTEM and administrators can change the service configuration, start/stop
+   it, or write its executable and capture directories. Preserve existing
+   identity, privileges, ACLs, and recovery policy when repairing an existing
+   installation. These commands were not executed as part of the documentation
+   checks.
+
+5. Start capture through SCM:
+
+   ```powershell
+   sc.exe start EtwDnstap
+   ```
+
+6. Check that the service reaches `RUNNING`:
+
+   ```powershell
+   sc.exe query EtwDnstap
+   ```
+
+7. After generating the DNS traffic you want to capture, stop the service:
+
+   ```powershell
+   sc.exe stop EtwDnstap
+   sc.exe query EtwDnstap
+   ```
+
+Confirm that the service reaches `STOPPED` with a zero exit code and that the
+capture file exists in the protected output directory. Each start creates a file such as
 `capture.1793232000-123456700-1234-0.dnstap`. The suffix contains the Unix time,
 nanoseconds, process ID, and a collision counter. Existing files are never
 truncated. Output directories must already exist.
+
+If `sc.exe query` reports `START_PENDING` or `STOP_PENDING`, repeat it until the
+transition completes. For a failed start or nonzero stop code, inspect the
+[Application Event Log error](#packet-processing-and-limits).
 
 ## Configure capture
 
@@ -131,6 +183,9 @@ following flags are available:
 | `--duration SECONDS` | Stop the service after 1–604800 seconds; otherwise run until SCM STOP or the file limit. |
 | `--session-name NAME` | Optional unused ETW session name, up to 200 UTF-16 units; default `etw-dnstap-PROCESS_ID`. |
 | `--identity TEXT` | Optional dnstap producer identity, up to 1024 UTF-8 bytes; default `etw-dnstap`. Empty text omits the field. |
+| `--metrics PATH` | Optional absolute local base filename for one-second JSONL metrics; the parent directory must already exist and be ACL-protected. Adds a metrics thread and per-event timing. |
+| `--help`, `-h` | Display configuration help without starting capture. |
+| `--version`, `-V` | Display the package version without starting capture. |
 
 At the file size limit, the parser requests service stop and discards events
 that cannot fit with a complete STOP frame. The service does not rotate files
@@ -215,6 +270,15 @@ storage calculations, not measured process-memory limits. See
 [Ring capacity and shutdown](docs/ring-buffer.md) for the historical capacity
 evidence.
 
+The separate [pooled VM performance review](docs/pooled-vm-performance-review.md)
+records native five-minute confirmations at 47,303.24 authoritative DNS QPS
+and 27,758.24 recursive DNS QPS, with exact zero-loss delivery of 94,606.49 and
+64,973.55 ETW records per sending second. These are observations on the fixed
+two-vCPU/4 GiB lab VM with the stated recursive upstream mix. The report retains
+overload failures, DNS/lifecycle qualifications, instrumentation differences,
+and restoration evidence; it does not establish universal capacity or a causal
+CPU improvement from pooling.
+
 The parser uses TDH property APIs and validated metadata to read `PacketData`,
 transport, addresses, ports, and timestamps. It caches up to 32 metadata/type
 schemas by event ID and version, while individual properties still use TDH
@@ -263,6 +327,14 @@ together. SCM exposes service status and a service-specific failure code. The
 tracing diagnostics, including packet/loss counters, use stderr, which is not a
 durable logging sink under SCM.
 
+For a durable measurement ledger, configure `--metrics` in the service binary
+path. Each start creates a uniquely suffixed JSONL file, flushes it each second,
+and synchronizes the final sample after capture and parser completion. The
+metrics file has a 1 GiB limit; a write error or reaching the limit ends capture.
+Include the additional thread and timing overhead when comparing runs. See
+[Measurement terms and result gates](docs/measurement-terms.md) to interpret
+the counters and CPU units.
+
 Service failures also produce a best-effort Application Event Log entry from
 source `EtwDnstap`, event ID 1, level Error, before SCM receives Stopped. Register
 the source before the first start as shown in the provisioning commands. The
@@ -271,8 +343,10 @@ it does not include packet buffers or query names. Event Log failure does not
 hide the original service failure. To inspect the stored error text, run:
 
 ```powershell
-Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='EtwDnstap'; Id=1} -MaxEvents 10 |
-    Select-Object TimeCreated, Id, @{Name='Details'; Expression={$_.Properties[0].Value}}
+$eventFilter = @{LogName='Application'; ProviderName='EtwDnstap'; Id=1}
+Get-WinEvent -FilterHashtable $eventFilter -MaxEvents 10 |
+    Select-Object TimeCreated, Id,
+        @{Name='Details'; Expression={$_.Properties[0].Value}}
 ```
 
 Startup and shutdown have 10-second fail-stop watchdogs. On a deadline or an

@@ -8,7 +8,7 @@ if (Test-Path -LiteralPath $out) { throw 'Preserve existing diagnostics' }
 $vm=Get-VM -Name DNSTap-WS2025
 if ($vm.Id -ne [guid]'24bafedb-0998-4430-a0c6-7e90350cd9ac') { throw 'Wrong VM' }
 $credential=Import-Clixml (Join-Path $root 'target/lab-windows/private/administrator.clixml')
-$result=Invoke-Command -VMId $vm.Id -Credential $credential -ArgumentList $SinceUtc,[bool]$RawEventScan -ScriptBlock {
+$result=Invoke-Command -VMId $vm.Id -Credential $credential -ArgumentList @($SinceUtc,[bool]$RawEventScan) -ScriptBlock {
     param($since,$rawScan)
     $start=[DateTime]::Parse($since).ToUniversalTime()
     if ($rawScan) {

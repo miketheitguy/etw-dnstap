@@ -1,9 +1,21 @@
 # Pooled VM trace analysis
 
-Use this note to review native WPR evidence for the campaign at
+Use this note to review native Windows Performance Recorder (WPR) evidence for
+the completed campaign at
 `target/performance/pooled-vm-20261029-0942`. The campaign plan and final review
-own workload decisions and capture results. This note records the trace probe,
+own workload decisions and capture results. This note helps maintainers inspect
+the trace probe,
 export procedure, and limits on scheduling and stack attribution.
+
+All 22 completed load ETLs pass the final native trace gate: zero lost events
+or buffers, continuous one-second CSwitch coverage, and containment of each
+complete sending interval. Per-run `wpa/RUN_ID/trace-gate-v1.json` receipts and
+the derivative `wpa/trace-gates-v1.json` retain canonical identities and source
+paths. This result describes WPR recording fidelity; the campaign review reports
+application admission loss, DNS flag failures, and lifecycle failures separately.
+All file paths without a repository prefix are relative to that campaign root.
+For units and independent pass criteria, see
+[Measurement terms and result gates](measurement-terms.md).
 
 ## Accepted recording probe
 
@@ -54,12 +66,97 @@ exports retain collapsed group rows and are preserved for provenance. Use the
 flat exports for stack and per-switch analysis. The flat profile sets
 `KeyColumnCount="0"` so a collapsed process group cannot hide leaf events.
 
-## Authoritative five-minute observations
+## Primary five-minute comparisons
+
+Use the management-clean `pooled-auth-1000-300s-2` and
+`pooled-rec-1000-300s-2` repeats as the primary low-rate resource evidence.
+The recursive repeat retains one RA=false response; its complete delivery and
+native trace pass do not clear that DNS-validity failure. The sustained
+confirmations are `pooled-auth-48000-300s-1` and `pooled-rec-28000-300s-1`.
+All four use the same production executable and full file-mode recording profile.
+
+The broad native views cover sending seconds 5–295. CPU in this table excludes observed
+DPC/ISR according to the recorded Xperf action; percentages use one core.
+Private bytes are the maximum from the separate full-sending PDH series.
+
+| Stage | Actual QPS | Broad trace-relative view, s | Service CPU, s / % | DNS CPU, s / % | Service maximum private MiB |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Authoritative 1k repeat | 999.70 | 16.004688–306.004688 | 2.078489 / 0.716720 | 10.975200 / 3.784552 | 41.594 |
+| Recursive 1k repeat, one RA=false | 999.68 | 15.651842–305.651842 | 2.955109 / 1.019003 | 19.786422 / 6.822904 | 41.797 |
+| Authoritative 48k confirmation | 47,303.24 | 15.914268–305.914268 | 107.064749 / 36.918879 | 237.642071 / 81.945542 | 41.180 |
+| Recursive 28k confirmation | 27,758.24 | 15.541131–305.541131 | 72.981012 / 25.165866 | 236.019012 / 81.385866 | 41.035 |
+
+Service sampled weights in these broad windows are respectively 1,788.5764,
+2,607.8676, 135,510.9296, and 91,575.5919 ms. These statistical weights include
+different attribution from exclusive CPU and must remain separate. PDH CPU also
+uses its own full-sending valid intervals; neither its integrated CPU nor the
+sample weights must equal the native 290-second CPU totals. The main campaign
+review retains PDH coverage and memory/thread series.
+
+The broad I/O observations are:
+
+| Stage | Service FileIo metrics writes / bytes | Service disk events / hard faults | DNS disk events / hard faults |
+| --- | ---: | ---: | ---: |
+| Authoritative 1k repeat | 292 / 163,162 | 1 / 1 | 0 / 0 |
+| Recursive 1k repeat | 293 / 163,916 | 0 / 0 | 0 / 0 |
+| Authoritative 48k confirmation | 292 / 166,581 | 0 / 0 | 0 / 0 |
+| Recursive 28k confirmation | 291 / 165,691 | 0 / 0 | 272 / 272 |
+
+The authoritative repeat's single disk read and hard fault concern 4,096 bytes
+of `tdh.dll` at trace-relative approximately 196.135 seconds. Disk I/O elapsed
+time is 0.144 ms; the hard-fault I/O measure is 0.1782 ms. Recursive confirmation
+DNS reads concern `pagefile.sys`: 10,006,528 bytes, 46.9789 ms of summed disk I/O
+time, and 59.8153 ms of summed hard-fault I/O time. These measures use different
+event boundaries. They do not establish a throughput bottleneck. Every observed
+service FileIo write in these broad views points to its metrics JSONL. Cached
+metrics writes need not appear as service-attributed physical disk writes;
+System can issue their later disk I/O. TCP output remains separate from FileIo.
+
+The matched precise views cover sending seconds 5–25. The parser observations
+for the primary low-rate repeats and recursive confirmation are:
+
+| Stage / parser TID | Scheduled / exclusive CPU, ms | Raw positive Ready total, ms | Raw positive Wait count / total, s | Wait p50 / p95 / p99 / max, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Authoritative 1k / 1360 | 127.8208 / 123.687 | 32.6040 | 1,298 / 19.8443181 | 15.9583 / 16.3368 / 16.4800 / 16.5595 |
+| Recursive 1k / 4848 | 179.0088 / 172.443 | 35.6196 | 1,282 / 19.7938566 | 15.9474 / 16.2403 / 16.4483 / 16.5308 |
+| Recursive 28k / 504 | 5,850.6328 / 4,614.718 | 3,353.1895 | 1,166 / 10.8028726 | 10.5484 / 13.7119 / 15.3933 / 17.6319 |
+
+Each parser row has one positive Wait crossing the left boundary. Fully interior
+positive Wait totals are respectively 19.8286280, 19.7778919, and 10.7907006 s.
+Ready p50/p95/p99/max values are 13.7/77.9/153.3/892.5 µs for authoritative 1k,
+14.4/87.6/168.5/584.8 µs for recursive 1k, and
+17.8/75.4/114.5/1,968.9 µs for recursive 28k. The roughly 16 ms low-rate waits
+persist in the management-clean repeats; the measurement does not establish
+timer or lock causality.
+
+The matching ETW consumers are TID 1344, 1988, and 1624. Their scheduled /
+exclusive CPU totals are 13.6874/13.387, 20.5645/19.923, and
+573.8534/448.459 ms. Raw positive Ready totals are 6.0268, 8.9538, and
+613.1907 ms; positive Wait medians are 94.0091, 63.9811, and 2.8466 ms.
+Each consumer also has one left-boundary positive Wait. The parser and consumer
+lifetimes begin before sending and end after drain; exact trace-relative
+lifetimes, raw/interior distributions, clipped occupancy, and source paths are
+in `wpa/native-comparison-v1.json` and each `matched/scheduling-summary.json`.
+Scheduling/sample CSVs filter only the service; Xperf process/thread CPU logs
+retain DNS and other processes. No full-stage absence of locks is inferred.
+
+Broad summary sources are `broad/summary-v2.json` for the authoritative 1k repeat
+and recursive 28k confirmation, and `broad/summary.json` for the recursive 1k
+repeat and authoritative 48k confirmation. All reside under the corresponding
+`wpa/RUN_ID` directory. All native actions used for these comparison views
+complete with exit code zero.
+The original baselines in the following sections remain preserved with their management-observer
+qualification. The earlier capacity-only baseline has a different partial WPR
+profile, so these observations do not establish a causal CPU improvement from
+pooling.
+
+## Original authoritative five-minute observations
 
 This original baseline includes a later in-load management enumeration. Its
 capture ledger remains valid; its broad resource measurements carry that
 qualification. The separately authorized clean repeat supplies the primary
-five-minute resource comparison when complete.
+five-minute resource comparison; it is complete and included in
+[Primary five-minute comparisons](#primary-five-minute-comparisons).
 
 Stage `pooled-auth-1000-300s-1` uses service PID 3188 and DNS PID 4176. Its
 776,994,816-byte trace spans UTC 09:15:49.2986125 through 09:21:09.4973807,
@@ -104,11 +201,12 @@ scheduling problems across the full five-minute stage. Broad disk, file, and
 fault observations do not rule out TCP or other I/O. PerfMon, application, and
 receiver counters supply those separate measurements.
 
-## Recursive five-minute observations
+## Original recursive five-minute observations
 
 This original baseline also includes a later in-load management enumeration.
 Preserve its capture result and use the authorized clean repeat as the primary
-resource comparison when complete.
+resource comparison. That repeat is complete and included in
+[Primary five-minute comparisons](#primary-five-minute-comparisons).
 
 Stage `pooled-rec-1000-300s-1` uses service PID 2492 and DNS PID 4176. Its
 663,748,608-byte ETL spans UTC 09:27:46.7979906 through 09:33:07.4870098,
@@ -148,6 +246,49 @@ baseline has more captured events and a shorter ETW consumer wait median. These
 are observations from the stated windows. They do not establish timer causality
 or a whole-stage absence of locking. Keep PerfMon's time-weighted CPU results
 separate from these native CPU totals because their windows and accounting differ.
+
+## Authoritative sustained confirmation window
+
+The clean `pooled-auth-48000-300s-1` confirmation has a 6,859,784,192-byte ETL,
+zero trace event/buffer loss, and continuous full-sending coverage. Its matched
+view covers trace-relative 15.914268–35.914268 seconds, or sending seconds 5–25.
+The scheduling and sampled CSVs include only service PID 3796 to bound stack
+output. The matching Xperf process/thread CPU report also contains DNS PID 4176.
+All native export actions complete with exit code zero. Evidence is in
+`wpa/pooled-auth-48000-300s-1/{inspect,matched}`.
+
+| Measurement | Parser | ETW consumer |
+| --- | ---: | ---: |
+| Named thread TID | 2272 | 4524 |
+| Trace-relative lifetime | 3.349710–316.319311 s | 3.350094–316.318826 s |
+| Switch-ins in matched view | 207,654 | 33,688 |
+| Scheduled CPU, including observed interrupt overlap | 8.2692395 s | 0.9245142 s |
+| CPU excluding observed DPC/ISR | 6.584242 s | 0.672077 s |
+| Raw positive Ready total | 4.6165969 s | 1.2861393 s |
+| Ready p50 / p95 / p99 / max | 16.4 / 51.8 / 81.3 / 6,058.0 µs | 13.6 / 59.2 / 203.1 / 14,913.8 µs |
+| Raw positive Wait count / total | 753 / 7.1141733 s | 9,535 / 17.7889024 s |
+| Fully interior positive Wait count / total | 753 / 7.1141733 s | 9,534 / 17.7862788 s |
+| Wait p50 / p95 / p99 / max | 9.2746 / 16.5409 / 17.4809 / 17.6916 ms | 2.0754 / 3.0044 / 3.2820 / 14.1332 ms |
+| Left-boundary Ready / Wait observations | 1 / 1 | 0 / 1 |
+
+The left-boundary parser observations have zero positive Wait; all 753 positive
+parser waits are fully interior. The consumer's raw Wait total includes one
+positive interval crossing the left boundary. Raw intervals, clipped occupancy,
+and fully interior distributions remain separate in `scheduling-summary.json`;
+they are not a required decomposition of the view's 20-second wall time.
+
+The service uses 7.265114 CPU seconds excluding observed DPC/ISR, and DNS uses
+16.244476 CPU seconds in the same view. Service sampled weight is 9,239.0827 ms,
+with unresolved instruction modules including `ntoskrnl.exe` (3,060.9622 ms),
+`tdh.dll` (1,968.4421 ms), `ntdll.dll` (1,811.7872 ms), and the application
+(1,410.9157 ms). Sample weights and scheduled/exclusive CPU use different
+accounting. No matching Rust functions are recovered.
+
+This successful high-rate window contains substantial parser dispatcher Wait
+and Ready time. The limiting 64k windows contain very little or no positive
+parser Wait while the queue stays near full. Those observations distinguish
+the measured windows; they do not identify a lock, timer mechanism, or sole
+cause of capacity loss.
 
 ## First authoritative limiting stage
 
@@ -203,11 +344,12 @@ not attribute individual dispatcher interruptions to a specific driver or cause.
 The two CPU measurements use identical windows. WPA's scheduled CPU includes
 observed interrupt overlap; Xperf's recorded `-exc_dpcisr` action excludes it.
 Their differences, approximately 1.466936 seconds early and 1.007211 seconds
-late for the parser, are interrupt-overlap estimates pending corroboration with
-explicit DPC/ISR tables. Installed `xperf -help cswitch` defines
+late for the parser, reflect those actions' different interrupt accounting.
+They are not interchangeable with elapsed DPC/ISR routine totals. Installed
+`xperf -help cswitch` defines
 `-exc_dpcisr` as excluding observed DPC/ISR time and requires those events to be
-enabled; this profile records both. Per-vCPU usage and explicit DPC/ISR/module
-attribution remain follow-up analysis after load.
+enabled; this profile records both. The per-vCPU and explicit DPC/ISR summaries
+provide additional context in the following table.
 
 A bounded full-sending-window Context pass adds the following native summaries
 for trace-relative 10.6087463–70.6087463 seconds:
@@ -251,6 +393,56 @@ by terminating only its task-owned exporter. Its nonzero result, command, and
 partial logs remain in `late-symbols`. Raw early and late exports complete with
 exit code zero. Matching OS-symbol attribution is deferred; no symbol-derived
 TDH, lock, driver, or Rust function claim is made from the partial pass.
+
+## Recursive 32k loss-centered windows
+
+`pooled-rec-32000-60s-1` delivers 31,691.27 client QPS but loses 7,535 of
+4,379,440 received events at ring admission. Its three positive one-second loss
+observations end at sending +0.628 s (6,265 drops), +46.088 s (684), and
++47.106 s (586). The latter two establish that loss is not confined to startup.
+The queue has fallen to 889, 899, and 292 respectively by those observations;
+these endpoints do not reconstruct the queue within each interval.
+
+The 1,168,113,664-byte native trace passes full-file inspection with zero lost
+events/buffers and continuous sending coverage. Service PID is 4884. Parser
+TID 2904 lives at trace-relative 3.334621–78.320317 s; consumer TID 1872 lives
+at 3.335007–78.319765 s. Detailed views cover sending 0–3 s and 44–49 s,
+corresponding to trace-relative 10.756463–13.756463 s and
+54.756463–59.756463 s. Evidence is in
+`wpa/pooled-rec-32000-60s-1/{early-loss,late-loss}`.
+
+| Measurement | Early 3-second view | Later 5-second view |
+| --- | ---: | ---: |
+| Parser scheduled / exclusive CPU | 1.0372728 / 0.806395 s | 1.7567959 / 1.377934 s |
+| Parser switch-ins | 25,458 | 39,046 |
+| Parser raw positive Ready total | 0.7069856 s | 1.3030591 s |
+| Parser Ready p50 / p95 / p99 / max | 16.7 / 82.4 / 133.8 / 769.3 µs | 19.2 / 94.5 / 205.2 / 2,390.9 µs |
+| Parser raw positive Wait count / total | 128 / 1.2526110 s | 225 / 1.9371606 s |
+| Parser fully interior positive Wait count / total | 127 / 1.2366850 s | 224 / 1.9281816 s |
+| Parser clipped Wait occupancy associated with in-view switch-ins | 1.2487066 s | 1.9304249 s |
+| Consumer scheduled / exclusive CPU | 0.0977210 / 0.075913 s | 0.1725564 / 0.134359 s |
+| Consumer raw positive Ready total | 0.1390153 s | 0.3278697 s |
+| Consumer fully interior positive Wait count / total | 1,100 / 2.7491352 s | 1,789 / 4.4971653 s |
+| Consumer clipped Wait occupancy associated with in-view switch-ins | 2.7632443 s | 4.4986810 s |
+
+Both threads have one positive Wait crossing the left boundary in each view.
+The early consumer's raw Wait total is 10.1839291 s because it includes a
+7.4347939-second pre-load wait. That raw total is not occupancy inside the
+three-second view. Clipped values remain subject to the missing final-tail
+limitation when no further switch-in occurs inside the view. Do not force
+scheduled, Ready, and Wait totals to sum to wall time.
+
+Both loss-centered windows contain substantial positive parser Wait as well
+as Ready time. This differs from the continuously dropping authoritative 64k
+late window, which has no positive parser Wait observations. The recursive
+windows do not support a claim of uninterrupted runnable-only parser delay
+throughout either view. These three- and five-second views include time before
+and after the one-second loss observations. Positive Wait elsewhere in a view
+does not establish that the parser waits at an exact drop instant. Their
+averages cannot identify the exact short burst
+that overflows the ring or establish a TDH lock, timer, driver, or sole scheduler
+cause. The retained one-second counters bound drop timing; native events and
+stack module offsets retain evidence for a later focused diagnosis.
 
 ## Management-perturbed 48k stage
 
@@ -346,7 +538,41 @@ A later controlled interoperability check should compare a graceful receiver
 close while retaining the sender's strict FINISH validation. No source,
 receiver configuration, retry, or protocol behavior changes during this campaign.
 
+## Auxiliary receiver counter discrepancy
+
+The authoritative 48k five-minute receiver window reports 28,381,946 records
+in all four tap/console worker ingress/egress counters and durable JSON. Its
+`dnscollector_exporter_policy_forwarded_total{worker="tap"}` delta is
+28,379,834, a deficit of 2,112 (33 times 64). The resource receipt is
+`ubuntu/pooled-auth-48000-300s-1-start--pooled-auth-48000-300s-1-end-resources.json`.
+The worker and durable-record reconciliation remains the delivery gate; this
+auxiliary counter does not establish missing records.
+
+Read-only inspection of the pinned collector identifies a potential counter
+accounting data race. In
+[`sendBatch`](https://github.com/dmachard/DNS-collector/blob/3b5f3f77d75a0a47a5b8f1d189f05e22bf663a03/workers/worker.go#L370-L395),
+the producer sends a batch pointer to the route before reading
+`len(b.Messages)` to increment the forwarded counter. The
+[`StdOut` consumer](https://github.com/dmachard/DNS-collector/blob/3b5f3f77d75a0a47a5b8f1d189f05e22bf663a03/workers/stdout.go#L125-L150)
+processes and releases that input batch. The batch's
+[`Release`](https://github.com/dmachard/DNS-collector/blob/3b5f3f77d75a0a47a5b8f1d189f05e22bf663a03/dnsutils/dnsmessage_batch.go#L52-L63)
+resets `Messages` to length zero before returning it to the pool. No additional
+producer reference or synchronization protects the producer's post-send length
+read on this single-route path. A consumer release before that read can therefore
+undercount the metric even after successful delivery. This mechanism is
+consistent with the observed batch-sized deficit; no runtime race reproduction
+or per-deficit attribution was performed.
+
+The cached pinned source bytes and hashes are preserved in
+`build/shutdown-source/forwarded-metric-source-receipt.json`. No collector patch,
+receiver option change, or additional workload is part of this source check.
+
 ## Inspect and export a stage
+
+Use Windows PowerShell with the Windows Performance Toolkit (WPT), the installed
+Xperf and WPA Exporter versions recorded with the campaign, and access to its
+preserved native ETLs. Run the following examples from the repository root.
+These are offline evidence exports, not new load tests.
 
 Wait for the Windows owner to clear the interstage analysis window. Do not hash
 large ETLs, export tables, resolve symbols, scan receiver files, or compress
@@ -419,6 +645,15 @@ python scripts/performance/summarize-pooled-broad.py `
 Use the same process names and a fresh summary path. The helper reads the export
 receipt's exact range and streams the file-event dump to bound memory use.
 
+The installed WPA Hard Faults Summary table can return events outside the
+requested export range. The broad summarizer explicitly filters its `Log Time`
+to the receipt's half-open time interval and reports excluded event counts.
+Disk events use initiation/completion overlap with that interval. In the clean
+authoritative 1k broad view, this excludes 13 earlier service faults and two
+earlier DNS faults, leaving one service fault, consistent with the independent
+Xperf range report. Preserve the unfiltered native CSV. The corrected derivative
+for that view is `broad/summary-v2.json`; its initial summary remains preserved.
+
 `-FileEvents` exports the selected window's classic FileIo events, including
 other processes, to retain file-object/name and operation-end joins. It uses the
 official [FileIo class GUID](https://learn.microsoft.com/windows/win32/etw/fileio)
@@ -448,6 +683,20 @@ does not reopen or hash ETLs. The index records canonical identities, retained
 and actual bounds, event/buffer loss, continuous CSwitch coverage, UTC client
 containment, management-perturbation flags, and source paths. A passing trace
 gate remains separate from the stage's application and receiver gates.
+
+After the comparison views and summaries exist, create their derivative index:
+
+```powershell
+python scripts/performance/summarize-pooled-native.py `
+    --campaign CAMPAIGN_DIR --output FRESH_COMPARISON_JSON
+```
+
+Replace `CAMPAIGN_DIR` with the campaign root and `FRESH_COMPARISON_JSON` with a
+file that does not exist. The helper joins the four primary five-minute views
+and two recursive 32k loss views using saved summaries, exact process/thread CPU
+rows, and lifetime logs. It prefers corrected `summary-v2.json` derivatives when
+present, requires explicit I/O filtering metadata, and does not reopen ETLs.
+The campaign's completed index is `wpa/native-comparison-v1.json`.
 
 ## Interpret scheduling and symbols
 
@@ -480,3 +729,9 @@ Treat source-level timer and allocation explanations as hypotheses until native
 observations support them. A configured 2 ms park timeout is not proof of a
 2 ms wake deadline. WPR loss checks cover the trace session; application intake,
 parser, output, DNS-client, and durable receiver ledgers remain separate gates.
+
+After an export, confirm that its receipt records successful native exit codes,
+the intended process IDs and time range, and complete source paths. Preserve
+failed or partial exports separately. Use the
+[campaign review](pooled-vm-performance-review.md) to assess strict stage results;
+trace fidelity alone does not establish capture or DNS success.

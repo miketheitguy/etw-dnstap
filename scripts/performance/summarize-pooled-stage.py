@@ -10,6 +10,8 @@ from metrics_ledger import normalize_metrics
 parser = argparse.ArgumentParser()
 parser.add_argument("campaign", type=Path)
 parser.add_argument("run")
+parser.add_argument("--output", type=Path,
+                    help="Write a derivative summary to a fresh path instead of the preserved stage path")
 args = parser.parse_args()
 base, run = args.campaign, args.run
 
@@ -41,6 +43,25 @@ client_delivery_clean = (not non_ra_errors and not bad_rcodes and not worker_err
 capture_clean = (joined_run["capture_pipeline_zero_loss_verified"] is True
                  and joined_run["upstream_socket_drop_delta_marker_interval"] == 0
                  and joined_run["udp_receive_buffer_errors_marker_interval"] == 0)
+capture_event_loss_clean = (
+    joined_run["event_denominator_domain_closure_verified"] is True
+    and joined_run["receiver_exact_delivery_verified"] is True
+    and joined_run["upstream_socket_drop_delta_marker_interval"] == 0
+    and joined_run["udp_receive_buffer_errors_marker_interval"] == 0
+    and final["etw_stats_valid"] is True
+    and all(final[key] == 0 for key in (
+        "intake_dropped", "callback_errors", "queue_backlog", "ignored",
+        "rejected", "output_limit_dropped", "output_failed_events",
+        "etw_events_lost", "etw_realtime_buffers_lost"))
+    and all(joined_run["service_ledger"][key] == 0 for key in (
+        "intake_residual", "capture_residual", "parser_residual")))
+stop = read(base / "windows-campaign" / f"{run}-Stop.json")
+if isinstance(stop, list):
+    stop = stop[0]
+lifecycle_clean = (final["output_errors"] == 0
+                   and stop["service"]["ExitCode"] == 0
+                   and stop["service"]["State"] == "Stopped"
+                   and stop["service"]["ProcessId"] == 0)
 guards = read(base / "stages" / run / "completion.json")
 orchestrator_assessment = base / "stages" / run / "completion-assessment.json"
 correction = read(orchestrator_assessment) if orchestrator_assessment.exists() else None
@@ -59,6 +80,11 @@ summary = {
     "client_ra_missing": counts["ra_missing"], "client_other_errors": non_ra_errors,
     "client_bad_rcodes": bad_rcodes, "client_worker_errors": worker_errors,
     "capture_clean": capture_clean,
+    "capture_event_loss_clean": capture_event_loss_clean,
+    "lifecycle_clean": lifecycle_clean,
+    "strict_stage_pass_before_wpr_review": (
+        capture_clean and lifecycle_clean and counts["successful"] == counts["sent"]
+        and client_delivery_clean and rate >= requested * .98 and orchestrator_clean),
     "orchestrator_clean_after_explicit_assessment": orchestrator_clean,
     "ascent_clean_before_wpr_review": (capture_clean and client_delivery_clean
                                        and rate >= requested * .98 and orchestrator_clean),
@@ -82,7 +108,7 @@ summary = {
     "ubuntu_collector_cpu_one_core_percent": joined_run["collector_cpu_percent_one_core_estimated"],
     "wpr_review_required": True,
 }
-output = base / "stages" / run / "stage-summary.json"
+output = args.output or base / "stages" / run / "stage-summary.json"
 if output.exists():
     raise SystemExit("Preserve existing stage summary")
 output.write_text(json.dumps(summary, indent=2) + "\n")

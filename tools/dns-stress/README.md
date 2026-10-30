@@ -5,6 +5,20 @@ selected DNS laboratory server. Each worker owns a connected UDP socket and its
 request state. Run the executable on the Hyper-V host to keep its CPU and memory
 cost outside the DNS VM.
 
+## Before you begin
+
+Prepare the following before sending load:
+
+- Use a Windows x64 host with the toolchain and Build Tools required by the
+  [project build instructions](../../README.md#build-and-check).
+- Generate the names files with the
+  [pinned workload procedure](../../datasets/performance/README.md#generate-the-workload).
+- Verify the selected lab DNS server, authoritative zone, and recursive upstream
+  fixtures with independent address and TTL probes. The files alone do not
+  provision a DNS server.
+- Choose a fresh output directory for each run. Existing result files cause
+  an error.
+
 ## Build and verify
 
 Run these commands from the repository root so Cargo discovers the repository's
@@ -26,27 +40,33 @@ Inspect each production binary's imports to verify this property after changes.
 
 ## Run a measured scenario
 
-For the configured Windows DNS VM, run the authoritative scenario as follows:
+The examples use the recorded Windows DNS VM at `172.27.215.163`; verify its
+identity and fixture readiness before using that address. Both examples request
+a **global 1,000 QPS ceiling**, shared across two workers. Achieved QPS can be lower.
+For the authoritative scenario, run:
 
 ```powershell
 $dnsStress = 'tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.exe'
 & $dnsStress --server 172.27.215.163:53 `
   --names target/performance/workload/auth-names.txt `
   --mode authoritative --threads 2 --duration 300 --inflight 256 `
-  --timeout-ms 2000 --output-dir target/performance/auth-2threads
+  --timeout-ms 2000 --qps 1000 `
+  --output-dir target/performance/auth-2threads
 ```
 
 Before rerunning the recursive scenario, recreate the temporary
 `rec.stress.test` conditional forwarder and Ubuntu upstream from the
-[performance test plan](../../docs/performance-test-plan.md). Final cleanup
-removes this recursive fixture; the 5000 authoritative records remain available.
+[performance test plan](../../docs/performance-test-plan.md). The original
+campaign's cleanup removed this recursive fixture and retained the 5,000
+authoritative records. Verify both fixture states before another run.
 Then change the names file and mode:
 
 ```powershell
 & $dnsStress --server 172.27.215.163:53 `
   --names target/performance/workload/rec-names.txt `
   --mode recursive --threads 2 --duration 300 --inflight 256 `
-  --timeout-ms 2000 --output-dir target/performance/rec-2threads
+  --timeout-ms 2000 --qps 1000 `
+  --output-dir target/performance/rec-2threads
 ```
 
 Authoritative mode sends RD=0 and checks AA=1. Recursive mode sends RD=1 and
@@ -56,12 +76,13 @@ answer record, the expected flags, and TC=0. The client validates record bounds
 but does not verify that an answer is an A record with the configured fixture
 address or TTL. Run independent fixture probes to establish answer correctness.
 
-The measured scenarios use two workers selected from the pilot comparison.
-See the [performance review](../../docs/performance-review-2026-10-28.md) for the
-selection evidence and run results. The thread count remains configurable.
+The historical pilot comparison selected two workers for subsequent campaigns.
+See the [original performance review](../../docs/performance-review-2026-10-28.md)
+for that selection and the [pooled VM review](../../docs/pooled-vm-performance-review.md)
+for the later capped ramp and confirmations. The thread count remains configurable.
 
-Use `--qps 20000` to place a global sending ceiling on a run. Each worker receives
-an equal share. Without this option, each worker fills its outstanding window
+Change `--qps` to select a different global sending ceiling. Each worker receives
+an equal share. **Omitting `--qps` selects uncapped mode:** each worker fills its outstanding window
 as quickly as send and receive processing permit. Tune `--threads` and
 `--inflight` during calibration before selecting the measured load.
 
@@ -71,6 +92,11 @@ until their own response deadlines, at most `--timeout-ms` after the sending
 interval. Scheduler and I/O delays can affect achieved throughput. The program
 does not insert warm-up time. Use a different output directory for each run;
 existing result files cause an error.
+
+After the run, confirm that `summary.json` and `metrics.jsonl` exist in the
+selected output directory. Inspect the final counts, worker errors, and actual
+rate as described in [Interpret the output](#interpret-the-output). A zero exit
+code alone is not a passing DNS-validity result.
 
 The following flags control each run:
 
@@ -194,3 +220,7 @@ The implementation uses safe Rust throughout. Build decisions follow the
 [Rust UDP socket API](https://doc.rust-lang.org/std/net/struct.UdpSocket.html),
 the [Rust C runtime linkage reference](https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes),
 and the repository hardening configuration.
+
+For capture fidelity and service resource use, pair the client results with the
+[service and receiver gates](../../docs/measurement-terms.md#independent-result-gates).
+Client latency and success counters alone do not establish dnstap record delivery.

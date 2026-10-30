@@ -1,5 +1,12 @@
 # Performance repeat at global 1,000 QPS
 
+This historical plan helps maintainers reproduce the method and review the
+acceptance gates for the original paced comparison. The two runs are complete;
+their [review](performance-1000qps-review.md) records ring loss in both modes.
+The fixed binary hashes and campaign paths belong to that experiment, before
+the capacity-only and pooled changes. See the
+[documentation index](README.md#review-earlier-decisions-and-validation) for the sequence.
+
 Run authoritative and recursive-request workloads for 300 seconds each at a
 global offered-rate ceiling of 1,000 queries/s. Keep the existing binaries,
 two client workers, 256 outstanding requests per worker, 2,000 ms deadlines,
@@ -8,6 +15,8 @@ Report the achieved rate and losses without assuming exactly 300,000 sends.
 Do not rebuild or optimize the client/service for this comparison.
 
 ## Work chunks and dependencies
+
+The original campaign assigned these work chunks:
 
 | Chunk | Model / effort | Owner and outputs | Acceptance gate |
 | --- | --- | --- | --- |
@@ -67,7 +76,7 @@ receipts in `target/performance/windows/campaign-1000qps-20261028`.
 
 Run the compiled Rust client on the host, targeting the VM explicitly. The
 PowerShell wrapper writes the full expanded executable/argument vector,
-binary/name hashes, UTC timestamps, host resource samples and exit code.
+binary/name hashes, UTC timestamps, host resource samples, and exit code:
 
 ```powershell
 powershell.exe -NoProfile -File scripts/performance/windows-run-client.ps1 -Mode authoritative -RunId auth-1000qps-1 -Threads 2 -Duration 300 -Qps 1000
@@ -79,6 +88,11 @@ The wrapper appends `--qps 1000` once to this fixed argument vector:
 ```text
 --server 172.27.215.163:53 --names NAMES --mode MODE --threads 2 --duration 300 --inflight 256 --timeout-ms 2000 --output-dir RUN_DIRECTORY --qps 1000
 ```
+
+`NAMES` is the selected generated names-file path, `MODE` is `authoritative`
+or `recursive`, and `RUN_DIRECTORY` is the fresh output directory in the
+expanded invocation manifest. This block is an argument vector, not a command
+to execute by itself.
 
 For each official run, use its unique run ID with the existing helpers:
 
@@ -126,7 +140,7 @@ memory start/end/delta/peak, thread/handle ranges, I/O/queue/wait evidence,
 achieved QPS, and matched-response latency histogram upper-bound quantiles.
 Timeouts are not automatically network loss, and latency excludes timeouts.
 
-Require valid final ETW statistics and these stable ledgers:
+Require valid final ETW statistics and these stable schema 1 ledgers:
 
 ```text
 received = ring_dropped + callback_errors + dequeued + queue_backlog

@@ -1,9 +1,10 @@
 # Pooled ETW intake: validation plan
 
-This plan is for maintainers evaluating bounded callback storage and channel
-transfer. It defines source review and local synthetic validation before any
-separate decision to deploy or benchmark the candidate on a VM. The installed
-capacity-only service `CA3342…64347` and prior campaign evidence remain intact.
+This historical plan is for maintainers reviewing the original bounded callback
+storage and channel-validation design. It defines the local synthetic checks
+proposed before the separately authorized VM campaign. Its installed baseline
+is the capacity-only service `CA3342…64347`; later evidence is linked in
+[Execution status](#execution-status).
 
 ## Execution status
 
@@ -13,10 +14,18 @@ request; their table and commands are retained as a plan, not evidence of
 execution. Local implementation checks and a fresh independent read-only audit
 are tracked separately in the [audit and remaining validation
 plan](pooled-intake-audit-plan.md). That follow-up also records the metrics fix
-and documentation reconciliation. No candidate VM deployment or native ETW
-performance validation has occurred.
+and documentation reconciliation. At this plan's local-validation cutoff, no
+candidate VM deployment or native ETW performance validation had occurred.
 
-## Delegation and file ownership
+The later [pooled VM campaign](pooled-vm-performance-review.md) completed native
+validation of the reviewed `98FD…1F5D7C` candidate, including both high-rate
+five-minute confirmations. That separate campaign does not execute or resume
+the stopped synthetic matrix. Treat the ownership table and commands here as
+the original design record, not pending instructions for the completed campaign.
+
+## Original delegation and file ownership
+
+The original work assignments were:
 
 | Chunk | Model / effort | Owner and context | Output and gate |
 | --- | --- | --- | --- |

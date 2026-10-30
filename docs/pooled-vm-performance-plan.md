@@ -1,11 +1,29 @@
 # Pooled intake VM performance plan
 
-This plan lets maintainers reproduce the reviewed pooled candidate's Windows
-DNS capture checks and bounded throughput discovery. Native VM measurements,
+This completed plan helps maintainers review or reproduce the method for the
+reviewed pooled candidate's Windows DNS capture checks and bounded throughput
+discovery. Native VM measurements,
 actual WPR traces, raw counters, and exact receiver ledgers determine the result.
 Local allocator tests do not establish throughput or native loss behavior.
 
+## Campaign status and use of this plan
+
+All 22 stages and restoration checks are complete. The
+[performance review](pooled-vm-performance-review.md) retains 12 strict passes
+and 10 strict failures; both high-rate five-minute confirmations pass every
+gate. The [final completion record](#final-completion-record) identifies the
+restored state at the campaign cutoff.
+
+The procedure, approvals, staged decisions, and fixed addresses here record
+this campaign. Do not replay its `Prepare`, deployment, or restoration actions
+against an existing installation without a fresh campaign backup, unique IDs,
+verified guests, and the stated readiness gates. The plan is not a live-state
+inventory. See [Measurement terms and result gates](measurement-terms.md) for
+shared units and outcome definitions.
+
 ## Ownership and dependencies
+
+The recorded work assignments and required evidence were:
 
 | Work | Model / effort | Owner | Required output |
 | --- | --- | --- | --- |
@@ -111,12 +129,18 @@ the coordinator to decide diagnosis/continuation. A repeated isolated RA=false
 response is reported separately from throughput and capture loss; it prevents
 a full DNS-validity pass, and never disappears through an automatic rerun.
 
-The exact client command expands verified `NAMES`, `MODE`, `RATE`, `SECONDS`, and
-a unique `NEW_RUN_DIRECTORY` into:
+The exact client command expands the recorded workload parameters into:
 
-```text
-tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.exe --server 172.27.215.163:53 --names NAMES --mode MODE --threads 2 --duration SECONDS --inflight 256 --timeout-ms 2000 --output-dir NEW_RUN_DIRECTORY --qps RATE
+```powershell
+$dnsStress = 'tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.exe'
+& $dnsStress --server 172.27.215.163:53 --names NAMES --mode MODE `
+  --threads 2 --duration SECONDS --inflight 256 --timeout-ms 2000 `
+  --output-dir NEW_RUN_DIRECTORY --qps RATE
 ```
+
+Replace `NAMES` with the generated names-file path, `MODE` with `authoritative`
+or `recursive`, `RATE` with the approved global ceiling, `SECONDS` with 60 or
+300, and `NEW_RUN_DIRECTORY` with a fresh output directory.
 
 Use `windows-run-client.ps1` with explicit `-Mode`, `-RunId`, `-Duration`, `-Qps`,
 and the fresh campaign `client` root. Record expanded arguments, executable/name
@@ -150,8 +174,8 @@ exact all-category gate before another run.
    a new metrics path, and start exact-PID PerfMon. Record three host/guest clock
    bounds before and after each stage.
 3. Start the approved actual WPR recording and the unchanged load. The final
-   profile, timing, buffer count, file-mode/circular policy, and size guard are
-   added to this plan after trace review. Never claim WPR evidence until an ETL
+   profile, timing, buffer count, file-mode policy, and size guard are recorded
+   in [Metrics and analysis](#metrics-and-analysis). Never claim WPR evidence until an ETL
    exists, its source trace has been inspected, and relevant event coverage/loss
    is reported. Do not substitute synthetic tests or the ignored local benchmark.
 4. During load collect one-second process, thread, guest, and host-client metrics;
@@ -212,6 +236,54 @@ one clean 300-second 1,000 QPS repeat per mode, using
 `pooled-auth-1000-300s-2` and `pooled-rec-1000-300s-2`. Use these as the primary
 1,000 QPS CPU/memory/thread evidence. Preserve the original capture successes
 and their observer qualifications. No other automatic reruns are authorized.
+
+### Record the recursive bracket and confirmation
+
+Recursive discovery first reaches channel-admission loss at 32,000 requested
+QPS: 7,535 of 4,379,440 received records are dropped, while every direct DNS
+query receives a valid response. The first midpoint at 24,000 QPS passes all
+gates for 60 seconds at 23,800.92 achieved QPS. The final midpoint at 28,000 QPS
+has zero event loss and exact delivery of 3,888,766 records at 27,759.65 QPS,
+but four received RA=false responses and the exact final-only reset make its
+strict overall result a failure. Preserve those qualifications; do not classify
+them as missing DNS responses or a channel-throughput failure.
+
+The coordinator authorizes the bounded 28,000 QPS, 300-second confirmation
+under the standing qualifications. That confirmation passes every gate:
+8,327,473 valid queries at 27,758.24 QPS, actual upstream query/reply counts
+1,418,559 each, and 19,492,064 exact records with zero loss or final errors,
+SCM exit 0, and queue high water 5,293. Full native WPR covers the sending
+interval without event/buffer loss. Together with the clean authoritative
+48,000 QPS confirmation, this closes both sustained-rate targets; no lower
+confirmation fallback or further ascent is required.
+
+Both 1,000 QPS repeats without in-load management inventory are complete.
+Authoritative sends 299,910 valid queries at 999.70 QPS and closes 599,820 exact
+records with SCM 0 and high water 3,634. Recursive sends/completes 299,903 queries
+at 999.68 QPS, closes 909,954 exact records with SCM 0 and high water 4,786, and
+retains one received RA=false response as a strict DNS-validity failure.
+Both have zero capture/event loss and valid full native traces. No further
+load or rerun follows these repeats; restore normal operation.
+
+The recursive confirmation uses an 8 GiB Windows trace cap and 6 GiB forecast.
+Its live receipt records 27,160,457,216 guest free bytes against a required
+23,622,320,128 bytes, and 396,148,908,032 host free bytes against a required
+34,359,738,368 bytes. Its final native ETL is 5,250,220,032 bytes and transfers
+losslessly after stop. Ubuntu's distinct raw/archive forecasts and identities
+remain in the fresh per-stage READY receipt; they are not a legacy
+double-footprint claim.
+
+### Recover the unused prepared receiver epoch
+
+After the 18th completed stage, the campaign has an approximately twelve-hour
+idle gap. Read-only recovery at 2026-10-30 00:03 UTC verifies the exact running
+VM, stopped service, matching candidate hash, no WPR recording or campaign
+counter/load process, and no Windows 28,000 QPS artifacts. Ubuntu has only an
+unused prepared receiver epoch with 1,026 raw bytes and no active connection.
+Preserve it under `ubuntu/stale-ready-20261029-1141`, then obtain fresh READY
+and clock bounds before the pending midpoint. No interrupted Windows load is
+invented and neither VM is power-cycled. The recovery inventory is
+`recovery-preflight-20261030.json`.
 
 ### Preserve the recurring finish-only reset
 
@@ -368,16 +440,93 @@ Only the 300-second confirmations support an observed sustained result.
 
 ## Restore and deliver
 
-If basic candidate capture or SCM lifecycle fails, retain evidence and restore
-the protected baseline binary/hash and normal arguments through SCM. If native
-validation succeeds, retain the new reviewed binary with original normal
-arguments, no metrics/capacity overrides, and reviewed defaults. Remove only the
+Use the campaign's protected backup and verified task ownership for restoration
+or recovery. The completed restoration is recorded in
+[Final completion record](#final-completion-record).
+
+### Handle a failed WPR start helper conservatively
+
+Post-load review identifies a runner error-path limitation. The stage controller
+sets `traceStarted` only after the WPR Start helper returns. The helper starts
+native recording before querying active status and writing `owned-recording.txt`.
+A helper failure after successful native start can therefore leave a recording
+active while the stage controller still believes it did not start one.
+
+The generic `PooledVM` marker does not uniquely identify a live recording.
+Moving it earlier would not make stale-marker cleanup safe. Preserve the failed
+helper's logs and active state, reject the next load while WPR is recording,
+and establish current recording identity and task ownership before any scoped
+recovery. Never stop a recording solely because a campaign marker exists.
+Automatic recovery requires a separately validated live-identity protocol and
+failure-injection checks; it is not added during this completed measurement
+matrix. The post-load review is `build/wpr-cleanup-review-20261030.json`.
+No such orphan is observed in this campaign's recovery or final state, and all
+measured stages retain complete native trace gates.
+
+### Restore normal operation
+
+If basic candidate capture fails or a lifecycle failure falls outside the
+coordinator's exact final-reset exception, retain evidence and restore the
+protected baseline binary/hash and normal arguments through SCM. The documented
+exception preserves a failed lifecycle result after exact delivery; it does not
+invalidate the later clean confirmations or require changing the validated
+candidate. If native validation succeeds, retain the reviewed candidate with
+original normal arguments, no metrics/capacity overrides, and reviewed defaults.
+Remove only the
 owned temporary recursive forwarder. Restore and compare DNS settings, binary/
 SCM ACLs, SID/privileges, and task-owned collector state. Ubuntu restoration is
-owned by its assigned worker. Keep both VMs running.
+owned by its assigned worker. Keep both VMs running. After the last measured
+SCM stop, restore the Ubuntu normal receiver first and verify its readiness,
+then restore/start the Windows service. This prevents a receiver restart against
+the already restored running service.
 
 Verify Running service, exact retained hash, strict service policy, ordinary
 authoritative answer/TTL, and visible baseline console CQ/CR output outside any
 measurement window. Deliver `docs/pooled-vm-performance-review.md` with build and
 deployment identity, approved matrix, pass/fail tables, actual rates/ledgers,
 resource and WPR analysis, raw evidence paths, limits, and restoration receipts.
+
+## Final completion record
+
+All 22 measured stages have closed, classified client/native/parser/receiver
+evidence and passing native trace integrity gates. Completion does not turn the
+four ring-loss stages, RA validation failures, or four exact final-reset
+lifecycle failures into passes. Both high-rate 300-second confirmations pass
+every gate; the clean recursive 1,000 QPS repeat retains one RA=false response
+and therefore fails its separate strict DNS-validity gate. No further ascent,
+fallback or rerun occurs.
+
+| Final check | Result | Evidence under the campaign root |
+| --- | --- | --- |
+| Windows retained candidate | `98FD…1F5D7C`, SCM Running PID 2592, original normal arguments | `windows-campaign/final-policy-proof.json` |
+| Windows service policy | LocalSystem, enabled service SID, only `SeChangeNotifyPrivilege`, executable/SCM ACLs match protected baseline | `windows-campaign/final-policy-proof.json` |
+| DNS policy and fixtures | Recursion/cache/forwarders match backup, 5,000 A records retained, owned recursive forwarder absent | `windows-campaign/final-policy-proof.json` |
+| Task collectors | WPR not recording; no campaign logman collector remains | `windows-campaign/final-policy-proof.json` |
+| Ubuntu normal receiver | Protected configuration hash restored, journal/console stdout, original socket sysctls, temporary telemetry/upstream/firewall fixtures removed | `ubuntu/restoration-final.json` |
+| Temporary data disk | Exact UUID unmounted with no open descriptors, owned VHDX detached and retained | `ubuntu/temporary-data-disk-unmounted.json`, `ubuntu/temporary-data-disk-detached.json` |
+| VMs | Both Running, fixed 2 vCPUs/4 GiB each, original OS disks/DVDs retained | `ubuntu/restoration-vm-proof.json` |
+| Ordinary service proof | `www.auth.stress.test` A returns `192.0.2.53`, TTL 300; exact normal console CQ/CR ID 36450 at 00:34:03 UTC | `windows-campaign/final-query-proof.json`, `ubuntu/restoration-console-proof.json` |
+| Analysis gate regression | Actual clean, RA-only, final-reset and ring-loss receipts produce distinct event/lifecycle/strict outcomes; report predicate rejects extra client/upstream errors and live/PID states; original summary hashes unchanged | `build/summary-gates-check-20261030-v2.json` |
+
+No production source, pool/capacity, VM resources, timers, cache policy or process
+priority changes occur during this campaign. Formatting, strict Clippy, locked
+release and PE checks remain the pre-load build evidence; local tests are not
+relabeled as new native tests. Retain all original, failed and perturbed
+receipts. The final report includes the descriptive historical CPU/memory
+comparison and its instrumentation/storage limitations, without a causal
+pooling-efficiency claim. Receiver visibility-delay distribution remains
+unavailable; no archive is rescanned to manufacture one.
+
+Generate the integrated report only after the classified evidence and restoration
+proofs exist:
+
+```powershell
+python scripts/performance/build-pooled-report.py `
+  target/performance/pooled-vm-20261029-0942 `
+  docs/pooled-vm-performance-review.md --complete
+```
+
+`--complete` requires exact receiver/domain/ledger closure for all 22 stages,
+native trace integrity, lifecycle assessments for nonzero SCM exits, and restored
+normal Windows/Ubuntu/storage/console proofs. It accepts preserved classified
+strict failures; it does not require every stage to pass.

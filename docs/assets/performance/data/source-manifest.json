@@ -1,0 +1,681 @@
+{
+  "schema": 1,
+  "generated_utc": "2026-10-30T00:47:40.598953+00:00",
+  "derivative": true,
+  "raw_evidence_unchanged": true,
+  "etl_rehashed": false,
+  "documentation": "https://learn.microsoft.com/windows-hardware/test/wpt/cswitch",
+  "native_method": "290 Xperf cswitch -process -exc_dpcisr -range T1 T2 actions per ETL pass; T1/T2 in us",
+  "cpu_units": "CPU percent of one core; cpu_us / interval_us * 100; guest has two vCPUs; no clipping",
+  "cpu_semantics": "CSwitch scheduled process CPU excluding observed DPC/ISR; same native action as independent broad totals",
+  "qps_method": "Interpolate each worker's monotone cumulative sent counts separately at each integer sending second, then sum differences; only regular samples, never final drain sample",
+  "worker_clock": "dns-stress source main.rs gives every worker the same start Instant; elapsed_ns is relative to that shared start, not worker creation time",
+  "time_alignment": "Nominal UTC subtraction from trace-gate, identical sending [5,295) mapping to saved broad view; rounded to nearest us for Xperf. Guest-host offset is not corrected. Before/after measured bounds and 1ms client Unix timestamp quantization limit cross-clock alignment; interpolation cannot recover sub-sample send timing",
+  "source_code_sha256": "727AB5E19392BCC7E09826BF93086CB0F92693E0DBD62EC5361E5424C724050B",
+  "runs": [
+    {
+      "run_id": "pooled-auth-1000-300s-2",
+      "mode": "authoritative",
+      "requested_qps": 1000,
+      "strict_pass": true,
+      "qualification": "All workload and native trace gates pass",
+      "series_csv": "target\\performance\\pooled-vm-20261029-0942\\graphs-v1\\pooled-auth-1000-300s-2\\series.csv",
+      "series_sha256": "DD3207985FDB45F6EA039B632A5EBDAD69F9322317A6F2FDB1A05DD6E3A22C40",
+      "bins": 290,
+      "service_process": "etw-dnstap.exe (4136)",
+      "dns_process": "dns.exe (4176)",
+      "native_validation": {
+        "etw-dnstap.exe (4136)": {
+          "binned_cpu_us": 2078507,
+          "broad_cpu_us": 2078489,
+          "difference_us": 18,
+          "mean_percent_one_core": 0.7167265517241379,
+          "maximum_percent_one_core": 1.4694
+        },
+        "dns.exe (4176)": {
+          "binned_cpu_us": 10975214,
+          "broad_cpu_us": 10975200,
+          "difference_us": 14,
+          "mean_percent_one_core": 3.7845565517241377,
+          "maximum_percent_one_core": 4.5729
+        }
+      },
+      "client_validation": {
+        "workers": [
+          {
+            "worker": 0,
+            "regular_samples": 299,
+            "first_regular_s": 1.0,
+            "last_regular_s": 299.0000005,
+            "maximum_regular_gap_s": 1.0000339,
+            "final_sent": 149955,
+            "final_sample_elapsed_s": 300.0000278,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          },
+          {
+            "worker": 1,
+            "regular_samples": 299,
+            "first_regular_s": 1.0000003,
+            "last_regular_s": 299.0000005,
+            "maximum_regular_gap_s": 1.0000852,
+            "final_sent": 149955,
+            "final_sample_elapsed_s": 300.0000027,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          }
+        ],
+        "cumulative_at_5s": 4998.940188420501,
+        "cumulative_at_295s": 294911.99965000007,
+        "integrated_interior_queries": 289913.05946157954,
+        "full_sending_sent": 299910,
+        "regular_only_rate_interpolation": true
+      },
+      "full_sending_achieved_qps": 999.7,
+      "interior_achieved_qps": 999.7002050399294,
+      "clock_bounds_before": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-1000-300s-2\\clock-bounds.json",
+        "guest_minus_host_intersection_ms": [
+          -7.3542000000000005,
+          -6.330100000000001
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-30T00:19:10.5564679Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:19:10.6653314Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "a7eefb85-ded4-4f15-9f56-de935f7c0ed7",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:19:10.7109201Z",
+            "offset_lower_ms": -45.5887,
+            "offset_upper_ms": 108.8635
+          },
+          {
+            "host_before": "2026-10-30T00:19:10.7185325Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:19:10.7132217Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "a7eefb85-ded4-4f15-9f56-de935f7c0ed7",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:19:10.7215559Z",
+            "offset_lower_ms": -8.334200000000001,
+            "offset_upper_ms": -5.3108
+          },
+          {
+            "host_before": "2026-10-30T00:19:10.7215559Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:19:10.7152258Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "a7eefb85-ded4-4f15-9f56-de935f7c0ed7",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:19:10.7225800Z",
+            "offset_lower_ms": -7.3542000000000005,
+            "offset_upper_ms": -6.330100000000001
+          }
+        ]
+      },
+      "clock_bounds_after": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-1000-300s-2\\clock-bounds-end.json",
+        "guest_minus_host_intersection_ms": [
+          -6.1943,
+          -4.1905
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-30T00:24:46.7988968Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:24:46.9126305Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "e30f7647-ae54-47cc-ac91-e86bbb31e88b",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:24:46.9556157Z",
+            "offset_lower_ms": -42.9852,
+            "offset_upper_ms": 113.7337
+          },
+          {
+            "host_before": "2026-10-30T00:24:46.9622010Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:24:46.9585515Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "e30f7647-ae54-47cc-ac91-e86bbb31e88b",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:24:46.9647458Z",
+            "offset_lower_ms": -6.1943,
+            "offset_upper_ms": -3.6495
+          },
+          {
+            "host_before": "2026-10-30T00:24:46.9647458Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:24:46.9605553Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "e30f7647-ae54-47cc-ac91-e86bbb31e88b",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:24:46.9678068Z",
+            "offset_lower_ms": -7.2515,
+            "offset_upper_ms": -4.1905
+          }
+        ]
+      },
+      "nominal_trace_sending_start_s": 11.004688024520874,
+      "trace_grid_rounding_us": -0.0245208740234375,
+      "canonical_etl_sha256": "7CD87A6483DEBBFF56EDD22F0D476C88A8B872DF00AD5DEB715D5D5F827A5D25",
+      "canonical_etl_bytes": 516947968,
+      "sources_sha256": {
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\pooled-auth-1000-300s-2\\trace-gate-v1.json": "22EA5A5B4AD0CDC902CB84E24B39FA523991142C1B743075A891DACA498A865D",
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\native-comparison-v1.json": "4A45B2DBB00C291C4F31B97E787728D357BE4D82F58F4AC55FD070A73F594FDA",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-auth-1000-300s-2\\summary.json": "2FCDCC718B85C107B02309280F85A2C346CF5E5038BF8E18228D845EFE3635FA",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-auth-1000-300s-2\\metrics.jsonl": "86A423103E8EDD03F0FBC76DAB26FB9F1CC73554D68B18932DE4E84B95A5D960",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-auth-1000-300s-2\\invocation.json": "3C8036BAC41999118993880ADE0D957F9B74C4DDE577826C42FF3A0823AC0A40",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-1000-300s-2\\clock-bounds.json": "D7CA57F60476794A26B9BC52B159F1853B89F71F46B3156B31A6806830FE1123",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-1000-300s-2\\clock-bounds-end.json": "FDABC4532D4248CEF78A220AD9779FDFB3B5E3FCD19E90EBFC88FB6E54CB96F4",
+        "tools\\dns-stress\\src\\main.rs": "2BCE2368767165C5680FF630833B81DD425C7D389F579EB4B0DA064EB63EE0CF"
+      },
+      "native_log_sha256": "62C78EAC3BCDC3BC5EBD600852BF67C19E0DE3130C61FDF379B9C607EB9C46BC"
+    },
+    {
+      "run_id": "pooled-rec-1000-300s-2",
+      "mode": "recursive",
+      "requested_qps": 1000,
+      "strict_pass": false,
+      "qualification": "One RA=false response; zero packet/capture loss and clean SCM exit",
+      "series_csv": "target\\performance\\pooled-vm-20261029-0942\\graphs-v1\\pooled-rec-1000-300s-2\\series.csv",
+      "series_sha256": "6254DAF28086F5B8AF6F26C21EB8663B6EC72B03F39904A710D4DAE736D6C392",
+      "bins": 290,
+      "service_process": "etw-dnstap.exe (1632)",
+      "dns_process": "dns.exe (4176)",
+      "native_validation": {
+        "etw-dnstap.exe (1632)": {
+          "binned_cpu_us": 2955125,
+          "broad_cpu_us": 2955109,
+          "difference_us": 16,
+          "mean_percent_one_core": 1.0190086206896551,
+          "maximum_percent_one_core": 1.8924
+        },
+        "dns.exe (4176)": {
+          "binned_cpu_us": 19786437,
+          "broad_cpu_us": 19786422,
+          "difference_us": 15,
+          "mean_percent_one_core": 6.822909310344827,
+          "maximum_percent_one_core": 8.6712
+        }
+      },
+      "client_validation": {
+        "workers": [
+          {
+            "worker": 0,
+            "regular_samples": 299,
+            "first_regular_s": 1.0,
+            "last_regular_s": 299.0000003,
+            "maximum_regular_gap_s": 1.0000583000000347,
+            "final_sent": 149952,
+            "final_sample_elapsed_s": 300.0000333,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          },
+          {
+            "worker": 1,
+            "regular_samples": 299,
+            "first_regular_s": 1.0000006,
+            "last_regular_s": 299.0000002,
+            "maximum_regular_gap_s": 1.0000581000000466,
+            "final_sent": 149951,
+            "final_sample_elapsed_s": 300.0000274,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          }
+        ],
+        "cumulative_at_5s": 4999.99970000003,
+        "cumulative_at_295s": 294904.99960000004,
+        "integrated_interior_queries": 289904.9999,
+        "full_sending_sent": 299903,
+        "regular_only_rate_interpolation": true
+      },
+      "full_sending_achieved_qps": 999.6766666666666,
+      "interior_achieved_qps": 999.6724134482758,
+      "clock_bounds_before": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-1000-300s-2\\clock-bounds.json",
+        "guest_minus_host_intersection_ms": [
+          -6.2628,
+          -3.9489
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-30T00:25:59.1545809Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:25:59.2705590Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "1512a725-dc36-44a1-a478-31392c509b1d",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:25:59.3168409Z",
+            "offset_lower_ms": -46.2819,
+            "offset_upper_ms": 115.97810000000001
+          },
+          {
+            "host_before": "2026-10-30T00:25:59.3245194Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:25:59.3214153Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "1512a725-dc36-44a1-a478-31392c509b1d",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:25:59.3276781Z",
+            "offset_lower_ms": -6.2628,
+            "offset_upper_ms": -3.1041000000000003
+          },
+          {
+            "host_before": "2026-10-30T00:25:59.3276781Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:25:59.3237292Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "1512a725-dc36-44a1-a478-31392c509b1d",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:25:59.3306252Z",
+            "offset_lower_ms": -6.896,
+            "offset_upper_ms": -3.9489
+          }
+        ]
+      },
+      "clock_bounds_after": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-1000-300s-2\\clock-bounds-end.json",
+        "guest_minus_host_intersection_ms": [
+          -2.0731,
+          -0.0702
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-30T00:31:38.9504563Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:31:39.0661760Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "0b05a119-8415-44ed-868d-25f0d429dcdc",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:31:39.1065970Z",
+            "offset_lower_ms": -40.421,
+            "offset_upper_ms": 115.7197
+          },
+          {
+            "host_before": "2026-10-30T00:31:39.1126627Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:31:39.1138797Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "0b05a119-8415-44ed-868d-25f0d429dcdc",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:31:39.1159528Z",
+            "offset_lower_ms": -2.0731,
+            "offset_upper_ms": 1.217
+          },
+          {
+            "host_before": "2026-10-30T00:31:39.1159528Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:31:39.1158826Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "0b05a119-8415-44ed-868d-25f0d429dcdc",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:31:39.1189868Z",
+            "offset_lower_ms": -3.1042,
+            "offset_upper_ms": -0.0702
+          }
+        ]
+      },
+      "nominal_trace_sending_start_s": 10.65184211730957,
+      "trace_grid_rounding_us": -0.1173095703125,
+      "canonical_etl_sha256": "069FCAE81270B6A34AE71D4819F44E53643A7B21C7B915BA8D5969E9A27F6274",
+      "canonical_etl_bytes": 646971392,
+      "sources_sha256": {
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\pooled-rec-1000-300s-2\\trace-gate-v1.json": "7363A6182CBE5DCFFB6EA3CC8181207F9BCC6E24E5478BF80C3D4160245150DC",
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\native-comparison-v1.json": "4A45B2DBB00C291C4F31B97E787728D357BE4D82F58F4AC55FD070A73F594FDA",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-rec-1000-300s-2\\summary.json": "92E12B7F0B5C52813218BBBEC044A1CA926F6D3308D0EB82D8749106C56BAECC",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-rec-1000-300s-2\\metrics.jsonl": "B77B4F178E04F2937E4DCBF5A4493C26F9193E2CDAB3EDA064C340C1EAE73227",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-rec-1000-300s-2\\invocation.json": "762E4FC229E4A5C462E793F5B9441A1C7B6D158F456C49B95EFE5D0655C75672",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-1000-300s-2\\clock-bounds.json": "5574F6F8E75CBB2224D551EDBB7A39C6678CDDAB12E94B5085549EED58474F52",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-1000-300s-2\\clock-bounds-end.json": "572993B41C19358AE74B787A28C9619A7123CD2EDC453958AA2660640B10E4AC",
+        "tools\\dns-stress\\src\\main.rs": "2BCE2368767165C5680FF630833B81DD425C7D389F579EB4B0DA064EB63EE0CF"
+      },
+      "native_log_sha256": "EF9ED419903D7CB25FA1075573820722D31E792090F1E028CE900171E8A020C0"
+    },
+    {
+      "run_id": "pooled-auth-48000-300s-1",
+      "mode": "authoritative",
+      "requested_qps": 48000,
+      "strict_pass": true,
+      "qualification": "All workload and native trace gates pass",
+      "series_csv": "target\\performance\\pooled-vm-20261029-0942\\graphs-v1\\pooled-auth-48000-300s-1\\series.csv",
+      "series_sha256": "102E3285166B5694B070CB5576FC83E579A9323648F0AAF64D06E801599516CC",
+      "bins": 290,
+      "service_process": "etw-dnstap.exe (3796)",
+      "dns_process": "dns.exe (4176)",
+      "native_validation": {
+        "etw-dnstap.exe (3796)": {
+          "binned_cpu_us": 107064773,
+          "broad_cpu_us": 107064749,
+          "difference_us": 24,
+          "mean_percent_one_core": 36.91888724137931,
+          "maximum_percent_one_core": 41.4625
+        },
+        "dns.exe (4176)": {
+          "binned_cpu_us": 237642080,
+          "broad_cpu_us": 237642071,
+          "difference_us": 9,
+          "mean_percent_one_core": 81.9455448275862,
+          "maximum_percent_one_core": 88.0302
+        }
+      },
+      "client_validation": {
+        "workers": [
+          {
+            "worker": 0,
+            "regular_samples": 300,
+            "first_regular_s": 1.0000003,
+            "last_regular_s": 300.0000002,
+            "maximum_regular_gap_s": 1.0001346000000098,
+            "final_sent": 7095505,
+            "final_sample_elapsed_s": 300.0000692,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          },
+          {
+            "worker": 1,
+            "regular_samples": 300,
+            "first_regular_s": 1.0000001,
+            "last_regular_s": 300.0000003,
+            "maximum_regular_gap_s": 1.0001324999999923,
+            "final_sent": 7095468,
+            "final_sample_elapsed_s": 300.0001044,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          }
+        ],
+        "cumulative_at_5s": 236708.95512102835,
+        "cumulative_at_295s": 13954476.97867282,
+        "integrated_interior_queries": 13717768.02355179,
+        "full_sending_sent": 14190973,
+        "regular_only_rate_interpolation": true
+      },
+      "full_sending_achieved_qps": 47303.24333333333,
+      "interior_achieved_qps": 47302.64835707514,
+      "clock_bounds_before": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-48000-300s-1\\clock-bounds.json",
+        "guest_minus_host_intersection_ms": [
+          11.2857,
+          12.795200000000001
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-29T10:48:10.3509706Z",
+            "guest_utc": {
+              "value": "2026-10-29T10:48:10.4811264Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "35d817ef-99ff-4263-abfc-d4ae59059fab",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-29T10:48:10.5101405Z",
+            "offset_lower_ms": -29.014100000000003,
+            "offset_upper_ms": 130.1558
+          },
+          {
+            "host_before": "2026-10-29T10:48:10.5167393Z",
+            "guest_utc": {
+              "value": "2026-10-29T10:48:10.5305620Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "35d817ef-99ff-4263-abfc-d4ae59059fab",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-29T10:48:10.5197708Z",
+            "offset_lower_ms": 10.7912,
+            "offset_upper_ms": 13.822700000000001
+          },
+          {
+            "host_before": "2026-10-29T10:48:10.5197708Z",
+            "guest_utc": {
+              "value": "2026-10-29T10:48:10.5325660Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "35d817ef-99ff-4263-abfc-d4ae59059fab",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-29T10:48:10.5212803Z",
+            "offset_lower_ms": 11.2857,
+            "offset_upper_ms": 12.795200000000001
+          }
+        ]
+      },
+      "clock_bounds_after": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-48000-300s-1\\clock-bounds-end.json",
+        "guest_minus_host_intersection_ms": [
+          16.1892,
+          17.0116
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-29T10:57:01.9943441Z",
+            "guest_utc": {
+              "value": "2026-10-29T10:57:02.1347408Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "7fea1960-dca4-4032-84da-1578402d9c26",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-29T10:57:02.1614295Z",
+            "offset_lower_ms": -26.6887,
+            "offset_upper_ms": 140.3967
+          },
+          {
+            "host_before": "2026-10-29T10:57:02.1690688Z",
+            "guest_utc": {
+              "value": "2026-10-29T10:57:02.1860804Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "7fea1960-dca4-4032-84da-1578402d9c26",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-29T10:57:02.1720914Z",
+            "offset_lower_ms": 13.989,
+            "offset_upper_ms": 17.0116
+          },
+          {
+            "host_before": "2026-10-29T10:57:02.1720914Z",
+            "guest_utc": {
+              "value": "2026-10-29T10:57:02.1898490Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "7fea1960-dca4-4032-84da-1578402d9c26",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-29T10:57:02.1736598Z",
+            "offset_lower_ms": 16.1892,
+            "offset_upper_ms": 17.7576
+          }
+        ]
+      },
+      "nominal_trace_sending_start_s": 10.914268016815186,
+      "trace_grid_rounding_us": -0.016815185546875,
+      "canonical_etl_sha256": "10CA9132B33201D9BD0ABFA9A56E8358137F203D3EB70CC1095527C73E93FF66",
+      "canonical_etl_bytes": 6859784192,
+      "sources_sha256": {
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\pooled-auth-48000-300s-1\\trace-gate-v1.json": "D1D5AFDF34B7A6F901C7853B69358F5AB140E17E2E5E6C1D020F052ED7C26B0D",
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\native-comparison-v1.json": "4A45B2DBB00C291C4F31B97E787728D357BE4D82F58F4AC55FD070A73F594FDA",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-auth-48000-300s-1\\summary.json": "BC181C7FA13DFFE435CF36FFA85AE8DC3EDBB604A792C53D1383005230198063",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-auth-48000-300s-1\\metrics.jsonl": "28612339A4D9011DD82E3051E8B05F5F167454BD7F0759240E24D5FE311540EF",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-auth-48000-300s-1\\invocation.json": "C00B85A5FDA2367CADF7F4D0D2F40586C364E434A220391E543E9EF63DDAC930",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-48000-300s-1\\clock-bounds.json": "1374F4A933F3D97385E01F6FA959B86639B9CDA7223F9CA4B3CE4B7C535F45B4",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-auth-48000-300s-1\\clock-bounds-end.json": "773542384C666B5181E5EF7C3E182284AA6FAF784A174DC61A1586CDE9619F26",
+        "tools\\dns-stress\\src\\main.rs": "2BCE2368767165C5680FF630833B81DD425C7D389F579EB4B0DA064EB63EE0CF"
+      },
+      "native_log_sha256": "B3F3C9CEF8080ED7D4BEE7FB4835CCD2B0EC0AB896ADB9A03D871265D1CB0FF9"
+    },
+    {
+      "run_id": "pooled-rec-28000-300s-1",
+      "mode": "recursive",
+      "requested_qps": 28000,
+      "strict_pass": true,
+      "qualification": "All workload and native trace gates pass",
+      "series_csv": "target\\performance\\pooled-vm-20261029-0942\\graphs-v1\\pooled-rec-28000-300s-1\\series.csv",
+      "series_sha256": "328B016FA943EDD48E64A477DFBED4930F622B0FBF3329D3551A28C07614B218",
+      "bins": 290,
+      "service_process": "etw-dnstap.exe (3764)",
+      "dns_process": "dns.exe (4176)",
+      "native_validation": {
+        "etw-dnstap.exe (3764)": {
+          "binned_cpu_us": 72981028,
+          "broad_cpu_us": 72981012,
+          "difference_us": 16,
+          "mean_percent_one_core": 25.16587172413793,
+          "maximum_percent_one_core": 33.2763
+        },
+        "dns.exe (4176)": {
+          "binned_cpu_us": 236019026,
+          "broad_cpu_us": 236019012,
+          "difference_us": 14,
+          "mean_percent_one_core": 81.38587103448276,
+          "maximum_percent_one_core": 95.6227
+        }
+      },
+      "client_validation": {
+        "workers": [
+          {
+            "worker": 0,
+            "regular_samples": 300,
+            "first_regular_s": 1.0000077,
+            "last_regular_s": 300.0,
+            "maximum_regular_gap_s": 1.0001783999999816,
+            "final_sent": 4163741,
+            "final_sample_elapsed_s": 300.0002728,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          },
+          {
+            "worker": 1,
+            "regular_samples": 300,
+            "first_regular_s": 1.0,
+            "last_regular_s": 300.0000003,
+            "maximum_regular_gap_s": 1.000022300000012,
+            "final_sent": 4163732,
+            "final_sample_elapsed_s": 300.0000323,
+            "monotone_elapsed_and_sent": true,
+            "final_matches_worker_summary": true
+          }
+        ],
+        "cumulative_at_5s": 138757.9902668025,
+        "cumulative_at_295s": 8188669.968046548,
+        "integrated_interior_queries": 8049911.977779745,
+        "full_sending_sent": 8327473,
+        "regular_only_rate_interpolation": true
+      },
+      "full_sending_achieved_qps": 27758.243333333332,
+      "interior_achieved_qps": 27758.31716475774,
+      "clock_bounds_before": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-28000-300s-1\\clock-bounds.json",
+        "guest_minus_host_intersection_ms": [
+          -6.5149,
+          -5.0029
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-30T00:08:44.3021189Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:08:44.4117769Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "f8bc4d64-37fc-42a8-a284-58d16c634e5d",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:08:44.4569774Z",
+            "offset_lower_ms": -45.200500000000005,
+            "offset_upper_ms": 109.658
+          },
+          {
+            "host_before": "2026-10-30T00:08:44.4640988Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:08:44.4590959Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "f8bc4d64-37fc-42a8-a284-58d16c634e5d",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:08:44.4656108Z",
+            "offset_lower_ms": -6.5149,
+            "offset_upper_ms": -5.0029
+          },
+          {
+            "host_before": "2026-10-30T00:08:44.4656108Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:08:44.4610999Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "f8bc4d64-37fc-42a8-a284-58d16c634e5d",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:08:44.4681490Z",
+            "offset_lower_ms": -7.0491,
+            "offset_upper_ms": -4.5109
+          }
+        ]
+      },
+      "clock_bounds_after": {
+        "source": "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-28000-300s-1\\clock-bounds-end.json",
+        "guest_minus_host_intersection_ms": [
+          -6.604900000000001,
+          -6.0949
+        ],
+        "measurements": [
+          {
+            "host_before": "2026-10-30T00:16:52.0856385Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:16:52.2011088Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "8d4a8072-3ec5-4d9d-b2a8-9ed8c8c263ac",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:16:52.2454778Z",
+            "offset_lower_ms": -44.369,
+            "offset_upper_ms": 115.47030000000001
+          },
+          {
+            "host_before": "2026-10-30T00:16:52.2525478Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:16:52.2464529Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "8d4a8072-3ec5-4d9d-b2a8-9ed8c8c263ac",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:16:52.2555595Z",
+            "offset_lower_ms": -9.1066,
+            "offset_upper_ms": -6.0949
+          },
+          {
+            "host_before": "2026-10-30T00:16:52.2555595Z",
+            "guest_utc": {
+              "value": "2026-10-30T00:16:52.2504608Z",
+              "PSComputerName": "DNSTap-WS2025",
+              "RunspaceId": "8d4a8072-3ec5-4d9d-b2a8-9ed8c8c263ac",
+              "PSShowComputerName": true
+            },
+            "host_after": "2026-10-30T00:16:52.2570657Z",
+            "offset_lower_ms": -6.604900000000001,
+            "offset_upper_ms": -5.0987
+          }
+        ]
+      },
+      "nominal_trace_sending_start_s": 10.541131019592285,
+      "trace_grid_rounding_us": -0.01959228515625,
+      "canonical_etl_sha256": "B076A09392CE55150BDCBDE499CAB0CC3993687A16BE757EF47B4EFCC3DA0B8D",
+      "canonical_etl_bytes": 5250220032,
+      "sources_sha256": {
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\pooled-rec-28000-300s-1\\trace-gate-v1.json": "B7564E74DBA5D5235B5D127929D984BC33BA74E8710A7C319E47E6DF17AEB5B0",
+        "target\\performance\\pooled-vm-20261029-0942\\wpa\\native-comparison-v1.json": "4A45B2DBB00C291C4F31B97E787728D357BE4D82F58F4AC55FD070A73F594FDA",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-rec-28000-300s-1\\summary.json": "6E895E41CB15C44D9F9113B7F66FC67E5FD96C7A29BDF1EC5BB65FFFF74652AC",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-rec-28000-300s-1\\metrics.jsonl": "412C7CA72EA9D2C9A41084BB2ED7B0465A54F25185B3BDA12FD0F66F32D7B26B",
+        "target\\performance\\pooled-vm-20261029-0942\\client\\pooled-rec-28000-300s-1\\invocation.json": "8C9728BEBACDF2E2166E42FE6C80953E2E98EB07112B7F60B22B8BF60D77557F",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-28000-300s-1\\clock-bounds.json": "428A7FBECAA3E0E258FD6509F2EDA8E37D8AD2BB8AEF6E4B339F7CFF21C3EC08",
+        "target\\performance\\pooled-vm-20261029-0942\\capture\\pooled-rec-28000-300s-1\\clock-bounds-end.json": "A67118D2535548E17F234848E625019B4755555161752516A47D05E70BED87BA",
+        "tools\\dns-stress\\src\\main.rs": "2BCE2368767165C5680FF630833B81DD425C7D389F579EB4B0DA064EB63EE0CF"
+      },
+      "native_log_sha256": "EDE40CF67E43558CB7315BC2FBBB9C5D3CD77C906A8E37531D7A44E8FB269374"
+    }
+  ]
+}

@@ -1,5 +1,12 @@
 # Ring-buffer capacity fix: validation
 
+This historical report helps maintainers assess the allocation-based
+capacity-only candidate measured on October 29, 2026 UTC. Its binary, test
+counts, and installed-state descriptions apply at the recorded restoration
+cutoff. The [pooled VM review](pooled-vm-performance-review.md) records later
+validation of a different implementation; these results do not validate its
+pool or jumbo admission limits.
+
 **Capture target passed:** both 300-second runs at approximately global 1,000
 QPS had zero ring drops and exact end-to-end record counts. **The full DNS-client
 validity gate was not met:** the recursive run had one RA-check failure. Its
@@ -7,7 +14,8 @@ cause remains unknown; no unqualified all-gates pass is claimed.
 
 ## Final candidate and rejected experiment
 
-The installed and measured capacity-only v2 changes the default ring capacity from 1,024 to 8,192 and
+The capacity-only v2 installed for this campaign changes the default ring
+capacity from 1,024 to 8,192 and
 retains the original enqueue/polling behavior. The wake-only experiment at
 1,024 did not eliminate ring drops and was reverted. It remains preserved as
 a failed experiment, not hidden or accepted as the fix.
@@ -70,7 +78,7 @@ Actual recursive upstream queries/replies were 15,055/15,055 for original
 The count ratios to client requests were approximately 50.24%, 50.20% and
 50.69%; this repeated-name workload is not one upstream lookup per request.
 
-### Which change had the larger CPU impact?
+### Observed CPU impact
 
 The capacity increase had the more consistent **observed increase in total
 service CPU**, approximately +0.42 percentage points of one CPU in each mode.
@@ -135,6 +143,8 @@ microbursts. The global cap is not an exact 300,000-send promise.
 
 ### Final capture and delivery ledger
 
+The final runs produced the following capture and delivery ledger:
+
 | Mode | Received = dequeued = encoded | Ring drops | Final backlog | Observed high water | Exact receiver JSON | Tap/console ingress and egress, each |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Authoritative | 599,278 | 0 | 0 | 3,618 | 599,278 | 599,278 |
@@ -175,6 +185,8 @@ both expose the anomaly, but the summary does not retain a failing tuple for
 explicit correlation. Its cause is unknown and is not attributed to capture.
 
 ### CPU, memory, threads and I/O
+
+The following table records process and guest CPU, coverage, and sample counts:
 
 | Mode | Service CPU mean / p95 / max, one-core % | CPU-seconds / valid seconds | Valid samples | DNS CPU one-core % | Guest total CPU % |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -223,7 +235,7 @@ authoritative 07:54:08.594–07:54:55.160 UTC (46.566 s), recursive
 events/buffers and CSwitch coverage retained the beginning through end; this
 was checked rather than inferred from zero-loss headers. Instrumentation,
 trace start/rundown and one-second metrics add overhead to these resource
-windows. The matched comparison arms above had no WPR.
+windows. The [matched comparison arms](#matched-30-second-comparisons) had no WPR.
 
 A matched interior view at trace-relative 5–25 seconds was exported after both
 loads. Actual thread names and service PIDs identify these rows:
