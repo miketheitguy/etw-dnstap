@@ -226,6 +226,48 @@ mod tests {
     }
 
     #[test]
+    fn incompatible_receiver_is_fatal_before_start_or_data() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let receiver = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("sender connects");
+            let mut stream = DeadlineTcp::new(stream, Duration::from_secs(3));
+            read_control(&mut stream, CONTROL_READY, true).expect("READY arrives");
+            write_control(&mut stream, CONTROL_ACCEPT, false).expect("incompatible ACCEPT");
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).expect("sender closes"), 0);
+        });
+        let result = NetworkSink::connect(address);
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidData));
+        receiver.join().expect("receiver assertions pass");
+    }
+
+    #[test]
+    fn shutdown_deadline_bounds_wait_for_receiver_finish() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let (release, receive) = mpsc::channel();
+        let receiver = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("sender connects");
+            let mut stream = DeadlineTcp::new(stream, Duration::from_secs(5));
+            read_control(&mut stream, CONTROL_READY, true).expect("READY arrives");
+            write_control(&mut stream, CONTROL_ACCEPT, true).expect("ACCEPT writes");
+            read_control(&mut stream, 2, true).expect("START arrives");
+            read_control(&mut stream, 3, false).expect("STOP arrives");
+            receive
+                .recv_timeout(Duration::from_secs(5))
+                .expect("sender releases receiver");
+        });
+        let sender = NetworkSink::connect(address).expect("handshake succeeds");
+        let started = Instant::now();
+        let result = sender.finish();
+        release.send(()).expect("release receiver");
+        receiver.join().expect("receiver assertions pass");
+        assert!(result.is_err(), "missing FINISH is a shutdown failure");
+        assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
     fn deadline_is_not_extended_by_partial_reads() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
         let address = listener.local_addr().expect("listener address");

@@ -3,6 +3,12 @@
 This report helps maintainers assess pooled Event Tracing for Windows (ETW)
 capture under actual Windows DNS traffic.
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 **Bounded campaign complete.** Both five-minute high-rate confirmations pass
 all gates. The 22 measured stages retain **12 strict passes and
 10 strict failures**, including overload and DNS/lifecycle qualifications.

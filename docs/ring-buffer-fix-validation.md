@@ -7,6 +7,12 @@ cutoff. The [pooled VM review](pooled-vm-performance-review.md) records later
 validation of a different implementation; these results do not validate its
 pool or jumbo admission limits.
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 **Capture target passed:** both 300-second runs at approximately global 1,000
 QPS had zero ring drops and exact end-to-end record counts. **The full DNS-client
 validity gate was not met:** the recursive run had one RA-check failure. Its

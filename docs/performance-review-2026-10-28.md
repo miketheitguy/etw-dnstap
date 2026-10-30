@@ -6,6 +6,12 @@ test counts, and installed-state descriptions apply at its recorded restoration
 cutoff. For the later bounded pooled campaign, see the
 [pooled VM review](pooled-vm-performance-review.md).
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 The instrumented service remained small and completed all three 300-second
 captures cleanly, but it did not retain full-fidelity DNS telemetry at the
 offered load. In the authoritative run, DNS completed 53.95 million queries

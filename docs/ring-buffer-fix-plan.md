@@ -8,6 +8,11 @@ campaign. The later pooled implementation and VM validation are documented in
 [Pooled ETW intake](pooled-intake.md) and the
 [pooled VM review](pooled-vm-performance-review.md).
 
+This plan depends on the historical service JSONL metrics writer. It cannot
+measure the TCP-only service; new campaigns through its helpers are disabled.
+See the [instrumentation compatibility note](README.md). Recorded evidence and
+collector file destinations remain unchanged.
+
 Target: zero observed ring drops during separate 300-second authoritative and
 recursive-request tests at a **global 1,000 QPS ceiling**, while preserving the
 bounded ring, SCM-only security profile and existing ownership/shutdown rules.
@@ -73,7 +78,7 @@ prove a specific timer or locking cause.
   `24bafedb-0998-4430-a0c6-7e90350cd9ac`, `172.27.215.163`, 2 vCPUs, 4 GiB RAM.
   Verify live identity, resources and readiness before acting.
 - Original service: Running, SCM-only, LocalSystem, enabled service SID and
-  only `SeChangeNotifyPrivilege`; normal arguments omit `--metrics`.
+  only `SeChangeNotifyPrivilege`; normal arguments omit historical metrics export.
 - Retain `auth.stress.test` with exactly 5,000 A records, `192.0.2.53`, TTL 300.
   Source/name hashes and license remain those in
   [`workload-provenance.json`](../datasets/performance/workload-provenance.json).

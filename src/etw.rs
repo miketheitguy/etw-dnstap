@@ -30,8 +30,8 @@ use windows_sys::{
             CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, DecodingSourceXMLFile,
             ETW_BUFFER_CONTEXT, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_HEADER,
             EVENT_HEADER_EXTENDED_DATA_ITEM, EVENT_PROPERTY_INFO, EVENT_RECORD,
-            EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW,
-            EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2, OpenTraceW,
+            EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
+            EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2, OpenTraceW,
             PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
             PROPERTY_DATA_DESCRIPTOR, ProcessTrace, PropertyHasCustomSchema, PropertyParamCount,
             PropertyStruct, StartTraceW, TDH_INTYPE_ANSISTRING, TDH_INTYPE_BINARY,
@@ -47,6 +47,8 @@ use windows_sys::{
 use crate::dnstap::{RawDnsEvent, Transport};
 
 const PROVIDER: GUID = GUID::from_u128(0xeb79061a_a566_4698_9119_3ed2807060e7);
+const SUBSCRIPTION_LEVEL: u8 = 4;
+const SUBSCRIPTION_MATCH_ANY_KEYWORD: u64 = 0x8000_0000_0000_0000;
 const MAX_EXTENDED_ITEMS: usize = 64;
 const MAX_METADATA: usize = 1_048_576;
 
@@ -60,7 +62,6 @@ pub(crate) struct CaptureCounters {
     pub(crate) etw_lost: AtomicU64,
     pub(crate) etw_buffers_lost: AtomicU64,
     pub(crate) callback_errors: AtomicU64,
-    pub(crate) queue_high_water: AtomicU64,
     pub(crate) stats_valid: AtomicBool,
     pub(crate) stats_errors: AtomicU64,
 }
@@ -175,8 +176,8 @@ impl Capture {
                 session,
                 &PROVIDER,
                 EVENT_CONTROL_CODE_ENABLE_PROVIDER,
-                5,
-                0x7ffff,
+                SUBSCRIPTION_LEVEL,
+                SUBSCRIPTION_MATCH_ANY_KEYWORD,
                 0,
                 5000,
                 null(),
@@ -240,24 +241,6 @@ impl Capture {
 
     pub(crate) fn is_finished(&self) -> bool {
         self.worker.as_ref().is_none_or(JoinHandle::is_finished)
-    }
-
-    /// Refreshes loss statistics for this owned session, without stopping it.
-    pub(crate) fn query_statistics(&self) {
-        if let Some(session) = self.session {
-            let mut properties = SessionProperties::new();
-            // SAFETY: This live handle belongs to this Capture. The aligned
-            // initialized output includes room for the session name.
-            let status = unsafe {
-                ControlTraceW(
-                    session,
-                    null(),
-                    &raw mut properties.properties,
-                    EVENT_TRACE_CONTROL_QUERY,
-                )
-            };
-            self.store_statistics(status, &properties.properties);
-        }
     }
 
     fn store_statistics(&self, status: u32, properties: &EVENT_TRACE_PROPERTIES) {
@@ -336,7 +319,7 @@ impl Drop for Capture {
 }
 
 fn supported(id: u16) -> bool {
-    matches!(id, 256 | 257 | 258 | 260 | 261)
+    matches!(id, 256 | 257)
 }
 
 fn dns_provider(guid: &GUID) -> bool {
@@ -352,16 +335,16 @@ unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECORD) {
     let Some(record) = (unsafe { record.as_ref() }) else {
         return;
     };
-    // SAFETY: OpenTrace received this stable Box pointee, retained until all
-    // ProcessTrace callbacks finish; it is shared immutably across callbacks.
-    let Some(context) = (unsafe { record.UserContext.cast::<CallbackContext>().as_ref() }) else {
-        return;
-    };
     if !dns_provider(&record.EventHeader.ProviderId)
         || !supported(record.EventHeader.EventDescriptor.Id)
     {
         return;
     }
+    // SAFETY: OpenTrace received this stable Box pointee, retained until all
+    // ProcessTrace callbacks finish; it is shared immutably across callbacks.
+    let Some(context) = (unsafe { record.UserContext.cast::<CallbackContext>().as_ref() }) else {
+        return;
+    };
     context.counters.received.fetch_add(1, Ordering::Relaxed);
     let handled = PRODUCER
         .try_with(|state| {
@@ -394,12 +377,7 @@ unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECORD) {
                 }
             };
             match producer.sender.try_send(owned) {
-                Ok(()) => {
-                    context
-                        .counters
-                        .queue_high_water
-                        .fetch_max(producer.sender.len() as u64, Ordering::Relaxed);
-                }
+                Ok(()) => {}
                 Err(TrySendError::Full(_owned)) => {
                     context.counters.dropped.fetch_add(1, Ordering::Relaxed);
                     context
@@ -549,17 +527,51 @@ thread_local! {
     static SCHEMAS: RefCell<HashMap<(u16, u8), Schema>> = RefCell::new(HashMap::new());
 }
 
-/// Decodes named manifest properties using TDH, never rendered XML or fixed offsets.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Consumes the queued record and frees its storage at the parser boundary."
-)]
-pub(crate) fn parse(event: RawEtwEvent) -> Result<Option<RawDnsEvent>> {
-    let id = event.header.EventDescriptor.Id;
-    if !dns_provider(&event.header.ProviderId) || !supported(id) {
-        return Ok(None);
+/// Reuses initialized property and text storage on the parser thread.
+pub(crate) struct Parser {
+    property: [u8; 512],
+    // At most 255 nonterminating UTF-16 units, each requiring at most 3 UTF-8 bytes.
+    text: [u8; 768],
+}
+
+impl Parser {
+    pub(crate) fn new() -> Self {
+        Self {
+            property: [0; 512],
+            text: [0; 768],
+        }
     }
-    event.with_record(parse_record)
+
+    /// Decodes named manifest properties while consuming the queued event lease.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Consumes the queued record and returns its lease at the parser boundary."
+    )]
+    pub(crate) fn parse(
+        &mut self,
+        event: RawEtwEvent,
+        packet: &mut Vec<u8>,
+    ) -> Result<Option<RawDnsEvent>> {
+        cleared_packet(packet, |packet| {
+            let id = event.header.EventDescriptor.Id;
+            if !dns_provider(&event.header.ProviderId) || !supported(id) {
+                return Ok(None);
+            }
+            event.with_record(|record| self.parse_record(record, packet))
+        })
+    }
+}
+
+fn cleared_packet<T>(
+    packet: &mut Vec<u8>,
+    operation: impl FnOnce(&mut Vec<u8>) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    packet.clear();
+    let result = operation(packet);
+    if !matches!(result, Ok(Some(_))) {
+        packet.clear();
+    }
+    result
 }
 
 impl RawEtwEvent {
@@ -598,65 +610,81 @@ impl RawEtwEvent {
     }
 }
 
-fn parse_record(record: &EVENT_RECORD) -> Result<Option<RawDnsEvent>> {
-    let id = record.EventHeader.EventDescriptor.Id;
-    let peer_name = if matches!(id, 256 | 261) {
-        PropertyName::Source
-    } else {
-        PropertyName::Destination
-    };
-    let schema = SCHEMAS
-        .with(|cache| -> Result<Schema> {
-            let key = (id, record.EventHeader.EventDescriptor.Version);
-            let mut cache = cache.borrow_mut();
-            if let Some(schema) = cache.get(&key) {
-                return Ok(*schema);
-            }
-            let schema = load_schema(record, peer_name)?;
-            if cache.len() >= 32 {
-                cache.clear();
-            }
-            cache.insert(key, schema);
-            Ok(schema)
-        })
-        .with_context(|| {
-            format!(
-                "DNS event {id} version {} schema",
-                record.EventHeader.EventDescriptor.Version
-            )
-        })?;
-    let tcp = integer(&property(record, PropertyName::Tcp, 4)?, schema.tcp)?;
-    ensure!(tcp <= 1, "invalid TCP Boolean");
-    let port = integer(&property(record, PropertyName::Port, 4)?, schema.port)?;
-    let port = u16::try_from(port).context("Port exceeds u16")?;
-    let local = address(
-        &property(record, PropertyName::InterfaceIp, 512)?,
-        schema.local,
-    )?;
-    let peer = address(&property(record, peer_name, 512)?, schema.peer)?;
-    ensure!(
-        schema.packet.input == TDH_INTYPE_BINARY,
-        "PacketData is not binary"
-    );
-    let packet_data = property(record, PropertyName::PacketData, 65535)?;
-    ensure!(
-        packet_data.len() >= 12,
-        "PacketData shorter than a DNS header"
-    );
-    Ok(Some(RawDnsEvent {
-        event_id: id,
-        timestamp: timestamp(record.EventHeader.TimeStamp)?,
-        transport: if tcp == 1 {
-            Transport::Tcp
+impl Parser {
+    fn parse_record(
+        &mut self,
+        record: &EVENT_RECORD,
+        packet: &mut Vec<u8>,
+    ) -> Result<Option<RawDnsEvent>> {
+        let id = record.EventHeader.EventDescriptor.Id;
+        let peer_name = if matches!(id, 256 | 261) {
+            PropertyName::Source
         } else {
-            Transport::Udp
-        },
-        peer_address: observed_address(peer),
-        peer_port: observed_port(port),
-        local_address: observed_address(local),
-        local_port: None,
-        packet_data,
-    }))
+            PropertyName::Destination
+        };
+        let schema = SCHEMAS
+            .with(|cache| -> Result<Schema> {
+                let key = (id, record.EventHeader.EventDescriptor.Version);
+                let mut cache = cache.borrow_mut();
+                if let Some(schema) = cache.get(&key) {
+                    return Ok(*schema);
+                }
+                let schema = load_schema(record, peer_name)?;
+                if cache.len() >= 32 {
+                    cache.clear();
+                }
+                cache.insert(key, schema);
+                Ok(schema)
+            })
+            .with_context(|| {
+                format!(
+                    "DNS event {id} version {} schema",
+                    record.EventHeader.EventDescriptor.Version
+                )
+            })?;
+        let tcp = integer(
+            property(record, PropertyName::Tcp, 4, &mut self.property)?,
+            schema.tcp,
+        )?;
+        ensure!(tcp <= 1, "invalid TCP Boolean");
+        let port = integer(
+            property(record, PropertyName::Port, 4, &mut self.property)?,
+            schema.port,
+        )?;
+        let port = u16::try_from(port).context("Port exceeds u16")?;
+        let local = address(
+            property(record, PropertyName::InterfaceIp, 512, &mut self.property)?,
+            schema.local,
+            &mut self.text,
+        )?;
+        let peer = address(
+            property(record, peer_name, 512, &mut self.property)?,
+            schema.peer,
+            &mut self.text,
+        )?;
+        ensure!(
+            schema.packet.input == TDH_INTYPE_BINARY,
+            "PacketData is not binary"
+        );
+        packet_property(
+            packet,
+            || property_size(record, PropertyName::PacketData, 65535),
+            |bytes| read_property(record, PropertyName::PacketData, bytes),
+        )?;
+        Ok(Some(RawDnsEvent {
+            event_id: id,
+            timestamp: timestamp(record.EventHeader.TimeStamp)?,
+            transport: if tcp == 1 {
+                Transport::Tcp
+            } else {
+                Transport::Udp
+            },
+            peer_address: observed_address(peer),
+            peer_port: observed_port(port),
+            local_address: observed_address(local),
+            local_port: None,
+        }))
+    }
 }
 
 // DNS Server can report wildcard interface addresses and Port=0 for recursive
@@ -827,11 +855,11 @@ impl PropertyName {
     }
 }
 
-fn property(record: &EVENT_RECORD, name: PropertyName, maximum: usize) -> Result<Vec<u8>> {
+fn property_size(record: &EVENT_RECORD, name: PropertyName, maximum: usize) -> Result<usize> {
     let descriptor = name.descriptor();
     let mut size = 0;
-    // SAFETY: All record backing data and the terminated property name are alive;
-    // the descriptor requests a complete top-level property with no TDH contexts.
+    // SAFETY: The event lease retains all record backing data, the descriptor uses
+    // a static terminated name, and the initialized size output lives through this call.
     let status =
         unsafe { TdhGetPropertySize(record, 0, null(), 1, &raw const descriptor, &raw mut size) };
     check_status(status, "TdhGetPropertySize")?;
@@ -839,9 +867,15 @@ fn property(record: &EVENT_RECORD, name: PropertyName, maximum: usize) -> Result
         size as usize <= maximum,
         "TDH property exceeds its size limit"
     );
-    let mut bytes = vec![0; size as usize];
-    // SAFETY: bytes has exactly the buffer length returned by TDH and every
-    // pointer remains valid during this synchronous extraction call.
+    Ok(size as usize)
+}
+
+fn read_property(record: &EVENT_RECORD, name: PropertyName, bytes: &mut [u8]) -> Result<()> {
+    let descriptor = name.descriptor();
+    let size = u32::try_from(bytes.len()).context("TDH property length exceeds u32")?;
+    // SAFETY: The exclusive initialized byte slice has exactly the validated TDH
+    // length, alignment 1 suffices, and its owner and the event lease remain alive
+    // through the synchronous native call. The property name is static and terminated.
     let status = unsafe {
         TdhGetProperty(
             record,
@@ -853,8 +887,53 @@ fn property(record: &EVENT_RECORD, name: PropertyName, maximum: usize) -> Result
             bytes.as_mut_ptr(),
         )
     };
-    check_status(status, "TdhGetProperty")?;
+    check_status(status, "TdhGetProperty")
+}
+
+fn scratch_property(
+    scratch: &mut [u8; 512],
+    size: usize,
+    read: impl FnOnce(&mut [u8]) -> Result<()>,
+) -> Result<&[u8]> {
+    let bytes = scratch
+        .get_mut(..size)
+        .context("TDH property exceeds scratch size")?;
+    bytes.fill(0);
+    read(bytes)?;
     Ok(bytes)
+}
+
+fn property<'a>(
+    record: &EVENT_RECORD,
+    name: PropertyName,
+    maximum: usize,
+    scratch: &'a mut [u8; 512],
+) -> Result<&'a [u8]> {
+    let size = property_size(record, name, maximum)?;
+    scratch_property(scratch, size, |bytes| read_property(record, name, bytes))
+}
+
+fn packet_property(
+    packet: &mut Vec<u8>,
+    size: impl FnOnce() -> Result<usize>,
+    read: impl FnOnce(&mut [u8]) -> Result<()>,
+) -> Result<()> {
+    packet.clear();
+    let size = size()?;
+    ensure!(size <= 65535, "TDH property exceeds its size limit");
+    if size > packet.capacity() {
+        packet.reserve_exact(size);
+    }
+    packet.resize(size, 0);
+    if let Err(error) = read(packet) {
+        packet.clear();
+        return Err(error);
+    }
+    if packet.len() < 12 {
+        packet.clear();
+        bail!("PacketData shorter than a DNS header");
+    }
+    Ok(())
 }
 
 fn integer(bytes: &[u8], kind: PropertyType) -> Result<u32> {
@@ -874,7 +953,7 @@ fn integer(bytes: &[u8], kind: PropertyType) -> Result<u32> {
     }
 }
 
-fn address(bytes: &[u8], kind: PropertyType) -> Result<IpAddr> {
+fn address(bytes: &[u8], kind: PropertyType, scratch: &mut [u8; 768]) -> Result<IpAddr> {
     if kind.output == TDH_OUTTYPE_IPV4 && bytes.len() == 4 {
         return Ok(IpAddr::from(<[u8; 4]>::try_from(bytes)?));
     }
@@ -884,25 +963,30 @@ fn address(bytes: &[u8], kind: PropertyType) -> Result<IpAddr> {
     let text = match kind.input {
         TDH_INTYPE_UNICODESTRING => {
             ensure!(bytes.len().is_multiple_of(2), "odd Unicode address length");
-            let units: Vec<u16> = bytes
+            ensure!(bytes.len() <= 512, "Unicode address exceeds size limit");
+            ensure!(bytes.ends_with(&[0, 0]), "unterminated Unicode address");
+            let units = bytes[..bytes.len() - 2]
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                .collect();
-            ensure!(units.last() == Some(&0), "unterminated Unicode address");
-            String::from_utf16(&units[..units.len() - 1]).context("invalid address UTF-16")?
+                .map(|b| u16::from_le_bytes([b[0], b[1]]));
+            let mut length = 0;
+            for character in char::decode_utf16(units) {
+                let character = character.context("invalid address UTF-16")?;
+                length += character.encode_utf8(&mut scratch[length..]).len();
+            }
+            std::str::from_utf8(&scratch[..length])?
         }
         TDH_INTYPE_ANSISTRING => {
             ensure!(bytes.last() == Some(&0), "unterminated address");
-            std::str::from_utf8(&bytes[..bytes.len() - 1])?.to_owned()
+            std::str::from_utf8(&bytes[..bytes.len() - 1])?
         }
         _ => bail!("unsupported address property type"),
     };
-    // A zone index is routing context rather than part of the dnstap address.
-    let address = text
-        .split_once('%')
-        .map_or(text.as_str(), |(address, _)| address);
+    // Validate the complete string before ignoring routing context after `%`.
+    // Interior NULs in the address prefix reach IP parsing and are rejected;
+    // the suffix retains the manifest parser's existing opaque-text behavior.
+    let address = text.split_once('%').map_or(text, |(address, _)| address);
     address.parse().context("invalid DNS event IP address")
 }
 
@@ -916,6 +1000,11 @@ fn timestamp(filetime: i64) -> Result<SystemTime> {
             (ticks % 10_000_000) as u32 * 100,
         ))
         .context("event timestamp exceeds SystemTime")
+}
+
+#[cfg(test)]
+pub(crate) fn assert_no_allocations(operation: impl FnOnce()) {
+    tests::assert_no_allocations(operation);
 }
 
 #[cfg(test)]
@@ -989,12 +1078,30 @@ mod tests {
     #[global_allocator]
     static ALLOCATOR: TrackingAllocator = TrackingAllocator;
 
+    struct TrackingGuard;
+
+    impl Drop for TrackingGuard {
+        fn drop(&mut self) {
+            TRACK_ALLOCATIONS.with(|track| track.set(false));
+        }
+    }
+
     fn measured(operation: impl FnOnce()) -> AllocCounts {
         ALLOC_COUNTS.with(|counts| counts.set(AllocCounts::default()));
         TRACK_ALLOCATIONS.with(|track| track.set(true));
+        let guard = TrackingGuard;
         operation();
-        TRACK_ALLOCATIONS.with(|track| track.set(false));
+        drop(guard);
         ALLOC_COUNTS.with(std::cell::Cell::get)
+    }
+
+    pub(super) fn assert_no_allocations(operation: impl FnOnce()) {
+        let counts = measured(operation);
+        assert_eq!(
+            counts,
+            AllocCounts::default(),
+            "unexpected allocator activity"
+        );
     }
 
     fn allocator_fixtures() -> Vec<(&'static str, AllocCounts)> {
@@ -1343,8 +1450,8 @@ mod tests {
             input: TDH_INTYPE_UNICODESTRING,
             output: 0,
         };
-        assert!(address(&[0x31, 0], unicode).is_err());
-        assert!(address(&[0], unicode).is_err());
+        assert!(address(&[0x31, 0], unicode, &mut [0; 768]).is_err());
+        assert!(address(&[0], unicode, &mut [0; 768]).is_err());
         assert!(
             integer(
                 &[1],
@@ -1355,6 +1462,193 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn address_kind(input: i32) -> PropertyType {
+        PropertyType { input, output: 0 }
+    }
+
+    fn utf16_bytes(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain(Some(0))
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    #[test]
+    fn address_reuse_validates_full_text_and_ignores_valid_zone_context() -> Result<()> {
+        let mut scratch = [0; 768];
+        let unicode = address_kind(TDH_INTYPE_UNICODESTRING);
+        let ansi = address_kind(TDH_INTYPE_ANSISTRING);
+        let long_zone = format!("fe80::1%{}", "界".repeat(247));
+        let cases = [
+            (utf16_bytes(&long_zone), unicode, "fe80::1"),
+            (b"192.0.2.53\0".to_vec(), ansi, "192.0.2.53"),
+            (utf16_bytes("::%接口"), unicode, "::"),
+            (utf16_bytes("::%\0ignored"), unicode, "::"),
+            (b"::%bad\0suffix\0".to_vec(), ansi, "::"),
+            (b"fe80::1%interface\0".to_vec(), ansi, "fe80::1"),
+            (utf16_bytes("2001:db8::53"), unicode, "2001:db8::53"),
+        ];
+        for (bytes, kind, expected) in &cases {
+            assert_eq!(
+                address(bytes, *kind, &mut scratch)?,
+                expected.parse::<IpAddr>()?
+            );
+        }
+        let malformed = [
+            (vec![], unicode),
+            (vec![0], unicode),
+            (vec![b'1', 0], unicode),
+            (vec![0, 0xd8, 0, 0], unicode),
+            (utf16_bytes("::\0%bad"), unicode),
+            (vec![b':', 0, b':', 0, b'%', 0, 0, 0xd8, 0, 0], unicode),
+            (utf16_bytes(&format!("::%{}", "a".repeat(253))), unicode),
+            (b"::%bad\xff\0".to_vec(), ansi),
+            (b"::\0%bad\0".to_vec(), ansi),
+            (b"192.0.2.1".to_vec(), ansi),
+            (b"garbage\0".to_vec(), ansi),
+        ];
+        for (bytes, kind) in malformed {
+            assert!(address(&bytes, kind, &mut scratch).is_err());
+            assert_eq!(
+                address(b"127.0.0.1\0", ansi, &mut scratch)?,
+                IpAddr::from([127, 0, 0, 1])
+            );
+        }
+        super::assert_no_allocations(|| {
+            for _ in 0..32 {
+                for (bytes, kind, _) in &cases {
+                    let result = address(bytes, *kind, &mut scratch);
+                    std::hint::black_box(result).expect("valid address");
+                }
+            }
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn binary_addresses_require_the_native_length() -> Result<()> {
+        let mut scratch = [0; 768];
+        let kind = PropertyType {
+            input: TDH_INTYPE_BINARY,
+            output: TDH_OUTTYPE_IPV6,
+        };
+        assert_eq!(
+            address(&[0; 16], kind, &mut scratch)?,
+            IpAddr::from([0u8; 16])
+        );
+        for length in [0, 4, 15, 17] {
+            assert!(address(&[0; 17][..length], kind, &mut scratch).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_property_seam_initializes_and_limits_every_native_view() -> Result<()> {
+        // This seam covers buffer handling, not the DNS provider's native TDH implementation.
+        let mut scratch = [0x55; 512];
+        for size in [512, 1, 0, 4, 511] {
+            let bytes = scratch_property(&mut scratch, size, |bytes| {
+                assert_eq!(bytes.len(), size);
+                assert!(bytes.iter().all(|byte| *byte == 0));
+                bytes.fill(0xab);
+                Ok(())
+            })?;
+            assert!(bytes.iter().all(|byte| *byte == 0xab));
+        }
+        assert!(scratch_property(&mut scratch, 513, |_| panic!("oversize extraction")).is_err());
+        assert!(
+            scratch_property(&mut scratch, 8, |bytes| {
+                bytes.fill(0xff);
+                bail!("injected native failure")
+            })
+            .is_err()
+        );
+        super::assert_no_allocations(|| {
+            for size in [512, 1, 4, 0, 512] {
+                let result = scratch_property(&mut scratch, size, |bytes| {
+                    bytes.fill(0x53);
+                    Ok(())
+                });
+                std::hint::black_box(result).expect("bounded extraction");
+            }
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn packet_extraction_reuses_storage_and_clears_failed_or_ignored_packets() -> Result<()> {
+        let mut packet = Vec::new();
+        let grow = measured(|| {
+            packet_property(
+                &mut packet,
+                || Ok(65535),
+                |bytes| {
+                    bytes.fill(0x53);
+                    Ok(())
+                },
+            )
+            .expect("largest packet");
+        });
+        assert_eq!(grow.allocations, 1);
+        assert_eq!(grow.reallocations, 0);
+        assert!(packet.capacity() <= 65535);
+        let pointer = packet.as_ptr();
+        super::assert_no_allocations(|| {
+            for size in [12, 65535, 12] {
+                packet_property(
+                    &mut packet,
+                    || Ok(size),
+                    |bytes| {
+                        assert!(bytes.iter().all(|byte| *byte == 0));
+                        bytes.fill(0xab);
+                        Ok(())
+                    },
+                )
+                .expect("bounded packet");
+            }
+        });
+        assert_eq!(packet.as_ptr(), pointer);
+        for size in [0, 11, 65536] {
+            assert!(packet_property(&mut packet, || Ok(size), |_| Ok(())).is_err());
+            assert_eq!(packet, [] as [u8; 0]);
+        }
+        assert!(packet_property(&mut packet, || bail!("size failed"), |_| Ok(())).is_err());
+        assert_eq!(packet, [] as [u8; 0]);
+        assert!(
+            packet_property(
+                &mut packet,
+                || Ok(12),
+                |bytes| {
+                    bytes.fill(0xff);
+                    bail!("native extraction failed")
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(packet, [] as [u8; 0]);
+        let failed: Result<Option<()>> = cleared_packet(&mut packet, |packet| {
+            packet.extend_from_slice(&[0; 12]);
+            bail!("later timestamp validation failed")
+        });
+        assert!(failed.is_err());
+        assert_eq!(packet, [] as [u8; 0]);
+        let ignored: Result<Option<()>> = cleared_packet(&mut packet, |packet| {
+            packet.extend_from_slice(&[0; 12]);
+            Ok(None)
+        });
+        assert!(ignored?.is_none());
+        assert_eq!(packet, [] as [u8; 0]);
+        let pool = PoolManager::new(1, 0)?;
+        let source = EVENT_RECORD::default();
+        // SAFETY: The empty unsupported event advertises no native input ranges.
+        let event = unsafe { copy_record(&source, &pool) }.expect("empty event");
+        packet.extend_from_slice(&[0x53; 12]);
+        assert!(Parser::new().parse(event, &mut packet)?.is_none());
+        assert_eq!(packet, [] as [u8; 0]);
+        assert_eq!(packet.as_ptr(), pointer);
+        Ok(())
     }
 
     #[test]
@@ -1455,6 +1749,130 @@ mod tests {
                 state.borrow_mut().take();
             });
         }
+    }
+
+    const EXCLUDED_EVENT_IDS: [u16; 9] = [0, 1, 255, 258, 259, 260, 261, 262, u16::MAX];
+
+    fn assert_no_intake_activity(fixture: &Fixture) {
+        assert!(fixture.receive.is_empty());
+        let counters = &fixture.context.counters;
+        for counter in [
+            &counters.received,
+            &counters.dropped,
+            &counters.intake_dropped,
+            &counters.pool_exhausted,
+            &counters.receiver_disconnected,
+            &counters.callback_errors,
+            &counters.etw_lost,
+            &counters.etw_buffers_lost,
+            &counters.stats_errors,
+        ] {
+            assert_eq!(counter.load(Ordering::Relaxed), 0);
+        }
+        assert!(!counters.stats_valid.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn callback_accepts_only_client_query_and_successful_response() {
+        let mut fixture = Fixture::new(2, 0);
+        for id in [256, 257] {
+            fixture.record.EventHeader.EventDescriptor.Id = id;
+            assert_no_allocations(|| fixture.invoke());
+        }
+        for id in [256, 257] {
+            let event = fixture.receive.try_recv().expect("accepted client event");
+            assert_eq!(event.header.EventDescriptor.Id, id);
+        }
+        assert_eq!(fixture.context.counters.received.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn callback_excludes_other_ids_before_payload_pool_and_tls_access() {
+        let mut fixture = Fixture::new(1, 0);
+        for id in EXCLUDED_EVENT_IDS {
+            fixture.record.EventHeader.EventDescriptor.Id = id;
+            assert_no_allocations(|| fixture.invoke());
+        }
+        assert_no_intake_activity(&fixture);
+        // All three regular slots are still available after excluded records.
+        let held: Vec<_> = (0..3)
+            .map(|_| fixture.context.pool.acquire(1).expect("unconsumed slot"))
+            .collect();
+        assert!(fixture.context.pool.acquire(1).is_none());
+        for id in EXCLUDED_EVENT_IDS {
+            fixture.record.EventHeader.EventDescriptor.Id = id;
+            assert_no_allocations(|| fixture.invoke());
+        }
+        assert_no_intake_activity(&fixture);
+        for id in EXCLUDED_EVENT_IDS {
+            fixture.record.EventHeader.EventDescriptor.Id = id;
+            // Malformed pointer/length pairs must never reach copying.
+            fixture.record.UserDataLength = u16::MAX;
+            fixture.record.ExtendedDataCount = u16::MAX;
+            PRODUCER.with(|state| {
+                let _borrow = state.borrow_mut();
+                assert_no_allocations(|| fixture.invoke());
+            });
+            assert_no_intake_activity(&fixture);
+        }
+        drop(held);
+        let returned: Vec<_> = (0..3)
+            .map(|_| fixture.context.pool.acquire(1).expect("retained pool slot"))
+            .collect();
+        drop(returned);
+    }
+
+    #[test]
+    fn callback_header_filter_handles_null_record_context_and_wrong_provider() {
+        let mut fixture = Fixture::new(1, 0);
+        // SAFETY: The callback explicitly accepts a null defensive input.
+        assert_no_allocations(|| unsafe { native_etw_callback(null_mut()) });
+        fixture.record.UserContext = null_mut();
+        for id in EXCLUDED_EVENT_IDS {
+            fixture.record.EventHeader.EventDescriptor.Id = id;
+            assert_no_allocations(|| fixture.invoke());
+        }
+        fixture.record.EventHeader.EventDescriptor.Id = 256;
+        fixture.record.EventHeader.ProviderId = GUID::from_u128(0);
+        assert_no_allocations(|| fixture.invoke());
+        assert_no_intake_activity(&fixture);
+    }
+
+    #[test]
+    fn parser_excludes_other_ids_before_tdh_and_recycles_storage() -> Result<()> {
+        let pool = PoolManager::new(1, 0)?;
+        let mut parser = Parser::new();
+        let mut packet = Vec::with_capacity(12);
+        for id in EXCLUDED_EVENT_IDS {
+            let source = EVENT_RECORD {
+                EventHeader: EVENT_HEADER {
+                    ProviderId: PROVIDER,
+                    EventDescriptor: EVENT_DESCRIPTOR {
+                        Id: id,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            // SAFETY: The empty event advertises no native input ranges.
+            let event = unsafe { copy_record(&source, &pool) }.expect("empty excluded event");
+            packet.extend_from_slice(&[0x53; 12]);
+            assert_no_allocations(|| {
+                assert!(
+                    parser
+                        .parse(event, &mut packet)
+                        .expect("filtered before TDH")
+                        .is_none()
+                );
+            });
+            assert_eq!(packet, [] as [u8; 0]);
+        }
+        let returned: Vec<_> = (0..3)
+            .map(|_| pool.acquire(1).expect("parser returns excluded lease"))
+            .collect();
+        drop(returned);
+        Ok(())
     }
 
     #[test]
@@ -1776,7 +2194,8 @@ mod tests {
                 PropertyType {
                     input: TDH_INTYPE_UINT32,
                     output: TDH_OUTTYPE_IPV4,
-                }
+                },
+                &mut [0; 768],
             )?,
             "192.0.2.1".parse::<IpAddr>()?
         );

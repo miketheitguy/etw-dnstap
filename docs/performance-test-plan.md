@@ -4,6 +4,11 @@ This lab procedure measures service resource use and locates throughput limits f
 maintainers of `etw-dnstap`. The two measured workloads each run for 300 seconds.
 Record results separately from this plan; pilot data is not a measured result.
 
+This plan depends on the historical service JSONL metrics writer. It cannot
+measure the TCP-only service; new campaigns through its helpers are disabled.
+See the [instrumentation compatibility note](README.md). Recorded evidence and
+collector file destinations remain unchanged.
+
 ## Status and scope
 
 This is the method and decision record for the original unpaced experiment,
@@ -59,9 +64,11 @@ destination afterward.
 
 1. Verify all VM identities, addresses, service tokens/configuration, fixture
    readiness, and collector connectivity. Record UTC on host and both guests.
-2. Enable service `--metrics` in the protected task directory. Use the same
-   instrumented binary and telemetry in both workloads. Collect 30 seconds of
-   idle counters, then stop and save the idle run.
+2. For the recorded experiment, enable the historical service's JSONL metrics
+   writer in the protected task directory. This instrumentation is unavailable
+   in the TCP-only service. Use the same historical instrumented binary and
+   telemetry in both workloads. Collect 30 seconds of idle counters, then stop
+   and save the idle run.
 3. Run short authoritative pilots at 1, 2, 4, and 8 host client threads for
    10 seconds each, with 256 in-flight queries per thread and a 2,000 ms
    deadline. Compare achieved QPS, p95 latency, timeout rate, and host CPU.

@@ -6,6 +6,12 @@ loss accounting from a zero-loss result. It covers analysis helpers and their
 tests; it does not run a benchmark matrix or change Rust, installed services,
 virtual machines, or preserved campaign artifacts.
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 ## Status and evidence cutoff
 
 The measurement correction and independent local review are complete. The

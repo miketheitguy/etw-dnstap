@@ -57,8 +57,10 @@ WPA evidence and limitations. Measure loss,
 queue high water, and memory on the intended DNS host before selecting capacity
 for another workload.
 
-The later [pooled VM campaign](pooled-vm-performance-review.md) measures the
-bounded pooled implementation. Keep its results separate from this historical
+The later [pooled VM campaign](pooled-vm-performance-review.md) measures a
+historical pooled binary with a JSONL metrics writer. The TCP-only service has
+no durable metrics export or queue high-water tracking; see the
+[instrumentation compatibility note](README.md). Keep its results separate from this historical
 allocation-based capacity experiment, especially when comparing CPU or memory.
 
 ## Completion and resource ownership

@@ -6,6 +6,12 @@ proposed before the separately authorized VM campaign. Its installed baseline
 is the capacity-only service `CA3342…64347`; later evidence is linked in
 [Execution status](#execution-status).
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 ## Execution status
 
 This is the original validation design and ownership record. The original

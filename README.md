@@ -1,8 +1,8 @@
 # etw-dnstap
 
 `etw-dnstap` is a Windows service for administrators who need to capture Windows
-DNS Server query and response packets as a dnstap TCP stream or Frame Streams
-file. Capture starts only through the Service Control Manager (SCM), under service name
+DNS Server query and response packets as a dnstap TCP stream. Capture starts
+only through the Service Control Manager (SCM), under service name
 `EtwDnstap`. The executable has no foreground capture mode; `--help` and
 `--version` print command metadata without starting capture.
 
@@ -13,9 +13,9 @@ real-time session. It does not enable or alter the Event Viewer analytical log.
 To start, follow these tasks in order:
 
 1. [Build and check](#build-and-check) the executable on Windows x64.
-2. [Provision a service](#provision-a-service) with protected storage and the
+2. [Provision a service](#provision-a-service) with a protected executable and the
    required service identity.
-3. [Configure capture](#configure-capture) for a file or
+3. [Configure capture](#configure-capture) and
    [send to DNS-collector](#send-to-dns-collector).
 
 See the [documentation index](docs/README.md) for architecture, measurement
@@ -78,38 +78,33 @@ profile described here; this is not an inherent requirement that every ETW
 consumer use LocalSystem. Removing token privileges does not remove its
 powerful account/group access. A separate privileged broker is not implemented.
 
-Protect the executable and capture directories against writes by ordinary
-users. DNS payloads can contain private names and addresses, so restrict capture
-read access as well. Use an existing local NTFS directory whose ancestors are
-administrator-controlled. The program rejects UNC paths, device prefixes,
-alternate data streams, dot components, and reparse-point ancestors. These
-checks complement protected directory ACLs; they do not replace them or protect
-against a trusted administrator replacing directories during startup.
+Protect the executable and its parent directories against writes by ordinary
+users. DNS payloads can contain private names and addresses, so restrict access
+to the collector and protect the transport as described in
+[Send to DNS-collector](#send-to-dns-collector).
 
 For a **new installation**, complete the following steps from the repository
 root in an elevated Windows PowerShell 5.1 session. `New-EventLog` requires
 Windows PowerShell. Use the release executable from [Build and check](#build-and-check).
-This procedure expects the service and both destination directories to be absent.
+This procedure expects the service and installation directory to be absent.
+Start the collector listener first and use its numeric IP address for `RECEIVER_IP`.
 
-1. Create and protect the installation and capture directories:
+1. Create and protect the installation directory:
 
    ```powershell
    $installDirectory = 'C:\Program Files\EtwDnstap'
-   $captureDirectory = 'C:\ProgramData\EtwDnstap'
    New-Item -ItemType Directory -Path $installDirectory -ErrorAction Stop
-   New-Item -ItemType Directory -Path $captureDirectory -ErrorAction Stop
    icacls.exe $installDirectory /inheritance:r /grant:r `
-       '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
-   icacls.exe $captureDirectory /inheritance:r /grant:r `
        '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
    ```
 
-2. Copy the executable and register the service with a file-output destination:
+2. Copy the executable and register the service with its TCP receiver:
 
    ```powershell
    Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
-   $imagePath = '"{0}\etw-dnstap.exe" --output "{1}\capture" --capacity 8192' -f `
-       $installDirectory, $captureDirectory
+   $receiver = 'RECEIVER_IP:6000'
+   $imagePath = '"{0}\etw-dnstap.exe" --receiver "{1}" --capacity 8192' -f `
+       $installDirectory, $receiver
    New-Service -Name EtwDnstap -BinaryPathName $imagePath `
        -StartupType Manual -DependsOn DNS
    ```
@@ -133,7 +128,7 @@ This procedure expects the service and both destination directories to be absent
 
    Confirm that each command succeeds, the account is LocalSystem, and only
    SYSTEM and administrators can change the service configuration, start/stop
-   it, or write its executable and capture directories. Preserve existing
+   it, or write its executable and installation directory. Preserve existing
    identity, privileges, ACLs, and recovery policy when repairing an existing
    installation. These commands were not executed as part of the documentation
    checks.
@@ -158,10 +153,8 @@ This procedure expects the service and both destination directories to be absent
    ```
 
 Confirm that the service reaches `STOPPED` with a zero exit code and that the
-capture file exists in the protected output directory. Each start creates a file such as
-`capture.1793232000-123456700-1234-0.dnstap`. The suffix contains the Unix time,
-nanoseconds, process ID, and a collision counter. Existing files are never
-truncated. Output directories must already exist.
+collector receives the expected dnstap records. The service writes no capture,
+metrics, or log files. Use the collector's configured destination for retention.
 
 If `sc.exe query` reports `START_PENDING` or `STOP_PENDING`, repeat it until the
 transition completes. For a failed start or nonzero stop code, inspect the
@@ -169,35 +162,31 @@ transition completes. For a failed start or nonzero stop code, inspect the
 
 ## Configure capture
 
+When upgrading an existing installation, remove `--output`/`-o`,
+`--max-output-bytes`, and `--metrics` from the SCM binary path, and supply
+`--receiver` with the collector's numeric IP address and port before starting
+the updated executable. Removed arguments fail command-line parsing. Preserve
+the service identity, privileges, and protected executable ACLs.
+
 Set configuration arguments in the service binary path before starting the
 service. Arguments passed to `sc.exe start` are not used as configuration. The
 following flags are available:
 
 | Flag | Behavior |
 | --- | --- |
-| `--output PATH`, `-o PATH` | Absolute local base filename; each start appends a unique suffix. Specify exactly one of `--output` or `--receiver`. |
-| `--receiver IP:PORT` | Plaintext bidirectional Frame Streams TCP receiver; accepts a numeric unicast IP and nonzero port. IPv6 uses `[IP]:PORT`. |
+| `--receiver IP:PORT` | Required plaintext bidirectional Frame Streams TCP receiver; accepts a numeric unicast IP and nonzero port. IPv6 uses `[IP]:PORT`. |
 | `--capacity N` | Event-channel capacity, 1–16384 events; default 8192. A full channel drops the newest event. |
 | `--jumbo-capacity N` | Pool slots for records whose padded payload exceeds 2 KiB, 0–256; default 64. Zero disables jumbo capture. |
-| `--max-output-bytes N` | Maximum file size, 131072–1099511627776 bytes; default 1073741824 (1 GiB). Includes framing and STOP; unused with `--receiver`. |
-| `--duration SECONDS` | Stop the service after 1–604800 seconds; otherwise run until SCM STOP or the file limit. |
+| `--duration SECONDS` | Stop the service after 1–604800 seconds; otherwise run until SCM STOP or a capture failure. |
 | `--session-name NAME` | Optional unused ETW session name, up to 200 UTF-16 units; default `etw-dnstap-PROCESS_ID`. |
 | `--identity TEXT` | Optional dnstap producer identity, up to 1024 UTF-8 bytes; default `etw-dnstap`. Empty text omits the field. |
-| `--metrics PATH` | Optional absolute local base filename for one-second JSONL metrics; the parent directory must already exist and be ACL-protected. Adds a metrics thread and per-event timing. |
 | `--help`, `-h` | Display configuration help without starting capture. |
 | `--version`, `-V` | Display the package version without starting capture. |
 
-At the file size limit, the parser requests service stop and discards events
-that cannot fit with a complete STOP frame. The service does not rotate files
-or automatically restart at the limit. The per-file limit does **not** bound
-the total storage consumed by repeated service starts. Configure a protected
-storage quota and an operational retention policy, and avoid an unlimited SCM
-recovery/restart loop.
-
 ## Send to DNS-collector
 
-For network capture, replace the `--output` argument in the service binary path
-with `--receiver "RECEIVER_IP:6000"`. Replace `RECEIVER_IP` with the collector's
+Set `--receiver "RECEIVER_IP:6000"` in the service binary path.
+Replace `RECEIVER_IP` with the collector's
 numeric IP address. Start the collector listener before starting `EtwDnstap`.
 
 The TCP sink uses READY/ACCEPT/START negotiation for content type
@@ -211,8 +200,8 @@ sink.
 
 An I/O failure ends the service. There is no automatic reconnect or resend;
 buffered or queued packets can be lost, and a successful send does not prove
-that a collector durably stored the message. The one-second periodic flush
-also applies to network output. `--max-output-bytes` applies only to files.
+that a collector durably stored the message. The parser flushes buffered TCP
+output at least once per second while active.
 
 The sender has no TLS or peer authentication. Plaintext is suitable only for a
 trusted lab or an independently protected transport. A Hyper-V Default Switch
@@ -283,8 +272,14 @@ The parser uses TDH property APIs and validated metadata to read `PacketData`,
 transport, addresses, ports, and timestamps. It caches up to 32 metadata/type
 schemas by event ID and version, while individual properties still use TDH
 lookups per event. Five property reads still make five TDH size calls and five
-TDH extraction calls; their names use static UTF-16 storage. Parsing, protobuf
-encoding, and output still allocate. The parser does not use a manually fixed
+TDH extraction calls; their names use static UTF-16 storage. One parser reuses
+bounded property and address scratch storage and a packet vector. One Prost
+encoder retains identity, address, message, and output storage; it returns the
+packet allocation after serialization without an intermediate packet copy.
+Cold schema loads, capacity growth, errors, native TDH internals, and output
+remain outside the focused allocation tests. See the
+[parser and encoder plan](docs/parser-encoder-optimization-plan.md) for the
+reuse contract and local validation scope. The parser does not use a manually fixed
 payload layout. Measure all intake loss categories and CPU use on the target
 DNS host before choosing pool or channel capacities. Pooling alone does not
 establish higher throughput or a smaller safe queue.
@@ -294,46 +289,46 @@ DNS envelope and QR direction, but does not validate every DNS name or resource
 record. It does not strip or guess a TCP length prefix. Missing or malformed
 packet data is rejected; it is never reconstructed from a query name.
 
-The supported event mappings describe a recursive DNS server:
+The ETW subscription uses level 4 (informational) and `MatchAnyKeyword`
+`0x8000000000000000`. The callback accepts only event IDs 256 and 257 before
+accessing callback context, counters, pooled storage, or parsing. These events
+produce the following client records:
 
 | DNS Server event | dnstap message type |
 | --- | --- |
 | 256, query received | `CLIENT_QUERY` |
-| 257/258, response success/failure | `CLIENT_RESPONSE` |
-| 260, recursive query out | `RESOLVER_QUERY` |
-| 261, recursive response in | `RESOLVER_RESPONSE` |
+| 257, response success | `CLIENT_RESPONSE` |
 
-Authoritative and forwarder roles are not automatically distinguished. Other
-events, including updates, transfers, ignored queries, and timeouts without
-packets, are omitted. Endpoint fields retain initiator/responder meaning across
-both directions. The peer address/port and local interface address are included
+Event 258 (response failure), 260 (recursive query out), 261 (recursive response
+in), and all other event IDs are excluded. This intake emits no resolver records.
+Excluded records do not increment intake, drop, or error counters. Authoritative
+and forwarder roles are not automatically distinguished. Endpoint fields retain
+initiator/responder meaning across both directions. The peer address/port and local interface address are included
 when observed; the provider does not supply the local port for these events,
 so it stays absent. The encoder does not invent port 53, pair separate events,
 or infer a missing query timestamp for a response.
 
-File Frame Streams output consists of START with content type
-`protobuf:dnstap.Dnstap`, protobuf data frames, and STOP. The parser flushes at
-least once per second while active and synchronizes the file at orderly stop.
+Frame Streams output uses content type `protobuf:dnstap.Dnstap`, protobuf data
+frames, and the TCP control exchange described in
+[Send to DNS-collector](#send-to-dns-collector).
 An output error ends capture; an I/O-poisoned writer does not append a misleading
 STOP after a partial frame.
 
-Metrics schema 2 distinguishes channel-full `ring_dropped`, `pool_exhausted`,
-and `receiver_disconnected`; `intake_dropped` is their sum. Zero-loss analysis
-must include all three categories and reconcile the final capture and parser
-ledgers. Counters also distinguish received events, encoded messages, rejected
-events, output-limit drops, callback errors, ETW events lost, and real-time ETW
+Diagnostic counters distinguish channel-full `ring_dropped`, `pool_exhausted`,
+and `receiver_disconnected`; `intake_dropped` is their sum. Historical zero-loss
+analysis includes all three categories and reconciles final capture and parser
+ledgers from the recorded instrumentation. Counters also distinguish received events, encoded messages, rejected
+events, callback errors, ETW events lost, and real-time ETW
 buffers lost. Buffer loss and event loss use different units and are not added
 together. SCM exposes service status and a service-specific failure code. The
 tracing diagnostics, including packet/loss counters, use stderr, which is not a
 durable logging sink under SCM.
 
-For a durable measurement ledger, configure `--metrics` in the service binary
-path. Each start creates a uniquely suffixed JSONL file, flushes it each second,
-and synchronizes the final sample after capture and parser completion. The
-metrics file has a 1 GiB limit; a write error or reaching the limit ends capture.
-Include the additional thread and timing overhead when comparing runs. See
-[Measurement terms and result gates](docs/measurement-terms.md) to interpret
-the counters and CPU units.
+Historical performance reports use the removed service JSONL metrics writer.
+Their instrumentation overhead and final ledgers apply to the identified
+historical binaries. The service has no durable metrics export; stderr does not
+replace those ledgers. See [Measurement terms and result gates](docs/measurement-terms.md)
+to interpret the preserved counters and CPU units.
 
 Service failures also produce a best-effort Application Event Log entry from
 source `EtwDnstap`, event ID 1, level Error, before SCM receives Stopped. Register
@@ -370,8 +365,8 @@ The supported event names and payload fields follow
 [Microsoft's DNS logging documentation](https://learn.microsoft.com/en-us/windows-server/networking/dns/dns-logging-and-diagnostics).
 
 Unit tests exercise synthetic callback ownership, malformed native/property
-bounds, full-ring loss, shutdown signaling, service status/SID bounds, output
-limits, exact protobuf bytes, and Frame Streams failure handling. They do not
+bounds, full-ring loss, shutdown signaling, service status/SID bounds,
+exact protobuf bytes, and Frame Streams failure handling. They do not
 establish real SCM-issued token behavior, live DNS provider delivery, or
 performance under production traffic. No authored C/C++ translation units or
 `cc`/CMake dependency build steps are used; the native boundary consists of Rust

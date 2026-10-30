@@ -6,6 +6,12 @@ fidelity, or shutdown status. It defines the units and result gates shared by
 the [completed pooled VM review](pooled-vm-performance-review.md) and earlier
 reports; each report retains its own binary, workload, and evidence cutoff.
 
+The JSONL schemas and final samples in this reference describe historical
+binaries. The TCP-only service retains diagnostic counters but has no durable
+metrics export. See the [instrumentation compatibility note](README.md) before
+using a campaign harness; stderr diagnostics cannot replace a historical final
+JSONL ledger.
+
 ## DNS work and capture records
 
 The workload and capture counters measure different things:
@@ -40,7 +46,7 @@ client requires RA=true, that response fails DNS validation even though it
 arrived. A client timeout does not identify where a packet was lost, and a
 dropped capture record does not prove that the DNS exchange failed.
 
-## Service loss and final ledgers
+## Historical service loss and final ledgers
 
 The service distinguishes these loss units:
 

@@ -9,6 +9,7 @@ param(
     [switch]$UseBinaryDefault
 )
 $ErrorActionPreference = 'Stop'
+if ($Action -in 'Backup','Prepare','Deploy','Start') { throw 'Historical service-metrics harness: new campaigns are disabled because the TCP-only service no longer supports JSONL metrics. Existing evidence and cleanup actions remain available.' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $out = Join-Path $root 'target/performance/ring-fix-20261029/windows-campaign'
 New-Item -ItemType Directory -Path $out -Force | Out-Null

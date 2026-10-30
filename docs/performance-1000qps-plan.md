@@ -7,6 +7,11 @@ The fixed binary hashes and campaign paths belong to that experiment, before
 the capacity-only and pooled changes. See the
 [documentation index](README.md#review-earlier-decisions-and-validation) for the sequence.
 
+This plan depends on the historical service JSONL metrics writer. It cannot
+measure the TCP-only service; new campaigns through its helpers are disabled.
+See the [instrumentation compatibility note](README.md). Recorded evidence and
+collector file destinations remain unchanged.
+
 Run authoritative and recursive-request workloads for 300 seconds each at a
 global offered-rate ceiling of 1,000 queries/s. Keep the existing binaries,
 two client workers, 256 outstanding requests per worker, 2,000 ms deadlines,
@@ -164,7 +169,7 @@ Preserve every earlier run and backup. Final conclusions go in
 ## Restore and verify
 
 Stop/delete only new task collectors and finish owned WPR recordings. Restore
-this campaign's saved SCM command line without `--metrics`, retaining the
+this campaign's saved SCM command line without the historical metrics writer, retaining the
 tested binary and authoritative 5,000-record zone. Remove only the newly owned
 recursive forwarder. The Ubuntu owner restores its original console/journal
 output, prior sysctls and task fixtures. Verify both baseline services healthy,

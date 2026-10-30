@@ -125,7 +125,7 @@ fn run_registered(handle: SERVICE_STATUS_HANDLE) -> Result<()> {
             .map_err(|_| anyhow!("service arguments lock poisoned"))?
             .take()
             .context("missing service arguments")?;
-        let stop = Arc::clone(STOP.get().context("missing service stop state")?);
+        let stop = STOP.get().context("missing service stop state")?;
         pipeline::run_capture(
             args,
             stop,

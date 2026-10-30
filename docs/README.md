@@ -5,6 +5,26 @@ or assess the evidence for a performance claim. Administrators should start
 with the [project README](../README.md); maintainers can use the references and
 campaign records listed here.
 
+The service sends capture only to a required TCP receiver and writes no local
+capture, metrics, or log files. The historical campaigns used binaries with a
+service JSONL metrics writer that has been removed. Their commands, final
+ledgers, and measured overhead apply to those recorded binaries. The historical
+service-metrics harnesses require that legacy instrumentation and reject new campaigns before
+VM, load, or SCM changes. Existing evidence and cleanup actions remain available.
+Measuring this service needs a separately designed telemetry method. Removal
+also eliminates per-event timing, periodic ETW statistics queries, and queue
+high-water tracking, so the archived performance is not a measurement of this
+build. No replacement durable metrics export is provided. Collector output,
+WPR traces, and host tool artifacts remain
+separate from the service. Use the README for supported service arguments.
+
+The separate [filtered DNS ramp plan](filtered-ramp-plan.md) uses client and
+collector counts with the TCP-only service. Its Windows and receiver helpers
+preserve historical guards and export no service metrics. It starts a fresh
+campaign after a verified build, commit, push, deployment, and receiver gate.
+The earlier [parser ramp](parser-ramp-review.md) was aborted by the user and
+must not be resumed.
+
 ## Install, operate, and understand capture
 
 The following pages describe the service and its measurement tools:
@@ -12,16 +32,20 @@ The following pages describe the service and its measurement tools:
 | Task | Document |
 | --- | --- |
 | Build, provision, configure, and stop the service | [Project README](../README.md) |
+| Review the ETW subscription, accepted event IDs, and local validation | [ETW subscription filter plan](etw-subscription-filter-plan.md) |
 | Review pool ownership, callback allocation scope, and loss counters | [Pooled ETW intake](pooled-intake.md) |
+| Review bounded parser and encoder reuse, interface ownership, and local validation | [Parser and encoder optimization plan](parser-encoder-optimization-plan.md) |
 | Choose queue and pool capacity; review final-drain ownership | [Ring capacity and shutdown](ring-buffer.md) |
+| Review the proposed per-stage Windows V2 counter design and implementation tasks | [Windows V2 performance counter plan](windows-performance-counters-v2-plan.md) |
 | Interpret QPS, record counts, CPU units, and independent result gates | [Measurement terms and result gates](measurement-terms.md) |
 | Build and run the host DNS load generator; interpret its output | [DNS stress client](../tools/dns-stress/README.md) |
 | Recreate the pinned 5,000-name test workload | [DNS workload provenance](../datasets/performance/README.md) |
 
 The [historical packet-flow diagram](diagrams/packet-flow.drawio) and
 [historical code-architecture diagram](diagrams/code-architecture.drawio) are
-editable draw.io files dated October 28, 2026. The architecture diagram shows
-the earlier allocation-based `ArrayQueue` transport. For the pooled channel,
+editable draw.io files based on the October 28, 2026 lab. The architecture
+diagram retains the earlier allocation-based `ArrayQueue` transport and has
+its obsolete capture-file branch removed. For the pooled channel,
 ownership, and memory budget, use the README and pooled-intake reference.
 
 ## Assess the completed pooled VM campaign
@@ -65,7 +89,8 @@ later native campaign; do not treat an older plan's pending work as its status.
 
 Campaign commands contain recorded VM addresses, fixed campaign directories,
 and state-changing setup or restoration actions. Use them to understand the
-recorded experiment. Before another campaign, establish a fresh backup, unique
+recorded experiment; they are not procedures for the TCP-only service. Before
+another campaign, design and validate compatible telemetry, then establish a fresh backup, unique
 run IDs, verified guest identities, and fixture readiness as the relevant plan
 requires.
 

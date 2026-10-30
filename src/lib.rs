@@ -1,4 +1,4 @@
-//! Capture Microsoft DNS Server ETW packet data as a dnstap file.
+//! Send Microsoft DNS Server ETW packet data to a dnstap TCP receiver.
 
 #[cfg(not(target_os = "windows"))]
 compile_error!("etw-dnstap requires Windows; build for x86_64-pc-windows-msvc");

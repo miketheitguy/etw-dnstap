@@ -6,6 +6,12 @@ October 29, 2026 UTC. Binary, test, and installed-state descriptions apply at
 that cutoff. Later results are in the [capacity validation](ring-buffer-fix-validation.md)
 and [pooled VM review](pooled-vm-performance-review.md).
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 Both 300-second runs achieved **999.69 QPS** with zero client errors. The
 unchanged service nevertheless lost **24.78% of authoritative capture records**
 and **37.27% of recursive-workload capture records**, entirely at its bounded

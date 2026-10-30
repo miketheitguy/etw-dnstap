@@ -4,6 +4,7 @@ param(
     [string]$RunId = 'setup'
 )
 $ErrorActionPreference = 'Stop'
+if ($Action -in 'Prepare','Deploy','Start','UpdateNames') { throw 'Historical service-metrics harness: new campaigns are disabled because the TCP-only service no longer supports JSONL metrics. Existing evidence and cleanup actions remain available.' }
 if ($RunId -notmatch '^[A-Za-z0-9_-]{1,64}$') { throw 'Invalid run ID' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $out = Join-Path $root 'target/performance/windows'

@@ -5,6 +5,25 @@ accounting of the pooled Event Tracing for Windows (ETW) intake. It describes th
 local implementation and its checks. It does not establish production throughput
 or replace validation of the installed service.
 
+## Subscription and event selection
+
+The session enables the DNS provider at level 4 (informational), with
+`MatchAnyKeyword` set to the 64-bit mask `0x8000000000000000` and
+`MatchAllKeyword` set to zero. Level 4 includes more severe events; it is not an
+exact-level match. Keyword-zero events can pass ETW selection, so the callback
+also checks the provider and event ID.
+
+Immediately after checking for a null record, the callback accepts only event
+256 (client query) and 257 (successful client response). It excludes event 258
+(failed client response), 260 (recursive query), 261 (recursive response), and
+all other event IDs before context access, counters, TLS, pool acquisition,
+payload copying, queue admission, or TDH parsing. Excluded records do not count
+as received records, overload drops, or errors. The parser repeats this allowlist
+before TDH access. This intake produces no resolver records.
+
+See the [subscription filter plan](etw-subscription-filter-plan.md) for the
+implementation scope and local validation record.
+
 ## Ownership and callback lifecycle
 
 `PoolManager` allocates and initializes every slot before capture starts. The
@@ -113,12 +132,13 @@ notification mutex; the production event path keeps that waiter list empty.
 Adding `recv`, `recv_timeout`, iteration, or selection on this channel would
 invalidate that property. The channel API is nonblocking, but neither it nor the
 pool promises a hard wait-free execution bound: atomic retries, spinning,
-yielding, scheduling, and preemption still apply. Metrics receivers only inspect
-channel length.
+yielding, scheduling, and preemption still apply.
 
-The allocation guarantee covers callback admission and steady-state lease
-recycling while the pool remains owned. Parser TDH extraction, schema caching,
-protobuf encoding, and output retain their existing allocations. The callback
+The callback allocation guarantee covers admission and steady-state lease
+recycling while the pool remains owned. The parser and encoder also reuse
+bounded storage on the parser thread. Cold schema loads, packet/output growth,
+error construction, native TDH internals, and output remain outside their
+focused steady-state allocation tests. The callback
 also has bounded stack work for up to 64 descriptors and offsets, and the parser
 uses a fixed descriptor array. This fixed work and reference-count traffic must
 be included when measuring any performance change.
@@ -127,7 +147,19 @@ The five parser property reads use six fixed, nul-terminated UTF-16 property
 names, selecting either `Source` or `Destination` for the peer. Static names
 remove five per-event name-vector constructions. This does not change TDH
 extraction: a schema-cache hit still uses five `TdhGetPropertySize` calls and
-five `TdhGetProperty` calls, with property result buffers allocated by the parser.
+five `TdhGetProperty` calls. A 512-byte property scratch buffer serves integer
+and address reads; a 768-byte text scratch buffer serves Unicode conversion.
+ANSI addresses parse from borrowed UTF-8. PacketData fills a reusable vector
+with a maximum requested length of 65,535 bytes. The encoder retains identity,
+two address vectors, a Prost message, and at most 70 KiB of requested output
+storage. Allocators may round allocations beyond the requested size.
+
+The encoder transfers the packet vector into the active Prost field and returns
+it after encoding, including serialization failure. It adds no intermediate
+packet copy. Query/response fields and optional endpoint presence reset for each
+event. See the [parser and encoder optimization plan](parser-encoder-optimization-plan.md)
+for the interface contract and local validation record. Reuse alone does not
+establish higher throughput or zero allocation across the full pipeline.
 
 The copy from native ETW callback storage into owned storage remains required.
 Pooling removes repeated storage allocation; it is not literal zero-copy.
@@ -140,6 +172,12 @@ follow-up itself made no VM or capacity-default change; the later native
 campaign is recorded in [Validation scope](#validation-scope).
 
 ## Metrics schema 2
+
+This section documents the preserved JSONL evidence from historical binaries.
+The TCP-only service has no JSONL metrics writer or durable metrics export;
+see the [instrumentation compatibility note](README.md). Its diagnostic intake
+counters retain the admission meanings listed here. The historical
+`output_limit_dropped` field has no counterpart in the TCP-only parser ledger.
 
 Schema 2 preserves `ring_dropped` as channel-full loss and adds explicit intake
 loss categories:
@@ -165,7 +203,7 @@ dequeued = encoded + ignored + rejected + output_limit_dropped + output_failed_e
 
 Intermediate samples read separate relaxed atomics and can briefly differ from
 these identities. Final samples follow native completion and parser join.
-Metrics and supervisor receiver references can keep the channel connected after
+Historical metrics and supervisor receiver references can keep the channel connected after
 a parser failure; `receiver_disconnected` therefore does not detect every parser
 exit. The supervisor still detects parser completion, stops capture, reports the
 error, and retains the remaining backlog in the final ledger. Treat every intake

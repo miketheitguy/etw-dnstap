@@ -6,6 +6,12 @@ and remaining evidence needed for deployment or performance claims. It does not
 authorize a VM run, restart the stopped benchmark matrix, or change the installed
 service.
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 ## Status and evidence cutoff
 
 The local source, analysis, and documentation follow-up is complete, with no

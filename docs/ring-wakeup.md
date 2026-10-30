@@ -4,6 +4,12 @@ This historical note records the rejected `wake-1024-v1` candidate for
 maintainers reviewing the ring-drop investigation. The active implementation
 uses timed polling; see [Ring capacity and shutdown](ring-buffer.md).
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 The experiment retained the 1024-event ring and 2 ms idle timeout. It added an
 owned parser `Thread` handle to the callback context and called `unpark` after
 every successful enqueue. Synthetic wake and ownership tests passed, but a

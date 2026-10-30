@@ -8,6 +8,12 @@ for all 22 stages, overload failures, workload details, and lifecycle qualificat
 These observations do not establish universal capacity or a causal improvement
 over a pre-pooling build.
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 The four graphs cover two baseline repeats and two high-rate confirmations;
 they do not plot all 22 stages or a continuous capacity curve. See
 [Measurement terms and result gates](measurement-terms.md) for the shared units

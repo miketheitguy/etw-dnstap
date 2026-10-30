@@ -6,6 +6,11 @@ discovery. Native VM measurements,
 actual WPR traces, raw counters, and exact receiver ledgers determine the result.
 Local allocator tests do not establish throughput or native loss behavior.
 
+This plan depends on the historical service JSONL metrics writer. It cannot
+measure the TCP-only service; new campaigns through its helpers are disabled.
+See the [instrumentation compatibility note](README.md). Recorded evidence and
+collector file destinations remain unchanged.
+
 ## Campaign status and use of this plan
 
 All 22 stages and restoration checks are complete. The
@@ -90,7 +95,8 @@ only `SeChangeNotifyPrivilege`. Binary and SCM ACLs are protected. Normal argume
 "C:\Program Files\EtwDnstap\etw-dnstap.exe" --receiver 172.27.215.60:6000 --session-name EtwDnstap-Lab
 ```
 
-The measured service uses only an additional unique `--metrics` prefix. It uses
+The measured historical service adds only a unique JSONL metrics prefix,
+an option unavailable in the TCP-only service. It uses
 the reviewed binary defaults: queue capacity 8,192 and jumbo capacity 64, regular
 2 KiB slots (capacity plus two), jumbo 131,584-byte slots. Preserve the ten-second
 shutdown watchdog and SCM-only startup; no foreground mode, privilege expansion,

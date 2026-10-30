@@ -7,6 +7,12 @@ own workload decisions and capture results. This note helps maintainers inspect
 the trace probe,
 export procedure, and limits on scheduling and stack attribution.
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 All 22 completed load ETLs pass the final native trace gate: zero lost events
 or buffers, continuous one-second CSwitch coverage, and containment of each
 complete sending interval. Per-run `wpa/RUN_ID/trace-gate-v1.json` receipts and

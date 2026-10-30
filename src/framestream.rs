@@ -1,4 +1,4 @@
-//! Unidirectional Frame Streams encoding for dnstap files.
+//! Frame Streams START, data, and STOP encoding for the TCP sender.
 //!
 //! Wire format reference: <https://github.com/farsightsec/fstrm/blob/master/fstrm/control.h>.
 
@@ -10,9 +10,8 @@ const CONTROL_STOP: u32 = 3;
 const FIELD_CONTENT_TYPE: u32 = 1;
 /// Resource limit, comfortably above a maximum DNS message plus metadata.
 const MAX_FRAME_LENGTH: usize = 1_048_576;
-pub(crate) const STOP_FRAME_LENGTH: u64 = 12;
 
-/// A single dnstap file stream. Call [`Self::finish`] to emit STOP and flush.
+/// A single dnstap stream. Call [`Self::finish`] to emit STOP and flush.
 ///
 /// An I/O failure poisons the stream so later calls cannot append a misleading
 /// STOP after a partial data frame. Dropping a writer does not hide flush errors
@@ -20,7 +19,6 @@ pub(crate) const STOP_FRAME_LENGTH: u64 = 12;
 pub(crate) struct FrameStreamWriter<W: Write> {
     writer: W,
     failed: bool,
-    bytes_written: u64,
 }
 
 impl<W: Write> FrameStreamWriter<W> {
@@ -37,7 +35,6 @@ impl<W: Write> FrameStreamWriter<W> {
         Ok(Self {
             writer,
             failed: false,
-            bytes_written: 20 + u64::from(content_length),
         })
     }
 
@@ -52,21 +49,11 @@ impl<W: Write> FrameStreamWriter<W> {
         }
         let length = u32::try_from(payload.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame length exceeds u32"))?;
-        let next_length = self
-            .bytes_written
-            .checked_add(4 + u64::from(length))
-            .ok_or_else(|| io::Error::other("Frame Streams byte counter overflow"))?;
         self.failed = true;
         self.writer.write_all(&length.to_be_bytes())?;
         self.writer.write_all(payload)?;
         self.failed = false;
-        self.bytes_written = next_length;
         Ok(())
-    }
-
-    /// Number of complete START and data bytes written, excluding a future STOP.
-    pub(crate) fn bytes_written(&self) -> u64 {
-        self.bytes_written
     }
 
     /// Access the transport to set an operation deadline before writing.

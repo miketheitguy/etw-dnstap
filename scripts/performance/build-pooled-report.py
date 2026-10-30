@@ -328,6 +328,12 @@ text = f"""# Pooled intake VM performance review
 This report helps maintainers assess pooled Event Tracing for Windows (ETW)
 capture under actual Windows DNS traffic.
 
+This record describes historical binaries with service JSONL metrics
+instrumentation. The TCP-only service has no durable metrics export; its
+instrumentation and performance have not been measured by this campaign.
+See the [instrumentation compatibility note](README.md). Preserved counters,
+tables, hashes, and collector artifacts retain their historical meaning.
+
 {completion_status}
 
 See the [campaign plan](pooled-vm-performance-plan.md) for
