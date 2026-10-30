@@ -49,16 +49,22 @@ if a.capture_policy == 'client_only':
             or ready.get('expected_operations') != expected_ops
             or ready.get('source_filter_expected') != expected_filter
             or start.get('expected_operations') != expected_ops
-            or end.get('expected_operations') != expected_ops
             or start.get('source_filter_expected') != expected_filter
-            or end.get('source_filter_expected') != expected_filter
             or preflight.get('campaign_id') != a.campaign_id
             or preflight.get('capture_policy') != 'client_only'
             or preflight.get('source_filter') != expected_filter
             or not isinstance(candidate_hash, str) or len(candidate_hash) != 64
             or any(ch not in '0123456789abcdefABCDEF' for ch in candidate_hash)):
         raise SystemExit('Client-only READY/preflight filter contract mismatch')
+    if ('expected_operations' in end and end.get('expected_operations') != expected_ops):
+        raise SystemExit('End marker operation contract mismatch')
+    if ('source_filter_expected' in end and end.get('source_filter_expected') != expected_filter):
+        raise SystemExit('End marker source-filter contract mismatch')
     source_filter_verified = True
+    end_filter_contract_inherited = ('expected_operations' not in end
+                                     or 'source_filter_expected' not in end)
+else:
+    end_filter_contract_inherited = False
 if start.get('raw_path') != end.get('raw_path') or end.get('marker') != f'{a.run_id}-end.json':
     raise SystemExit('Markers do not bind the same stage raw file')
 if a.raw.stat().st_size != end.get('offset') or end.get('offset') != end.get('raw_bytes'):
@@ -141,6 +147,7 @@ result = {
     'strict_gate_failure': 'Windows SCM stop was not clean; strict reconciler rejected the stage.',
     'raw_bytes': end['raw_bytes'], 'raw_sha256': raw_hash.hexdigest(),
     'source_filter_verified': source_filter_verified,
+    'end_filter_contract_inherited_from_start': end_filter_contract_inherited,
     'unexpected_resolver_records_under_client_only_filter': resolver_filter_failure,
     'byte_range': [start['offset'], end['offset']], 'collector_pid': start.get('collector_pid'),
     'collector_stop_exit_code': end.get('collector_stop_exit_code'),

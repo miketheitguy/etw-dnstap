@@ -73,10 +73,12 @@ if args.capture_policy == 'client_only':
                               'keyword_mask': '0x8000000000000000'}
     if (ready.get('source_filter_expected') != expected_source_filter
             or start.get('expected_operations') != expected_operations
-            or end.get('expected_operations') != expected_operations
-            or start.get('source_filter_expected') != expected_source_filter
-            or end.get('source_filter_expected') != expected_source_filter):
-        raise SystemExit('Receiver READY/markers do not carry the expected client-only source-filter contract')
+            or start.get('source_filter_expected') != expected_source_filter):
+        raise SystemExit('Receiver READY/start marker do not carry the expected client-only source-filter contract')
+    if ('expected_operations' in end and end.get('expected_operations') != expected_operations):
+        raise SystemExit('End marker expected-operation list does not match the client-only contract')
+    if ('source_filter_expected' in end and end.get('source_filter_expected') != expected_source_filter):
+        raise SystemExit('End marker source-filter contract mismatch')
     expected_binary_hash = preflight.get('expected_binary_sha256')
     if (preflight.get('campaign_id') != args.campaign_id
             or preflight.get('capture_policy') != 'client_only'
@@ -85,6 +87,10 @@ if args.capture_policy == 'client_only':
             or len(expected_binary_hash) != 64
             or any(ch not in '0123456789abcdefABCDEF' for ch in expected_binary_hash)):
         raise SystemExit('Preflight does not confirm the requested client-only source filter')
+    end_filter_contract_inherited = ('expected_operations' not in end
+                                     or 'source_filter_expected' not in end)
+else:
+    end_filter_contract_inherited = False
 if ready.get('receiver_ready') is not True or ready.get('start_marker_ready') is not True:
     raise SystemExit('Receiver READY/start marker gate is false')
 if start.get('run') != args.run_id or start.get('offset') != 0:
@@ -296,6 +302,7 @@ result = {
     'capture_policy': args.capture_policy,
     'source_filter_verified': args.capture_policy == 'all_supported' or preflight.get('source_filter') == expected_source_filter,
     'source_filter_contract': (expected_source_filter if args.capture_policy == 'client_only' else None),
+    'end_filter_contract_inherited_from_start': end_filter_contract_inherited,
     'preflight_expected_service_binary_sha256': (preflight.get('expected_binary_sha256')
                                                  if args.capture_policy == 'client_only' else None),
     'zone': zone,

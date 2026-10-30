@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import time
+from parser_ramp_receipts import finish_marker_contract
 
 HOST = 'dnstap-ubuntu2604'
 DEFAULT_CAMPAIGN_ID = 'parser-ramp-20261030'
@@ -391,8 +392,7 @@ def finish(args):
         raise RuntimeError('Raw output changed while its post-drain digest was computed')
     errors_path = Path(ready['errors_path'])
     errors_stat = errors_path.stat() if errors_path.exists() else None
-    end.update({'run': args.run_id, 'campaign_id': CAMPAIGN_ID,
-                'capture_policy': ready.get('capture_policy', 'all_supported'),
+    end.update({'run': args.run_id, **finish_marker_contract(ready),
                 'marker': f'{args.run_id}-end.json',
                 'raw_path': str(raw), 'collector_config_sha256': sha256(CONFIG),
                 'collector_binary_sha256': sha256(BINARY), 'raw_bytes': after_hash.st_size,
