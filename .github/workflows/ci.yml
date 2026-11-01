@@ -1,0 +1,195 @@
+# Continuous integration for etw-dnstap (Windows service; x86_64-pc-windows-msvc).
+#
+# Every third-party action is pinned to a full commit SHA; the comment names the
+# release it was resolved from. Update them together and re-resolve the SHAs.
+#
+# Live-ETW tests need an elevated session and the DNS Server role, so they run
+# only in lab.yml on a self-hosted runner.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test, release build)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rust-toolchain.toml pins the nightly and lists clippy, rustfmt, rust-src
+      # and the target. Installing with no arguments reads that file.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --profile minimal
+          rustc -vV
+          cargo --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            tools/dns-stress -> target
+          # build-std output lives under target/, so the cache covers it.
+          cache-on-failure: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: clippy (default features)
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: clippy (diag-timing)
+        run: cargo clippy --locked --all-targets --features diag-timing -- -D warnings
+
+      - name: clippy (fuzzing entry points)
+        run: cargo clippy --locked --all-targets --features fuzzing -- -D warnings
+
+      - name: test
+        run: cargo test --locked
+
+      - name: test (diag-timing)
+        run: cargo test --locked --features diag-timing
+
+      - name: release build
+        run: cargo build --locked --release
+
+      - name: dns-stress fmt, clippy, test
+        working-directory: tools/dns-stress
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+  python:
+    name: Python tests (scripts/performance)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      # Hyphenated script names block unittest discovery, so run each file.
+      - name: metrics ledger
+        run: python -I scripts/performance/test_metrics_ledger.py
+      - name: pooled intake run
+        run: python -I scripts/performance/test_pooled_intake_run.py
+
+  docs:
+    name: Markdown relative links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -I scripts/ci/linkcheck.py .
+
+  deny:
+    name: cargo-deny (advisories, licenses, bans, sources)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check
+
+  coverage:
+    name: Coverage (report only)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Coverage is informational. It never fails the workflow, and there is no
+    # threshold: instrumenting the rebuilt standard library is the likeliest
+    # thing to break, and that must not block a merge.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain and LLVM tools
+        run: |
+          rustup toolchain install --profile minimal
+          rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-llvm-cov
+      - name: Measure
+        run: |
+          cargo llvm-cov --locked --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+          {
+            echo '### Coverage (report only)'
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: |
+            lcov.info
+            coverage-summary.txt
+
+  fuzz-smoke:
+    name: Fuzz smoke (60 s per target)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # Not yet proven on a hosted runner: libFuzzer on MSVC with the pinned
+    # nightly and rebuilt standard library. Remove continue-on-error once it
+    # has passed on main a few times.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> target
+          cache-on-failure: true
+      - name: Install cargo-fuzz
+        # Installed from a temporary directory so the repository's toolchain
+        # file and build-std settings do not apply to the tool itself.
+        working-directory: ${{ runner.temp }}
+        run: cargo +stable install cargo-fuzz --locked
+      - name: Fuzz each target for 60 seconds
+        run: |
+          for target in decoder control_frame plan_compiler; do
+            cargo fuzz run "$target" --sanitizer none -- -max_total_time=60 -max_len=4096
+          done
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

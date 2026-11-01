@@ -20,6 +20,8 @@ mod decode;
 #[cfg(feature = "diag-timing")]
 #[allow(unsafe_code)]
 mod diag;
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzzing;
 #[allow(unsafe_code)]
 mod instance;
 #[allow(unsafe_code)]

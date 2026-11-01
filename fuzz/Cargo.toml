@@ -1,0 +1,41 @@
+[package]
+name = "etw-dnstap-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+
+[dependencies.etw-dnstap]
+path = ".."
+features = ["fuzzing"]
+
+# A separate workspace keeps the fuzz crate out of the main build, `cargo test`,
+# and `Cargo.lock`.
+[workspace]
+
+[[bin]]
+name = "decoder"
+path = "fuzz_targets/decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_frame"
+path = "fuzz_targets/control_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan_compiler"
+path = "fuzz_targets/plan_compiler.rs"
+test = false
+doc = false
+bench = false

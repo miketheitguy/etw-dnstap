@@ -14,6 +14,20 @@ mod pipeline;
 mod service;
 mod sink;
 
+/// Entry points for the `fuzz/` crate. Not part of the supported interface.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing {
+    pub use crate::etw::fuzzing::{FuzzField, compile_and_decode, decode_reference};
+
+    /// Reads one Frame Streams control frame and validates it, as the handshake
+    /// does. Returns whether the frame was accepted.
+    #[must_use]
+    pub fn read_control(bytes: &[u8], expected: u32, require_content: bool) -> bool {
+        crate::network::fuzz_read_control(bytes, expected, require_content)
+    }
+}
+
 /// Runs capture through the Windows Service Control Manager dispatcher.
 ///
 /// Help and version output print to stdout and succeed without starting the

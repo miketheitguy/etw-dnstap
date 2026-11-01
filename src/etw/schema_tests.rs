@@ -802,3 +802,37 @@ fn rejected_key_list_is_bounded_without_reallocating() {
     assert_eq!(parser.rejected_keys.len(), 1);
     assert_eq!(parser.rejected_keys.capacity(), capacity);
 }
+
+#[test]
+fn mixed_ipv4_ipv6_endpoints_are_rejected_and_recovered_from() -> Result<()> {
+    let pool = PoolManager::new(1, 0)?;
+    let mut parser = Parser::new();
+    let mut encoder = Encoder::new(b"mixed families")?;
+    for id in [256, 257] {
+        let peer = if id == 256 { "Source" } else { "Destination" };
+        let mut valid = decode::tests::fixture(id, false, false, 0);
+        parser
+            .schemas
+            .push(((id, 0), cached_fixture_schema(&valid.fields, peer)));
+        for (local_ipv6, peer_text) in [
+            (false, &b"2001:db8:2::42\0"[..]),
+            (true, &b"198.51.100.42\0"[..]),
+        ] {
+            let mut fixture = decode::tests::fixture(id, local_ipv6, false, 0);
+            fixture
+                .payload
+                .splice(fixture.peer.clone(), peer_text.iter().copied());
+            let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+            let error = parser
+                .parse_encode(event, &mut encoder)
+                .expect_err("mixed address families are not a DNS exchange");
+            assert!(
+                format!("{error:#}").contains("address families"),
+                "event {id}: {error:#}"
+            );
+        }
+        let event = pooled_fixture(&mut valid.payload, id, 0, &pool);
+        assert!(parser.parse_encode(event, &mut encoder)?.is_some());
+    }
+    Ok(())
+}

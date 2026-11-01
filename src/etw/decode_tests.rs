@@ -447,3 +447,233 @@ fn warmed_decode_does_not_allocate_and_reuses_changed_payload() {
         });
     }
 }
+
+/// Every saved template shape: event ID, address family, transport, and string
+/// length variants that move all later offsets.
+fn all_fixtures() -> impl Iterator<Item = Fixture> {
+    [256_u16, 257].into_iter().flat_map(|id| {
+        [false, true].into_iter().flat_map(move |ipv6| {
+            [false, true].into_iter().flat_map(move |tcp| {
+                [0_usize, 1, 2, 31, 257]
+                    .into_iter()
+                    .map(move |variant| fixture(id, ipv6, tcp, variant))
+            })
+        })
+    })
+}
+
+#[test]
+fn truncation_sweep_covers_every_template_and_prefix() {
+    let mut checked = 0_usize;
+    for fixture in all_fixtures() {
+        let plan = compile(&fixture);
+        // Every strict prefix that ends before the last required byte fails and
+        // never panics; the first prefix containing the packet succeeds.
+        for end in 0..fixture.packet.end {
+            assert!(
+                plan.decode(&fixture.payload[..end]).is_err(),
+                "event {} prefix {end}/{}",
+                fixture.id,
+                fixture.payload.len()
+            );
+            checked += 1;
+        }
+        for end in fixture.packet.end..=fixture.payload.len() {
+            let decoded = plan
+                .decode(&fixture.payload[..end])
+                .expect("trailing metadata is never required");
+            assert_eq!(decoded.packet, &fixture.payload[fixture.packet.clone()]);
+        }
+    }
+    assert!(checked > 2_000, "sweep must be exhaustive, ran {checked}");
+}
+
+#[test]
+fn length_field_overflow_is_rejected_for_every_template() {
+    for mut fixture in all_fixtures() {
+        let plan = compile(&fixture);
+        for length in [
+            u32::MAX,
+            u32::MAX - 1,
+            u32::MAX / 2 + 1,
+            0x8000_0000,
+            0x7fff_ffff,
+            0x0001_0000,
+        ] {
+            fixture.payload[fixture.length_offset..fixture.length_offset + 4]
+                .copy_from_slice(&length.to_le_bytes());
+            let available = fixture.payload.len() - fixture.packet.start;
+            if length as usize > available {
+                assert!(plan.decode(&fixture.payload).is_err(), "length {length:#x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_length_packet_decodes_as_empty_without_consuming_the_tail() {
+    for mut fixture in all_fixtures() {
+        let plan = compile(&fixture);
+        fixture.payload[fixture.length_offset..fixture.length_offset + 4]
+            .copy_from_slice(&0_u32.to_le_bytes());
+        let decoded = plan
+            .decode(&fixture.payload)
+            .expect("empty packet is framed");
+        assert_eq!(decoded.packet, &[] as &[u8]);
+        // The empty packet still starts at the same offset: later bytes are not
+        // reinterpreted as part of an earlier property.
+        assert_eq!(decoded.port, &fixture.payload[fixture.port.clone()]);
+    }
+}
+
+#[test]
+fn maximum_dns_packet_is_framed_exactly_and_one_more_byte_is_not_invented() {
+    for id in [256_u16, 257] {
+        for size in [65_535_usize, 65_536] {
+            let mut fixture = fixture(id, true, false, 3);
+            let plan = compile(&fixture);
+            let packet = fixture.packet.clone();
+            let body: Vec<u8> = (0..size)
+                .map(|index| u8::try_from(index % 251).expect("below 251"))
+                .collect();
+            fixture.payload.splice(packet.clone(), body.iter().copied());
+            let length = u32::try_from(size).expect("size fits u32");
+            fixture.payload[fixture.length_offset..fixture.length_offset + 4]
+                .copy_from_slice(&length.to_le_bytes());
+            let decoded = plan.decode(&fixture.payload).expect("large packet fits");
+            assert_eq!(decoded.packet.len(), size);
+            assert_eq!(decoded.packet, body.as_slice());
+            // One byte short of the declared size is a truncation, not a shorter packet.
+            let short = &fixture.payload[..packet.start + size - 1];
+            assert!(plan.decode(short).is_err());
+        }
+    }
+}
+
+#[test]
+fn decoder_does_not_validate_address_families_or_directions() {
+    // Semantic checks belong to the caller: an IPv4 interface with an IPv6 peer
+    // borrows both texts unchanged, and the encoder (tested separately) rejects
+    // the mixed pair.
+    let mut fixture = fixture(256, false, false, 0);
+    let plan = compile(&fixture);
+    let mut peer = b"2001:db8:2::42\0".to_vec();
+    fixture.payload.splice(fixture.peer.clone(), peer.drain(..));
+    let decoded = plan
+        .decode(&fixture.payload)
+        .expect("layout is still valid");
+    assert_eq!(decoded.local, b"192.0.2.53\0");
+    assert_eq!(decoded.peer, b"2001:db8:2::42\0");
+}
+
+mod properties {
+    use super::{Fixture, compile, fixture};
+    use crate::etw::decode::{DecodePlan, Decoded, FieldSpec};
+    use proptest::prelude::*;
+
+    fn assert_inside(decoded: &Decoded<'_>, payload: &[u8]) {
+        let start = payload.as_ptr() as usize;
+        let end = start + payload.len();
+        for part in [
+            decoded.tcp,
+            decoded.port,
+            decoded.local,
+            decoded.peer,
+            decoded.packet,
+        ] {
+            let from = part.as_ptr() as usize;
+            assert!(
+                part.is_empty() || (from >= start && from + part.len() <= end),
+                "field escapes the payload"
+            );
+        }
+    }
+
+    fn params() -> impl Strategy<Value = (u16, bool, bool, usize)> {
+        (
+            prop::sample::select(vec![256_u16, 257]),
+            any::<bool>(),
+            any::<bool>(),
+            0_usize..300,
+        )
+    }
+
+    fn build((id, ipv6, tcp, variant): (u16, bool, bool, usize)) -> Fixture {
+        fixture(id, ipv6, tcp, variant)
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_bytes_never_panic_and_never_escape_the_payload(
+            params in params(),
+            payload in prop::collection::vec(any::<u8>(), 0..2048),
+        ) {
+            let template = build(params);
+            let plan = compile(&template);
+            if let Ok(decoded) = plan.decode(&payload) {
+                assert_inside(&decoded, &payload);
+            }
+        }
+
+        #[test]
+        fn mutated_valid_payloads_stay_inside_the_payload(
+            params in params(),
+            edits in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..8),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let template = build(params);
+            let plan = compile(&template);
+            let mut payload = template.payload.clone();
+            for (index, value) in edits {
+                let position = index.index(payload.len());
+                payload[position] = value;
+            }
+            payload.truncate(cut.index(payload.len() + 1));
+            if let Ok(decoded) = plan.decode(&payload) {
+                assert_inside(&decoded, &payload);
+            }
+        }
+
+        #[test]
+        fn every_strict_prefix_of_the_required_region_fails(
+            params in params(),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let template = build(params);
+            let plan = compile(&template);
+            let end = cut.index(template.packet.end);
+            prop_assert!(plan.decode(&template.payload[..end]).is_err());
+        }
+
+        #[test]
+        fn arbitrary_schemas_never_panic_the_compiler_or_decoder(
+            fields in prop::collection::vec(
+                (0_usize..8, -4_i32..40, -2_i32..40, any::<u32>(), 0_u16..4, 0_u16..20),
+                0..40,
+            ),
+            payload in prop::collection::vec(any::<u8>(), 0..512),
+            response in any::<bool>(),
+        ) {
+            const NAMES: [&str; 8] = [
+                "TCP", "Port", "InterfaceIP", "Source", "Destination", "PacketData", "X", "Y",
+            ];
+            let specs: Vec<FieldSpec> = fields
+                .into_iter()
+                .map(|(name, input, output, flags, count, length)| FieldSpec {
+                    name: NAMES[name].to_owned(),
+                    input,
+                    output,
+                    flags: flags & 0b111,
+                    count,
+                    length,
+                })
+                .collect();
+            let peer = if response { "Destination" } else { "Source" };
+            if let Some(plan) = DecodePlan::compile(&specs, peer)
+                && let Ok(decoded) = plan.decode(&payload)
+            {
+                assert_inside(&decoded, &payload);
+            }
+        }
+    }
+}
