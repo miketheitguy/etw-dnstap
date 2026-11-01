@@ -92,7 +92,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   reprovisioned. Validated on one lab DNS Server (Windows Server 2025, build
   26100) on 2026-11-01. See the
   [validation record](docs/history/localservice-restricted-validation.md).
-- ETW and instance-lock access-denied errors name the missing right, the GUID, and
+- ETW access-denied errors name the missing right, the GUID, and
   the provisioning script.
 - The ETW session now has a stable GUID derived from `--session-name`
   (SHA-1, RFC 9562 version 5; `{05e1db3c-1322-58c7-8235-0463fccba32b}` for the default name), logged as

@@ -243,9 +243,31 @@ fn print_query(label: &str, name: &[u16]) {
     );
 }
 
-/// Starts a session with a log file and the given mode, returning the status.
+/// The GUID ETW reports when querying the named session.
+fn queried_guid(name: &[u16]) -> GUID {
+    let mut query = QueryProperties::new();
+    // SAFETY: `name` is NUL-terminated and `query` is a sized, aligned buffer
+    // that outlives this synchronous call; a zero handle selects lookup by name.
+    let status = unsafe {
+        ControlTraceW(
+            CONTROLTRACE_HANDLE::default(),
+            name.as_ptr(),
+            &raw mut query.properties,
+            EVENT_TRACE_CONTROL_QUERY,
+        )
+    };
+    assert!(
+        matches!(status, ERROR_SUCCESS | ERROR_MORE_DATA),
+        "query status {status}"
+    );
+    query.properties.Wnode.Guid
+}
+
+/// Starts a session with a log file and the given mode under `guid`, returning
+/// the status.
 fn start_log_file_session(
     name: &[u16],
+    guid: GUID,
     config: &SessionConfig,
     mode: u32,
     log_units: &[u16],
@@ -257,6 +279,7 @@ fn start_log_file_session(
     };
     properties.properties.Wnode.BufferSize = offset_u32(size_of::<StartPropertiesWithLogFile>());
     properties.properties.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+    properties.properties.Wnode.Guid = guid;
     properties.properties.BufferSize = config.buffer_kib;
     properties.properties.LogFileMode = mode;
     properties.properties.LoggerNameOffset =
@@ -289,9 +312,20 @@ fn assert_log_file_session_refused(name_text: &str, mode: u32) {
         log_file: Some(log_path),
     };
 
-    let status = start_log_file_session(&name, &config, mode, &log_units);
+    let guid = session_guid(name_text).expect("guid");
+    let status = start_log_file_session(&name, guid, &config, mode, &log_units);
     assert_eq!(status, ERROR_SUCCESS, "log-file session should start");
     print_query("log-file session", &name);
+    // reclaimable() also compares the GUID. Without this check a GUID mismatch
+    // would make the refusal below pass without reaching the log-file checks.
+    let reported = queried_guid(&name);
+    assert!(
+        reported.data1 == guid.data1
+            && reported.data2 == guid.data2
+            && reported.data3 == guid.data3
+            && reported.data4 == guid.data4,
+        "ETW must report the GUID the session was started with"
+    );
 
     let counters = CaptureCounters::default();
     let error = reclaim_stale_session(
