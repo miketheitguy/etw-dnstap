@@ -34,17 +34,46 @@ and [README.md](README.md).
 
 - The local Windows host, its administrators, and the DNS Server role. The
   service reads DNS Server events from a local ETW session.
-- Any principal that can enable the DNS Server ETW provider or create or stop
-  real-time ETW sessions. The service does not authenticate the producer of
-  ETW events beyond the provider GUID, event IDs, and schema. A local process
-  that can register the same provider could in principle inject records. This
-  is an open verification item on a live host, not a demonstrated attack.
+- Any principal that can enable the DNS Server ETW provider, or create or stop
+  real-time ETW sessions. Administrators and members of Performance Log Users
+  have this ability.
 - The configured dnstap receiver. It receives full DNS payloads.
+
+**Producer identity (forged provider records)**
+
+- The service admits only records whose process ID is the running `DNS` service
+  process. The ETW session is filtered by that process ID
+  (`EVENT_FILTER_TYPE_PID`), and the callback checks the record's process ID
+  again before it copies the record. Records from any other process are counted
+  in `foreign_pid_rejected` and are not captured.
+- This narrows the earlier open item, in which a local process that could
+  register the same provider could inject records. A nonzero
+  `foreign_pid_rejected` shows that records from another process reached the
+  callback. Whether the ETW-side filter removes them first is unverified on a
+  live host.
+- The check does not stop code that runs inside the DNS Server process. A
+  process that can run code as the DNS Server can emit records the service
+  accepts.
+- The process ID is read at startup and checked every 5 seconds. A DNS Server
+  restart makes the service exit for SCM restart. Records from the new process
+  are not captured during that gap.
+
+**Service identity**
+
+- The service runs as the virtual account `NT SERVICE\EtwDnstap`, not as
+  LocalSystem. It refuses to start unless its token user is the service SID, the
+  account is an enabled member of Performance Log Users, and the token holds only
+  `SeChangeNotifyPrivilege`, enabled.
+- The virtual-account profile has **not been validated on a live DNS Server**.
+  The lab record, [docs/history/lab-validation.md](docs/history/lab-validation.md),
+  covers the earlier LocalSystem profile. The provisioning checklist is in
+  [docs/guide/install.md](docs/guide/install.md).
 
 **Protected or limited**
 
-- The service accepts no inbound network connections. It initiates one outbound
-  TCP connection to the receiver given by `--receiver`.
+- The service accepts no inbound network connections. It holds one outbound TCP
+  connection to the receiver given by `--receiver`, and it reconnects after a
+  failure.
 - **Transport is plaintext.** Frame Streams over TCP has no TLS and no peer
   authentication. Anyone on the path can read or alter DNS payloads and client
   addresses. Use it only on a trusted network or behind an independently
@@ -52,9 +81,8 @@ and [README.md](README.md).
 - DNS payloads can contain private names and addresses. The service does not
   log payloads, and it writes no capture or metrics files. The collector is
   responsible for retention and access control.
-- The service runs as LocalSystem under the token profile described in
-  [docs/guide/install.md](docs/guide/install.md). Its executable and install
-  directory must not be writable by ordinary users.
+- The executable and its install directory must not be writable by ordinary
+  users. The virtual account needs read and execute on the executable only.
 - The ETW session name is fixed by default (`EtwDnstap`) and is reclaimed at
   startup when it matches the program's shape. An administrator or a member of
   Performance Log Users can stop it.
@@ -64,5 +92,6 @@ and [README.md](README.md).
 - No runtime process mitigations beyond the link-time flags listed in
   [README.md](README.md) (CFG, CET-compatible marker, ASLR, NX, stack
   protection).
-- No automatic reconnection or resend. A transport failure ends capture; see
-  [docs/guide/troubleshooting.md](docs/guide/troubleshooting.md).
+- No resend. Frames that are lost while the receiver is disconnected are counted
+  in `disconnected_dropped` and are not retried. See
+  [docs/guide/configuration.md](docs/guide/configuration.md#receiver-connection).

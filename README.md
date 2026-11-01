@@ -1,12 +1,17 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `9172f2d` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `54eafae` · **Reviewed:** 2026-11-01
+>
+> **Validation status:** the virtual-account profile (`NT SERVICE\EtwDnstap`) has
+> not been validated on a live DNS Server. The lab record covers the earlier
+> LocalSystem profile. See [install.md](docs/guide/install.md#provision-the-service).
 
 `etw-dnstap` is a Windows service that captures DNS Server client query and
 response events and sends them to a [dnstap](https://dnstap.info/) receiver over
 TCP using Frame Streams. It runs under the Service Control Manager (SCM) as
-`EtwDnstap`. The executable has no foreground capture mode. `--help` and
-`--version` print information and exit without starting capture.
+`EtwDnstap`, under the virtual account `NT SERVICE\EtwDnstap`. The executable has
+no foreground capture mode. `--help` and `--version` print information and exit
+without starting capture.
 
 It enables the `Microsoft-Windows-DNSServer` Event Tracing for Windows (ETW)
 provider in its own real-time session. It does not enable or change the DNS
@@ -22,8 +27,10 @@ only on a trusted network or behind an independently protected transport. Read
 1. Install the pinned Rust toolchain, then build the release executable. See
    [Install the Rust toolchain](docs/guide/install.md#install-the-rust-toolchain) and
    [Build the executable](docs/guide/install.md#build-the-executable).
-2. Start your dnstap receiver's listener. Then provision the service with the
-   validated receiver address. See [Provision the service](docs/guide/install.md#provision-the-service).
+2. Confirm that the DNS Server service is Running, because the service refuses to
+   start without it. Provision the service with the validated receiver address.
+   Starting the receiver's listener first is advisable but not required: the
+   service reconnects. See [Provision the service](docs/guide/install.md#provision-the-service).
 3. Start the service, generate DNS traffic, and stop it. Confirm the receiver
    got the expected records. See [step 7](docs/guide/install.md#7-start-capture-and-confirm-it-is-running).
 
@@ -38,6 +45,7 @@ Run `--help` for the options. Their defaults and ranges are in the
 | Install the toolchain, build, provision, and register the service | [Install and provision](docs/guide/install.md) |
 | Every option, default, and range; the low-rate limits | [Configuration reference](docs/guide/configuration.md) |
 | Diagnose a failed start, restarts, drops, or missing records | [Troubleshooting](docs/guide/troubleshooting.md) |
+| Read the periodic log counters and what each one means | [Log events and counters](docs/guide/configuration.md#log-events-and-counters) |
 | Remove the service, the event source, and leftover ETW sessions | [Uninstall](docs/guide/uninstall.md) |
 | Reporting vulnerabilities and the threat model | [SECURITY.md](SECURITY.md) |
 | Building, testing, and proposing changes | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -88,15 +96,28 @@ They do not establish live SCM token behavior, live DNS provider delivery, or
 performance under production traffic. The lab records are:
 
 - [Lab validation](docs/history/lab-validation.md): receiver readiness and initial live
-  delivery, October 28, 2026.
+  delivery, October 28, 2026. It validated the earlier LocalSystem profile, not
+  the virtual account.
 - [Pooled VM performance review](docs/performance/pooled-vm-performance-review.md): native
-  five-minute confirmations on a fixed two-vCPU lab VM. These are observations,
-  not a capacity claim for other hardware.
+  five-minute confirmations on a fixed two-vCPU lab VM, run under LocalSystem.
+  These are observations, not a capacity claim for other hardware.
 
-**Known limitation.** Any receiver connection failure ends capture, and the
-service does not reconnect or resend. The recovery policy in
-[install.md](docs/guide/install.md#5-configure-scm-recovery) restarts the service,
-but data in flight at the failure is lost.
+**Known limitations.**
+
+- **Receiver connection.** A receiver failure does not stop capture. The service
+  reconnects with backoff (250 ms to 30 s) and repeats the handshake. Events
+  that arrive while disconnected, and frames buffered at the failure, are dropped
+  and counted in `disconnected_dropped`. They are never resent. See
+  [Receiver connection](docs/guide/configuration.md#receiver-connection).
+- **DNS Server restarts.** The service exits when the DNS Server process changes
+  or stops. SCM then restarts it, and capture of the new process starts after
+  that restart. Records from the gap are not captured.
+- **Identity.** The service runs as `NT SERVICE\EtwDnstap`. That profile has not
+  been validated on a live DNS Server. Follow the
+  [validation checklist](docs/guide/install.md#validation-checklist-for-the-virtual-account-profile).
+- **Recovery.** The policy in
+  [install.md](docs/guide/install.md#5-configure-scm-recovery) restarts the
+  service after failures, but data in flight at a failure is lost.
 
 ## License
 

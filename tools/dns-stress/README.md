@@ -56,7 +56,7 @@ $dnsStress = 'tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.
 
 Before rerunning the recursive scenario, recreate the temporary
 `rec.stress.test` conditional forwarder and Ubuntu upstream from the
-[performance test plan](../../docs/performance-test-plan.md). The original
+[performance test plan](../../docs/history/performance-test-plan.md). The original
 campaign's cleanup removed this recursive fixture and retained the 5,000
 authoritative records. Verify both fixture states before another run.
 Then change the names file and mode:
@@ -77,8 +77,8 @@ but does not verify that an answer is an A record with the configured fixture
 address or TTL. Run independent fixture probes to establish answer correctness.
 
 The historical pilot comparison selected two workers for subsequent campaigns.
-See the [original performance review](../../docs/performance-review-2026-10-28.md)
-for that selection and the [pooled VM review](../../docs/pooled-vm-performance-review.md)
+See the [original performance review](../../docs/history/performance-review-2026-10-28.md)
+for that selection and the [pooled VM review](../../docs/performance/pooled-vm-performance-review.md)
 for the later capped ramp and confirmations. The thread count remains configurable.
 
 Change `--qps` to select a different global sending ceiling. Each worker receives
@@ -222,5 +222,5 @@ the [Rust C runtime linkage reference](https://doc.rust-lang.org/reference/linka
 and the repository hardening configuration.
 
 For capture fidelity and service resource use, pair the client results with the
-[service and receiver gates](../../docs/measurement-terms.md#independent-result-gates).
+[service and receiver gates](../../docs/design/measurement-terms.md#independent-result-gates).
 Client latency and success counters alone do not establish dnstap record delivery.

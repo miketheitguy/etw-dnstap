@@ -1,6 +1,6 @@
 # Measurement terms and result gates
 
-> **Status:** Current · **Evidence dated:** not applicable (reference) · **Commit:** `9172f2d` (reference text; JSONL schemas describe historical binaries) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Evidence dated:** not applicable (reference) · **Commit:** `54eafae` (reference text; JSONL schemas describe historical binaries) · **Reviewed:** 2026-11-01
 
 This reference helps maintainers and administrators interpret the service's
 performance reports without confusing DNS responses, captured records, trace
@@ -50,6 +50,13 @@ dropped capture record does not prove that the DNS exchange failed.
 
 ## Historical service loss and final ledgers
 
+The current service writes live counters to the Application event log under the
+names listed in [Log events and counters](../guide/configuration.md#log-events-and-counters).
+Several names match this section, but the live fields are not the schema 2 JSONL
+ledger, and not every schema 2 field exists in the live log. The identities below
+apply to the historical JSONL binaries. The live identities are in
+[Counter relationships](../guide/configuration.md#counter-relationships).
+
 The service distinguishes these loss units:
 
 | Counter | Unit and interpretation |
@@ -63,6 +70,7 @@ The service distinguishes these loss units:
 | `etw_realtime_buffers_lost` | Lost ETW buffers, not lost events. Never add this count to event counts. |
 | `output_failed_events` | Dequeued events whose frame-output operation failed. |
 | `output_errors` | Failed output operations, including a flush or final STOP/FINISH failure after all encoded records were delivered. |
+| `disconnected_dropped` | Live service only (no schema 2 equivalent). Frames discarded because the TCP receiver was down, or frames written since the last successful flush when a session failed. Those may have reached the receiver. Never resent. Not part of `intake_dropped`. Frames it counts were already encoded. |
 
 After native capture stops and the parser joins, schema 2 requires these exact
 identities:

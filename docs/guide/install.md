@@ -1,6 +1,15 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `9172f2d` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `54eafae` (service identity and reconnect behavior from `f0b51f4`) · **Reviewed:** 2026-11-01
+
+> **Validation status: the virtual-account profile has not been validated on a
+> live DNS Server.** The lab record,
+> [lab-validation.md](../history/lab-validation.md), validated the earlier
+> LocalSystem profile only. The provisioning steps below are written from the
+> source and have not been run on a live DNS Server under
+> `NT SERVICE\EtwDnstap`. Run them on a disposable DNS host first, complete the
+> [validation checklist](#validation-checklist-for-the-virtual-account-profile),
+> and record the result before production use.
 
 This guide covers the toolchain, the build, the service identity, and the SCM
 registration for a new installation. Options are in
@@ -13,8 +22,9 @@ disposable host first.
 
 ## Prerequisites
 
-- Windows x64 with the **DNS Server role** installed. The service depends on the
-  `DNS` service and is useless without it.
+- Windows x64 with the **DNS Server role** installed, and the `DNS` service
+  Running. The service depends on the `DNS` service. It refuses to start while
+  the `DNS` service is not running, and it has nothing to capture without it.
 - Visual Studio C++ Build Tools with the Windows SDK, for the MSVC linker.
 - A dnstap receiver that accepts Frame Streams over TCP and speaks content type
   `protobuf:dnstap.Dnstap`. The lab used
@@ -116,8 +126,15 @@ Use an elevated Windows PowerShell 5.1 session at the repository root. The steps
 assume the service and the installation directory do not exist yet. For an
 existing installation, see [Repair or upgrade](#repair-or-upgrade) below.
 
-Start the collector listener **before** the service starts. The service connects
-during startup, and it does not wait for a receiver that comes up later.
+The service runs as the virtual account `NT SERVICE\EtwDnstap`. Its token user
+is the service SID, and it must be an enabled member of the built-in
+Performance Log Users group (`S-1-5-32-559`). Its token may hold only
+`SeChangeNotifyPrivilege`. The service refuses to start otherwise.
+
+Starting the collector listener first is still the simplest path, but it is not
+required. If the receiver is unreachable at startup, the service runs
+disconnected and reconnects with backoff. A receiver that answers but does not
+accept the dnstap content type stops the service at startup.
 
 ### 1. Validate the receiver address
 
@@ -142,7 +159,7 @@ if ($receiverEndpoint.Port -eq 0 -or
 $Receiver = $receiverEndpoint.ToString()   # IPv6 is written as [address]:port
 ```
 
-The validation mirrors `parse_receiver` in `src/pipeline.rs`: a numeric IP with a
+The validation mirrors `check_receiver` in `src/pipeline.rs`: a numeric IP with a
 nonzero port, not unspecified and not multicast. It does not test reachability.
 Check that with a connection test to the collector.
 
@@ -156,9 +173,10 @@ icacls.exe $installDirectory /inheritance:r /grant:r `
 ```
 
 Only SYSTEM and Administrators keep write access. Ordinary users must not be
-able to replace the executable.
+able to replace the executable. The virtual account gets read and execute in
+step 3.
 
-### 3. Copy the executable and register the service
+### 3. Copy the executable, register the service, and grant read and execute
 
 ```powershell
 Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
@@ -166,6 +184,7 @@ $imagePath = '"{0}\etw-dnstap.exe" --receiver "{1}" --capacity 8192' -f `
     $installDirectory, $Receiver
 New-Service -Name EtwDnstap -BinaryPathName $imagePath `
     -StartupType Manual -DependsOn DNS
+icacls.exe $installDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(RX)'
 ```
 
 Arguments go in the binary path. Arguments passed to `sc.exe start` are not used
@@ -173,30 +192,58 @@ as configuration. The `--capacity 8192` shown here is the default; it is written
 out so the value is visible. Add other options from
 [configuration.md](configuration.md) to the same string.
 
+The virtual account's name resolves once the service exists, so the `icacls`
+grant comes after `New-Service`. Step 2 removed inherited ACEs. Without this
+grant, the copied executable is not readable by the service account, and the
+service cannot start.
+
 ### 4. Set the service identity, privileges, and event source
 
 ```powershell
+sc.exe config EtwDnstap obj= "NT SERVICE\EtwDnstap"
 sc.exe sidtype EtwDnstap unrestricted
 sc.exe privs EtwDnstap SeChangeNotifyPrivilege
+net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add
 New-EventLog -LogName Application -Source EtwDnstap
 ```
 
-- `sidtype unrestricted` makes the service SID enabled in the process token.
-  The service refuses to run if the SID is missing or deny-only.
+- `obj=` runs the service as the virtual account. A virtual account has no
+  password. A service still set to LocalSystem fails the identity check.
+- `sidtype unrestricted` is part of this provisioning set. The service's
+  identity check tests the token user and the group membership, not this
+  setting directly.
 - `privs` leaves only `SeChangeNotifyPrivilege`. The service refuses to run if
-  the token holds any other privilege.
+  the token holds any other privilege, or if that privilege is disabled.
+- `net localgroup` adds the account to Performance Log Users, which lets it
+  create and control ETW sessions. The membership must be enabled in the token,
+  not deny-only. Restart the service after you change membership.
 - `New-EventLog` registers the `EtwDnstap` source. Without it, service failures
   and the capture start and stop lines are not written to the Application log.
 
 If the source already exists, `New-EventLog` fails. Check it first with
 `[System.Diagnostics.EventLog]::SourceExists('EtwDnstap')`.
 
+### If the DNS provider enable is denied
+
+If the log shows `EnableTraceEx2: access denied enabling the Microsoft-Windows-DNSServer provider`,
+the account lacks `TRACELOG_GUID_ENABLE` (0x80) on the provider GUID
+`{eb79061a-a566-4698-9119-3ed2807060e7}`. Grant that right, then restart the
+service.
+
+**Unverified:** this review did not verify where Windows stores that provider
+permission. A candidate location is a security descriptor under
+`HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`, keyed by the provider GUID.
+Confirm the location and the procedure on a disposable host before any edit.
+Record the change in your change log, because it is outside the service's own
+provisioning.
+
 ### 5. Configure SCM recovery
 
-The service exits with a service-specific error on I/O failure, such as a
-dropped receiver connection. That is a non-crash failure, so SCM ignores its
-recovery policy unless the non-crash flag is set. Without these two commands,
-one dropped connection stops DNS capture until someone starts the service.
+The service exits with a service-specific error when the DNS Server process
+changes or stops, when a capture worker fails, and on other run failures. That
+is a non-crash failure, so SCM ignores its recovery policy unless the non-crash
+flag is set. Without these two commands, one such failure stops DNS capture
+until someone starts the service.
 
 ```powershell
 sc.exe failure EtwDnstap reset= 86400 actions= restart/5000/restart/5000/restart/60000
@@ -210,8 +257,10 @@ sc.exe failureflag EtwDnstap 1
   exit codes). Without it, the `failure` actions do not run for this service.
 
 A restart does not resend lost data. It only restarts capture. A restart that
-happens while the receiver is still down fails again, and SCM applies the
-delays above. See [troubleshooting.md](troubleshooting.md#the-service-keeps-restarting).
+happens while the receiver is still down does not fail: the service starts
+disconnected and retries. A restart that happens while the `DNS` service is
+stopped fails at startup. See
+[troubleshooting.md](troubleshooting.md#the-service-keeps-restarting).
 
 Check the policy:
 
@@ -223,15 +272,19 @@ sc.exe qfailureflag EtwDnstap
 ### 6. Inspect the registered identity and access controls
 
 ```powershell
+sc.exe qc EtwDnstap
 sc.exe qsidtype EtwDnstap
 sc.exe qprivs EtwDnstap
-sc.exe qc EtwDnstap
+net localgroup "Performance Log Users"
 sc.exe sdshow EtwDnstap
+icacls.exe $installDirectory
 ```
 
-Confirm that each command succeeds, that the account is LocalSystem, and that
-only SYSTEM and Administrators can change the configuration or start and stop
-the service.
+Confirm that each command succeeds, that `sc.exe qc` shows `SERVICE_START_NAME`
+as `NT SERVICE\EtwDnstap`, that `sc.exe qprivs` lists only
+`SeChangeNotifyPrivilege`, that Performance Log Users lists the account, and
+that only SYSTEM and Administrators can change the configuration or start and
+stop the service.
 
 ### 7. Start capture and confirm it is running
 
@@ -243,6 +296,7 @@ sc.exe query EtwDnstap
 Repeat `sc.exe query EtwDnstap` while the state is `START_PENDING`. It should
 reach `RUNNING`. If it does not, see
 [troubleshooting.md](troubleshooting.md#the-service-does-not-reach-running).
+Look for a `capture started` line (Event ID 2) in the Application log.
 
 ### 8. Stop the service after the traffic you want
 
@@ -255,12 +309,33 @@ The service should reach `STOPPED` with exit code 0. Confirm that the collector
 received the expected records. The service writes no capture, metrics, or log
 files. Retention is the collector's job.
 
+### Validation checklist for the virtual-account profile
+
+Complete this checklist on a disposable DNS host before you rely on the profile.
+Record each result with the binary's commit.
+
+- The service reaches `RUNNING`, and `capture started` shows the expected keyword
+  masks without `keyword_fallback` set.
+- `foreign_pid_rejected` stays 0 under DNS traffic, and `received` rises.
+- `EnableTraceEx2` is not denied. If it is, follow
+  [the provider-permission step](#if-the-dns-provider-enable-is-denied).
+- Under DNS traffic, `output stats` shows `receiver_connected` true, and the
+  collector receives the records.
+- After `sc.exe stop`, the service reaches `STOPPED` with exit code 0, and the
+  final `output stopped` line reports `output_errors` 0.
+- A DNS Server restart produces a gap and an automatic EtwDnstap restart under
+  the recovery policy.
+- The `Global\EtwDnstap-<session>` instance mutex is created. A virtual account
+  normally holds `SeCreateGlobalPrivilege`, and the restricted privilege list
+  removes it. No unit test or lab run has covered this combination.
+
 ## Receiver configuration
 
-The service sends one outbound TCP connection to `--receiver`. It negotiates
+The service keeps one outbound TCP connection to `--receiver`. It negotiates
 content type `protobuf:dnstap.Dnstap` with READY, ACCEPT, and START, then sends
-data frames. On shutdown it sends STOP and waits for FINISH. There is no TLS and
-no peer authentication.
+data frames. On shutdown it sends STOP and waits for FINISH. After a failure it
+reconnects and negotiates again; frames lost in the gap are counted, not resent.
+There is no TLS and no peer authentication.
 
 An example receiver for DNS-collector 3.2.3 listens for dnstap and writes text to
 the console. Replace the placeholders with your collector's address:
@@ -300,12 +375,19 @@ Windows DNS guest. Do not expose the listener to an untrusted network. See
 For an existing installation, keep the service identity, privileges, executable
 ACLs, and recovery policy as they are. Change only what you need.
 
+- **Upgrading from LocalSystem.** A service still registered as LocalSystem
+  refuses to run with this build. Set the identity from
+  [step 4](#4-set-the-service-identity-privileges-and-event-source), add the
+  virtual account's read and execute grant from [step 3](#3-copy-the-executable-register-the-service-and-grant-read-and-execute),
+  keep the recovery policy from [step 5](#5-configure-scm-recovery), and then
+  start the service. Confirm the account with `sc.exe qc EtwDnstap`.
 - **Upgrading from a build with `--output`, `--max-output-bytes`, or `--metrics`.**
   Remove those arguments from the binary path before starting the new
   executable. They now fail command-line parsing. Add `--receiver` with the
   collector's numeric IP and port.
 - **Replacing the executable.** Stop the service, copy the new executable over
-  the old one, then start the service. Do not change the ACLs.
+  the old one, then start the service. Do not change the ACLs. The virtual
+  account's read and execute grant must remain.
 - **Changing the binary path.** Use `sc.exe config EtwDnstap binPath= "..."`,
   keeping the space after `binPath=`.
 

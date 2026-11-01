@@ -1,6 +1,6 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** `main` at commit `6e62b2e` (layout); document contents as stated in each row · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `54eafae` (layout and contents as stated in each row) · **Reviewed:** 2026-11-01
 
 This index lists every document in `docs/`, with its status. Operators should start
 with the [project README](../README.md) and the [guides](#guides). Maintainers can use the
@@ -52,9 +52,10 @@ Historical records keep their recorded command text and source paths. Where a
 lab script or source file has moved since, the record has a short note that names
 the new path. It is not rewritten. See the
 [script moves and renames](../scripts/performance/README.md#file-moves-and-renames)
-for commit `6e62b2e`. Commit `dc9d7e0` split `src/etw.rs` into `src/etw/`
-(`session.rs`, `keywords.rs`, `intake.rs`, `schema.rs`, `diag.rs`) plus
-`src/event.rs` and `src/sink.rs`.
+for commit `6e62b2e`. Commit `dc9d7e0` split the ETW code into `src/etw/`
+(`session.rs`, `keywords.rs`, `intake.rs`, `schema.rs`, `diag.rs`, and the other
+modules there). `src/etw.rs` remains as the module root. `src/event.rs` and
+`src/sink.rs` are the seams for the output sink.
 
 The service sends capture only to its required TCP receiver. It writes no
 capture, metrics, or log files. Diagnostics go to the event log and to stderr.
@@ -66,14 +67,14 @@ install, configuration, troubleshooting, and removal.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Install and provision](guide/install.md) | Current | not applicable | `9172f2d` | Toolchain, build, service identity, SCM recovery, receiver setup |
-| [Configuration reference](guide/configuration.md) | Current | not applicable | `9172f2d` | Every option and default, the low-rate limits, subscription, session reclaim |
-| [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `9172f2d` | Startup, restarts, drops, missing records, stale sessions, watchdog aborts |
+| [Install and provision](guide/install.md) | Current; virtual-account profile not validated live | not applicable | `54eafae` | Toolchain, build, virtual-account identity, privileges, SCM recovery, receiver setup, validation checklist |
+| [Configuration reference](guide/configuration.md) | Current | not applicable | `54eafae` | Every option and default, the low-rate limits, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters |
+| [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `54eafae` | Event log messages, startup failures, receiver outages, DNS restarts, counters, watchdog aborts |
 | [Service shutdown remediation](guide/service-stop-remediation.md) | Current (operator guide) | not applicable | not recorded | Diagnosing receiver resets during STOP/FINISH and the close behavior |
-| [Uninstall](guide/uninstall.md) | Current | not applicable | `9172f2d` | Service, event source, ETW session, and directory removal |
-| [Security policy](../SECURITY.md) | Current | not applicable | `9172f2d` | Reporting, threat model summary |
+| [Uninstall](guide/uninstall.md) | Current | not applicable | `54eafae` | Service, group membership, event source, ETW session, and directory removal |
+| [Security policy](../SECURITY.md) | Current | not applicable | `54eafae` | Reporting, threat model summary, producer identity, virtual-account profile |
 | [Contributing](../CONTRIBUTING.md) | Current | not applicable | `9172f2d` | Build, test, lint, documentation status and layout, commit style |
-| [Changelog](../CHANGELOG.md) | Current | not applicable | `9172f2d` | Keep a Changelog format; `0.1.0` reconstructed from `git log` |
+| [Changelog](../CHANGELOG.md) | Current | not applicable | `54eafae` | Keep a Changelog format; `0.1.0` reconstructed from `git log` |
 
 ## Design and reference
 
@@ -84,9 +85,9 @@ These documents are in `design/`.
 | [Pooled ETW intake](design/pooled-intake.md) | Current | not applicable | present by `2c62a9f` (its results are documented there) | Ownership, memory budget, and loss accounting of the pooled intake |
 | [Ring capacity and shutdown](design/ring-buffer.md) | Current | Oct 28-29, 2026 (evidence) | not recorded | Channel bounds, shutdown ordering, and the historical capacity experiment. The low-rate limits link to the configuration reference. |
 | [Single-pass decoder](design/single-pass-decoder-plan.md) | Current | not applicable | `e59425f` | Implemented decoding plan, supported layouts, pooled-event lifetime |
-| [Measurement terms and result gates](design/measurement-terms.md) | Current | not applicable | `9172f2d` | Units, counters, and gates for reading performance reports |
+| [Measurement terms and result gates](design/measurement-terms.md) | Current | not applicable | `54eafae` | Units, counters, and gates for reading performance reports, and how the live counters relate to them |
 | [Packet-flow diagram](design/diagrams/packet-flow.drawio) | Historical | Oct 28, 2026 | not recorded | Editable draw.io diagram of the October 28 design |
-| [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Historical (partly updated) | Oct 28, 2026 | not recorded | Editable draw.io diagram. The queue box is relabelled for the pooled crossbeam channel. Other boxes still reflect the October 28 layout. See the [diagram note](#diagram-note). |
+| [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Current (labels updated; box positions from Oct 28, 2026) | Oct 28, 2026 (positions) | `54eafae` (labels) | Editable draw.io diagram. Labels match the module split, DNS process filter, virtual account, and reconnecting sink. See the [diagram note](#diagram-note). |
 
 The rejected wake-on-enqueue experiment, which explains why the ETW callback stays
 wake-free, is a historical record:
@@ -94,10 +95,12 @@ wake-free, is a historical record:
 
 ### Diagram note
 
-The architecture diagram's title says "Historical intake architecture." Its queue
-box is now labelled as the bounded crossbeam channel with pooled leases, which is
-the current transport. The rest of its layout is the October 28 design. Use
-[Pooled ETW intake](design/pooled-intake.md) for the current structure.
+The architecture diagram's title is "Code architecture." Its labels match `main`
+at `54eafae`: the `src/etw/` module split, the bounded crossbeam channel with
+pooled leases, the DNS process filter, the virtual-account token gate, and the
+reconnecting network sink. Its box positions are still those of the October 28
+layout. Use [Pooled ETW intake](design/pooled-intake.md) for the current
+intake design.
 
 ## Performance
 
@@ -106,7 +109,7 @@ campaign, `pooled-vm-20261029-0942`.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Pooled intake VM performance review](performance/pooled-vm-performance-review.md) | Current (latest native results; its binaries are historical) | Oct 29, 2026 (campaign `pooled-vm-20261029-0942`) | `2c62a9f` documents the results | The completed pooled campaign: 22 measured stages, 12 strict passes, 10 strict failures |
+| [Pooled intake VM performance review](performance/pooled-vm-performance-review.md) | Current (latest native results; its binaries are historical) | Oct 29, 2026 (campaign `pooled-vm-20261029-0942`) | `2c62a9f` documents the results | The completed pooled campaign: 22 measured stages, 12 strict passes, 10 strict failures. Run under LocalSystem, not the current virtual account. |
 | [Pooled VM CPU and QPS graphs](performance/pooled-vm-performance-graphs.md) | Historical | Oct 29, 2026 | `2c62a9f` | Graphs of the four primary runs |
 | [Pooled VM trace analysis](performance/pooled-vm-trace-analysis.md) | Historical | Oct 29, 2026 | `2c62a9f` | Native WPR evidence |
 | [Pooled intake VM performance plan](performance/pooled-vm-performance-plan.md) | Historical | Oct 29, 2026 | `2c62a9f` | Workload, commands, and approvals of the completed campaign |
@@ -126,11 +129,11 @@ These documents are in `plans/`. None of them has a recorded execution.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed (must be regenerated before the next campaign) | Oct 30, 2026 | `3d401cc` and later | Client-event filter ramp. Its capture contract predates `e59425f` and `9172f2d`. See the banner in the document. |
-| [Live load validation plan](plans/live-load-validation-plan.md) | Proposed (execution not recorded) | Oct 30, 2026 | not recorded | Load checks deferred from the October 30 review |
-| [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading |
-| [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed | not recorded | not recorded | Plan to diagnose the bottleneck and test parallel workers |
-| [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Proposed | not applicable | not applicable | Future per-stage counters; no task has been executed |
+| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed (must be regenerated before the next campaign) | Oct 30, 2026 | `3d401cc` and later | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` (virtual account, DNS PID filter, reconnect). See the banner in the document. |
+| [Live load validation plan](plans/live-load-validation-plan.md) | Proposed (execution not recorded) | Oct 30, 2026 | not recorded | Load checks deferred from the October 30 review. Its premise that counters reach only stderr is out of date. |
+| [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading. Its fail-fast contract predates `f0b51f4`. |
+| [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed | not recorded | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. |
+| [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Proposed | not applicable | not applicable | Future per-stage counters; no task has been executed. Its baseline predates periodic counter logging and `f0b51f4`. |
 
 ## History
 
@@ -216,8 +219,9 @@ The historical service-metrics harnesses require that legacy instrumentation.
 They reject new campaigns before any VM, load, or SCM change. Existing evidence and
 cleanup actions remain available.
 
-The current service keeps diagnostic counters, but it has no durable metrics
-export and no queue high-water tracking. Its performance has not been measured by
+The current service writes its diagnostic counters to the Application event log
+every `--stats-interval-seconds` and at shutdown. It has no durable metrics
+export. It samples the deepest queue depth as a lower bound (`queue_depth_max`). Its performance has not been measured by
 the historical campaigns. Measuring it needs a separately designed telemetry
 method. Collector output, WPR traces, and host tool artifacts are separate from
 the service.

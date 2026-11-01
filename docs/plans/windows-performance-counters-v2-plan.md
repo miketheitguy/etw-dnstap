@@ -1,6 +1,11 @@
 # Minimal Windows V2 performance counter plan
 
 > **Status:** Proposed (future implementation tasks; none executed) · **Evidence dated:** not applicable · **Commit:** not applicable · **Reviewed:** 2026-11-01
+>
+> **Note (2026-11-01):** this baseline predates periodic counter logging
+> (`--stats-interval-seconds`) and commit `f0b51f4`. The service now has periodic
+> ETW queries and a sampled queue-depth maximum (`queue_depth_max`). Re-check the
+> statements that say these are not restored before any implementation.
 
 This proposed design helps maintainers expose essential DNS pipeline progress
 and errors through Windows Performance Counters V2, without adding per-event
