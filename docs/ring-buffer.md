@@ -7,7 +7,7 @@ traffic rate or event size.
 
 ## Capacity and memory
 
-**Warning: the defaults are tuned for low rates, about 1,000 queries/s or less.** With the periodic flush off (`--etw-flush-ms 0`), ETW delivers events in batches about 1 s apart, so delivery latency is about 1-2 s. The default 8,192 ring therefore starts dropping at roughly 2,000 queries/s (inferred), and lost 59-79% of events at 10k-20k queries/s in lab tests (P3w/P3x). For higher rates use `--etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64` (validated in P3x).
+**Warning: the defaults are tuned for low rates, about 1,000 queries/s or less.** With the periodic flush off (`--etw-flush-ms 0`), ETW delivers events in batches about 1 s apart, so delivery latency is up to about 2 s (normally under 1 s). The default 8,192 ring therefore starts dropping at roughly 2,000 queries/s (inferred), and, with 64 KiB x 256 buffers and the flush off, lost 59-79% of events at 10k-20k queries/s in lab tests (P3w/P3x); the 16 KiB x 12 defaults have not been tested above 1,000 queries/s. For higher rates use `--etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64` (in the P3x lab the periodic flush gave 0 drops at 10k-20k queries/s; 50 ms was tested at 20k, 100 ms at 10k and 50k, and at 50k with 100 ms it still lost 0.04-0.91%).
 
 The user-mode ETW callback leases preallocated storage, copies each accepted
 event, and calls `crossbeam_channel::Sender::try_send` on a bounded event channel.
@@ -29,9 +29,9 @@ queries/s loss was 0.04-0.9% versus 0.3-1.7% without it; that residual loss
 tracks host disturbance, not the flush, and `etw_lost` was 0. The flush wrote
 about 5-16% more ETW buffers and cost under 0.1% of a core when idle. At 20k
 queries/s the largest batch was about 6,800 events with a 100 ms interval and
-about 3,500 with 50 ms, which is why 50 ms was the earlier default. Not tested: other
+about 3,500 with 50 ms, which is why 50 ms is the recommended high-rate setting. Not tested: other
 machines and vCPU counts, 25-45k queries/s, recursive or mixed workloads, and
-the 50 ms default at 50k queries/s and above in a release build.
+50 ms at 50k queries/s and above in a release build.
 
 Capacity guidance: each delivered batch holds roughly up to twice the flush
 interval's worth of events (2 events per query). At higher rates in the

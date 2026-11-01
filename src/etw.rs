@@ -2263,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn session_config_enforces_ranges_and_one_gib_peak() {
+    fn session_config_enforces_ranges_and_accepts_max_buffer_product() {
         assert!(SessionConfig::new(4, 4, 1).is_ok());
         assert!(SessionConfig::new(128, 4096, 1).is_ok(), "512 MiB peak");
         assert!(SessionConfig::new(128, 256, 1).is_ok());
