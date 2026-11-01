@@ -87,9 +87,9 @@ The unit tests cover parsing, framing, shutdown signaling, and the protobuf byte
 They do not establish live SCM token behavior, live DNS provider delivery, or
 performance under production traffic. The lab records are:
 
-- [Lab validation](docs/lab-validation.md): receiver readiness and initial live
+- [Lab validation](docs/history/lab-validation.md): receiver readiness and initial live
   delivery, October 28, 2026.
-- [Pooled VM performance review](docs/pooled-vm-performance-review.md): native
+- [Pooled VM performance review](docs/performance/pooled-vm-performance-review.md): native
   five-minute confirmations on a fixed two-vCPU lab VM. These are observations,
   not a capacity claim for other hardware.
 

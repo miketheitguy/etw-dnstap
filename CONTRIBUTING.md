@@ -67,16 +67,33 @@ Use the status values as follows.
 | Superseded | Replaced by a newer document or implementation. Link to the replacement. |
 | Proposed | A design or plan that is not implemented or not executed. |
 
+The status decides the folder under `docs/`:
+
+| Folder | Put here |
+| --- | --- |
+| `docs/guide/` | Current operator guides (install, configuration, troubleshooting, remediation, uninstall) |
+| `docs/design/` | Current architecture and reference documents; editable diagrams in `docs/design/diagrams/` |
+| `docs/performance/` | The current performance record and the records the report generator links beside it |
+| `docs/plans/` | Proposed plans and analyses that are not executed or implemented |
+| `docs/history/` | Historical and Superseded records: finished campaigns, reviews, and completed plans |
+| `docs/assets/performance/` | Generated graphs and data copies (the default output of `plot-pooled-wpr.py`) |
+
+When a document's status changes, move it with `git mv`, update every relative
+link to it, and update its row in [docs/README.md](docs/README.md). Do not rewrite
+the commands or paths in a Historical record when a script or source file moves.
+Add a short note that names the new path.
+
 Rules for documentation changes:
 
 - Do not edit numeric evidence in a Historical record. Add a clarifying note
   instead.
 - Define an abbreviation at its first use, or link to its definition in
   [docs/guide/configuration.md](docs/guide/configuration.md) or
-  [docs/measurement-terms.md](docs/measurement-terms.md).
+  [docs/design/measurement-terms.md](docs/design/measurement-terms.md).
 - Link to symbols (function, type, or constant names), not to line numbers, when
   you cite source code. Line numbers drift.
-- Relative links must resolve. Anchors must match a heading that exists.
+- Relative links must resolve. Anchors must match a heading that exists. A link
+  into the gitignored `target/` directory must say that it is a local artifact.
 - Do not paste receiver addresses, query names, or capture data.
 
 ## Commits and pull requests

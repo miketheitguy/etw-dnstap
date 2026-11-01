@@ -23,6 +23,9 @@ headings.
 ### Changed
 
 - _pending_
+- Documentation moved into `docs/guide/`, `docs/design/`, `docs/performance/`,
+  `docs/plans/`, and `docs/history/` by status. See the
+  [documentation index](docs/README.md#layout).
 
 ### Fixed
 

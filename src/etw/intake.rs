@@ -1,6 +1,6 @@
 //! The native ETW callback and the deep copy of records into pooled storage.
 //!
-//! The callback is allocation-free and wake-free; see `docs/ring-wakeup.md`.
+//! The callback is allocation-free and wake-free; see `docs/history/ring-wakeup.md`.
 
 use std::{
     cell::RefCell,

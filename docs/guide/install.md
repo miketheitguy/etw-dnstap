@@ -314,4 +314,4 @@ ACLs, and recovery policy as they are. Change only what you need.
 - [Configuration reference](configuration.md)
 - [Troubleshooting](troubleshooting.md)
 - [Uninstall](uninstall.md)
-- [Pooled ETW intake](../pooled-intake.md) for the memory budget
+- [Pooled ETW intake](../design/pooled-intake.md) for the memory budget

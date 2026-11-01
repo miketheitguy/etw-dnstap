@@ -109,8 +109,8 @@ events (2 events per query). At higher rates, lower `--etw-flush-ms` or raise
 capacity. At 20,000 queries per second, the largest batch was about 6,800
 events with a 100 ms interval and about 3,500 with 50 ms.
 
-The evidence is in [ring-buffer.md](../ring-buffer.md) and
-[singlepass-four-core-test-results.md](../singlepass-four-core-test-results.md).
+The evidence is in [ring-buffer.md](../design/ring-buffer.md) and
+[singlepass-four-core-test-results.md](../history/singlepass-four-core-test-results.md).
 The per-stage lab labels from the source reports are not defined elsewhere and
 are not used here.
 
@@ -131,7 +131,7 @@ Counted storage at the defaults is 28.22 MiB. At the maximum (262,144 events and
 256 jumbo slots) it is 678.14 MiB. These are calculated payload, slot, free-list,
 and channel totals. They exclude the allocator, native ETW buffers, TDH caches,
 protobuf data, and output buffers. They are not measured process-memory limits.
-See [pooled-intake.md](../pooled-intake.md) for the budget.
+See [pooled-intake.md](../design/pooled-intake.md) for the budget.
 
 ## Subscription
 
@@ -205,4 +205,4 @@ Clean them up once with `logman query -ets`, then `logman stop etw-dnstap-<pid> 
 
 - [Install and provision](install.md)
 - [Troubleshooting](troubleshooting.md)
-- [Measurement terms](../measurement-terms.md)
+- [Measurement terms](../design/measurement-terms.md)
