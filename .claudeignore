@@ -1,0 +1,4 @@
+# Build output: large, generated, never worth reading.
+target/
+fuzz/target/
+tools/dns-stress/target/
