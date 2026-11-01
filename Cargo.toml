@@ -1,3 +1,7 @@
+# trim-paths (nightly) keeps absolute build-host paths, which name the user's
+# profile directory, out of panic locations in the shipped binary.
+cargo-features = ["trim-paths"]
+
 [package]
 name = "etw-dnstap"
 version = "0.1.0"
@@ -15,11 +19,11 @@ prost = "0.14"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Cryptography"] }
 
 [features]
 # Diagnostic only: times the parser thread idle parks and socket writes.
-diag-timing = []
+diag-timing = ["windows-sys/Win32_Media"]
 # Fuzzing only: exposes `#[doc(hidden)] etw_dnstap::fuzzing` entry points used by
 # the separate `fuzz/` crate. Never enable it in a shipped build.
 fuzzing = []
@@ -37,6 +41,7 @@ debug = 0
 strip = "symbols"
 overflow-checks = true
 panic = "abort"
+trim-paths = "all"
 
 [profile.asan]
 inherits = "dev"
