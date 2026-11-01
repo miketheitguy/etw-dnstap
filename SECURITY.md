@@ -97,8 +97,9 @@ and [README.md](README.md).
   that has no descriptor of its own. In the lab it also spread: other
   components copy the default when they create descriptors.
 - The service's SCM security descriptor is pinned with `sc.exe sdset`. SYSTEM and
-  Administrators can change or control the service. Authenticated users can query
-  it, and they cannot start, stop, or reconfigure it. Install and repair steps are
+  Administrators can change or control the service. Interactive and service
+  logons can query it, and they cannot start, stop, or reconfigure it. Network
+  and batch logons get no access. Install and repair steps are
   in [install.md](docs/guide/install.md).
 - The profile was validated on Windows Server 2025, build 26100, on 2026-11-01.
   See [docs/history/localservice-restricted-validation.md](docs/history/localservice-restricted-validation.md).
