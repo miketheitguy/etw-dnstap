@@ -1,6 +1,6 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** `main` at commit `e8560ac` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `5f610f5` · **Reviewed:** 2026-11-01
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.
@@ -82,6 +82,9 @@ logman stop EtwDnstap -ets
 ```
 
 Use the `--session-name` you configured if it was not the default.
+
+Earlier builds named sessions `etw-dnstap-<pid>`. Those can remain after a crash. Confirm the process ID with `logman query -ets`,
+then stop only that session with `logman stop etw-dnstap-<pid> -ets`.
 
 ## 6. Remove the executable and its directory
 
