@@ -60,11 +60,26 @@ and [README.md](README.md).
 
 **Service identity**
 
-- The service runs as the virtual account `NT SERVICE\EtwDnstap`, not as
-  LocalSystem. It refuses to start unless its token user is the service SID, the
-  account is an enabled member of Performance Log Users, and the token holds only
+- The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with a restricted
+  service SID type (`sc.exe sidtype EtwDnstap restricted`), not as LocalSystem. It
+  refuses to start unless its token user is S-1-5-19, the service SID is an
+  enabled group, the token is restricted with restricting SIDs that include the
+  service SID and the Write Restricted SID `S-1-5-33`, Performance Log Users is an
+  enabled group (through the service SID's membership), and the token holds only
   `SeChangeNotifyPrivilege`, enabled.
-- The virtual-account profile has **not been validated on a live DNS Server**.
+- LocalService has no network-credential identity: on the network it presents as
+  anonymous, not as the computer account, and its default local rights are low.
+  The restricted SID type adds a write-restricted token. For write-type access
+  checks, a second pass runs against the restricting SIDs (the service SID,
+  Everyone, the logon SID, and `S-1-5-33`). The service can therefore write only
+  to objects whose ACL grants one of those, such as the service SID, Everyone, or
+  Write Restricted. Reads use the normal check only.
+- ETW rights are granted to the service SID alone, by
+  [`scripts/provision/Grant-EtwDnstapEtwAccess.ps1`](scripts/provision/README.md),
+  and not to all LocalService processes. The script also adds only that SID to
+  Performance Log Users.
+- The profile and the restricting-SID set are assumptions from Microsoft
+  documentation and have **not been validated on a live DNS Server**.
   The lab record, [docs/history/lab-validation.md](docs/history/lab-validation.md),
   covers the earlier LocalSystem profile. The provisioning checklist is in
   [docs/guide/install.md](docs/guide/install.md).
@@ -82,7 +97,7 @@ and [README.md](README.md).
   log payloads, and it writes no capture or metrics files. The collector is
   responsible for retention and access control.
 - The executable and its install directory must not be writable by ordinary
-  users. The virtual account needs read and execute on the executable only.
+  users. The service SID needs read and execute on the executable only.
 - The ETW session name is fixed by default (`EtwDnstap`) and is reclaimed at
   startup when it matches the program's shape. An administrator or a member of
   Performance Log Users can stop it.

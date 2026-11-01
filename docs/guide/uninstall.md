@@ -27,25 +27,30 @@ sc.exe delete EtwDnstap
 ```
 
 `sc.exe delete` removes the service's configuration. That includes the binary
-path, the account (`NT SERVICE\EtwDnstap`), the SID type, the privilege list,
+path, the account (`NT AUTHORITY\LocalService`), the SID type, the privilege list,
 and the recovery policy. If the service is still running, SCM marks it for
 deletion and removes it when it stops.
 
-## 3. Remove the virtual account's group membership
+## 3. Remove the service SID's group membership and ETW grants
 
 ```powershell
 net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /delete
+.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -Remove -WhatIf
+.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -Remove
 ```
 
-Provisioning added the virtual account to Performance Log Users. Removing the
-service does not remove that membership. Remove it here, so no account keeps
-ETW control after the service is gone. Run `net localgroup "Performance Log Users"`
-to confirm that the entry is gone.
+Provisioning added the service SID to Performance Log Users and granted it ETW
+rights on the DNS provider GUID and the default WMI security GUID. Removing the
+service removes neither. Remove them here, so no SID keeps ETW control after the
+service is gone. Run `net localgroup "Performance Log Users"` to confirm that the
+entry is gone.
 
-If you granted the account a `TRACELOG_GUID_ENABLE` right on the DNS provider
-GUID, reverse that change with the same procedure you used to make it. The
-procedure is in [install.md](install.md#if-the-dns-provider-enable-is-denied).
-Its registry location is unverified.
+The script derives the service SID from the service name, so `-Remove` works
+after `sc.exe delete` as well. It strips only the ACEs for that SID and prints
+the resulting SDDL. It edits the descriptors under
+`HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`, a path that has not been
+verified on a live host, so check the printed SDDL. See
+[scripts/provision/README.md](../../scripts/provision/README.md).
 
 ## 4. Remove the Event Log source
 
@@ -80,7 +85,7 @@ Get-ChildItem -Force -Path $installDirectory
 Remove-Item -Recurse -Force -Path $installDirectory
 ```
 
-Deleting the directory removes its ACLs with it, including the virtual account's
+Deleting the directory removes its ACLs with it, including the service SID's
 read and execute grant. You do not need `icacls` for removal. If you keep the
 directory for evidence, leave the ACLs in place, so it stays protected from
 ordinary users.

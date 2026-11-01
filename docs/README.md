@@ -67,12 +67,12 @@ install, configuration, troubleshooting, and removal.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Install and provision](guide/install.md) | Current; virtual-account profile not validated live | not applicable | `54eafae` | Toolchain, build, virtual-account identity, privileges, SCM recovery, receiver setup, validation checklist |
+| [Install and provision](guide/install.md) | Current; LocalService restricted-SID profile not validated live | not applicable | `54eafae` | Toolchain, build, LocalService restricted-SID identity, privileges, SCM recovery, receiver setup, validation checklist |
 | [Configuration reference](guide/configuration.md) | Current | not applicable | `54eafae` | Every option and default, the low-rate limits, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters |
 | [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `54eafae` | Event log messages, startup failures, receiver outages, DNS restarts, counters, watchdog aborts |
 | [Service shutdown remediation](guide/service-stop-remediation.md) | Current (operator guide) | not applicable | not recorded | Diagnosing receiver resets during STOP/FINISH and the close behavior |
 | [Uninstall](guide/uninstall.md) | Current | not applicable | `54eafae` | Service, group membership, event source, ETW session, and directory removal |
-| [Security policy](../SECURITY.md) | Current | not applicable | `54eafae` | Reporting, threat model summary, producer identity, virtual-account profile |
+| [Security policy](../SECURITY.md) | Current | not applicable | `54eafae` | Reporting, threat model summary, producer identity, LocalService restricted-SID profile |
 | [Contributing](../CONTRIBUTING.md) | Current | not applicable | `9172f2d` | Build, test, lint, documentation status and layout, commit style |
 | [Changelog](../CHANGELOG.md) | Current | not applicable | `54eafae` | Keep a Changelog format; `0.1.0` reconstructed from `git log` |
 
@@ -87,7 +87,7 @@ These documents are in `design/`.
 | [Single-pass decoder](design/single-pass-decoder-plan.md) | Current | not applicable | `e59425f` | Implemented decoding plan, supported layouts, pooled-event lifetime |
 | [Measurement terms and result gates](design/measurement-terms.md) | Current | not applicable | `54eafae` | Units, counters, and gates for reading performance reports, and how the live counters relate to them |
 | [Packet-flow diagram](design/diagrams/packet-flow.drawio) | Historical | Oct 28, 2026 | not recorded | Editable draw.io diagram of the October 28 design |
-| [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Current (labels updated; box positions from Oct 28, 2026) | Oct 28, 2026 (positions) | `54eafae` (labels) | Editable draw.io diagram. Labels match the module split, DNS process filter, virtual account, and reconnecting sink. See the [diagram note](#diagram-note). |
+| [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Current (labels updated; box positions from Oct 28, 2026) | Oct 28, 2026 (positions) | `54eafae` (labels) | Editable draw.io diagram. Labels match the module split, DNS process filter, and reconnecting sink. See the [diagram note](#diagram-note). |
 
 The rejected wake-on-enqueue experiment, which explains why the ETW callback stays
 wake-free, is a historical record:
@@ -97,7 +97,7 @@ wake-free, is a historical record:
 
 The architecture diagram's title is "Code architecture." Its labels match `main`
 at `54eafae`: the `src/etw/` module split, the bounded crossbeam channel with
-pooled leases, the DNS process filter, the virtual-account token gate, and the
+pooled leases, the DNS process filter, the LocalService restricted-token gate, and the
 reconnecting network sink. Its box positions are still those of the October 28
 layout. Use [Pooled ETW intake](design/pooled-intake.md) for the current
 intake design.
@@ -109,7 +109,7 @@ campaign, `pooled-vm-20261029-0942`.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Pooled intake VM performance review](performance/pooled-vm-performance-review.md) | Current (latest native results; its binaries are historical) | Oct 29, 2026 (campaign `pooled-vm-20261029-0942`) | `2c62a9f` documents the results | The completed pooled campaign: 22 measured stages, 12 strict passes, 10 strict failures. Run under LocalSystem, not the current virtual account. |
+| [Pooled intake VM performance review](performance/pooled-vm-performance-review.md) | Current (latest native results; its binaries are historical) | Oct 29, 2026 (campaign `pooled-vm-20261029-0942`) | `2c62a9f` documents the results | The completed pooled campaign: 22 measured stages, 12 strict passes, 10 strict failures. Run under LocalSystem, not the current LocalService restricted-SID profile. |
 | [Pooled VM CPU and QPS graphs](performance/pooled-vm-performance-graphs.md) | Historical | Oct 29, 2026 | `2c62a9f` | Graphs of the four primary runs |
 | [Pooled VM trace analysis](performance/pooled-vm-trace-analysis.md) | Historical | Oct 29, 2026 | `2c62a9f` | Native WPR evidence |
 | [Pooled intake VM performance plan](performance/pooled-vm-performance-plan.md) | Historical | Oct 29, 2026 | `2c62a9f` | Workload, commands, and approvals of the completed campaign |
@@ -129,7 +129,7 @@ These documents are in `plans/`. None of them has a recorded execution.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed (must be regenerated before the next campaign) | Oct 30, 2026 | `3d401cc` and later | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` (virtual account, DNS PID filter, reconnect). See the banner in the document. |
+| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed (must be regenerated before the next campaign) | Oct 30, 2026 | `3d401cc` and later | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` (service identity, DNS PID filter, reconnect). See the banner in the document. |
 | [Live load validation plan](plans/live-load-validation-plan.md) | Proposed (execution not recorded) | Oct 30, 2026 | not recorded | Load checks deferred from the October 30 review. Its premise that counters reach only stderr is out of date. |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading. Its fail-fast contract predates `f0b51f4`. |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed | not recorded | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. |

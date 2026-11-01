@@ -8,7 +8,7 @@
         <mxCell id="title" value="etw-dnstap | Code architecture (labels for main 54eafae)" style="text;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#18324b;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="30" y="20" width="1820" height="38" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="October 28 box positions with labels for main 54eafae: module split, DNS PID filter, virtual account, reconnecting sink • see docs/design/pooled-intake.md for the intake design" style="text;align=left;verticalAlign=middle;fontSize=12;fontColor=#526779;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="October 28 box positions with labels for main 54eafae: module split, DNS PID filter, LocalService restricted token, reconnecting sink • see docs/design/pooled-intake.md for the intake design" style="text;align=left;verticalAlign=middle;fontSize=12;fontColor=#526779;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="30" y="58" width="1820" height="25" as="geometry" />
         </mxCell>
         <mxCell id="svc" value="Windows service host" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#eef5fb;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
@@ -23,7 +23,7 @@
         <mxCell id="m" value="&lt;b&gt;main.rs + lib.rs&lt;/b&gt;&lt;br&gt;Parse configuration; enter SCM dispatcher&lt;br&gt;Service-only runtime" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="55" y="155" width="265" height="72" as="geometry" />
         </mxCell>
-        <mxCell id="s" value="&lt;b&gt;service.rs&lt;/b&gt;&lt;br&gt;SCM status, STOP/SHUTDOWN control&lt;br&gt;Token gate: user = NT SERVICE\EtwDnstap&lt;br&gt;Performance Log Users; only SeChangeNotifyPrivilege" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+        <mxCell id="s" value="&lt;b&gt;service.rs&lt;/b&gt;&lt;br&gt;SCM status, STOP/SHUTDOWN control&lt;br&gt;Token gate: user = LocalService, restricted service SID&lt;br&gt;Performance Log Users; only SeChangeNotifyPrivilege" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="55" y="275" width="265" height="125" as="geometry" />
         </mxCell>
         <mxCell id="w" value="&lt;b&gt;Lifecycle watchdogs&lt;/b&gt;&lt;br&gt;Startup: 10 s + 1 s per 16,384 slots&lt;br&gt;Shutdown: 10 s; Event ID 5 on expiry" style="rounded=1;arcSize=12;fillColor=#fff3db;strokeColor=#c6902d;fontColor=#644516;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
