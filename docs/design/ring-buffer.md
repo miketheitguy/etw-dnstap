@@ -18,8 +18,10 @@ The user-mode ETW callback leases preallocated storage, copies each accepted
 event, and calls `crossbeam_channel::Sender::try_send` on a bounded event channel.
 It does not wait for capacity or allocate callback storage. A full channel drops
 the newest event and increments `ring_dropped`. The default capacity is 8192
-events; `--capacity` accepts 1,024–262,144. The parser uses only `try_recv` and polls
-an empty channel with a timed park that backs off from 2 ms to 20 ms while idle.
+events; `--capacity` accepts 1,024–262,144. The parser uses only `try_recv`. The ETW buffer
+callback wakes it once per delivered buffer that enqueued events; after data it
+polls for up to 200 µs before it parks, and otherwise it parks with a timed
+backoff from 2 ms to 20 ms.
 When `--etw-flush-ms` is set (opt-in; default 0, off), the supervisor thread also asks ETW to flush the session at that interval, because ETW otherwise delivers about once per `--etw-flush-seconds`, even with full buffers, and delivers them as one batch, which can overflow the
 channel. On the 6-vCPU lab VM, ETW delivered one batch per second at 10k and
 20k queries/s (about 20k and 39k events/s) and delivered promptly at 50k
@@ -38,11 +40,15 @@ interval's worth of events (2 events per query). In the batching regime, lower
 `--etw-flush-ms` or raise `--capacity` so that 2 x rate x interval stays well
 below the channel capacity.
 
-The callback does not signal the parser after enqueue. The channel has no
-registered blocking receivers or selectors; atomic retries, spinning, yielding,
-and preemption still apply. The supervisor thread, not the callback, unparks the
-parser after each successful periodic ETW flush, so a flushed batch does not wait
-for the parser's idle park.
+The per-event callback does not signal the parser after enqueue. It sets a
+same-thread flag, and the ETW buffer callback, which `ProcessTrace` calls on the
+consumer thread after each delivered buffer, unparks the parser when the flag is
+set. A burst therefore starts draining within microseconds instead of after the
+parser's backed-off park (see
+[ETW buffer wake validation](../history/buffer-wake-validation.md)). The channel
+has no registered blocking receivers or selectors; atomic retries, spinning,
+yielding, and preemption still apply. The supervisor thread also unparks the
+parser after each successful periodic ETW flush, as a backstop.
 
 The regular pool has `capacity + 2` slots with 2048 payload bytes each. The jumbo
 pool has 131,184-byte slots, with `--jumbo-capacity` accepting 0–256 and defaulting

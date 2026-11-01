@@ -414,14 +414,7 @@ impl Fixture {
             TEST_PID,
         ));
         let (sender, receive) = crossbeam_channel::bounded(capacity);
-        let context_address = (&raw const *context) as usize;
-        PRODUCER.with(|state| {
-            *state.borrow_mut() = Some(CallbackProducer {
-                context: context_address,
-                sender,
-                pool,
-            });
-        });
+        install_producer(&context, sender, pool, std::thread::current());
         let record = EVENT_RECORD {
             EventHeader: EVENT_HEADER {
                 ProviderId: PROVIDER,
@@ -976,4 +969,59 @@ mod copy_record_properties {
             }
         }
     }
+}
+
+#[test]
+fn buffer_callback_wakes_the_parser_once_per_buffer_that_enqueued() {
+    let mut fixture = Fixture::new(4, 0);
+    let mut payload = [0u8; 16];
+    fixture.record.UserDataLength = 16;
+    fixture.record.UserData = payload.as_mut_ptr().cast();
+    let counters = Arc::clone(&fixture.context.counters);
+    // Clear a wake token left by an earlier test on this thread, so the long
+    // park below can only end early because of this test's buffer callback.
+    std::thread::park_timeout(std::time::Duration::ZERO);
+    // A buffer that enqueued nothing counts as delivered and wakes nobody.
+    assert_eq!(native_buffer_callback(null_mut()), 1);
+    assert_eq!(counters.etw_buffers_delivered.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.parser_wake_requests.load(Ordering::Relaxed), 0);
+    // SAFETY: The fixture record and payload are live for the call.
+    unsafe { native_etw_callback(&raw mut fixture.record) };
+    assert_eq!(fixture.receive.len(), 1);
+    assert_eq!(native_buffer_callback(null_mut()), 1);
+    assert_eq!(counters.parser_wake_requests.load(Ordering::Relaxed), 1);
+    // The "parser" in this test is the current thread: the wake left a token, so
+    // this park returns at once instead of after 30 s.
+    let start = std::time::Instant::now();
+    std::thread::park_timeout(std::time::Duration::from_secs(30));
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    // The flag was consumed: the next buffer without events wakes nobody.
+    assert_eq!(native_buffer_callback(null_mut()), 1);
+    assert_eq!(counters.etw_buffers_delivered.load(Ordering::Relaxed), 3);
+    assert_eq!(counters.parser_wake_requests.load(Ordering::Relaxed), 1);
+    clear_producer();
+    // With no producer installed the callback still returns TRUE.
+    assert_eq!(native_buffer_callback(null_mut()), 1);
+}
+
+#[test]
+fn buffer_callback_during_a_borrow_keeps_the_pending_wake() {
+    let mut fixture = Fixture::new(4, 0);
+    let mut payload = [0u8; 16];
+    fixture.record.UserDataLength = 16;
+    fixture.record.UserData = payload.as_mut_ptr().cast();
+    let counters = Arc::clone(&fixture.context.counters);
+    // SAFETY: The fixture record and payload are live for the call.
+    unsafe { native_etw_callback(&raw mut fixture.record) };
+    PRODUCER.with(|state| {
+        let _held = state.borrow_mut();
+        // Re-entered: the callback cannot borrow, counts nothing, still continues.
+        assert_eq!(native_buffer_callback(null_mut()), 1);
+    });
+    assert_eq!(counters.etw_buffers_delivered.load(Ordering::Relaxed), 0);
+    // The enqueue flag survived, so the next buffer delivers the wake.
+    assert_eq!(native_buffer_callback(null_mut()), 1);
+    assert_eq!(counters.parser_wake_requests.load(Ordering::Relaxed), 1);
+    std::thread::park_timeout(std::time::Duration::ZERO);
+    clear_producer();
 }
