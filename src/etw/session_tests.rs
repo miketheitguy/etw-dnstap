@@ -414,11 +414,6 @@ fn run_decision(
 }
 
 #[test]
-fn exit_reason_names_the_process() {
-    assert!(exited_reason(77).contains("exited") && exited_reason(77).contains("77"));
-}
-
-#[test]
 fn reclaim_decision_vanished_session_neither_stops_nor_counts() {
     let (result, stopped, count) =
         run_decision(ERROR_WMI_INSTANCE_NOT_FOUND, |_| {}, ERROR_SUCCESS);

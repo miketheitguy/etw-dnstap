@@ -39,7 +39,7 @@ use super::{
     intake::{self, CallbackContext, native_etw_callback},
     keywords::{KeywordChoice, KeywordSelection, resolve_keywords},
     session_guid::{format_guid, session_guid},
-    target::{DNS_SERVICE, ProcessHandle, service_process_id, service_process_id_raw},
+    target::{DNS_SERVICE, service_process_id, service_process_id_raw},
 };
 #[cfg(feature = "diag-timing")]
 use super::{ThreadPriority, set_current_thread_priority};
@@ -384,40 +384,6 @@ pub(crate) struct Capture {
     /// The DNS Server service process, resolved at start. If it changes, the
     /// supervisor ends capture so SCM can restart this service with the new PID.
     dns_pid: u32,
-    /// Held open so the kernel cannot reuse `dns_pid` between supervisor polls;
-    /// `None` when the open was denied (SCM polling still applies).
-    dns_process: Option<ProcessHandle>,
-}
-
-fn exited_reason(pid: u32) -> String {
-    format!("the DNS Server process exited (process ID {pid})")
-}
-
-/// Opens the DNS process so its PID cannot be reused while capture runs. The
-/// SCM is asked again after the open: if it still reports `pid`, the process
-/// opened is the one the SCM meant. Any failure is logged once and capture
-/// continues with SCM polling alone.
-fn open_dns_process(pid: u32) -> Option<ProcessHandle> {
-    let handle = match ProcessHandle::open(pid) {
-        Ok(handle) => handle,
-        Err(error) => {
-            tracing::warn!(
-                "cannot hold the DNS Server process open; PID reuse is detected only by \
-                 polling the SCM: {error:#}"
-            );
-            return None;
-        }
-    };
-    match service_process_id_raw(DNS_SERVICE) {
-        Ok(current) if current == pid => Some(handle),
-        _ => {
-            tracing::warn!(
-                "the DNS Server process ID changed while it was being opened; \
-                 relying on SCM polling"
-            );
-            None
-        }
-    }
 }
 
 /// What the supervisor concluded from re-reading the DNS service process ID.
@@ -530,7 +496,6 @@ impl Capture {
         let display_name = name;
         let dns_pid = service_process_id(DNS_SERVICE)
             .context("resolve the DNS Server service process ID for the PID filter")?;
-        let dns_process = open_dns_process(dns_pid);
         let mut name: Vec<u16> = name.encode_utf16().collect();
         ensure!(
             name.len() <= 1024,
@@ -561,7 +526,6 @@ impl Capture {
             counters,
             keywords,
             dns_pid,
-            dns_process,
         };
         // The payloads, descriptors, and parameters are locals that outlive the
         // synchronous EnableTraceEx2 call below. Two filters: event IDs and the
@@ -710,13 +674,6 @@ impl Capture {
     /// service stopped or restarted, which invalidates the PID filter. A failed
     /// query is inconclusive and returns `None`.
     pub(crate) fn target_change(&self) -> Option<String> {
-        if self
-            .dns_process
-            .as_ref()
-            .is_some_and(ProcessHandle::has_exited)
-        {
-            return Some(exited_reason(self.dns_pid));
-        }
         classify_target(self.dns_pid, service_process_id_raw(DNS_SERVICE).ok())
     }
 

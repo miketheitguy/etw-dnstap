@@ -52,9 +52,7 @@ Search the Application log for the text, then go to the section named.
 | `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. Logged for the first four failures and then every 60th. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver reconnected` | Event ID 2 | A session was re-established. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `shutting down while the dnstap receiver is disconnected` | Event ID 3 | The service stopped without sending STOP. | [Receiver](#the-receiver-is-down-or-unreachable) |
-| `the DNS Server service restarted`, `the DNS Server service stopped`, or `the DNS Server process exited (process ID N)` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
-| `cannot hold the DNS Server process open; PID reuse is detected only by polling the SCM` | Event ID 3 | The service could not open the DNS Server process at startup. Capture continues. | [Restarts](#the-service-keeps-restarting) |
-| `the DNS Server process ID changed while it was being opened; relying on SCM polling` | Event ID 3 | The DNS Server restarted during startup. Capture continues. | [Restarts](#the-service-keeps-restarting) |
+| `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
 | `a capture worker exited before shutdown was requested` | Event ID 1 | A worker thread ended on its own. | [Restarts](#the-service-keeps-restarting) |
 | `ETW session flush failed` | Event ID 3 | A periodic flush failed once. Capture continues. | [ETW warnings](#etw-flush-and-consumer-warnings) |
 | `ETW session flush took` | Event ID 3 | One flush call took over 1 second. | [ETW warnings](#etw-flush-and-consumer-warnings) |
@@ -136,22 +134,8 @@ The service exits with a service-specific error in these cases, and SCM restarts
 it under the recovery policy in [install.md](install.md#5-configure-scm-recovery):
 
 - **The DNS Server process changed or stopped.** Event ID 4 names the reason, for
-  example `the DNS Server service restarted (process ID 4242 -> 5151)` or
-  `the DNS Server process exited (process ID 4242)`. Event ID 1
-  follows. The service checks this every 5 seconds.
-- **Startup warnings about the DNS Server process.** At startup the service
-  holds the DNS Server process open, so that Windows cannot give its process ID
-  to another process. Two warnings (Event ID 3) report that it could not do so:
-  `cannot hold the DNS Server process open; PID reuse is detected only by
-  polling the SCM`, and `the DNS Server process ID changed while it was being
-  opened; relying on SCM polling`. Both are informational. Capture continues,
-  and the 5-second SCM check still detects a changed process. On Windows Server
-  2025 build 26100, the first warning appears at every start, because the
-  restricted LocalService token cannot open the DNS Server process (access
-  denied). In that case the stop reasons are `the DNS Server service restarted`
-  and `the DNS Server service stopped`, and the reason `the DNS Server process
-  exited` does not occur. If the second
-  warning is followed by a restart, the DNS Server restarted during startup.
+  example `the DNS Server service restarted (process ID 4242 -> 5151)`. Event
+  ID 1 follows. The service checks this every 5 seconds.
 - **A capture worker ended on its own.** Event ID 1, `a capture worker exited
   before shutdown was requested`.
 - **A shutdown failure.** Event ID 1 names `finish dnstap STOP/FINISH exchange`.
