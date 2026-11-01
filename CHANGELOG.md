@@ -180,9 +180,16 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   tested the SCM recovery policy and a DNS Server restart. See
   [the lab record](docs/history/skills-evaluation-lab-validation.md).
 - **Breaking.** The service's SCM security descriptor is pinned with `sc.exe
-  sdset`. SYSTEM and Administrators control the service. Authenticated users may
-  query it, but they may not start, stop, or configure it. Existing installs must
-  be reprovisioned. Commit `700dd62`.
+  sdset`. SYSTEM and Administrators control the service. Interactive and
+  service logons may query it, but they may not start, stop, or configure it.
+  Network and batch logons get no access. Existing installs must be
+  reprovisioned. Commits `700dd62` and `b8d0427`.
+- Backup and restore folders under `ProgramData\EtwDnstap` must be owned by
+  SYSTEM or Administrators, must not be junctions, and must not let anyone else
+  write. The grant script refuses otherwise, never reuses a backup folder, and
+  validates `changes.json` before `-Restore` applies it. `-Restore` skips values
+  that changed after the run unless `-Force` is given. This closes a local
+  privilege escalation found in review before release. Commit `b8d0427`.
 - The DNS Server process ID is checked every 5 s. Windows can reuse that process
   ID after the DNS Server exits. A process that gets the same ID before the next
   check could inject records. The service cannot hold the DNS Server process
