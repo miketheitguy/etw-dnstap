@@ -193,6 +193,8 @@ the source, local evidence, and documentation with no blocker. The immutable
 receipt retains its accurate pending-at-build review status; this plan records
 the subsequent signoff.
 
+The PE inspection text files are [pooled-intake-release-pe.txt](../../datasets/pooled-intake-local/pooled-intake-release-pe.txt) and [audit-fixes-v1/release-pe.txt](../../datasets/pooled-intake-local/audit-fixes-v1/release-pe.txt). The `etw-dnstap.exe` binaries beside them are local only; git ignores `*.exe`.
+
 The optional synthetic harness and unexecuted matrix exclude native delivery,
 TDH parsing, protobuf encoding, and output. Local allocator counters instrument
 the Rust allocator during scoped callback/recycle work, not arbitrary Windows

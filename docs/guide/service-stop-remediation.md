@@ -58,7 +58,7 @@ authorized, compare the current receiver policy with explicit
 `reset-conn: false` using the same binaries and the exact existing workload
 that reproduced the stop failure: `parser-filtered-auth-80000-60s-1`, the
 80,000-QPS, 60-second filtered authoritative DNS workload. Follow the
-[filtered ramp plan](../plans/filtered-ramp-plan.md) when resuming that campaign; do not
+[filtered ramp plan](../plans/filtered-ramp-plan.md) must be regenerated from the commit you deploy before a new campaign. Do not run it as written. Do not
 infer results from a different workload. Preserve the existing console output
 pipeline and mode.
 

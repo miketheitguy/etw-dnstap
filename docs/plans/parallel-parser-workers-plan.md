@@ -1,6 +1,6 @@
 # Parallel parser workers plan
 
-> **Status:** Proposed (not executed) · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+> **Status:** Proposed; partly executed (P0 and diagnostic runs recorded Oct 31, 2026; P1a next; P4 deferred) · **Evidence dated:** October 31, 2026 · **Commit:** not recorded · **Reviewed:** 2026-11-01
 >
 > **Note (2026-11-01):** commit `f0b51f4` added reconnect with backoff, with no
 > resend. Rows in this plan that say "no reconnect" describe the earlier design.
@@ -24,7 +24,7 @@ workers help only if the wait is on something per-connection.
 ## Evidence (Stage L5, October 31, 2026)
 
 Source: `target/live-checks-20261031/heavy-load-results.md` and the
-[live load validation plan](live-load-validation-plan.md#stage-l5).
+[live load validation plan](../history/live-load-validation-plan.md#stage-l5-heavy-load-and-buffer-ceiling-comparison).
 
 - **Loss at uncapped load.** At about 160,000 queries per second (about
   320,000 events per second), every buffer setting lost events. With the
@@ -103,7 +103,7 @@ option and needs no encoded-output queue.
 **Prerequisites:**
 
 - The lab identity checks and restore rules from the
-  [live load validation plan](live-load-validation-plan.md#lab-identity-verify-before-every-stage)
+  [live load validation plan](../history/live-load-validation-plan.md#lab-identity-verify-before-every-stage)
   apply.
 - Use the Stage L5 candidate binary
   (`target/live-checks-20261031/candidate-etw-dnstap.exe`) with default

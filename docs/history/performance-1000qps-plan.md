@@ -107,13 +107,15 @@ to execute by itself.
 For each official run, use its unique run ID with the existing helpers:
 
 ```powershell
-powershell.exe -NoProfile -File scripts/performance/windows-control.ps1 -Action Start -RunId auth-1000qps-1
+powershell.exe -NoProfile -File scripts/performance/archive/windows-control.ps1 -Action Start -RunId auth-1000qps-1
 powershell.exe -NoProfile -File scripts/performance/windows-capture.ps1 -Action Start -RunId auth-1000qps-1
 powershell.exe -NoProfile -File scripts/performance/windows-capture.ps1 -Action Trace -RunId auth-1000qps-1
-powershell.exe -NoProfile -File scripts/performance/windows-control.ps1 -Action Stop -RunId auth-1000qps-1
+powershell.exe -NoProfile -File scripts/performance/archive/windows-control.ps1 -Action Stop -RunId auth-1000qps-1
 powershell.exe -NoProfile -File scripts/performance/windows-capture.ps1 -Action Stop -RunId auth-1000qps-1
-powershell.exe -NoProfile -File scripts/performance/windows-control.ps1 -Action Fetch -RunId auth-1000qps-1
+powershell.exe -NoProfile -File scripts/performance/archive/windows-control.ps1 -Action Fetch -RunId auth-1000qps-1
 ```
+
+> **Script path changed:** `windows-control.ps1` is now `scripts/performance/archive/windows-control.ps1` (now under archive/). The commands above use the new path.
 
 Create receiver markers `auth-1000qps-1-start/end` and
 `rec-1000qps-1-start/end` using the receiver helper. Start markers precede the

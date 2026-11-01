@@ -1,6 +1,6 @@
 # Live load validation plan
 
-> **Status:** Proposed (execution is not recorded in this index; confirm before relying on it) · **Evidence dated:** October 30, 2026 (deferred checks) · **Commit:** not recorded · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed L1-L5; the pending L4 action was not done) · **Evidence dated:** October 30-31, 2026 (completion record) · **Commit:** not recorded · **Reviewed:** 2026-11-01
 >
 > **Note (2026-11-01):** the premise below that loss counters reach only stderr is
 > out of date. The service writes periodic and final counters to the Application
@@ -8,7 +8,7 @@
 > [configuration.md](../guide/configuration.md#log-events-and-counters).
 
 This plan unblocks and runs the load checks deferred by the October 30, 2026
-live validation in the [source review remediation plan](../history/src-review-remediation-plan.md).
+live validation in the [source review remediation plan](src-review-remediation-plan.md).
 Stages L1–L3 used a low-cost model at low effort. Stages L4 and L5 use the
 models named in each stage.
 
@@ -22,18 +22,18 @@ The checks were blocked for three reasons:
 ## Lab identity (verify before every stage)
 
 - Windows DNS VM: Hyper-V `DNSTap-WS2025`, VM ID
-  `24bafedb-0998-4430-a0c6-7e90350cd9ac`, address `172.27.215.163`.
+  `<vm-id>`, address `<dns-vm-address>`.
   - Reach it with PowerShell Direct:
     `New-PSSession -VMId <id> -Credential (Import-Clixml target/lab-windows/private/administrator.clixml)`.
   - The session runs elevated.
 - Ubuntu receiver VM: `ssh -F target/lab-ubuntu/ssh_config dnstap-ubuntu`
-  (`172.27.215.60`, passwordless `sudo -n`). The DNS-collector listens on
-  `172.27.215.60:6000`.
+  (`<receiver-address>`, passwordless `sudo -n`). The DNS-collector listens on
+  `<receiver-address>:6000`.
 - Original service state to restore:
   - binary SHA-256 `CE4314678BCBEDE625AC536FCC9096C1401A45F93E770DBE69484B789CF0B656`;
-  - `PathName` `"C:\Program Files\EtwDnstap\etw-dnstap.exe" --receiver 172.27.215.60:6000 --session-name EtwDnstap-Lab`;
+  - `PathName` `"C:\Program Files\EtwDnstap\etw-dnstap.exe" --receiver <receiver-address>:6000 --session-name EtwDnstap-Lab`;
   - state Stopped.
-  - Backups are in `C:\ProgramData\EtwDnstap\live-checks-20261030\`
+  - Backups are in `<backup-directory>` (a folder under the service's ProgramData directory)
     (`service-original.exe`, `service-original.json`).
 
 ## Stage L1: Counters to the Application Event Log (finding 1)
@@ -118,7 +118,7 @@ Prerequisites: L1 and L2 are complete.
 **Load generator.** `tools/dns-stress` runs on the Hyper-V host. Its release
 binary is `tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.exe`.
 Read `tools/dns-stress/README.md` first. Use authoritative mode with
-`target/performance/workload/auth-names.txt` against `172.27.215.163:53`.
+`target/performance/workload/auth-names.txt` against `<dns-vm-address>:53`.
 Each run needs a fresh `--output-dir`.
 
 **Setup.**
@@ -127,7 +127,7 @@ Each run needs a fresh `--output-dir`.
    Record its SHA-256.
 2. Verify the fixture. On the VM, `Get-DnsServerZone -Name auth.stress.test`
    must exist. From the host, resolve three names from `auth-names.txt` with
-   `Resolve-DnsName -Server 172.27.215.163 -DnsOnly`; each must return
+   `Resolve-DnsName -Server <dns-vm-address> -DnsOnly`; each must return
    NOERROR with an answer. If the fixture is missing, stop and report; do not
    recreate zones.
 3. On the receiver, check `df -h /`. Before each scenario, if less than 10 GB

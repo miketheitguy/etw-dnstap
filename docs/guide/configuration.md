@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `54eafae` (defaults from `CaptureArgs` in `src/pipeline.rs`; identity, DNS process filter, and reconnect behavior from `f0b51f4`) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `efb47af` (defaults from `CaptureArgs` in `src/pipeline.rs`; identity, DNS process filter, and reconnect behavior from `f0b51f4`) · **Reviewed:** 2026-11-01
 
 Every option is set in the service binary path, not in `sc.exe start`. Install
 and provisioning steps are in [install.md](install.md). Symptoms are in

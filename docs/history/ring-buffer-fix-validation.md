@@ -35,6 +35,8 @@ a failed experiment, not hidden or accepted as the fix.
 | Capacity-only v2 | `CA3342D848BD06B7B8E1E6CE9ADC05E2157C3E86A18980E69E74B16555264347` |
 | Unchanged Rust client | `7A5800CFC4252196E4C6162F7D2CCF81217FE95A339D7CFBB9CD84063F4B6960` |
 
+The full SHA-256 of the capacity-only v2 binary is also in [`sha256.txt`](../../datasets/baselines/arrayqueue-v2/sha256.txt). The `etw-dnstap.exe` beside that file is local only: git ignores `*.exe`, so it is not in a clone. Use the hash file to check a local copy.
+
 The [plan](ring-buffer-fix-plan.md) records the delegated models/efforts,
 approved matrix, revision after the failed gate and restoration requirements.
 Sol/high workers authored code/scripts/docs; Astra/high performed coordination

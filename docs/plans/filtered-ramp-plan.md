@@ -1,15 +1,16 @@
 # Filtered DNS ramp plan
 
-> **Status: Proposed. Do not run this plan as written.**
+> **Status:** Proposed · **Evidence dated:** October 30, 2026 (the planning date for `target/performance/filtered-ramp-20261030/`) · **Commit:** not recorded (predates `e59425f`, `9172f2d`, and `f0b51f4`) · **Reviewed:** 2026-11-01
 >
-> The capture contract below (level 4, `MatchAnyKeyword` `0x8000000000000000`), the
+> **Do not run this plan as written.** The capture contract below (level 4, `MatchAnyKeyword` `0x8000000000000000`), the
 > reviewed `src/etw.rs` and executable SHA-256 values, and the defaults named in
 > this plan **predate commits `e59425f` (single-pass decoding, `--etw-flush-ms`,
 > low-rate defaults), `9172f2d` (low-rate warnings), and `f0b51f4` (virtual-account
 > identity, DNS PID filter, reconnect)**. The current subscription
 > resolves `QUERY_RECEIVED` and `RESPONSE_SUCCESS` by name, and the service has new
-> flush and buffer defaults. The LocalSystem baseline in this plan no longer applies:
-> the service runs as `NT SERVICE\EtwDnstap`, and a receiver outage no longer stops it.
+> flush and buffer defaults. The LocalSystem baseline in this plan no longer applies. The
+> service runs as `NT AUTHORITY\LocalService` with a restricted service SID.
+> `NT SERVICE\EtwDnstap` is the service SID. A receiver outage no longer stops it.
 > See [configuration.md](../guide/configuration.md#subscription)
 > and [configuration.md](../guide/configuration.md#low-rate-defaults).
 >
@@ -19,7 +20,8 @@
 > `dc9d7e0` split the ETW code into `src/etw/` (`session.rs`, `keywords.rs`,
 > `intake.rs`, `schema.rs`, `diag.rs`) plus `src/event.rs` and `src/sink.rs`.
 >
-> **Status:** Proposed · **Evidence dated:** October 30, 2026 (the planning date for `target/performance/filtered-ramp-20261030/`) · **Commit:** not recorded (predates `e59425f`, `9172f2d`, and `f0b51f4`) · **Reviewed:** 2026-11-01
+> For the in-progress snapshot of the October 30 campaign, see the
+> [filtered DNS ramp review](../history/filtered-ramp-review.md).
 
 This plan helps the Windows deployment operator and evidence reviewer deploy
 the reviewed client-event filter and run a bounded DNS ramp. The campaign

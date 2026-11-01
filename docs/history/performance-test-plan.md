@@ -142,13 +142,15 @@ starts with a capped example.
 Run the checked-in Windows helpers from elevated Windows PowerShell 5.1:
 
 ```powershell
-powershell.exe -NoProfile -File scripts/performance/windows-control.ps1 -Action Start -RunId auth-1
+powershell.exe -NoProfile -File scripts/performance/archive/windows-control.ps1 -Action Start -RunId auth-1
 powershell.exe -NoProfile -File scripts/performance/windows-capture.ps1 -Action Start -RunId auth-1
 powershell.exe -NoProfile -File scripts/performance/windows-capture.ps1 -Action Trace -RunId auth-1
-powershell.exe -NoProfile -File scripts/performance/windows-control.ps1 -Action Stop -RunId auth-1
+powershell.exe -NoProfile -File scripts/performance/archive/windows-control.ps1 -Action Stop -RunId auth-1
 powershell.exe -NoProfile -File scripts/performance/windows-capture.ps1 -Action Stop -RunId auth-1
-powershell.exe -NoProfile -File scripts/performance/windows-control.ps1 -Action Fetch -RunId auth-1
+powershell.exe -NoProfile -File scripts/performance/archive/windows-control.ps1 -Action Fetch -RunId auth-1
 ```
+
+> **Script path changed:** `windows-control.ps1` is now `scripts/performance/archive/windows-control.ps1` (now under archive/). The commands above use the new path.
 
 Start the 45-second WPR window during sustained load. The helper uses the
 General profile in memory mode, refuses an existing recording, and stops only

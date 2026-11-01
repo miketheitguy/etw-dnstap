@@ -8,6 +8,8 @@
 > `--etw-buffer-kib`, `--etw-max-buffers`) were not recorded. The 0.43% deficit
 > below therefore cannot be attributed to ETW, queue, or transport loss, and this
 > run is not a flush-setting comparison.
+>
+> The test plan for this run is [Single-pass four-CPU test plan](singlepass-four-core-test-plan.md).
 
 The client completed all 5,678,344 queries successfully, but collector receipt
 reconciliation did not pass: query records were short by 0.42935%, and response

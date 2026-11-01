@@ -6,7 +6,7 @@ This record covers the lab run for the changes made after the skills-driven
 evaluation: the removal of the instance mutex, the GUID-checked session reclaim,
 the DNS process handle, the pinned service descriptor, delayed automatic start,
 and the backup and restore of ETW and service state. It follows
-[the first LocalService record](localservice-restricted-validation.md).
+[the first LocalService record](localservice-restricted-validation.md). It is the lab record for the [skills-driven evaluation plan](skills-evaluation-plan.md).
 
 ## Environment
 
