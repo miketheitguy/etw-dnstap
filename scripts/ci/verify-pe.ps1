@@ -13,8 +13,11 @@
 #
 # dumpbin comes from -DumpBin, then PATH, then the newest Visual Studio C++
 # toolset that vswhere reports. Parsing uses dumpbin's hexadecimal values, not
-# its English labels where a number is available. Absolute user paths embedded
-# in strings are reported as warnings only.
+# its English labels where a number is available. Each absence check (no PDB,
+# no ASan or dynamic CRT import, no absolute user path) is paired with a
+# positive check that the parse actually found data, so an empty or changed
+# dumpbin layout fails instead of passing. The release profile uses
+# trim-paths = "all", so an absolute C:\Users\ path in the image is a failure.
 #
 # Works on Windows PowerShell 5.1 and PowerShell 7.
 param(
@@ -54,6 +57,7 @@ function Invoke-DumpBin([string]$Tool, [string]$Switch, [string]$Image) {
         $ErrorActionPreference = $previous
     }
     if ($code -ne 0) { throw "dumpbin $Switch exited with $code" }
+    if (@($lines).Count -eq 0) { throw "dumpbin $Switch produced no output; the dumpbin format may have changed" }
     return [string[]]$lines
 }
 
@@ -67,7 +71,7 @@ function Find-Value([string[]]$Lines, [string]$Pattern) {
 }
 
 function ConvertFrom-Hex([string]$Text) {
-    if ($null -eq $Text) { return $null }
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
     return [Convert]::ToUInt64($Text, 16)
 }
 
@@ -133,6 +137,9 @@ foreach ($line in $headers) {
     $m = [regex]::Match($line, '^\s*[0-9A-Fa-f]{8}\s+(\S+)\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]{8}\s+[0-9A-Fa-f]+')
     if ($m.Success) { $debugTypes += $m.Groups[1].Value }
 }
+$knownDebugTypes = @('coffgrp', 'dllchar', 'feat', 'cv', 'pdb', 'pogo', 'iltcg', 'repro')
+$knownParsed = @($debugTypes | Where-Object { $knownDebugTypes -contains $_ })
+Add-Check 'debug directory parsed (known entry type present)' ($knownParsed.Count -gt 0) ("debug entry types: {0}" -f (($debugTypes | Sort-Object -Unique) -join ', '))
 Add-Check 'no CodeView (PDB) debug entry' (-not ($debugTypes -contains 'cv')) ("debug entry types: {0}" -f (($debugTypes | Sort-Object -Unique) -join ', '))
 
 # Imports: no ASan runtime, no dynamic VC/UCRT runtime.
@@ -141,22 +148,22 @@ foreach ($line in $dependents) {
     $m = [regex]::Match($line, '^\s+([\w.-]+\.dll)\s*$')
     if ($m.Success) { $deps += $m.Groups[1].Value }
 }
+Add-Check 'imports parsed (kernel32.dll present)' (@($deps | Where-Object { $_ -match '^kernel32\.dll$' }).Count -gt 0) ("{0} import(s) parsed" -f $deps.Count)
 $asan = @($deps | Where-Object { $_ -match '^clang_rt\.' })
 Add-Check 'no AddressSanitizer runtime import' ($asan.Count -eq 0) ("asan imports: {0}" -f ($asan -join ', '))
 $dynCrt = @($deps | Where-Object { $_ -match '^(vcruntime\d+(_\d+)?|msvcp\d+(_\w+)?|ucrtbase|api-ms-win-crt-[a-z0-9-]+)\.dll$' })
 Add-Check 'no dynamic VC/UCRT runtime import (static CRT)' ($dynCrt.Count -eq 0) ("CRT imports: {0}" -f ($dynCrt -join ', '))
 
-# Warning only: absolute user paths in strings (panic locations and similar).
+# Absolute user paths in strings (panic locations and similar). trim-paths
+# removes them, so any match is a failure.
 $text = [System.Text.Encoding]::ASCII.GetString($bytes)
 $userPaths = [regex]::Matches($text, '[A-Za-z]:\\Users\\').Count
+Add-Check 'no absolute C:\Users\ path strings (trim-paths)' ($userPaths -eq 0) ("{0} match(es)" -f $userPaths)
 
 $failed = @($results | Where-Object { -not $_.Ok })
 foreach ($r in $results) {
     $tag = if ($r.Ok) { 'PASS' } else { 'FAIL' }
     Write-Output ("[{0}] {1}: {2}" -f $tag, $r.Name, $r.Detail)
-}
-if ($userPaths -gt 0) {
-    Write-Output ("[WARN] {0} absolute C:\Users\ path string(s) embedded in the image" -f $userPaths)
 }
 Write-Output ("PE verification: {0} checks, {1} failed." -f $results.Count, $failed.Count)
 if ($failed.Count -gt 0) { exit 1 }
