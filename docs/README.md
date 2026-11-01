@@ -133,6 +133,7 @@ These documents are in `plans/`. None of them has a recorded execution.
 | [Live load validation plan](plans/live-load-validation-plan.md) | Proposed (execution not recorded) | Oct 30, 2026 | not recorded | Load checks deferred from the October 30 review. Its premise that counters reach only stderr is out of date. |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading. Its fail-fast contract predates `f0b51f4`. |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed | not recorded | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. |
+| [Skills-driven evaluation plan](plans/skills-evaluation-plan.md) | Approved, in execution | Nov 1, 2026 | `e8560ac` | Evaluation of code, build, CI and service hardening against the installed skills. |
 | [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Proposed | not applicable | not applicable | Future per-stage counters; no task has been executed. Its baseline predates periodic counter logging and `f0b51f4`. |
 
 ## History
