@@ -57,7 +57,6 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   default ETW settings. Commit `f0b51f4`.
 - Watchdog Event ID 5, written before an abort. The startup deadline is 10 s plus
   1 s per 16,384 channel slots.
-- Single-instance guard: a named mutex, `Global\EtwDnstap-<session>`.
 - Negative schema cache: an event whose schema fails to load is rejected without
   repeated TDH calls, and counted in `schema_rejected`.
 - Tests, fuzzing, and CI. Commit `12cce7a` added them. Property tests
@@ -69,6 +68,17 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   and a link check. The 60-second fuzz smoke run and coverage are report-only.
   The `lab.yml` workflow runs the ignored tests that need live ETW, on a
   self-hosted runner.
+- A property test for `copy_record` admission and copying. Commit `14d6e6a`.
+- Release PE check in CI, `scripts/ci/verify-pe.ps1`. It fails when a hardening
+  flag is missing, when the image has a PDB entry, or when it imports an ASan
+  runtime or the dynamic C or Universal CRT. Commit `47206d4`.
+- An advisory CI job runs `cargo test-release` and `cargo asan`. Commit `47206d4`.
+- Dependabot checks each weekly for the root, `fuzz/`, and `tools/dns-stress/`
+  Cargo workspaces, and for the GitHub Actions pins. Commit `47206d4`.
+- `Grant-EtwDnstapEtwAccess.ps1 -BackupPath` saves the original bytes of each ETW
+  descriptor value it changes. `-Restore` writes them back. Commit `700dd62`.
+- The install guide has a snapshot procedure before a repair or upgrade. Commit
+  `700dd62`.
 
 ### Changed
 
@@ -114,9 +124,31 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - Documentation is reorganized into `docs/guide/`, `docs/design/`,
   `docs/performance/`, `docs/plans/`, and `docs/history/` by status. Commit
   `54eafae`. See the [documentation index](docs/README.md#layout).
+- **Breaking.** The service starts with the delayed automatic start type and a
+  dependency on `DNS` (`sc.exe config EtwDnstap start= delayed-auto depend= DNS`).
+  Existing installs must be reprovisioned. A stop of `DNS` also stops `EtwDnstap`,
+  and it stays stopped until it is started again. See the
+  [start type notes](docs/guide/install.md#start-type). Commit `700dd62`.
+- The session reclaim checks the session GUID as well as the name and shape. A
+  leaked session with the same name and another GUID is left alone, and startup
+  fails. Commit `9fce762`.
+- ETW cleanup errors are logged through `tracing`. Commit `9fce762`.
+- Release builds trim build-host paths from the executable with
+  `trim-paths = "all"`. This needs nightly Cargo. Commit `77d7c47`.
+- `windows-sys/Win32_Media` is enabled only by the `diag-timing` feature, so the
+  default build does not link it. Commit `77d7c47`.
+- CI pins `cargo-fuzz` to 0.13.2. Dependabot does not update that pin. Commit
+  `47206d4`.
 
 ### Removed
 
+- **Breaking.** The single-instance guard, a named mutex
+  `Global\EtwDnstap-<session>`. It is removed, and no mutex is created. Only
+  the SCM starts one process for the service, and the identity check refuses a
+  process that does not run as this service. Existing installs must be
+  reprovisioned. Commit `9fce762`.
+- The `rust-version` field in `Cargo.toml`. The build needs the pinned nightly,
+  so no minimum stable version applies. Commit `47206d4`.
 - The `--output`/`-o`, `--max-output-bytes`, and `--metrics` options and the
   service JSONL metrics writer. Arguments that use them now fail command-line
   parsing. Remove them from the binary path before you start this build. See
@@ -132,6 +164,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - The documented `sc.exe config ... password= ""` did nothing in Windows
   PowerShell 5.1, which drops the empty argument. The docs and the identity
   error now run it through `cmd.exe /c`.
+- `Grant-EtwDnstapEtwAccess.ps1 -BackupPath` failed on Windows PowerShell 5.1
+  with `Argument types do not match`, before it changed anything. It now writes
+  the backup. Commit `d721569`.
 
 ### Security
 
@@ -141,8 +176,18 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - The service no longer runs as LocalSystem. It runs as LocalService with a
   restricted service SID and only `SeChangeNotifyPrivilege`. The profile was
   validated on one lab DNS Server (Windows Server 2025, build 26100) on
-  2026-11-01. A DNS Server restart, SCM recovery, load, and other Windows builds
-  were not tested.
+  2026-11-01. Load and other Windows builds were not tested. A later lab run
+  tested the SCM recovery policy and a DNS Server restart. See
+  [the lab record](docs/history/skills-evaluation-lab-validation.md).
+- **Breaking.** The service's SCM security descriptor is pinned with `sc.exe
+  sdset`. SYSTEM and Administrators control the service. Authenticated users may
+  query it, but they may not start, stop, or configure it. Existing installs must
+  be reprovisioned. Commit `700dd62`.
+- The DNS Server process ID is checked every 5 s. Windows can reuse that process
+  ID after the DNS Server exits. A process that gets the same ID before the next
+  check could inject records. The service cannot hold the DNS Server process
+  open, because the restricted token is denied `OpenProcess` in the lab. See
+  [SECURITY.md](SECURITY.md). Commit `5f610f5`.
 
 ## Commit log through `9172f2d`
 

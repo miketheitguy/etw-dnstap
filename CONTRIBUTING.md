@@ -31,7 +31,8 @@ Notes:
   `// SAFETY:` comment, which Clippy enforces (`undocumented_unsafe_blocks`).
 - The first build rebuilds the standard library (`build-std`). Expect it to take
   noticeably longer than an ordinary Rust build.
-- `cargo test --locked` reports 217 passed, 0 failed, and 6 ignored. The six
+- `cargo test --locked` reports 217 passed, 0 failed, and 6 ignored.
+  `cargo test --locked --features diag-timing` reports 222 passed. The six
   ignored tests need live ETW or the DNS Server role; they run only in the
   manual/scheduled `lab.yml` workflow on a self-hosted `etw-lab` runner. Do not
   un-ignore them in a pull request.
@@ -42,20 +43,27 @@ Notes:
     feature sets.
   - Tests, for the default and `diag-timing` feature sets.
   - A release build.
+  - `scripts/ci/verify-pe.ps1` on the release executable. It checks the
+    hardening flags, the absence of a PDB entry, and the absence of ASan and
+    dynamic CRT imports.
   - The `tools/dns-stress` checks.
   - The Python tests in `scripts/performance`.
-  - `cargo deny`.
+  - `cargo deny` on the root, `fuzz/`, and `tools/dns-stress/` lockfiles.
   - The markdown link check (`python -I scripts/ci/linkcheck.py`).
+- An advisory `sanitizers` job runs `cargo test-release` and `cargo asan`. It
+  does not block a merge until it passes on hosted runners.
 - Coverage and a 60-second fuzz smoke run (`fuzz/`) are report-only. They do
-  not block a merge.
+  not block a merge. Local `cargo fuzz run` currently fails at build on MSVC
+  with an LLVM COMDAT error, which is why the fuzz smoke run is advisory.
 - Property tests use `proptest`. Golden byte vectors in
   `src/dnstap/golden_tests.rs` compare the encoder with the upstream
   `dnstap.proto`. The fuzz targets (`decoder`, `control_frame`, `plan_compiler`)
   live in the separate `fuzz/` workspace. They build with the `fuzzing` feature,
   which exposes internal entry points. That feature is never enabled in a
-  shipped build. Install the runner with `cargo install cargo-fuzz`.
+  shipped build. Install the runner with `cargo install cargo-fuzz --version 0.13.2 --locked`.
 - `cargo test-release` and `cargo asan` are alias commands in `.cargo/config.toml`.
-  The ASan run needs the Visual Studio AddressSanitizer runtime; see the
+  `cargo asan` writes its build output to `target\asan`. The ASan run needs the
+  Visual Studio AddressSanitizer runtime; see the
   [install guide](docs/guide/install.md#optional-address-sanitizer-builds).
 
 The `tools/dns-stress` load generator is a separate Cargo project. Build and

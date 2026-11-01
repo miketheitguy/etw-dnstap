@@ -1,11 +1,13 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `e8560ac`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `5f610f5`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
 
 > **Validation status:** the LocalService restricted-SID profile was validated
 > on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
 > [localservice-restricted-validation.md](../history/localservice-restricted-validation.md).
-> The SCM recovery policy, a DNS Server restart, and load were not covered. On
+> Load and other Windows builds were not covered. A later lab run tested the
+> SCM recovery policy and a DNS Server restart; see
+> [the lab record](../history/skills-evaluation-lab-validation.md). On
 > other builds, run the
 > [validation checklist](#validation-checklist-for-the-localservice-restricted-profile)
 > on a disposable host first.
@@ -80,8 +82,16 @@ Points to know before you build:
   CET-compatible marker, stack protection (`-Z stack-protector=all`), and
   `/DEBUG:NONE` for release) come from
   `.cargo/config.toml`. The CET flag is a compatibility marker. It does not prove
-  that the hardware enforces shadow stacks. Inspect the final PE after changing
-  the toolchain or flags.
+  that the hardware enforces shadow stacks. After each build, and after any
+  toolchain or flag change, check the release executable:
+
+  ```powershell
+  scripts\ci\verify-pe.ps1 -Path target\x86_64-pc-windows-msvc\release\etw-dnstap.exe
+  ```
+
+  The script fails if a hardening flag is missing, if the image has a PDB entry,
+  or if it imports an ASan runtime or the dynamic C or Universal CRT. CI runs the
+  same check on the release build.
 - **Check the binary.** `etw-dnstap.exe --version` prints the package version.
   `--help` prints the options without starting capture.
 

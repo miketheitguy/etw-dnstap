@@ -1,6 +1,6 @@
 # etw-dnstap evaluation plan (skills-driven)
 
-Status: Approved for execution (Nov 1, 2026). Written at `e8560ac`. Every line number below was read from the file at plan time.
+Status: Executed (Nov 1, 2026). Written at `e8560ac`. Execution ran through `5f610f5`. Every line number below was read from the file at plan time.
 
 > **Correction:** `asd-ste100` is installed. `~/.claude/skills/asd-ste100` is a symlink to `~/.agents/skills/asd-ste100`, which the planning agent's file search did not follow. It applies to documentation and error-message wording. D-3 is resolved.
 
@@ -160,6 +160,12 @@ Handoff files (all outside the repo): `eval/1A-security.md`, `1B-build-ci.md`, `
 - **D-8: self-hosted runner.** Is the `etw-lab` runner actually registered, and who has dispatch rights (F-7)?
 
 ## 8. Decisions (Nov 1, 2026)
+
+**Execution status: Executed** on Nov 1, 2026, through commit `5f610f5`. The lab
+results are in [the lab record](skills-evaluation-lab-validation.md).
+Work that the lab record lists under "Not covered" was not executed. This plan
+belongs in `docs/history/` under the status rules in CONTRIBUTING.md, and it should
+move there with `git mv`. Links to it are in `docs/README.md`.
 
 - **D-1:** Changes are allowed, committed directly on `main`.
 - **D-2:** The lab VMs may be changed as needed, including service start/stop, the mutex-squat test, SCM recovery with a DNS restart, ETW ACL changes and guest reboots. Take a checkpoint first.

@@ -1,12 +1,14 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `54eafae` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `5f610f5` · **Reviewed:** 2026-11-01
 >
 > **Validation status:** the LocalService profile with a restricted service SID
 > (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) was
 > validated on one lab DNS Server (Windows Server 2025, build 26100) on
 > 2026-11-01. See [localservice-restricted-validation.md](docs/history/localservice-restricted-validation.md).
-> Recovery after a DNS Server restart and load were not covered.
+> A later lab run tested the SCM recovery policy and a DNS Server restart. Load and
+> other Windows builds were not covered. See
+> [the skills evaluation lab record](docs/history/skills-evaluation-lab-validation.md).
 
 `etw-dnstap` is a Windows service that captures DNS Server client query and
 response events and sends them to a [dnstap](https://dnstap.info/) receiver over
@@ -84,7 +86,11 @@ Event 256 and 257 selection, the keyword masks, and the callback check are in
 ## Build and verification
 
 - Toolchain: a pinned nightly in [rust-toolchain.toml](rust-toolchain.toml), with
-  `rust-src`, `rustfmt`, and Clippy. No Protocol Buffers compiler is needed.
+  `rust-src`, `rustfmt`, and Clippy. The build needs the nightly for its `-Z`
+  flags and `build-std`. The project sets no minimum stable Rust version. No
+  Protocol Buffers compiler is needed.
+- `scripts/ci/verify-pe.ps1` checks the release executable for the hardening
+  flags, a missing PDB reference, and unwanted runtime imports. CI runs it.
 - `Cargo.toml` denies all rustc warnings. A warning fails the build.
 - The first build rebuilds the standard library with the hardening flags
   (`build-std`). It is slow. Later builds reuse the output.
