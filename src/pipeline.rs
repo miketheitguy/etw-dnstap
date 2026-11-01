@@ -875,7 +875,7 @@ fn supervise(
         }
         let now = Instant::now();
         // Flushing here, not in the ETW callback, keeps the callback wake-free
-        // (docs/ring-wakeup.md). The park ends at the next flush deadline, so the
+        // (docs/history/ring-wakeup.md). The park ends at the next flush deadline, so the
         // cadence is the setting plus at most one timer tick (about 15.6 ms).
         if monitor.flush.poll(now) && flush_etw(capture, monitor.capture) {
             // The batch just delivered is queued; wake the parser instead of
@@ -1137,7 +1137,7 @@ fn parse_loop<S: FrameSink>(
         })
 }
 
-// The ETW callback must stay wake-free; see docs/ring-wakeup.md. The parser
+// The ETW callback must stay wake-free; see docs/history/ring-wakeup.md. The parser
 // therefore polls with a bounded backoff: each empty poll doubles the park from
 // 2 ms to at most 20 ms, and any received event resets it to 2 ms. Windows'
 // default ~15.6 ms timer granularity stretches these requests, so a 20 ms park

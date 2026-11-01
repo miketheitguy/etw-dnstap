@@ -328,7 +328,7 @@ capture under actual Windows DNS traffic.
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 {completion_status}
@@ -338,7 +338,7 @@ delegation, approvals, exact commands, fixed workload, resource guards, and
 restoration requirements. Evidence root: `{base.as_posix()}`. Table generation:
 {datetime.now(timezone.utc).isoformat()}.
 
-Use [Measurement terms and result gates](measurement-terms.md) for QPS, record
+Use [Measurement terms and result gates](../design/measurement-terms.md) for QPS, record
 counts, CPU units, and the independent DNS/capture/lifecycle/trace outcomes.
 For the four primary runs, start with [the graphs](#wpr-cpu-and-achieved-qps-over-time);
 for every stage, see [the final record ledgers](#workload-and-final-record-ledgers).
@@ -498,7 +498,7 @@ the counted 37.32 MiB pool/channel budget.
 
 {table(['Run / instrumentation','Mode','Actual QPS','Encoded records/s','Upstream Q / client sent','Service CPU one core / VM %','CPU-s / valid s','Private peak MiB','DNS p99 upper ms','p99 / historical','DNS validity failures'], comparison_rows)}
 
-The preserved [capacity-only report](ring-buffer-fix-validation.md) supplies
+The preserved [capacity-only report](../history/ring-buffer-fix-validation.md) supplies
 the historical method and limitations. Original pooled 1,000 QPS runs remain
 in the full tables with their management-observer qualification; the clean
 repeats provide the primary pooled baseline resource measurements.
