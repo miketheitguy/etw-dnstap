@@ -59,10 +59,6 @@ def repo_path(dotted: str) -> Path:
     return (repo_root() / str(get(dotted))).resolve()
 
 
-def receiver_endpoint() -> str:
-    return f"{get('network.receiver_ip')}:{get('network.receiver_port')}"
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)

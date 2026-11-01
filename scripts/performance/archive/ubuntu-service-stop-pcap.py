@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import time
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # lab_config lives in the parent directory
 import lab_config  # noqa: E402
 
 HOST = lab_config.get('ubuntu_vm.hostname')
@@ -224,7 +224,6 @@ def stop(args) -> None:
     start_path = pcap_dir / 'tcpdump-start.json'
     if not start_path.is_file():
         raise RuntimeError('Capture start receipt is missing')
-    start_receipt = json.loads(start_path.read_text())
     receipts = {}
     failures = []
     for capture_set in CAPTURE_SETS:

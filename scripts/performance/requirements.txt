@@ -1,7 +1,7 @@
 # Python 3.11 or newer is required (hashlib.file_digest, tomllib-era typing).
 # The guest-side scripts (ubuntu-*.py, prepare/unmount-ubuntu-data-disk.py) run on
-# Ubuntu 26.04 with the distribution python3; install PyYAML there with
-# `apt install python3-yaml` rather than pip.
-# Everything else uses only the standard library.
-PyYAML>=6.0        # ubuntu-service-stop-config.py
+# Ubuntu 26.04 with the distribution python3 and use only the standard library.
+# The archived archive/ubuntu-service-stop-config.py also needs PyYAML on the guest
+# (`apt install python3-yaml`, not pip).
+# Everything else on the host uses only the standard library, except:
 matplotlib>=3.8    # plot-pooled-wpr.py

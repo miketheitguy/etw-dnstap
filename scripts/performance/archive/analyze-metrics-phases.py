@@ -3,7 +3,9 @@ import argparse
 from collections import defaultdict
 from datetime import datetime
 import json
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # metrics_ledger lives in the parent directory
 from metrics_ledger import nonnegative_integer, normalize_metrics, validate_sample_pair
 
 

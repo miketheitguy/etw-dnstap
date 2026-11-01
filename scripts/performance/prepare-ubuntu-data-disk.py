@@ -92,7 +92,7 @@ def check_disk(args: argparse.Namespace, base: Path) -> tuple[dict[str, Any], Pa
     return disk, device
 
 
-def check_host_receipt(args: argparse.Namespace, base: Path, disk: dict[str, Any]) -> dict[str, Any]:
+def check_host_receipt(args: argparse.Namespace, base: Path) -> dict[str, Any]:
     ubuntu = lab_config.get("ubuntu_vm")
     host = json.loads((base / "temporary-data-disk-host.json").read_text(encoding="utf-8-sig"))
     vhdx = f"{ubuntu['vhdx_dir']}/{args.campaign_id}-data.vhdx".replace("/", "\\")
@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     if receipt_path.exists() or mount.exists():
         raise SystemExit("Storage receipt or mount directory already exists")
     disk, device = check_disk(args, base)
-    host = check_host_receipt(args, base, disk)
+    host = check_host_receipt(args, base)
     old_log = f"/var/log/dnscollector/performance-{args.campaign_id}.jsonl"
     new_log = str(mount / f"performance-{args.campaign_id}.jsonl")
     dropin = Path("/etc/systemd/system/dnscollector.service.d/performance.conf")

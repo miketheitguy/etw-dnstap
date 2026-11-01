@@ -4,7 +4,6 @@ import argparse
 import csv
 import datetime
 import json
-import re
 from pathlib import Path
 from perf_common import normalize_process as process_name, read_json as read
 

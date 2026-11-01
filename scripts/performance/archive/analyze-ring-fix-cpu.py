@@ -1,7 +1,9 @@
 """Descriptive matched-run CPU comparison; normalized work values are estimates."""
 import argparse
 import json
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # metrics_ledger lives in the parent directory
 from metrics_ledger import normalize_metrics
 
 

@@ -1,11 +1,13 @@
 """Join client, Windows forwarder, kernel, and verified receiver evidence."""
 import argparse
 import json
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # metrics_ledger lives in the parent directory
 from metrics_ledger import ledger_summary, normalize_metrics
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--directory', type=Path, default=Path(__file__).resolve().parents[2] / 'target/performance', help='evidence directory (default: <repo>/target/performance)')
+parser.add_argument('--directory', type=Path, default=Path(__file__).resolve().parents[3] / 'target/performance', help='evidence directory (default: <repo>/target/performance)')
 parser.add_argument('--runs', nargs='+', default=['auth-1', 'rec-1', 'rec-2'])
 parser.add_argument('--output', type=Path)
 parser.add_argument('--service-metrics-directory', type=Path)

@@ -7,7 +7,6 @@
     "memory_bytes": 4294967296,
     "credential_path": "target/lab-windows/private/administrator.clixml",
     "service_name": "EtwDnstap",
-    "install_dir": "C:/Program Files/EtwDnstap",
     "install_exe": "C:/Program Files/EtwDnstap/etw-dnstap.exe",
     "data_dir": "C:/ProgramData/EtwDnstap/performance",
     "session_name": "EtwDnstap-Lab"

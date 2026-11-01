@@ -3,7 +3,6 @@ import argparse
 import datetime
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -51,7 +50,7 @@ def socket_buffer_evidence():
     return {'text': text, 'receive_buffer_bytes': int(match.group(1)) if match else None}
 
 
-def open_socket(address, port, timeout=3):
+def open_socket(timeout=3):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
     sock.bind((UBUNTU, 0))
@@ -76,12 +75,12 @@ def skip_name(data, offset):
 def query_proof(qname):
     ident = 0x5A19
     query = struct.pack('!HHHHHH', ident, 0x0100, 1, 0, 0, 0) + encode_name(qname) + struct.pack('!HH', 1, 1)
-    with open_socket(UBUNTU, 53) as sock:
+    with open_socket() as sock:
         sock.sendto(query, (UBUNTU, 53))
         response, _ = sock.recvfrom(4096)
     if len(response) < 12:
         raise RuntimeError('DNS fixture response header is truncated')
-    rid, flags, qd, an, ns, ar = struct.unpack('!HHHHHH', response[:12])
+    rid, flags, qd, an, _, _ = struct.unpack('!HHHHHH', response[:12])
     if rid != ident or not flags & 0x8000 or flags & 0x000F or qd != 1 or an < 1:
         raise RuntimeError('DNS fixture response does not contain a successful answer')
     pos = skip_name(response, 12) + 4
