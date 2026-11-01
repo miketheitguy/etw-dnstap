@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `5f610f5`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `40a6b65`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
 
 > **Validation status:** the LocalService restricted-SID profile was validated
 > on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See

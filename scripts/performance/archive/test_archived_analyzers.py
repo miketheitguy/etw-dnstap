@@ -1,7 +1,7 @@
 """Exercise the archived analyzers: send window, receiver results, phases and ring-fix CPU.
 
 Run with ``python -I scripts/performance/archive/test_archived_analyzers.py``.  The
-analyzers keep their hyphenated command names and are not part of the CI test set.
+analyzers keep their hyphenated command names. CI runs this file too.
 """
 import json
 from pathlib import Path

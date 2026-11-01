@@ -1,6 +1,6 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** `main` at commit `5f610f5` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `40a6b65` · **Reviewed:** 2026-11-01
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.

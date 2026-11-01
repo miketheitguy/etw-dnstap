@@ -139,6 +139,18 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   default build does not link it. Commit `77d7c47`.
 - CI pins `cargo-fuzz` to 0.13.2. Dependabot does not update that pin. Commit
   `47206d4`.
+- CI pins `cargo-deny` 0.20.2 and `cargo-llvm-cov` 0.9.1 like `cargo-fuzz`, and
+  checks the formatting of `fuzz/`. Commit `2fcc4a2`.
+- Finished-campaign lab tools moved to `scripts/performance/archive/`: the
+  service-stop config and pcap tools, the ring-fix and JSONL-metrics analyzers
+  (with their tests), `count-parser-ramp-diagnostic.py` and
+  `windows-control.ps1`. `LabCommon.psm1` no longer exports
+  `Get-LabGuestPrelude`, `Get-LabCredential` or `Assert-LabId`. Commits
+  `63dd477` and `015d385`.
+- Documentation: the single-pass decoder plan, the live-load plan, the
+  packet-flow diagram and the ArrayQueue capacity experiment moved to
+  `docs/history/`. A current decoder contract is in
+  [single-pass-decoder.md](docs/design/single-pass-decoder.md). Commit `40a6b65`.
 
 ### Removed
 
@@ -155,6 +167,10 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   [install.md](docs/guide/install.md#repair-or-upgrade). The removing commit is
   not identified in this file. See the
   [instrumentation compatibility note](docs/README.md#instrumentation-compatibility-note).
+- Five unreferenced archived lab scripts, `Test-LabAnswer`,
+  `lab_config.receiver_endpoint()`, the unread `lab.json` key
+  `windows_vm.install_dir`, and the PyYAML requirement (only an archived tool
+  used it). Commits `63dd477` and `015d385`.
 
 ### Fixed
 
@@ -167,6 +183,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - `Grant-EtwDnstapEtwAccess.ps1 -BackupPath` failed on Windows PowerShell 5.1
   with `Argument types do not match`, before it changed anything. It now writes
   the backup. Commit `d721569`.
+- `ubuntu-parser-ramp-control.py`: recursive monitoring raised `NameError`
+  because `monitor()` read a variable that only `finish()` defined. Commit
+  `015d385`.
 
 ### Security
 
@@ -195,11 +214,15 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   check could inject records. The service cannot hold the DNS Server process
   open, because the restricted token is denied `OpenProcess` in the lab. See
   [SECURITY.md](SECURITY.md). Commit `5f610f5`.
+- The ETW callback context requires the DNS Server process ID. The earlier
+  default, which accepted any process, could not be reached from the service,
+  and it is removed. Commit `0865e19`.
 
-## Commit log through `9172f2d`
+## Commit log through `40a6b65`
 
 This is not a release. It lists every commit on `main` from the first commit
-through `9172f2d`, from `git log`, grouped by category. Each entry is summarized
+through `40a6b65`, from `git log`, grouped by category. Commits after `9172f2d`
+are in the last subsection. Each entry is summarized
 from its commit subject. Per-commit contents were not reviewed for this file.
 The removal of the CLI options is recorded under `[Unreleased]`.
 
@@ -221,3 +244,48 @@ The removal of the CLI options is recorded under `[Unreleased]`.
 - `5fa2152` (2026-10-29), Preserve capture filter metadata in receiver end
   markers.
 
+### After `9172f2d` (all 2026-11-01)
+
+Added:
+
+- `dc9d7e0`, Split ETW module and add pipeline seams for sinks and producers.
+- `8588619`, Restructure documentation and add project files.
+- `12cce7a`, Add property tests, fuzz targets, golden vectors and CI.
+- `9ab6dad`, Add skills-driven evaluation plan.
+- `14d6e6a`, Add a property test for copy_record admission and copying.
+- `8c79f69`, Add the obsolete and legacy code cleanup plan.
+
+Changed:
+
+- `6e62b2e`, Harden and consolidate lab performance scripts.
+- `f0b51f4`, Reconnect receiver, filter DNS PID, and run as virtual account.
+- `54eafae`, Reorganize docs into guide, design, performance, plans and history.
+- `b7f23ba`, Document reconnect, PID filter, virtual account and runtime stats.
+- `df6fd9c`, Reconcile CHANGELOG, guides and security notes with the code.
+- `47206d4`, Verify the release PE in CI and widen supply-chain checks.
+- `f3b4a6b`, Document the evaluation changes; move the executed plan to history.
+- `efb47af`, Record the backup hardening and narrower service DACL in CHANGELOG
+  and SECURITY.
+- `2fcc4a2`, Remove manifest keys that repeat Cargo defaults; pin CI tools.
+- `63dd477`, Remove unreferenced lab scripts and unused LabCommon exports.
+- `015d385`, Archive finished-campaign Python tools; fix parser-ramp monitor.
+- `0865e19`, Rename ring-era names, share test scaffolding, require the DNS PID.
+- `40a6b65`, Move executed plans and retired designs to history; fix doc status.
+
+Fixed:
+
+- `d721569`, Record lab validation of the evaluation fixes; fix grant script on
+  PS 5.1.
+- `987ec0f`, Make the log-file reclaim tests reach the log-file check.
+- `78d1ca0`, Make verify-pe.ps1 fail when it parses nothing.
+
+Security:
+
+- `6718863`, Run as LocalService with a restricted service SID.
+- `e8560ac`, Scope the ETW grant to the service's own session GUID.
+- `9fce762`, Drop the global instance mutex, pin the DNS process, check session
+  GUID.
+- `700dd62`, Back up and restore ETW and service state; pin the service DACL.
+- `77d7c47`, Trim build-host paths from the release binary; narrow windows-sys.
+- `5f610f5`, Remove the DNS process handle; document the PID-reuse window.
+- `b8d0427`, Close the backup-folder privilege escalation; guard restore.

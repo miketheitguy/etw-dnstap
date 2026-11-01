@@ -170,7 +170,7 @@ bash -n scripts/performance/setup-ubuntu-workload.sh scripts/performance/restore
 python -I -m py_compile scripts/performance/*.py scripts/performance/archive/*.py
 python -I scripts/performance/test_metrics_ledger.py
 python -I scripts/performance/test_pooled_intake_run.py
-python -I scripts/performance/archive/test_archived_analyzers.py   # archived analyzers; not run by CI
+python -I scripts/performance/archive/test_archived_analyzers.py   # archived analyzers; also run by CI
 ```
 
 The unit tests need no lab. Do not execute the lab scripts to "test" them.

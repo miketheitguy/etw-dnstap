@@ -1,6 +1,6 @@
 # Obsolete and legacy code cleanup plan
 
-> **Status:** Proposed (not executed) · **Written at:** `efb47af` · **Date:** 2026-11-01
+> **Status:** Historical (executed Nov 1, 2026; results in [cleanup-validation.md](cleanup-validation.md)) · **Evidence dated:** 2026-11-01 · **Commit:** written at `efb47af`; executed through the commit that records the validation · **Reviewed:** 2026-11-01
 
 ## 1. Summary
 
@@ -27,7 +27,7 @@ Most of the cleanup is in three areas:
    in `design/`, three plans have incorrect status lines, an index is out of date,
    and the CHANGELOG commit log stops at `9172f2d`.
 
-Raw reports: `C:\Users\kn6py\AppData\Local\Temp\claude\C--Users-kn6py-Git-etw-dnstap\a6de32d5-ee1c-4163-9b2c-3d909d4cb42b\scratchpad\cleanup\`
+Raw reports were kept in the session scratch folder, outside the repository
 (the agents returned them as hand-backs; finding IDs below are theirs: R = Rust,
 P = Python, S = PowerShell/shell, D = docs/datasets, B = build/CI).
 
