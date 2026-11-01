@@ -10,28 +10,11 @@ use std::{net::IpAddr, time::SystemTime};
 
 use prost::Message as _;
 
+use crate::event::{DecodedDnsEvent, DnsEventMetadata, Transport};
+
 const DNS_HEADER_LENGTH: usize = 12;
 const MAX_DNS_MESSAGE_LENGTH: usize = 65_535;
 const MAX_IDENTITY_LENGTH: usize = 1_024;
-
-/// DNS transport reported by the ETW provider.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Transport {
-    Udp,
-    Tcp,
-}
-
-/// Metadata actually observed in one DNS Server event; packet storage is separate.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RawDnsEvent {
-    pub(crate) event_id: u16,
-    pub(crate) timestamp: SystemTime,
-    pub(crate) transport: Transport,
-    pub(crate) peer_address: Option<IpAddr>,
-    pub(crate) peer_port: Option<u16>,
-    pub(crate) local_address: Option<IpAddr>,
-    pub(crate) local_port: Option<u16>,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EncodeError {
@@ -57,8 +40,9 @@ pub(crate) enum EncodeError {
 
 /// Reusable metadata and final wire storage for one parser thread.
 ///
-/// Incoming client events (256/257/258) map to client messages; recursive
-/// events (260/261) map to resolver messages. Unknown endpoints remain absent.
+/// Client query (256) and successful client response (257) events map to
+/// `CLIENT_QUERY` and `CLIENT_RESPONSE` messages; every other event ID is
+/// rejected. Unknown endpoints remain absent.
 /// Storage requests are bounded to 1,024 identity bytes, 16 bytes per address,
 /// and 70 KiB of output. `reserve_exact` avoids geometric output growth; the
 /// allocator may internally round its allocation beyond the requested size.
@@ -91,9 +75,17 @@ impl Encoder {
         })
     }
 
-    /// Discard any previously encoded event before parsing a new one.
-    pub(crate) fn clear(&mut self) {
-        self.output.clear();
+    /// Encode a decoded event, copying its packet into the final protobuf range.
+    ///
+    /// The returned bytes borrow only the encoder, so the decoded view (and the
+    /// event lease behind it) can be released immediately afterwards. Every
+    /// error clears the output.
+    pub(crate) fn encode(&mut self, event: &DecodedDnsEvent<'_>) -> anyhow::Result<&[u8]> {
+        let packet = event.packet;
+        self.encode_with(event.metadata, packet.len(), |destination| {
+            destination.copy_from_slice(packet);
+            Ok(())
+        })
     }
 
     /// Fill the packet directly in its final, initialized protobuf location.
@@ -104,7 +96,7 @@ impl Encoder {
     /// Every error clears the output. This validates the DNS envelope, not records.
     pub(crate) fn encode_with(
         &mut self,
-        event: RawDnsEvent,
+        event: DnsEventMetadata,
         packet_length: usize,
         fill: impl FnOnce(&mut [u8]) -> anyhow::Result<()>,
     ) -> anyhow::Result<&[u8]> {
@@ -118,7 +110,7 @@ impl Encoder {
 
     fn encode_into(
         &mut self,
-        event: RawDnsEvent,
+        event: DnsEventMetadata,
         packet_length: usize,
         fill: impl FnOnce(&mut [u8]) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
@@ -130,11 +122,9 @@ impl Encoder {
             self.response_address = address;
         }
         self.message = DnsMessage::default();
-        let (message_type, is_response, peer_is_initiator) = match event.event_id {
-            256 => (MessageType::ClientQuery, false, true),
-            257 | 258 => (MessageType::ClientResponse, true, true),
-            260 => (MessageType::ResolverQuery, false, false),
-            261 => (MessageType::ResolverResponse, true, false),
+        let (message_type, is_response) = match event.event_id {
+            256 => (MessageType::ClientQuery, false),
+            257 => (MessageType::ClientResponse, true),
             other => return Err(EncodeError::UnsupportedEvent(other).into()),
         };
         if !(DNS_HEADER_LENGTH..=MAX_DNS_MESSAGE_LENGTH).contains(&packet_length) {
@@ -153,21 +143,13 @@ impl Encoder {
             (Some(IpAddr::V6(_)), _) | (_, Some(IpAddr::V6(_))) => Some(SocketFamily::Inet6 as i32),
             (None, None) => None,
         };
-        let (query_address, response_address, query_port, response_port) = if peer_is_initiator {
-            (
-                event.peer_address,
-                event.local_address,
-                event.peer_port,
-                event.local_port,
-            )
-        } else {
-            (
-                event.local_address,
-                event.peer_address,
-                event.local_port,
-                event.peer_port,
-            )
-        };
+        // The peer is always the client, which initiated the query.
+        let (query_address, response_address, query_port, response_port) = (
+            event.peer_address,
+            event.local_address,
+            event.peer_port,
+            event.local_port,
+        );
         self.message.r#type = message_type as i32;
         self.message.socket_family = socket_family;
         self.message.socket_protocol = Some(match event.transport {
@@ -327,8 +309,6 @@ struct DnsMessage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
 #[repr(i32)]
 enum MessageType {
-    ResolverQuery = 3,
-    ResolverResponse = 4,
     ClientQuery = 5,
     ClientResponse = 6,
 }
@@ -356,14 +336,49 @@ mod tests {
     use super::*;
     use std::{net::Ipv4Addr, time::Duration};
 
-    fn event(event_id: u16) -> (RawDnsEvent, Vec<u8>) {
+    #[test]
+    fn only_client_query_and_response_ids_encode() {
+        let mut encoder = Encoder::new(b"").expect("identity");
+        for id in [0, 255, 258, 259, 260, 261, 262, u16::MAX] {
+            let (fixture, packet) = event(id);
+            let error = encoder
+                .encode_with(fixture, packet.len(), |destination| {
+                    destination.copy_from_slice(&packet);
+                    Ok(())
+                })
+                .expect_err("unsupported event ID");
+            assert!(
+                matches!(
+                    error.downcast_ref::<EncodeError>(),
+                    Some(EncodeError::UnsupportedEvent(rejected)) if *rejected == id
+                ),
+                "event {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn decoded_view_encodes_to_the_same_bytes_as_encode_with() {
+        let mut encoder = Encoder::new(b"view").expect("identity");
+        for id in [256, 257] {
+            let (metadata, packet) = event(id);
+            let expected = reference(&metadata, packet.clone(), b"view").expect("baseline");
+            let decoded = DecodedDnsEvent {
+                metadata,
+                packet: &packet,
+            };
+            assert_eq!(encoder.encode(&decoded).expect("encodes"), expected);
+        }
+    }
+
+    fn event(event_id: u16) -> (DnsEventMetadata, Vec<u8>) {
         let mut packet = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
         packet.extend_from_slice(b"\x07example\0\0\x01\0\x01");
-        if matches!(event_id, 257 | 258 | 261) {
+        if event_id == 257 {
             packet[2] |= 0x80;
         }
         (
-            RawDnsEvent {
+            DnsEventMetadata {
                 event_id,
                 timestamp: SystemTime::UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_700),
                 transport: Transport::Udp,
@@ -386,7 +401,7 @@ mod tests {
     fn mixed_reuse_matches_independent_baseline_and_preserves_source_packet() {
         for identity in [b"".as_slice(), b"dns-server".as_slice()] {
             let mut encoder = Encoder::new(identity).expect("valid identity");
-            for (index, id) in [256, 257, 258, 260, 261, 256, 257, 260]
+            for (index, id) in [256, 257, 256, 257, 256, 257, 256, 257]
                 .into_iter()
                 .enumerate()
             {
@@ -428,14 +443,12 @@ mod tests {
                     (!identity.is_empty()).then_some(identity)
                 );
                 let message = tap.message.expect("DNS message");
-                let response = matches!(id, 257 | 258 | 261);
+                let response = id == 257;
                 assert_eq!(
                     message.r#type,
                     match id {
                         256 => 5,
-                        257 | 258 => 6,
-                        260 => 3,
-                        _ => 4,
+                        _ => 6,
                     }
                 );
                 if response {
@@ -634,15 +647,13 @@ mod tests {
 
     // Independent allocating baseline, retained only as a compatibility oracle.
     fn reference(
-        event: &RawDnsEvent,
+        event: &DnsEventMetadata,
         packet_data: Vec<u8>,
         identity: &[u8],
     ) -> Result<Vec<u8>, EncodeError> {
-        let (message_type, is_response, peer_is_initiator) = match event.event_id {
-            256 => (MessageType::ClientQuery, false, true),
-            257 | 258 => (MessageType::ClientResponse, true, true),
-            260 => (MessageType::ResolverQuery, false, false),
-            261 => (MessageType::ResolverResponse, true, false),
+        let (message_type, is_response) = match event.event_id {
+            256 => (MessageType::ClientQuery, false),
+            257 => (MessageType::ClientResponse, true),
             other => return Err(EncodeError::UnsupportedEvent(other)),
         };
         if !(DNS_HEADER_LENGTH..=MAX_DNS_MESSAGE_LENGTH).contains(&packet_data.len()) {
@@ -672,21 +683,13 @@ mod tests {
             (Some(IpAddr::V6(_)), _) | (_, Some(IpAddr::V6(_))) => Some(SocketFamily::Inet6 as i32),
             (None, None) => None,
         };
-        let (query_address, response_address, query_port, response_port) = if peer_is_initiator {
-            (
-                event.peer_address,
-                event.local_address,
-                event.peer_port,
-                event.local_port,
-            )
-        } else {
-            (
-                event.local_address,
-                event.peer_address,
-                event.local_port,
-                event.peer_port,
-            )
-        };
+        // The peer is always the client, which initiated the query.
+        let (query_address, response_address, query_port, response_port) = (
+            event.peer_address,
+            event.local_address,
+            event.peer_port,
+            event.local_port,
+        );
         let mut message = DnsMessage {
             r#type: message_type as i32,
             socket_family,

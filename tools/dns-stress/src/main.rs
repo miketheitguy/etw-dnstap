@@ -23,6 +23,9 @@ use dns::{Name, parse_response};
 use serde::Serialize;
 use stats::{Counts, Histogram, Latency};
 
+/// Longest idle sleep, which bounds how late a response can be noticed.
+const IDLE_POLL_CAP: Duration = Duration::from_millis(1);
+
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Mode {
@@ -308,6 +311,22 @@ impl Worker {
         Ok(())
     }
 
+    /// Sleeps instead of spinning, so pacing does not steal CPU from a DNS Server
+    /// sharing the host. The wake-up is the next send (when one is possible) or
+    /// the deadline, capped so responses are still polled promptly.
+    fn idle(&self, options: &Options, next_send: Instant, deadline: Instant) {
+        let can_send = self.outstanding < usize::from(options.inflight) && self.next_id != 65536;
+        let wake = if can_send {
+            next_send.min(deadline)
+        } else {
+            deadline
+        };
+        thread::sleep(
+            wake.saturating_duration_since(Instant::now())
+                .min(IDLE_POLL_CAP),
+        );
+    }
+
     // Send/receive batches bound each loop so expiry and measurement cannot starve.
     fn run_loop(
         &mut self,
@@ -411,7 +430,7 @@ impl Worker {
                 }
             }
             if !progress {
-                thread::yield_now();
+                self.idle(options, next_send, next_metric.min(end));
             }
         }
         Ok(())

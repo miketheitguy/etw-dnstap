@@ -8,7 +8,10 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::framestream::{CONTENT_TYPE, FrameStreamWriter};
+use crate::{
+    framestream::{CONTENT_TYPE, FrameStreamWriter},
+    sink::FrameSink,
+};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_ACCEPT: u32 = 1;
@@ -40,23 +43,25 @@ impl NetworkSink {
         Ok(Self { writer })
     }
 
-    pub(crate) fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
+    fn reset_deadline(&mut self) {
+        self.writer.get_mut().get_mut().deadline = Instant::now() + IO_TIMEOUT;
+    }
+}
+
+impl FrameSink for NetworkSink {
+    fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
         self.reset_deadline();
         self.writer.write_frame(payload)
     }
 
-    pub(crate) fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         self.reset_deadline();
         self.writer.flush()
     }
 
-    pub(crate) fn finish(mut self) -> Result<()> {
+    fn finish(mut self) -> Result<()> {
         self.reset_deadline();
         finish_stream(self.writer)
-    }
-
-    fn reset_deadline(&mut self) {
-        self.writer.get_mut().get_mut().deadline = Instant::now() + IO_TIMEOUT;
     }
 }
 

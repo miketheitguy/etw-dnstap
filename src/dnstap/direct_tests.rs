@@ -1,6 +1,7 @@
 //! Independent wire and storage checks for direct packet filling.
 
-use super::{EncodeError, Encoder, RawDnsEvent, Transport};
+use super::{EncodeError, Encoder};
+use crate::event::{DnsEventMetadata, Transport};
 use prost::Message as _;
 use std::{
     net::IpAddr,
@@ -49,7 +50,7 @@ struct ReferenceMessage {
     response_packet: Option<Vec<u8>>,
 }
 
-fn fixture(id: u16, endpoints: usize, tcp: bool) -> RawDnsEvent {
+fn fixture(id: u16, endpoints: usize, tcp: bool) -> DnsEventMetadata {
     let (peer, local) = match endpoints {
         0 => (Some("192.0.2.1"), Some("192.0.2.53")),
         1 => (Some("2001:db8::1"), Some("2001:db8::53")),
@@ -58,7 +59,7 @@ fn fixture(id: u16, endpoints: usize, tcp: bool) -> RawDnsEvent {
         4 => (None, Some("192.0.2.53")),
         _ => panic!("unknown endpoint fixture"),
     };
-    RawDnsEvent {
+    DnsEventMetadata {
         event_id: id,
         timestamp: SystemTime::UNIX_EPOCH + Duration::new(1_700_000_000, 987_654_321),
         transport: if tcp { Transport::Tcp } else { Transport::Udp },
@@ -71,11 +72,7 @@ fn fixture(id: u16, endpoints: usize, tcp: bool) -> RawDnsEvent {
 
 fn packet(id: u16, length: usize) -> Vec<u8> {
     let mut bytes = vec![0x5a; length];
-    bytes[2] = if matches!(id, 257 | 258 | 261) {
-        0x81
-    } else {
-        0x01
-    };
+    bytes[2] = if id == 257 { 0x81 } else { 0x01 };
     bytes
 }
 
@@ -86,24 +83,14 @@ fn address(ip: IpAddr) -> Vec<u8> {
     }
 }
 
-fn reference(event: RawDnsEvent, bytes: &[u8], identity: &[u8]) -> ReferenceTap {
-    let response = matches!(event.event_id, 257 | 258 | 261);
-    let client = matches!(event.event_id, 256..=258);
-    let (query_ip, response_ip, query_port, response_port) = if client {
-        (
-            event.peer_address,
-            event.local_address,
-            event.peer_port,
-            event.local_port,
-        )
-    } else {
-        (
-            event.local_address,
-            event.peer_address,
-            event.local_port,
-            event.peer_port,
-        )
-    };
+fn reference(event: DnsEventMetadata, bytes: &[u8], identity: &[u8]) -> ReferenceTap {
+    let response = event.event_id == 257;
+    let (query_ip, response_ip, query_port, response_port) = (
+        event.peer_address,
+        event.local_address,
+        event.peer_port,
+        event.local_port,
+    );
     let timestamp = event
         .timestamp
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -111,9 +98,7 @@ fn reference(event: RawDnsEvent, bytes: &[u8], identity: &[u8]) -> ReferenceTap 
     let mut message = ReferenceMessage {
         kind: match event.event_id {
             256 => 5,
-            257 | 258 => 6,
-            260 => 3,
-            261 => 4,
+            257 => 6,
             _ => panic!("unsupported fixture event"),
         },
         family: event
@@ -147,7 +132,7 @@ fn reference(event: RawDnsEvent, bytes: &[u8], identity: &[u8]) -> ReferenceTap 
     }
 }
 
-fn compare(encoder: &mut Encoder, event: RawDnsEvent, bytes: &[u8], identity: &[u8]) {
+fn compare(encoder: &mut Encoder, event: DnsEventMetadata, bytes: &[u8], identity: &[u8]) {
     let expected = reference(event, bytes, identity);
     let actual = encoder
         .encode_with(event, bytes.len(), |destination| {
@@ -177,7 +162,7 @@ fn direct_bytes_match_independent_prost_across_event_and_packet_boundaries() {
         vec![0x55; 1_024],
     ] {
         let mut encoder = Encoder::new(&identity).expect("valid identity");
-        for id in [256, 257, 258, 260, 261] {
+        for id in [256, 257] {
             for endpoints in 0..5 {
                 for tcp in [false, true] {
                     for length in [12, 126, 127, 128, 129, 16_383, 16_384, 65_535] {
@@ -196,7 +181,7 @@ fn direct_bytes_match_independent_prost_across_event_and_packet_boundaries() {
 
 #[test]
 fn enclosing_message_lengths_cross_both_varint_boundaries() {
-    for id in [256, 257, 258, 260, 261] {
+    for id in [256, 257] {
         for endpoints in 0..5 {
             let event = fixture(id, endpoints, true);
             let mut encoder = Encoder::new(&[0x66; 128]).expect("identity");
@@ -261,7 +246,7 @@ fn length_field(mut input: &[u8], tag: usize) -> &[u8] {
 #[test]
 fn fill_destination_is_initialized_and_is_the_final_packet_location() {
     let mut encoder = Encoder::new(b"direct").expect("identity");
-    for (id, length) in [(256, 65_535), (261, 128), (257, 16_384), (260, 12)] {
+    for (id, length) in [(256, 65_535), (257, 128), (257, 16_384), (256, 12)] {
         let bytes = packet(id, length);
         let mut calls = 0;
         let mut destination_pointer = std::ptr::null();
@@ -279,14 +264,7 @@ fn fill_destination_is_initialized_and_is_the_final_packet_location() {
             })
             .expect("encoding");
         let message = length_field(output, 14);
-        let wire_packet = length_field(
-            message,
-            if matches!(id, 257 | 258 | 261) {
-                14
-            } else {
-                10
-            },
-        );
+        let wire_packet = length_field(message, if id == 257 { 14 } else { 10 });
         assert_eq!(calls, 1);
         assert_eq!(wire_packet, bytes);
         assert_eq!(
@@ -324,8 +302,8 @@ fn invalid_metadata_and_sizes_never_invoke_fill_and_clear_previous_output() {
     for failure in 0..4 {
         compare(
             &mut encoder,
-            fixture(261, 0, false),
-            &packet(261, 12),
+            fixture(257, 0, false),
+            &packet(257, 12),
             b"test",
         );
         let mut event = fixture(256, 0, false);
@@ -354,8 +332,8 @@ fn invalid_metadata_and_sizes_never_invoke_fill_and_clear_previous_output() {
         assert_eq!(encoder.output, [] as [u8; 0]);
         compare(
             &mut encoder,
-            fixture(260, 2, true),
-            &packet(260, 12),
+            fixture(256, 2, true),
+            &packet(256, 12),
             b"test",
         );
     }
@@ -368,7 +346,7 @@ fn invalid_metadata_and_sizes_never_invoke_fill_and_clear_previous_output() {
 #[test]
 fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
     let mut encoder = Encoder::new(b"").expect("identity");
-    for id in [256, 257, 258, 260, 261] {
+    for id in [256, 257] {
         compare(&mut encoder, fixture(id, 1, true), &packet(id, 128), b"");
         let mut calls = 0;
         let error = encoder
@@ -389,14 +367,7 @@ fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
         );
         assert!(format!("{error:#}").contains("synthetic packet extraction"));
         assert_eq!(encoder.output, [] as [u8; 0]);
-        let wrong_direction = packet(
-            if matches!(id, 257 | 258 | 261) {
-                256
-            } else {
-                257
-            },
-            12,
-        );
+        let wrong_direction = packet(if id == 257 { 256 } else { 257 }, 12);
         let error = encoder
             .encode_with(fixture(id, 2, true), 12, |destination| {
                 calls += 1;
@@ -419,8 +390,8 @@ fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
 fn warmed_direct_encoding_reuses_all_storage_without_heap_operations() {
     let mut encoder = Encoder::new(&[0x77; 1_024]).expect("identity");
     let query = packet(256, 65_535);
-    let response = packet(261, 65_535);
-    for id in [256, 261] {
+    let response = packet(257, 65_535);
+    for id in [256, 257] {
         encoder
             .encode_with(fixture(id, 1, true), query.len(), |destination| {
                 destination.copy_from_slice(if id == 256 { &query } else { &response });
@@ -433,12 +404,8 @@ fn warmed_direct_encoding_reuses_all_storage_without_heap_operations() {
     let mut all_succeeded = true;
     crate::etw::assert_no_allocations(|| {
         for index in 0..30 {
-            let id = [256, 257, 258, 260, 261][index % 5];
-            let bytes = if matches!(id, 257 | 258 | 261) {
-                &response
-            } else {
-                &query
-            };
+            let id = [256, 257][index % 2];
+            let bytes = if id == 257 { &response } else { &query };
             let length = [12, 128, 16_384, 65_535][index % 4];
             all_succeeded &= encoder
                 .encode_with(

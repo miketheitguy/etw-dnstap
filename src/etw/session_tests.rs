@@ -1,0 +1,487 @@
+use super::*;
+
+fn offset_u32(offset: usize) -> u32 {
+    u32::try_from(offset).expect("test offsets fit u32")
+}
+
+/// A query result shaped like this program's own real-time session.
+fn own_query(config: &SessionConfig) -> QueryProperties {
+    let mut query = QueryProperties::new();
+    query.properties.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+    query.properties.BufferSize = config.buffer_kib;
+    query.properties.LogFileNameOffset = offset_u32(offset_of!(QueryProperties, log_file_name));
+    query
+}
+
+fn query_result(edit: impl FnOnce(&mut QueryProperties)) -> QueryProperties {
+    let mut query = own_query(&SessionConfig::default());
+    edit(&mut query);
+    query
+}
+
+/// Fingerprint check against the default configuration.
+fn reclaimable_by_default(query: &QueryProperties) -> bool {
+    reclaimable(query, &SessionConfig::default())
+}
+
+#[test]
+fn query_properties_set_name_offsets_and_size() {
+    let query = QueryProperties::new();
+    assert_eq!(
+        query.properties.Wnode.BufferSize,
+        offset_u32(size_of::<QueryProperties>())
+    );
+    assert_eq!(query.properties.Wnode.Flags, WNODE_FLAG_TRACED_GUID);
+    assert_eq!(
+        query.properties.LoggerNameOffset,
+        offset_u32(offset_of!(QueryProperties, logger_name))
+    );
+    assert_eq!(
+        query.properties.LogFileNameOffset,
+        offset_u32(offset_of!(QueryProperties, log_file_name))
+    );
+    assert!(query.logger_name.iter().all(|unit| *unit == 0));
+    assert!(query.log_file_name.iter().all(|unit| *unit == 0));
+}
+
+#[test]
+fn fingerprint_accepts_own_session_shape() {
+    assert!(reclaimable_by_default(
+        &own_query(&SessionConfig::default())
+    ));
+    // Offset 0 is the other shape ETW may report for a session with no log file.
+    assert!(reclaimable_by_default(&query_result(|q| {
+        q.properties.LogFileNameOffset = 0;
+    })));
+    // ETW may normalize counts and flush timer.
+    assert!(reclaimable_by_default(&query_result(|q| {
+        q.properties.MinimumBuffers = 8;
+        q.properties.NumberOfBuffers = 8;
+        q.properties.FlushTimer = 0;
+    })));
+}
+
+#[test]
+fn fingerprint_rejects_foreign_sessions() {
+    // Nonempty log file name at the log-file field offset.
+    assert!(!reclaimable_by_default(&query_result(|q| {
+        q.log_file_name[0] = u16::from(b'C');
+    })));
+    // Offsets elsewhere: the logger-name field, the header, misaligned, or
+    // beyond the buffer.
+    for offset in [
+        4,
+        offset_of!(QueryProperties, logger_name),
+        offset_of!(QueryProperties, log_file_name) + 1,
+        size_of::<QueryProperties>(),
+    ] {
+        assert!(!reclaimable_by_default(&query_result(|q| {
+            q.properties.LogFileNameOffset = offset_u32(offset);
+        })));
+    }
+    // Real-time mode is required.
+    assert!(!reclaimable_by_default(&query_result(|q| {
+        q.properties.LogFileMode = 0;
+    })));
+    // Each file-mode bit, and each other logger mode, is forbidden.
+    for mode in [
+        EVENT_TRACE_FILE_MODE_SEQUENTIAL,
+        EVENT_TRACE_FILE_MODE_CIRCULAR,
+        EVENT_TRACE_FILE_MODE_APPEND,
+        EVENT_TRACE_FILE_MODE_NEWFILE,
+        EVENT_TRACE_SYSTEM_LOGGER_MODE,
+        EVENT_TRACE_BUFFERING_MODE,
+        EVENT_TRACE_PRIVATE_LOGGER_MODE,
+    ] {
+        assert!(!reclaimable_by_default(&query_result(|q| {
+            q.properties.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | mode;
+        })));
+    }
+}
+
+#[test]
+fn query_outcome_classifies_statuses() {
+    assert_eq!(query_outcome(ERROR_SUCCESS), QueryOutcome::Inspect);
+    assert_eq!(
+        query_outcome(ERROR_WMI_INSTANCE_NOT_FOUND),
+        QueryOutcome::Vanished
+    );
+    for status in [ERROR_ALREADY_EXISTS, ERROR_CANCELLED, 5, u32::MAX] {
+        assert_eq!(query_outcome(status), QueryOutcome::Failed);
+    }
+}
+
+#[test]
+fn session_properties_write_configured_values() {
+    let config = SessionConfig::new(128, 512, 5).expect("valid configuration");
+    let properties = SessionProperties::new(&config);
+    assert_eq!(properties.properties.BufferSize, 128);
+    assert_eq!(properties.properties.MaximumBuffers, 512);
+    assert_eq!(properties.properties.FlushTimer, 5);
+    assert_eq!(properties.properties.MinimumBuffers, 4);
+
+    let defaults = SessionProperties::new(&SessionConfig::default());
+    assert_eq!(defaults.properties.BufferSize, 16);
+    assert_eq!(defaults.properties.MaximumBuffers, 12);
+    assert_eq!(defaults.properties.FlushTimer, 1);
+}
+
+#[test]
+fn fingerprint_compares_against_configured_buffer_size() {
+    let config = SessionConfig::new(128, 512, 5).expect("valid configuration");
+    assert!(reclaimable(&own_query(&config), &config));
+    // A session leaked under the default 16 KiB size is not reclaimed by a
+    // process configured for 128 KiB, and vice versa.
+    assert!(!reclaimable(&own_query(&SessionConfig::default()), &config));
+    assert!(!reclaimable(&own_query(&config), &SessionConfig::default()));
+}
+
+fn utf16_nul(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Stops a session by name on drop, so ignored tests clean up even when an
+/// assertion fails. Optionally deletes the log file the session wrote.
+struct StopSessionOnDrop {
+    name: Vec<u16>,
+    log_file: Option<std::path::PathBuf>,
+}
+
+impl Drop for StopSessionOnDrop {
+    fn drop(&mut self) {
+        let mut properties = QueryProperties::new();
+        // SAFETY: `name` is NUL-terminated and `properties` is a sized, aligned
+        // buffer that outlives this synchronous call; a zero handle selects
+        // lookup by name.
+        unsafe {
+            ControlTraceW(
+                CONTROLTRACE_HANDLE::default(),
+                self.name.as_ptr(),
+                &raw mut properties.properties,
+                EVENT_TRACE_CONTROL_STOP,
+            );
+        }
+        if let Some(path) = &self.log_file {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Start properties with logger-name and log-file-name storage, for tests
+/// that create a session with a log file.
+#[repr(C)]
+struct StartPropertiesWithLogFile {
+    properties: EVENT_TRACE_PROPERTIES,
+    logger_name: [u16; 1025],
+    log_file_name: [u16; 1025],
+}
+
+/// Prints ETW's actual QUERY view of a session, so a live
+/// `--ignored --nocapture` run records the behavior the fingerprint relies on.
+fn print_query(label: &str, name: &[u16]) {
+    let mut query = QueryProperties::new();
+    // SAFETY: `name` is NUL-terminated and `query` is a sized, aligned buffer
+    // that outlives this synchronous call; a zero handle selects lookup by name.
+    let status = unsafe {
+        ControlTraceW(
+            CONTROLTRACE_HANDLE::default(),
+            name.as_ptr(),
+            &raw mut query.properties,
+            EVENT_TRACE_CONTROL_QUERY,
+        )
+    };
+    eprintln!(
+        "{label}: status={status} LogFileMode={:#x} BufferSize={} \
+         LogFileNameOffset={} log_file_name[0]={}",
+        query.properties.LogFileMode,
+        query.properties.BufferSize,
+        query.properties.LogFileNameOffset,
+        query.log_file_name[0]
+    );
+}
+
+/// Starts a session with a log file and the given mode, returning the status.
+fn start_log_file_session(
+    name: &[u16],
+    config: &SessionConfig,
+    mode: u32,
+    log_units: &[u16],
+) -> u32 {
+    let mut properties = StartPropertiesWithLogFile {
+        properties: EVENT_TRACE_PROPERTIES::default(),
+        logger_name: [0; 1025],
+        log_file_name: [0; 1025],
+    };
+    properties.properties.Wnode.BufferSize = offset_u32(size_of::<StartPropertiesWithLogFile>());
+    properties.properties.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+    properties.properties.BufferSize = config.buffer_kib;
+    properties.properties.LogFileMode = mode;
+    properties.properties.LoggerNameOffset =
+        offset_u32(offset_of!(StartPropertiesWithLogFile, logger_name));
+    properties.properties.LogFileNameOffset =
+        offset_u32(offset_of!(StartPropertiesWithLogFile, log_file_name));
+    properties.log_file_name[..log_units.len()].copy_from_slice(log_units);
+    let mut session = CONTROLTRACE_HANDLE::default();
+    // SAFETY: `name` is NUL-terminated, and `properties` is a local, sized,
+    // aligned buffer whose name storage holds the logger and log-file paths.
+    // It outlives this synchronous call.
+    unsafe {
+        StartTraceW(
+            &raw mut session,
+            name.as_ptr(),
+            &raw mut properties.properties,
+        )
+    }
+}
+
+/// Leaks a session that writes a log file and asserts reclaim refuses it.
+fn assert_log_file_session_refused(name_text: &str, mode: u32) {
+    let name = utf16_nul(name_text);
+    let config = SessionConfig::default();
+    let log_path = std::env::temp_dir().join(format!("{name_text}.etl"));
+    let log_units = utf16_nul(&log_path.to_string_lossy());
+    assert!(log_units.len() <= 1025, "temp log path fits the buffer");
+    let _cleanup = StopSessionOnDrop {
+        name: name.clone(),
+        log_file: Some(log_path),
+    };
+
+    let status = start_log_file_session(&name, &config, mode, &log_units);
+    assert_eq!(status, ERROR_SUCCESS, "log-file session should start");
+    print_query("log-file session", &name);
+
+    let counters = CaptureCounters::default();
+    let error = reclaim_stale_session(&name, name_text, &counters, &config)
+        .expect_err("a session that writes a log file must not be reclaimed");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match this program's session shape"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(counters.stale_sessions_reclaimed.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+#[ignore = "requires an elevated session"]
+fn flush_succeeds_on_live_real_time_session() {
+    const NAME: &str = "EtwDnstap-FlushTest";
+    let name = utf16_nul(NAME);
+    let config = SessionConfig::default();
+    let _cleanup = StopSessionOnDrop {
+        name: name.clone(),
+        log_file: None,
+    };
+    let (status, session) = start_session(&name, &config);
+    assert_eq!(status, ERROR_SUCCESS, "session should start");
+    assert_eq!(flush_session(session), Ok(()), "flush should succeed");
+    assert_eq!(
+        flush_session(session),
+        Ok(()),
+        "repeat flush should succeed"
+    );
+}
+
+#[test]
+#[ignore = "requires an elevated session"]
+fn reclaim_replaces_leaked_real_time_session() {
+    const NAME: &str = "EtwDnstap-ReclaimTest-Replace";
+    let name = utf16_nul(NAME);
+    // A non-default size exercises exact BufferSize matching beyond 64 KiB.
+    let config = SessionConfig::new(128, 256, 1).expect("valid configuration");
+    let _cleanup = StopSessionOnDrop {
+        name: name.clone(),
+        log_file: None,
+    };
+    // Leak a real-time-only session with this program's shape.
+    let (status, _leaked) = start_session(&name, &config);
+    assert_eq!(status, ERROR_SUCCESS, "leaking a session should start");
+    print_query("leaked session", &name);
+
+    let (status, _duplicate) = start_session(&name, &config);
+    assert_eq!(
+        status, ERROR_ALREADY_EXISTS,
+        "the leaked session must block a second start"
+    );
+
+    let counters = CaptureCounters::default();
+    reclaim_stale_session(&name, NAME, &counters, &config).expect("reclaim succeeds");
+    let (status, _session) = start_session(&name, &config);
+    assert_eq!(status, ERROR_SUCCESS, "retry after reclaim should start");
+    print_query("restarted session", &name);
+    assert_eq!(counters.stale_sessions_reclaimed.load(Ordering::Relaxed), 1);
+}
+
+/// Real-time mode only plus a log-file name: the case where ETW writes a
+/// sequential file without any file-mode bit.
+#[test]
+#[ignore = "requires an elevated session"]
+fn reclaim_refuses_session_that_writes_log_file() {
+    assert_log_file_session_refused("EtwDnstap-ReclaimTest-LogFile", EVENT_TRACE_REAL_TIME_MODE);
+}
+
+#[test]
+#[ignore = "requires an elevated session"]
+fn reclaim_refuses_sequential_log_file_session() {
+    assert_log_file_session_refused(
+        "EtwDnstap-ReclaimTest-Sequential",
+        EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_FILE_MODE_SEQUENTIAL,
+    );
+}
+
+/// Runs the decision with canned statuses, recording whether stop ran.
+fn run_decision(
+    query_status: u32,
+    query_edit: impl FnOnce(&mut QueryProperties),
+    stop_status: u32,
+) -> (Result<()>, bool, u64) {
+    let counters = CaptureCounters::default();
+    let config = SessionConfig::default();
+    let mut stopped = false;
+    let result = reclaim_decision(
+        "test",
+        &counters,
+        &config,
+        |properties| {
+            *properties = own_query(&config);
+            query_edit(properties);
+            query_status
+        },
+        |_| {
+            stopped = true;
+            stop_status
+        },
+    );
+    let count = counters.stale_sessions_reclaimed.load(Ordering::Relaxed);
+    (result, stopped, count)
+}
+
+#[test]
+fn reclaim_decision_vanished_session_neither_stops_nor_counts() {
+    let (result, stopped, count) =
+        run_decision(ERROR_WMI_INSTANCE_NOT_FOUND, |_| {}, ERROR_SUCCESS);
+    assert!(result.is_ok());
+    assert!(!stopped);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn reclaim_decision_failed_query_errors_without_stop() {
+    let (result, stopped, count) = run_decision(5, |_| {}, ERROR_SUCCESS);
+    let error = result.expect_err("query failure is an error");
+    assert!(error.to_string().contains("query existing ETW session"));
+    assert!(!stopped);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn reclaim_decision_shape_mismatch_errors_without_stop() {
+    let (result, stopped, count) = run_decision(
+        ERROR_SUCCESS,
+        |q| q.log_file_name[0] = u16::from(b'C'),
+        ERROR_SUCCESS,
+    );
+    let error = result.expect_err("mismatch is an error");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match this program's session shape")
+    );
+    assert!(!stopped);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn reclaim_decision_counts_stop_success_and_more_data() {
+    for stop_status in [ERROR_SUCCESS, ERROR_MORE_DATA] {
+        let (result, stopped, count) = run_decision(ERROR_SUCCESS, |_| {}, stop_status);
+        assert!(result.is_ok());
+        assert!(stopped);
+        assert_eq!(count, 1, "stop status {stop_status}");
+    }
+}
+
+#[test]
+fn reclaim_decision_does_not_count_session_that_vanished_before_stop() {
+    let (result, stopped, count) =
+        run_decision(ERROR_SUCCESS, |_| {}, ERROR_WMI_INSTANCE_NOT_FOUND);
+    assert!(result.is_ok());
+    assert!(stopped);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn reclaim_decision_stop_failure_errors_without_count() {
+    let (result, stopped, count) = run_decision(ERROR_SUCCESS, |_| {}, 5);
+    let error = result.expect_err("stop failure is an error");
+    assert!(error.to_string().contains("stopping stale ETW session"));
+    assert!(stopped);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn session_config_enforces_ranges_and_accepts_max_buffer_product() {
+    assert!(SessionConfig::new(4, 4, 1).is_ok());
+    assert!(SessionConfig::new(128, 4096, 1).is_ok(), "512 MiB peak");
+    assert!(SessionConfig::new(128, 256, 1).is_ok());
+    for rejected in [3, 132, 256, 1024] {
+        assert!(SessionConfig::new(rejected, 256, 1).is_err(), "{rejected}");
+    }
+    assert!(SessionConfig::new(64, 3, 1).is_err());
+    assert!(SessionConfig::new(64, 4097, 1).is_err());
+    assert!(SessionConfig::new(64, 256, 0).is_err());
+    assert!(SessionConfig::new(64, 256, 61).is_err());
+    assert!(
+        SessionConfig::new(65, 256, 1).is_err(),
+        "not a multiple of 4"
+    );
+    assert!(
+        SessionConfig::new(66, 256, 1).is_err(),
+        "not a multiple of 4"
+    );
+    assert!(SessionConfig::new(68, 256, 1).is_ok());
+}
+
+#[test]
+fn stop_outcome_classifies_statuses() {
+    for status in [ERROR_SUCCESS, ERROR_MORE_DATA, ERROR_WMI_INSTANCE_NOT_FOUND] {
+        assert_eq!(stop_outcome(status), StopOutcome::Stopped);
+    }
+    for status in [ERROR_ALREADY_EXISTS, ERROR_CANCELLED, 5, u32::MAX] {
+        assert_eq!(stop_outcome(status), StopOutcome::Failed);
+    }
+}
+
+#[test]
+fn event_id_filter_payload_bytes_are_exact() {
+    let payload = EventIdFilterPayload::new();
+    // SAFETY: The payload is an 8-byte repr(C) struct without padding, so
+    // every byte is initialized.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(&payload).cast::<u8>(),
+            size_of::<EventIdFilterPayload>(),
+        )
+    };
+    assert_eq!(bytes, [1, 0, 2, 0, 0x00, 0x01, 0x01, 0x01]);
+}
+
+#[test]
+fn event_id_descriptor_and_parameters_describe_payload() {
+    let payload = EventIdFilterPayload::new();
+    let mut descriptor = event_id_descriptor(&payload);
+    assert_eq!(descriptor.Type, EVENT_FILTER_TYPE_EVENT_ID);
+    assert_eq!(descriptor.Size, 8);
+    assert_eq!(descriptor.Ptr, std::ptr::from_ref(&payload) as u64);
+
+    let descriptor_ptr = &raw mut descriptor;
+    let parameters = enable_parameters(descriptor_ptr);
+    assert_eq!(parameters.Version, ENABLE_TRACE_PARAMETERS_VERSION_2);
+    assert_eq!(parameters.EnableProperty, 0x10);
+    assert_eq!(
+        parameters.EnableProperty,
+        EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0
+    );
+    assert_eq!(parameters.FilterDescCount, 1);
+    assert_eq!(parameters.EnableFilterDesc, descriptor_ptr);
+}

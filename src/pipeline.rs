@@ -1,6 +1,7 @@
 //! Supervise ingestion and parsing, with bounded memory and explicit loss counts.
 
 use std::{
+    io,
     net::SocketAddr,
     sync::{
         Arc,
@@ -18,8 +19,11 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 use crate::{
     dnstap::Encoder,
-    etw::{self, Capture, CaptureCounters, PoolManager, RawEtwEvent, SessionConfig},
+    etw::{
+        self, Capture, CaptureCounters, KeywordSelection, PoolManager, RawEtwEvent, SessionConfig,
+    },
     network::NetworkSink,
+    sink::FrameSink,
 };
 
 /// Fixed default so a restart finds and reclaims a session leaked by a crash.
@@ -99,6 +103,11 @@ fn parse_receiver(value: &str) -> Result<SocketAddr, String> {
     let address: SocketAddr = value
         .parse()
         .map_err(|_| "receiver must be a numeric IP:PORT")?;
+    check_receiver(address)
+}
+
+/// Shared by the command line and [`PipelineConfig::validate`].
+fn check_receiver(address: SocketAddr) -> Result<SocketAddr, String> {
     if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
         return Err("receiver must have a unicast IP and a nonzero port".into());
     }
@@ -109,6 +118,10 @@ fn parse_etw_flush_ms(value: &str) -> Result<u32, String> {
     let milliseconds: u32 = value
         .parse()
         .map_err(|_| "etw-flush-ms must be an integer")?;
+    check_etw_flush_ms(milliseconds)
+}
+
+fn check_etw_flush_ms(milliseconds: u32) -> Result<u32, String> {
     if milliseconds != 0 && !(20..=1000).contains(&milliseconds) {
         return Err("etw-flush-ms must be 0 (disabled) or 20-1000".into());
     }
@@ -177,7 +190,7 @@ fn record_etw_flush(counters: &CaptureCounters, result: Result<(), u32>) {
 }
 
 /// Runs one flush, counts it, and records its duration.
-fn flush_etw(capture: &Capture, counters: &CaptureCounters) {
+fn flush_etw(capture: &impl EventProducer, counters: &CaptureCounters) {
     let flush_started = Instant::now();
     let result = capture.flush();
     let elapsed = flush_started.elapsed();
@@ -193,6 +206,10 @@ fn flush_etw(capture: &Capture, counters: &CaptureCounters) {
 
 fn parse_capacity(value: &str) -> Result<usize, String> {
     let capacity: usize = value.parse().map_err(|_| "capacity must be an integer")?;
+    check_capacity(capacity)
+}
+
+fn check_capacity(capacity: usize) -> Result<usize, String> {
     if !(crate::etw::MIN_CAPACITY..=crate::etw::MAX_CAPACITY).contains(&capacity) {
         return Err(format!(
             "capacity must be between {} and {} events",
@@ -204,17 +221,111 @@ fn parse_capacity(value: &str) -> Result<usize, String> {
 }
 
 fn parse_session_name(value: &str) -> Result<String, String> {
-    if value.is_empty() || value.encode_utf16().count() > 200 || value.contains('\0') {
-        return Err("session name must contain 1..=200 UTF-16 units and no NUL".into());
-    }
+    check_session_name(value)?;
     Ok(value.into())
 }
 
+fn check_session_name(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.encode_utf16().count() > 200 || value.contains('\0') {
+        return Err("session name must contain 1..=200 UTF-16 units and no NUL".into());
+    }
+    Ok(())
+}
+
 fn parse_identity(value: &str) -> Result<String, String> {
+    check_identity(value)?;
+    Ok(value.into())
+}
+
+fn check_identity(value: &str) -> Result<(), String> {
     if value.len() > 1024 {
         return Err("identity must be at most 1024 UTF-8 bytes".into());
     }
-    Ok(value.into())
+    Ok(())
+}
+
+/// Diagnostic-only settings, folded into one value so the pipeline signatures
+/// carry no per-feature parameters. It is empty unless `diag-timing` is enabled.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DiagContext {
+    /// `timeBeginPeriod` request held for the whole run.
+    #[cfg(feature = "diag-timing")]
+    pub(crate) timer_resolution_ms: Option<u32>,
+    /// Priority applied to the parser and ETW consumer threads.
+    #[cfg(feature = "diag-timing")]
+    pub(crate) thread_priority: Option<etw::ThreadPriority>,
+}
+
+/// Validated runtime settings, independent of how they were supplied. The
+/// command line fills it through [`CaptureArgs`]; tests and other front ends can
+/// build one directly and call [`PipelineConfig::validate`].
+#[derive(Clone, Debug)]
+pub(crate) struct PipelineConfig {
+    pub(crate) receiver: SocketAddr,
+    pub(crate) capacity: usize,
+    pub(crate) jumbo_capacity: u16,
+    pub(crate) duration: Option<Duration>,
+    pub(crate) session_name: String,
+    pub(crate) identity: String,
+    pub(crate) session: SessionConfig,
+    /// Explicit ETW flush interval in milliseconds; zero disables it.
+    pub(crate) etw_flush_ms: u32,
+    pub(crate) diag: DiagContext,
+}
+
+impl PipelineConfig {
+    /// Re-checks every bound the command line enforces, so a config built
+    /// without clap is held to the same rules.
+    ///
+    /// # Errors
+    /// Returns the first violated bound.
+    pub(crate) fn validate(&self) -> Result<()> {
+        check_receiver(self.receiver).map_err(anyhow::Error::msg)?;
+        check_capacity(self.capacity).map_err(anyhow::Error::msg)?;
+        check_session_name(&self.session_name).map_err(anyhow::Error::msg)?;
+        check_identity(&self.identity).map_err(anyhow::Error::msg)?;
+        check_etw_flush_ms(self.etw_flush_ms).map_err(anyhow::Error::msg)?;
+        SessionConfig::new(
+            self.session.buffer_kib,
+            self.session.maximum_buffers,
+            self.session.flush_seconds,
+        )?;
+        Ok(())
+    }
+
+    /// The periodic ETW flush interval, or `None` when disabled.
+    fn etw_flush_interval(&self) -> Option<Duration> {
+        (self.etw_flush_ms != 0).then(|| Duration::from_millis(u64::from(self.etw_flush_ms)))
+    }
+}
+
+impl TryFrom<CaptureArgs> for PipelineConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(args: CaptureArgs) -> Result<Self> {
+        let config = Self {
+            receiver: args.receiver,
+            capacity: args.capacity,
+            jumbo_capacity: args.jumbo_capacity,
+            duration: args.duration.map(Duration::from_secs),
+            session_name: args.session_name,
+            identity: args.identity,
+            session: SessionConfig::new(
+                args.etw_buffer_kib,
+                args.etw_max_buffers,
+                args.etw_flush_seconds,
+            )?,
+            etw_flush_ms: args.etw_flush_ms,
+            diag: DiagContext {
+                #[cfg(feature = "diag-timing")]
+                timer_resolution_ms: args.diag_timer_resolution_ms,
+                #[cfg(feature = "diag-timing")]
+                thread_priority: args.diag_thread_priority,
+            },
+        };
+        config.validate()?;
+        Ok(config)
+    }
 }
 
 /// Holds a `timeBeginPeriod` request and withdraws it on drop, so every exit
@@ -396,6 +507,57 @@ where
     CaptureArgs::try_parse_from(arguments)
 }
 
+/// Everything an event producer needs to start delivering into the pipeline.
+pub(crate) struct ProducerStart<'a> {
+    pub(crate) session_name: &'a str,
+    /// Bounded channel to the parser thread; the producer owns the only sender,
+    /// so dropping it ends the stream.
+    pub(crate) sender: crossbeam_channel::Sender<RawEtwEvent>,
+    pub(crate) pool: Arc<PoolManager>,
+    pub(crate) counters: Arc<CaptureCounters>,
+    pub(crate) session: SessionConfig,
+    /// Read only by diagnostic producers.
+    #[cfg(feature = "diag-timing")]
+    pub(crate) diag: DiagContext,
+}
+
+/// The source of [`RawEtwEvent`]s the pipeline supervises. [`Capture`] is the
+/// production implementation; tests supply fakes.
+pub(crate) trait EventProducer {
+    /// The keyword masks the producer subscribed with, for the startup log.
+    fn keywords(&self) -> KeywordSelection;
+    /// True once the producer stopped delivering on its own.
+    fn is_finished(&self) -> bool;
+    /// Asks the source to deliver buffered events now; the error is a Win32 status.
+    ///
+    /// # Errors
+    /// Returns the native status when the request fails.
+    fn flush(&self) -> Result<(), u32>;
+    /// Stops delivery and waits until no producer thread can still send.
+    ///
+    /// # Errors
+    /// Returns an error if the source could not be stopped cleanly.
+    fn stop(&mut self) -> Result<()>;
+}
+
+impl EventProducer for Capture {
+    fn keywords(&self) -> KeywordSelection {
+        Capture::keywords(self)
+    }
+
+    fn is_finished(&self) -> bool {
+        Capture::is_finished(self)
+    }
+
+    fn flush(&self) -> Result<(), u32> {
+        Capture::flush(self)
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        Capture::stop(self)
+    }
+}
+
 pub(crate) fn run_capture(
     args: CaptureArgs,
     stop: &AtomicBool,
@@ -410,22 +572,47 @@ pub(crate) fn run_capture(
         .try_init()
         .map_err(|error| anyhow::anyhow!("initialize diagnostics: {error}"))?;
 
+    let config = PipelineConfig::try_from(args)?;
+    run_pipeline(
+        &config,
+        NetworkSink::connect,
+        |start| {
+            Capture::start(
+                start.session_name,
+                start.sender,
+                start.pool,
+                start.counters,
+                start.session,
+                #[cfg(feature = "diag-timing")]
+                start.diag.thread_priority,
+            )
+        },
+        stop,
+        on_running,
+        on_stopping,
+    )
+}
+
+/// Runs the pipeline against any sink and producer. `connect` opens the sink
+/// before capture starts, `start` begins event delivery, and the call returns
+/// after both workers have stopped and the counters have been reported.
+pub(crate) fn run_pipeline<S, P>(
+    config: &PipelineConfig,
+    connect: impl FnOnce(SocketAddr) -> io::Result<S>,
+    start: impl FnOnce(ProducerStart<'_>) -> Result<P>,
+    stop: &AtomicBool,
+    on_running: impl FnOnce() -> Result<()>,
+    on_stopping: impl FnOnce() -> Result<()>,
+) -> Result<()>
+where
+    S: FrameSink + Send + 'static,
+    P: EventProducer,
+{
     // Declared before any worker thread so it drops after both are joined.
-    #[cfg(feature = "diag-timing")]
-    let (_timer_resolution, thread_priority) = begin_diag_levers(&args)?;
-    let session_config = SessionConfig::new(
-        args.etw_buffer_kib,
-        args.etw_max_buffers,
-        args.etw_flush_seconds,
-    )?;
-    let etw_flush_ms = args.etw_flush_ms;
-    let etw_flush_interval =
-        (etw_flush_ms != 0).then(|| Duration::from_millis(u64::from(etw_flush_ms)));
-    let session_name = args.session_name;
-    let writer =
-        NetworkSink::connect(args.receiver).context("connect/negotiation with dnstap receiver")?;
-    let (sender, queue) = crossbeam_channel::bounded(args.capacity);
-    let pool = PoolManager::new(args.capacity, usize::from(args.jumbo_capacity))?;
+    let _diag_levers = begin_diag_levers(config.diag)?;
+    let writer = connect(config.receiver).context("connect/negotiation with dnstap receiver")?;
+    let (sender, queue) = crossbeam_channel::bounded(config.capacity);
+    let pool = PoolManager::new(config.capacity, usize::from(config.jumbo_capacity))?;
     let producer_done = Arc::new(AtomicBool::new(false));
     let capture_counts = Arc::new(CaptureCounters::default());
     let parse_counts = Arc::new(ParseCounters::default());
@@ -434,24 +621,23 @@ pub(crate) fn run_capture(
         queue,
         Arc::clone(&producer_done),
         Arc::clone(&parse_counts),
-        args.identity,
+        config.identity.clone(),
         writer,
-        #[cfg(feature = "diag-timing")]
-        thread_priority,
+        config.diag,
     )?;
 
     let startup_watchdog = ShutdownWatchdog::arm();
-    let capture = Capture::start(
-        &session_name,
+    let producer = start(ProducerStart {
+        session_name: &config.session_name,
         sender,
         pool,
-        Arc::clone(&capture_counts),
-        session_config,
+        counters: Arc::clone(&capture_counts),
+        session: config.session,
         #[cfg(feature = "diag-timing")]
-        thread_priority,
-    );
-    let mut capture = match capture {
-        Ok(capture) => capture,
+        diag: config.diag,
+    });
+    let mut producer = match producer {
+        Ok(producer) => producer,
         Err(error) => {
             startup_watchdog.disarm()?;
             let watchdog = ShutdownWatchdog::arm();
@@ -464,38 +650,28 @@ pub(crate) fn run_capture(
         }
     };
     let running_result = on_running();
-    let keywords = capture.keywords();
-    log_capture_started(
-        &session_name,
-        args.receiver,
-        args.capacity,
-        session_config,
-        etw_flush_ms,
-        keywords,
-    );
-    #[cfg(feature = "diag-timing")]
-    log_diag_settings(args.diag_timer_resolution_ms, thread_priority);
+    log_capture_started(config, producer.keywords());
+    log_diag_settings(config.diag);
     startup_watchdog.disarm()?;
     let started = Instant::now();
-    let duration = args.duration.map(Duration::from_secs);
-    let schedule = FlushSchedule::new(etw_flush_interval, Instant::now());
+    let schedule = FlushSchedule::new(config.etw_flush_interval(), Instant::now());
     let unexpected_exit = supervise(
         stop,
-        duration.map(|limit| started + limit),
+        config.duration.map(|limit| started + limit),
         running_result.is_err(),
         &parser,
-        &capture,
+        &producer,
         &capture_counts,
         schedule,
     );
 
     let watchdog = ShutdownWatchdog::arm();
     let stopping_result = on_stopping();
-    // stop joins ProcessTrace, so no producer can enqueue after this publication.
-    let capture_result = capture.stop();
+    // stop joins the producer's threads, so none can enqueue after this publication.
+    let capture_result = producer.stop();
     // A failed stop may retain the handle for Drop to retry. Keep that retry
     // inside the deadline as well, while native resources are still retained.
-    drop(capture);
+    drop(producer);
     producer_done.store(true, Ordering::Release);
     parser.thread().unpark();
     let parser_result = join_parser(parser);
@@ -517,7 +693,7 @@ fn supervise(
     deadline: Option<Instant>,
     startup_failed: bool,
     parser: &thread::JoinHandle<Result<()>>,
-    capture: &Capture,
+    capture: &impl EventProducer,
     counters: &CaptureCounters,
     mut schedule: FlushSchedule,
 ) -> bool {
@@ -541,22 +717,15 @@ fn supervise(
     }
 }
 
-fn log_capture_started(
-    session: &str,
-    receiver: SocketAddr,
-    capacity: usize,
-    session_config: SessionConfig,
-    etw_flush_ms: u32,
-    keywords: etw::KeywordSelection,
-) {
+fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
     tracing::info!(
-        session,
-        receiver = %receiver,
-        capacity,
-        etw_buffer_kib = session_config.buffer_kib,
-        etw_max_buffers = session_config.maximum_buffers,
-        etw_flush_seconds = session_config.flush_seconds,
-        etw_flush_ms,
+        session = config.session_name.as_str(),
+        receiver = %config.receiver,
+        capacity = config.capacity,
+        etw_buffer_kib = config.session.buffer_kib,
+        etw_max_buffers = config.session.maximum_buffers,
+        etw_flush_seconds = config.session.flush_seconds,
+        etw_flush_ms = config.etw_flush_ms,
         match_any_keyword = format_args!("{:#x}", keywords.match_any),
         match_all_keyword = format_args!("{:#x}", keywords.match_all),
         keyword_fallback = keywords.fallback,
@@ -564,50 +733,74 @@ fn log_capture_started(
     );
 }
 
-/// Applies the process-wide diagnostic lever; the guard must outlive the workers.
-#[cfg(feature = "diag-timing")]
-fn begin_diag_levers(
-    args: &CaptureArgs,
-) -> Result<(Option<TimerResolution>, Option<etw::ThreadPriority>)> {
-    let timer = args
-        .diag_timer_resolution_ms
-        .map(TimerResolution::begin)
-        .transpose()?;
-    Ok((timer, args.diag_thread_priority))
+/// Process-wide diagnostic levers; dropping it withdraws them, so it must
+/// outlive the workers. Empty unless `diag-timing` is enabled.
+struct DiagLevers {
+    #[cfg(feature = "diag-timing")]
+    _timer: Option<TimerResolution>,
+}
+
+#[cfg_attr(
+    not(feature = "diag-timing"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "Starting the diagnostic timer can fail; the normal build has no timer."
+    )
+)]
+fn begin_diag_levers(diag: DiagContext) -> Result<DiagLevers> {
+    #[cfg(not(feature = "diag-timing"))]
+    let _ = diag;
+    Ok(DiagLevers {
+        #[cfg(feature = "diag-timing")]
+        _timer: diag
+            .timer_resolution_ms
+            .map(TimerResolution::begin)
+            .transpose()?,
+    })
 }
 
 /// Records which diagnostic levers a run applied.
 #[cfg(feature = "diag-timing")]
-fn log_diag_settings(timer_resolution_ms: Option<u32>, priority: Option<etw::ThreadPriority>) {
+fn log_diag_settings(diag: DiagContext) {
     tracing::info!(
-        diag_timer_resolution_ms =
-            timer_resolution_ms.map_or_else(|| "default".to_owned(), |ms| ms.to_string()),
-        diag_thread_priority = priority.map_or("normal", etw::ThreadPriority::as_str),
+        diag_timer_resolution_ms = diag
+            .timer_resolution_ms
+            .map_or_else(|| "default".to_owned(), |ms| ms.to_string()),
+        diag_thread_priority = diag
+            .thread_priority
+            .map_or("normal", etw::ThreadPriority::as_str),
         "diagnostic settings applied"
     );
 }
 
-fn spawn_parser(
+#[cfg(not(feature = "diag-timing"))]
+fn log_diag_settings(_diag: DiagContext) {}
+
+/// Applies the configured diagnostic priority to the calling thread.
+#[cfg(feature = "diag-timing")]
+fn apply_thread_priority(diag: DiagContext) {
+    if let Some(priority) = diag.thread_priority {
+        etw::set_current_thread_priority(priority);
+    }
+}
+
+#[cfg(not(feature = "diag-timing"))]
+fn apply_thread_priority(_diag: DiagContext) {}
+
+fn spawn_parser<S>(
     queue: Receiver<RawEtwEvent>,
     producer_done: Arc<AtomicBool>,
     counters: Arc<ParseCounters>,
     identity: String,
-    writer: NetworkSink,
-    #[cfg(feature = "diag-timing")] priority: Option<etw::ThreadPriority>,
-) -> Result<thread::JoinHandle<Result<()>>> {
+    writer: S,
+    diag: DiagContext,
+) -> Result<thread::JoinHandle<Result<()>>>
+where
+    S: FrameSink + Send + 'static,
+{
     thread::Builder::new()
         .name("dnstap-parser".into())
-        .spawn(move || {
-            parse_loop(
-                &queue,
-                &producer_done,
-                &counters,
-                &identity,
-                writer,
-                #[cfg(feature = "diag-timing")]
-                priority,
-            )
-        })
+        .spawn(move || parse_loop(&queue, &producer_done, &counters, &identity, writer, diag))
         .context("start dnstap parser thread")
 }
 
@@ -626,27 +819,30 @@ fn combine_results(capture: Result<()>, parser: Result<()>) -> Result<()> {
     }
 }
 
-fn parse_loop(
+fn parse_loop<S: FrameSink>(
     queue: &Receiver<RawEtwEvent>,
     producer_done: &AtomicBool,
     counters: &ParseCounters,
     identity: &str,
-    mut writer: NetworkSink,
-    #[cfg(feature = "diag-timing")] priority: Option<etw::ThreadPriority>,
+    mut writer: S,
+    diag: DiagContext,
 ) -> Result<()> {
-    #[cfg(feature = "diag-timing")]
-    if let Some(priority) = priority {
-        etw::set_current_thread_priority(priority);
-    }
+    apply_thread_priority(diag);
     let mut parser = etw::Parser::new();
     let mut encoder = Encoder::new(identity.as_bytes())?;
     let mut last_flush = Instant::now();
     let consume = |event: Option<RawEtwEvent>| {
         if let Some(event) = event {
             counters.dequeued.fetch_add(1, Ordering::Relaxed);
-            // Parsing consumes and releases the pooled record before network I/O;
+            // The decoded view borrows the pooled record. Encoding copies the packet
+            // into encoder storage, so the record is released before network I/O and
             // the returned payload borrows only reusable encoder storage.
-            let result = parser.parse(event, &mut encoder);
+            let result = match parser.parse(&event) {
+                Ok(Some(decoded)) => encoder.encode(&decoded).map(Some),
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            };
+            drop(event);
             match result {
                 Ok(Some(payload)) => {
                     #[cfg(feature = "diag-timing")]
@@ -974,8 +1170,7 @@ mod tests {
                 &counters,
                 "test",
                 writer,
-                #[cfg(feature = "diag-timing")]
-                None,
+                DiagContext::default(),
             );
             receiver.join().expect("receiver completes")?;
             assert_eq!(result.is_ok(), acknowledge_finish);
@@ -989,6 +1184,99 @@ mod tests {
                 assert!(error.to_string().contains("STOP/FINISH"));
             }
         }
+        Ok(())
+    }
+
+    /// A producer that delivers nothing and records how the pipeline drove it.
+    struct FakeProducer {
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl EventProducer for FakeProducer {
+        fn keywords(&self) -> KeywordSelection {
+            KeywordSelection {
+                match_any: 0,
+                match_all: 0,
+                fallback: true,
+            }
+        }
+
+        fn is_finished(&self) -> bool {
+            false
+        }
+
+        fn flush(&self) -> Result<(), u32> {
+            Ok(())
+        }
+
+        fn stop(&mut self) -> Result<()> {
+            self.stopped.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pipeline_runs_a_fake_producer_against_a_loopback_receiver() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let receiver = thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+            let mut control = [0; 42];
+            stream.read_exact(&mut control)?;
+            control[8..12].copy_from_slice(&1_u32.to_be_bytes());
+            stream.write_all(&control)?;
+            stream.read_exact(&mut control)?;
+            let mut stop = [0; 12];
+            stream.read_exact(&mut stop)?;
+            stop[8..12].copy_from_slice(&5_u32.to_be_bytes());
+            stream.write_all(&stop)
+        });
+        let config = PipelineConfig::try_from(parse_args_from([
+            "etw-dnstap",
+            "--receiver",
+            &address.to_string(),
+        ])?)?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let producer_stopped = Arc::clone(&stopped);
+        // Shutdown is already requested, so the supervisor exits at once.
+        let stop = AtomicBool::new(true);
+        run_pipeline(
+            &config,
+            NetworkSink::connect,
+            |_start| {
+                Ok(FakeProducer {
+                    stopped: producer_stopped,
+                })
+            },
+            &stop,
+            || Ok(()),
+            || Ok(()),
+        )?;
+        receiver.join().expect("receiver completes")?;
+        assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
+        Ok(())
+    }
+
+    #[test]
+    fn pipeline_config_validation_matches_the_command_line() -> Result<()> {
+        let valid = PipelineConfig::try_from(parse_args_from([
+            "etw-dnstap",
+            "--receiver",
+            "127.0.0.1:6000",
+        ])?)?;
+        assert_eq!(valid.capacity, 8192);
+        assert_eq!(valid.etw_flush_interval(), None);
+        let mut bad = valid.clone();
+        bad.capacity = 1;
+        assert!(bad.validate().is_err());
+        let mut bad = valid.clone();
+        bad.etw_flush_ms = 5;
+        assert!(bad.validate().is_err());
+        let mut bad = valid;
+        bad.receiver = "0.0.0.0:6000".parse()?;
+        assert!(bad.validate().is_err());
         Ok(())
     }
 

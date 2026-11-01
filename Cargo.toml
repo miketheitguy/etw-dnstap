@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 description = "Capture Windows DNS Server ETW packets as dnstap Frame Streams"
+license = "MIT"
 publish = false
 
 [dependencies]

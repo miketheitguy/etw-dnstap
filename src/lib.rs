@@ -4,13 +4,15 @@
 compile_error!("etw-dnstap requires Windows; build for x86_64-pc-windows-msvc");
 
 mod dnstap;
-#[allow(unsafe_code)]
+// `unsafe` is allowed only in the `etw` submodules that call native APIs.
 mod etw;
+mod event;
 mod framestream;
 mod network;
 mod pipeline;
 #[allow(unsafe_code)]
 mod service;
+mod sink;
 
 /// Runs capture through the Windows Service Control Manager dispatcher.
 ///
