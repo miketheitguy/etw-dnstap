@@ -1,7 +1,36 @@
+#requires -Version 5.1
+#requires -Modules Hyper-V
+<#
+.SYNOPSIS
+Historical pooled-VM stage orchestrator (WPR + counters + DNS client + service start/stop).
+
+.DESCRIPTION
+Disabled: the TCP-only service no longer supports the JSONL metrics this harness measured.
+Kept for reference and so the evidence it produced stays interpretable. It drives
+windows-pooled-wpr.ps1 and windows-service-campaign.ps1 (in this directory) and
+windows-capture.ps1 / windows-run-client.ps1 (one level up). The dated campaign directory
+that used to be baked in is now the mandatory -CampaignId and the service hash the
+mandatory -ExpectedHash.
+
+.PARAMETER Mode
+authoritative or recursive.
+.PARAMETER CampaignId
+Campaign directory under target/performance.
+.PARAMETER RunId
+Stage run ID (the stage directory must not exist).
+.PARAMETER ExpectedHash
+SHA-256 of the installed service binary.
+.PARAMETER ReceiverReadyReceipt
+Receiver READY receipt from the Ubuntu side.
+.PARAMETER MatrixApproved
+Operator approval of the run matrix.
+#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateSet('authoritative','recursive')][string]$Mode,
+    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$CampaignId,
     [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$RunId,
+    [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedHash,
     [Parameter(Mandatory)][ValidateRange(1000,128000)][int]$Qps,
     [Parameter(Mandatory)][ValidateSet(60,300)][int]$Duration,
     [Parameter(Mandatory)][string]$ReceiverReadyReceipt,
@@ -10,11 +39,15 @@ param(
     [ValidateRange(0,12884901888)][long]$ForecastTraceBytes=0,
     [switch]$CompressTraceTransfer
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 throw 'Historical service-metrics harness: new campaigns are disabled because the TCP-only service no longer supports JSONL metrics. Existing evidence and cleanup actions remain available.'
-$root=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$campaign='target/performance/pooled-vm-20261029-0942'
-$out=Join-Path $root "$campaign/stages/$RunId"
+Import-Module (Join-Path $PSScriptRoot '../LabCommon.psm1') -Force
+$config=Get-LabConfig
+$root=Get-LabRoot
+$parentScripts=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$campaign="$($config.paths.evidence_root)/$CampaignId"
+$out=Resolve-LabPath "$campaign/stages/$RunId"
 if (-not $MatrixApproved -or -not (Test-Path -LiteralPath $ReceiverReadyReceipt)) { throw 'Missing matrix/receiver gate' }
 $ready=Get-Content -LiteralPath $ReceiverReadyReceipt -Raw | ConvertFrom-Json
 if ($ready.run -ne $RunId -or $ready.configured_global_qps -ne $Qps -or $ready.duration_seconds -ne $Duration -or $ready.stable_publication -ne $true) { throw 'Receiver READY identity/configuration/stability mismatch' }
@@ -51,10 +84,8 @@ if ($separateVolumes) {
     Copy-Item -LiteralPath (Join-Path $root "$campaign/$($ready.collector_output_diff)") -Destination "$out/collector-data-path.diff"
 }
 if ((Get-PSDrive C).Free -lt 20GB) { throw 'Host disk guard' }
-$vm=Get-VM -Name DNSTap-WS2025
-if ($vm.Id -ne [guid]'24bafedb-0998-4430-a0c6-7e90350cd9ac' -or $vm.ProcessorCount -ne 2 -or $vm.MemoryAssigned -ne 4294967296 -or $vm.State -ne 'Running') { throw 'VM identity/resources/state changed' }
-$credential=Import-Clixml (Join-Path $root 'target/lab-windows/private/administrator.clixml')
-$session=New-PSSession -VMId $vm.Id -Credential $credential
+$vm=Get-LabVm -RequireRunning -CheckResources
+$session=Get-LabSession -Vm $vm
 $client=$null
 $traceStarted=$false
 $serviceStarted=$false
@@ -63,45 +94,51 @@ $guards=[Collections.Generic.List[object]]::new()
 $failure=$null
 $serviceStopped=$false
 function Run-Helper {
-    param([string]$Script,[string[]]$ToolArgs)
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $Script) @ToolArgs
-    if ($LASTEXITCODE -ne 0) { throw "$Script failed ($LASTEXITCODE)" }
+    # Runs a sibling script in a child Windows PowerShell; -Parent selects scripts/performance instead of archive.
+    param([string]$Script,[string[]]$ToolArgs,[switch]$Parent)
+    $directory = if ($Parent) { $parentScripts } else { $PSScriptRoot }
+    Invoke-LabNative -FilePath 'powershell.exe' -ArgumentList (@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $directory $Script)) + $ToolArgs)
+}
+function Run-Campaign {
+    param([string[]]$ToolArgs)
+    Run-Helper 'windows-service-campaign.ps1' (@('-Variant','Pooled','-CampaignId',$CampaignId,'-ExpectedHash',$ExpectedHash) + $ToolArgs)
 }
 try {
-    $pre=Invoke-Command -Session $session -ScriptBlock {
-        $svc=Get-CimInstance Win32_Service -Filter "Name='EtwDnstap'"
+    $pre=Invoke-LabGuest -Session $session -ArgumentList $ExpectedHash,$config.windows_vm.install_exe,$config.windows_vm.service_name -ScriptBlock {
+        param($expectedHash,$installed,$serviceName)
+        $svc=Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
         if ($svc.State -ne 'Stopped') { throw 'Expected stopped service at stage boundary' }
-        if ((Get-FileHash 'C:/Program Files/EtwDnstap/etw-dnstap.exe').Hash -ne '98FDAB43AA24AE1BE31A7AABCCBDD67A2F64C87DC1C50C428B638B3C091F5D7C') { throw 'Candidate hash mismatch' }
+        if ((Get-FileHash $installed).Hash -ne $expectedHash) { throw 'Candidate hash mismatch' }
         if ((Get-Volume C).SizeRemaining -lt 8GB) { throw 'Guest disk guard' }
         $os=Get-CimInstance Win32_OperatingSystem
         if ($os.FreePhysicalMemory -lt 1MB) { throw 'Guest available-memory guard' }
         @{utc=[DateTime]::UtcNow.ToString('o');free_bytes=(Get-Volume C).SizeRemaining;available_memory_kib=$os.FreePhysicalMemory}
     }
-    $pre | ConvertTo-Json | Set-Content "$out/preflight.json"
+    Write-LabJson -Path "$out/preflight.json" -InputObject $pre
     $hostFree=(Get-PSDrive C).Free
     if ($TraceBudgetGiB -gt 4 -and ($pre.free_bytes -lt (2*$ForecastTraceBytes+10GB) -or $hostFree -lt (2*$ForecastTraceBytes+20GB))) { throw 'Expanded trace budget lacks approved merge/temp/free-space safety headroom' }
-    [ordered]@{utc=[DateTime]::UtcNow.ToString('o');run_id=$RunId;mode=$Mode;requested_qps=$Qps;seconds=$Duration;trace_budget_bytes=$TraceBudgetGiB*1GB;forecast_trace_bytes=$ForecastTraceBytes;compress_trace_transfer=[bool]$CompressTraceTransfer;host_free_bytes=$hostFree;guest_free_bytes=$pre.free_bytes;expanded_cap_confirmation_only=($TraceBudgetGiB-gt4);required_guest_headroom_bytes=2*$ForecastTraceBytes+10GB;required_host_headroom_bytes=2*$ForecastTraceBytes+20GB} | ConvertTo-Json | Set-Content "$out/budget-receipt.json"
-    Run-Helper 'windows-pooled-wpr.ps1' @('-Action','Start','-RunId',$RunId)
+    [ordered]@{utc=[DateTime]::UtcNow.ToString('o');run_id=$RunId;mode=$Mode;requested_qps=$Qps;seconds=$Duration;trace_budget_bytes=$TraceBudgetGiB*1GB;forecast_trace_bytes=$ForecastTraceBytes;compress_trace_transfer=[bool]$CompressTraceTransfer;host_free_bytes=$hostFree;guest_free_bytes=$pre.free_bytes;expanded_cap_confirmation_only=($TraceBudgetGiB-gt4);required_guest_headroom_bytes=2*$ForecastTraceBytes+10GB;required_host_headroom_bytes=2*$ForecastTraceBytes+20GB} | ConvertTo-Json | Set-Content "$out/budget-receipt.json" -Encoding UTF8
+    Run-Helper 'windows-pooled-wpr.ps1' @('-Action','Start','-CampaignId',$CampaignId,'-RunId',$RunId)
     $traceStarted=$true
     $serviceStarted=$true
-    Run-Helper 'windows-pooled-campaign.ps1' @('-Action','Start','-RunId',$RunId)
-    Run-Helper 'windows-capture.ps1' @('-Action','Start','-RunId',$RunId,'-EvidenceRoot',"$campaign/capture")
+    Run-Campaign @('-Action','Start','-RunId',$RunId)
+    Run-Helper 'windows-capture.ps1' @('-Action','Start','-RunId',$RunId,'-EvidenceRoot',"$campaign/capture") -Parent
     $countersStarted=$true
-    $clientArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'windows-run-client.ps1'),'-Mode',$Mode,'-RunId',$RunId,'-Duration',"$Duration",'-Qps',"$Qps",'-EvidenceRoot',"$campaign/client")
-    $client=Start-Process powershell.exe -ArgumentList $clientArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput "$out/client-wrapper-stdout.txt" -RedirectStandardError "$out/client-wrapper-stderr.txt"
+    $clientArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $parentScripts 'windows-run-client.ps1'),'-Mode',$Mode,'-RunId',$RunId,'-Duration',"$Duration",'-Qps',"$Qps",'-EvidenceRoot',"$campaign/client")
+    $client=Start-Process powershell.exe -ArgumentList (Join-LabArguments -Arguments $clientArgs) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$out/client-wrapper-stdout.txt" -RedirectStandardError "$out/client-wrapper-stderr.txt"
     $clientHandle=$client.Handle
     $deadline=[DateTime]::UtcNow.AddSeconds($Duration+45)
     while (-not $client.HasExited) {
         if ([DateTime]::UtcNow -gt $deadline) { throw 'Client bounded completion deadline exceeded' }
         if ((Get-PSDrive C).Free -lt 20GB) { throw 'Host disk guard during load' }
-        $guard=Invoke-Command -Session $session -ArgumentList $RunId -ScriptBlock {
-            param($run)
-            $dir="C:/ProgramData/EtwDnstap/performance/pooled-vm-20261029-0942/$run-wpr/temp"
+        $guard=Invoke-LabGuest -Session $session -ArgumentList $RunId,"$($config.windows_vm.data_dir)/$CampaignId",$config.windows_vm.service_name -ScriptBlock {
+            param($run,$campaignDir,$serviceName)
+            $dir="$campaignDir/$run-wpr/temp"
             $bytes=(Get-ChildItem -LiteralPath $dir -File -Recurse -Force | Measure-Object Length -Sum).Sum
             $os=Get-CimInstance Win32_OperatingSystem
-            $svc=Get-CimInstance Win32_Service -Filter "Name='EtwDnstap'"
+            $svc=Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
             $nativeMetrics=$null
-            $metricFile=Get-ChildItem -LiteralPath 'C:/ProgramData/EtwDnstap/performance/pooled-vm-20261029-0942' -Filter "$run.*.jsonl" -File | Select-Object -First 1
+            $metricFile=Get-ChildItem -LiteralPath $campaignDir -Filter "$run.*.jsonl" -File | Select-Object -First 1
             if ($metricFile) {
                 foreach ($line in @(Get-Content -LiteralPath $metricFile.FullName -Tail 2)) {
                     try { $nativeMetrics=$line | ConvertFrom-Json -ErrorAction Stop } catch { }
@@ -110,7 +147,7 @@ try {
             [pscustomobject]@{utc=[DateTime]::UtcNow.ToString('o');trace_temp_bytes=[long]$bytes;free_bytes=(Get-Volume C).SizeRemaining;available_memory_kib=$os.FreePhysicalMemory;service_state=$svc.State;service_pid=$svc.ProcessId;native_metrics=$nativeMetrics}
         }
         $guards.Add($guard)
-        $guard | ConvertTo-Json -Compress | Add-Content "$out/guards.jsonl"
+        $guard | ConvertTo-Json -Compress | Add-Content "$out/guards.jsonl" -Encoding UTF8
         if ($guard.trace_temp_bytes -ge $TraceBudgetGiB*1GB -or ($pre.free_bytes-$guard.free_bytes) -ge $TraceBudgetGiB*1GB -or $guard.free_bytes -lt 8GB -or $guard.available_memory_kib -lt 1MB -or $guard.service_state -ne 'Running') { throw 'Guest trace/disk/memory/service guard activated' }
         Start-Sleep -Seconds 5
         $client.Refresh()
@@ -129,22 +166,21 @@ try {
     }
 } finally {
     if ($serviceStarted) {
-        try { Run-Helper 'windows-pooled-campaign.ps1' @('-Action','Stop','-RunId',$RunId); $serviceStopped=$true } catch { $failure="$failure; SCM stop: $_" }
+        try { Run-Campaign @('-Action','Stop','-RunId',$RunId); $serviceStopped=$true } catch { $failure="$failure; SCM stop: $_" }
     }
-    try { Run-Helper 'windows-pooled-campaign.ps1' @('-Action','Fetch','-RunId',$RunId) } catch { $failure="$failure; metrics fetch: $_" }
+    try { Run-Campaign @('-Action','Fetch','-RunId',$RunId) } catch { $failure="$failure; metrics fetch: $_" }
     if ($traceStarted) {
         try {
-            $stopArgs=@('-Action','Stop','-RunId',$RunId)
+            $stopArgs=@('-Action','Stop','-CampaignId',$CampaignId,'-RunId',$RunId)
             if ($CompressTraceTransfer) { $stopArgs+='-CompressTransfer' }
             Run-Helper 'windows-pooled-wpr.ps1' $stopArgs
         } catch { $failure="$failure; WPR stop: $_" }
     }
     if ($countersStarted) {
-        try { Run-Helper 'windows-capture.ps1' @('-Action','Clock','-RunId',$RunId,'-EvidenceRoot',"$campaign/capture"); Run-Helper 'windows-capture.ps1' @('-Action','Stop','-RunId',$RunId,'-EvidenceRoot',"$campaign/capture") } catch { $failure="$failure; counters stop: $_" }
+        try { Run-Helper 'windows-capture.ps1' @('-Action','Clock','-RunId',$RunId,'-EvidenceRoot',"$campaign/capture") -Parent; Run-Helper 'windows-capture.ps1' @('-Action','Stop','-RunId',$RunId,'-EvidenceRoot',"$campaign/capture") -Parent } catch { $failure="$failure; counters stop: $_" }
     }
     Remove-PSSession $session
-    [ordered]@{utc=[DateTime]::UtcNow.ToString('o');run_id=$RunId;mode=$Mode;qps=$Qps;duration=$Duration;trace_budget_bytes=$TraceBudgetGiB*1GB;forecast_trace_bytes=$ForecastTraceBytes;compress_trace_transfer=[bool]$CompressTraceTransfer;failure=$failure;guards=$guards.Count;service_stopped=$serviceStopped;trace_started=$traceStarted;counters_started=$countersStarted} | ConvertTo-Json -Depth 4 | Set-Content "$out/completion.json"
+    [ordered]@{utc=[DateTime]::UtcNow.ToString('o');run_id=$RunId;mode=$Mode;qps=$Qps;duration=$Duration;trace_budget_bytes=$TraceBudgetGiB*1GB;forecast_trace_bytes=$ForecastTraceBytes;compress_trace_transfer=[bool]$CompressTraceTransfer;failure=$failure;guards=$guards.Count;service_stopped=$serviceStopped;trace_started=$traceStarted;counters_started=$countersStarted} | ConvertTo-Json -Depth 4 | Set-Content "$out/completion.json" -Encoding UTF8
 }
 if ($failure) { throw $failure }
 Write-Output "WINDOWS_STAGE_COMPLETE $RunId; receiver final stable marker and all-category ledger gate still required"
-

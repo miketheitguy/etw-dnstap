@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from metrics_ledger import normalize_metrics
+from perf_common import read_json as read
 
 parser = argparse.ArgumentParser()
 parser.add_argument("campaign", type=Path)
@@ -14,10 +15,6 @@ parser.add_argument("--output", type=Path,
                     help="Write a derivative summary to a fresh path instead of the preserved stage path")
 args = parser.parse_args()
 base, run = args.campaign, args.run
-
-
-def read(path):
-    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 client = read(base / "client" / run / "summary.json")

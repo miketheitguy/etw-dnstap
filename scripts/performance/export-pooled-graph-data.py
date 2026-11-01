@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 import re
 import subprocess
+from perf_common import read_json as read, sha256_file, write_json as write
 
 
 RUNS = (
@@ -20,16 +21,8 @@ XPERF = Path("C:/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit
 ROW = re.compile(r"^\s*(\d+),\s*(.+?)\s+\(\s*(\d+)\)\s*$")
 
 
-def read(path):
-    return json.loads(path.read_text(encoding="utf-8-sig"))
-
-
-def write(path, value):
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-
-
 def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest().upper()
+    return sha256_file(path, upper=True)
 
 
 def interpolate(points, at):

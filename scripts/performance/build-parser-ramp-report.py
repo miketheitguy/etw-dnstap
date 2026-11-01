@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Any
+from perf_common import sha256_file as sha256
 
 
 RUN_ID = re.compile(r"^(?:parser(?:-filtered)?|filtered)-(auth|rec)-(\d+)-(\d+)s-(\d+)$")
@@ -46,14 +47,6 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"Expected a JSON object in {path}")
     return value
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def number(source: dict[str, Any], key: str, where: str) -> int:

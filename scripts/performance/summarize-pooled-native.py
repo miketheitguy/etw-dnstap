@@ -6,14 +6,7 @@ import datetime
 import json
 import re
 from pathlib import Path
-
-
-def read(path):
-    return json.loads(path.read_text(encoding='utf-8-sig'))
-
-
-def process_name(value):
-    return re.sub(r'\(\s*(\d+)\)', r'(\1)', value.strip())
+from perf_common import normalize_process as process_name, read_json as read
 
 
 def named_threads(campaign, run, view):

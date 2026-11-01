@@ -4,12 +4,15 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import socket
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument('start')
 parser.add_argument('end')
-parser.add_argument('--directory', type=Path, default=Path(os.environ.get('DNSTAP_PERF_BASE', '/home/dnstaplab/performance')))
+parser.add_argument('--directory', type=Path, default=Path(os.environ.get('DNSTAP_PERF_BASE') or Path(lab_config.get('ubuntu_vm.home')) / 'performance'))
 args = parser.parse_args()
 base = args.directory
 start = json.loads((base / f'{args.start}.json').read_text())
@@ -41,7 +44,7 @@ def nft(data):
     return result
 
 def upstream_socket(marker):
-    address = socket.inet_aton('172.27.215.60')[::-1].hex().upper() + ':0035'
+    address = socket.inet_aton(lab_config.get('network.receiver_ip'))[::-1].hex().upper() + ':0035'
     rows = [line.split() for line in marker.get('udp_sockets', '').splitlines()[1:]]
     matches = [row for row in rows if len(row) >= 13 and row[1] == address]
     if len(matches) != 1:

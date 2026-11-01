@@ -5,14 +5,17 @@ import json
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import time
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--config', default='target/lab-ubuntu/ssh_config')
+parser.add_argument('--config', type=Path, default=lab_config.repo_path('ubuntu_vm.ssh_config'), help='ssh_config for the Ubuntu VM (default from lab.json)')
 parser.add_argument('--output', required=True, type=Path)
 args = parser.parse_args()
 code = 'import sys,time\nfor line in sys.stdin:\n print(time.time_ns(),flush=True)'
-process = subprocess.Popen(['ssh.exe', '-T', '-F', args.config, 'dnstap-ubuntu',
+process = subprocess.Popen(['ssh.exe', '-T', '-F', str(args.config), lab_config.get('ubuntu_vm.ssh_alias'),
                             'python3 -u -c '+shlex.quote(code)],
                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 samples = []

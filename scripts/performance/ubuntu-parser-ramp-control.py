@@ -12,9 +12,12 @@ import shutil
 import socket
 import subprocess
 import time
+import sys
 from parser_ramp_receipts import finish_marker_contract
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
-HOST = 'dnstap-ubuntu2604'
+HOST = lab_config.get('ubuntu_vm.hostname')
 DEFAULT_CAMPAIGN_ID = 'parser-ramp-20261030'
 CAMPAIGN_ID = DEFAULT_CAMPAIGN_ID
 CONFIG = Path('/etc/dnscollector/config.yml')
@@ -194,7 +197,7 @@ def metadata(run_id):
             'archive_volume': archive_fs, 'collector_state': systemd_state(),
             'collector_pid': pid(), 'prometheus_listener_present':
             subprocess.run(['curl', '-fsS', '--max-time', '1', 'http://127.0.0.1:9165/metrics'],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0,
             'run_id': run_id}
 
 
@@ -361,7 +364,7 @@ def finish(args):
     else:
         raise RuntimeError('Receiver output did not plateau or a TCP peer remains before collector stop')
     collector_pid_before_stop = pid()
-    stopped = subprocess.run(['systemctl', 'stop', UNIT], capture_output=True, text=True)
+    stopped = subprocess.run(['systemctl', 'stop', UNIT], capture_output=True, text=True, check=False)
     if stopped.returncode != 0:
         raise RuntimeError(f'Collector stop failed: {stopped.stderr.strip()}')
     final_stable = []

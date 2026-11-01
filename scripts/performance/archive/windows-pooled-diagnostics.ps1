@@ -1,14 +1,41 @@
+#requires -Version 5.1
+#requires -Modules Hyper-V
+<#
+.SYNOPSIS
+Collects EtwDnstap service/SCM event diagnostics from the Windows VM for a stage.
+
+.DESCRIPTION
+Writes service-diagnostics.json (or service-diagnostics-raw-events.json with -RawEventScan) under the stage directory; refuses to overwrite.
+Historical pooled-VM campaign helper: the dated campaign directory that used to be baked
+in is now the mandatory -CampaignId.
+.PARAMETER CampaignId
+Campaign directory under target/performance.
+.PARAMETER RunId
+Stage run ID.
+.PARAMETER SinceUtc
+Start of the event window (UTC).
+.PARAMETER RawEventScan
+Scan raw Application events instead of provider-filtered events.
+#>
 [CmdletBinding()]
-param([Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$RunId,[Parameter(Mandatory)][string]$SinceUtc,[switch]$RawEventScan)
-$ErrorActionPreference='Stop'
-$root=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$out=Join-Path $root "target/performance/pooled-vm-20261029-0942/stages/$RunId/service-diagnostics.json"
-if ($RawEventScan) { $out=Join-Path $root "target/performance/pooled-vm-20261029-0942/stages/$RunId/service-diagnostics-raw-events.json" }
+param(
+    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$CampaignId,
+    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$RunId,
+    [Parameter(Mandatory)][string]$SinceUtc,
+    [switch]$RawEventScan
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot '../LabCommon.psm1') -Force
+$config = Get-LabConfig
+$stageDir = Resolve-LabPath "$($config.paths.evidence_root)/$CampaignId/stages/$RunId"
+$out = Join-Path $stageDir 'service-diagnostics.json'
+if ($RawEventScan) { $out = Join-Path $stageDir 'service-diagnostics-raw-events.json' }
 if (Test-Path -LiteralPath $out) { throw 'Preserve existing diagnostics' }
-$vm=Get-VM -Name DNSTap-WS2025
-if ($vm.Id -ne [guid]'24bafedb-0998-4430-a0c6-7e90350cd9ac') { throw 'Wrong VM' }
-$credential=Import-Clixml (Join-Path $root 'target/lab-windows/private/administrator.clixml')
-$result=Invoke-Command -VMId $vm.Id -Credential $credential -ArgumentList @($SinceUtc,[bool]$RawEventScan) -ScriptBlock {
+$vm = Get-LabVm
+$session = Get-LabSession -Vm $vm
+try {
+$result = Invoke-LabGuest -Session $session -ArgumentList @($SinceUtc,[bool]$RawEventScan) -ScriptBlock {
     param($since,$rawScan)
     $start=[DateTime]::Parse($since).ToUniversalTime()
     if ($rawScan) {
@@ -25,5 +52,6 @@ $result=Invoke-Command -VMId $vm.Id -Credential $credential -ArgumentList @($Sin
     $scm=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Service Control Manager';StartTime=$start} -ErrorAction SilentlyContinue | Where-Object Message -match 'EtwDnstap' | Select-Object -First 20 TimeCreated,Id,RecordId,LevelDisplayName,ProviderName,Message,@{n='Xml';e={$_.ToXml()}})
     [ordered]@{utc=[DateTime]::UtcNow.ToString('o');since_utc=$start.ToString('o');service=Get-CimInstance Win32_Service -Filter "Name='EtwDnstap'" | Select-Object Name,State,ProcessId,ExitCode,ServiceSpecificExitCode,PathName;application_events=$application;scm_events=$scm;wpr_status=(& wpr.exe -status | Out-String);free_bytes=(Get-Volume C).SizeRemaining}
 }
-$result | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $out -Encoding utf8
+} finally { Remove-PSSession $session }
+Write-LabJson -Path $out -InputObject $result -Depth 7
 Get-Content -LiteralPath $out -Raw

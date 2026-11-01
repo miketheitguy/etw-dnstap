@@ -10,16 +10,19 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--restore', action='store_true')
 parser.add_argument('--retry', action='store_true')
 args = parser.parse_args()
-BASE = Path(os.environ.get('DNSTAP_PERF_BASE', '/home/dnstaplab/performance'))
+BASE = Path(os.environ.get('DNSTAP_PERF_BASE') or Path(lab_config.get('ubuntu_vm.home')) / 'performance')
 BACKUP = BASE / 'backup' / 'rmem-original.json'
 KEYS = ('net.core.rmem_default', 'net.core.rmem_max')
-if subprocess.check_output(['hostname']).decode().strip() != 'dnstap-ubuntu2604':
+if subprocess.check_output(['hostname']).decode().strip() != lab_config.get('ubuntu_vm.hostname'):
     raise SystemExit('Wrong guest identity')
 
 def read_values():
@@ -63,7 +66,7 @@ try:
     subprocess.run(['systemctl', 'is-active', 'dnstap-performance-upstream'], check=True)
     ready = False
     for _ in range(50):
-        sockets = subprocess.check_output(['ss', '-uanm', 'src 172.27.215.60 sport = :53']).decode()
+        sockets = subprocess.check_output(['ss', '-uanm', f"src {lab_config.get('network.receiver_ip')} sport = :53"]).decode()
         match = re.search(r'\brb(\d+)', sockets)
         if match and int(match.group(1)) >= 8*1024*1024:
             ready = True
