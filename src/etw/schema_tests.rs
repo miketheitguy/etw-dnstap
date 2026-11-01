@@ -4,7 +4,9 @@ use crate::{
     etw::{
         PROVIDER, PoolManager, decode,
         intake::copy_record,
-        test_support::{AllocCounts, EXCLUDED_EVENT_IDS, assert_no_allocations, measured},
+        test_support::{
+            AllocCounts, EXCLUDED_EVENT_IDS, assert_no_allocations, measured, utf16_nul_bytes,
+        },
     },
 };
 use std::sync::Arc;
@@ -27,13 +29,7 @@ impl ParseEncode for Parser {
         event: RawEtwEvent,
         encoder: &'e mut Encoder,
     ) -> Result<Option<&'e [u8]>> {
-        let result = match self.parse(&event) {
-            Ok(Some(decoded)) => encoder.encode(&decoded).map(Some),
-            Ok(None) => Ok(None),
-            Err(error) => Err(error),
-        };
-        drop(event);
-        result
+        crate::pipeline::parse_and_encode(self, event, encoder)
     }
 }
 
@@ -116,13 +112,6 @@ fn address_kind(input: i32) -> PropertyType {
     PropertyType { input, output: 0 }
 }
 
-fn utf16_bytes(text: &str) -> Vec<u8> {
-    text.encode_utf16()
-        .chain(Some(0))
-        .flat_map(u16::to_le_bytes)
-        .collect()
-}
-
 #[test]
 fn address_reuse_validates_full_text_and_ignores_valid_zone_context() -> Result<()> {
     let mut scratch = [0; 768];
@@ -130,13 +119,13 @@ fn address_reuse_validates_full_text_and_ignores_valid_zone_context() -> Result<
     let ansi = address_kind(TDH_INTYPE_ANSISTRING);
     let long_zone = format!("fe80::1%{}", "界".repeat(247));
     let cases = [
-        (utf16_bytes(&long_zone), unicode, "fe80::1"),
+        (utf16_nul_bytes(&long_zone), unicode, "fe80::1"),
         (b"192.0.2.53\0".to_vec(), ansi, "192.0.2.53"),
-        (utf16_bytes("::%接口"), unicode, "::"),
-        (utf16_bytes("::%\0ignored"), unicode, "::"),
+        (utf16_nul_bytes("::%接口"), unicode, "::"),
+        (utf16_nul_bytes("::%\0ignored"), unicode, "::"),
         (b"::%bad\0suffix\0".to_vec(), ansi, "::"),
         (b"fe80::1%interface\0".to_vec(), ansi, "fe80::1"),
-        (utf16_bytes("2001:db8::53"), unicode, "2001:db8::53"),
+        (utf16_nul_bytes("2001:db8::53"), unicode, "2001:db8::53"),
     ];
     for (bytes, kind, expected) in &cases {
         assert_eq!(
@@ -149,9 +138,9 @@ fn address_reuse_validates_full_text_and_ignores_valid_zone_context() -> Result<
         (vec![0], unicode),
         (vec![b'1', 0], unicode),
         (vec![0, 0xd8, 0, 0], unicode),
-        (utf16_bytes("::\0%bad"), unicode),
+        (utf16_nul_bytes("::\0%bad"), unicode),
         (vec![b':', 0, b':', 0, b'%', 0, 0, 0xd8, 0, 0], unicode),
-        (utf16_bytes(&format!("::%{}", "a".repeat(253))), unicode),
+        (utf16_nul_bytes(&format!("::%{}", "a".repeat(253))), unicode),
         (b"::%bad\xff\0".to_vec(), ansi),
         (b"::\0%bad\0".to_vec(), ansi),
         (b"192.0.2.1".to_vec(), ansi),
@@ -649,13 +638,7 @@ fn native_normalization_keeps_unsupported_trailing_names_without_reading_unions(
             Flags: field.flags.cast_signed(),
             ..Default::default()
         };
-        bytes.extend(
-            field
-                .name
-                .encode_utf16()
-                .chain(Some(0))
-                .flat_map(u16::to_le_bytes),
-        );
+        bytes.extend(utf16_nul_bytes(&field.name));
         property.Anonymous1.nonStructType = EVENT_PROPERTY_INFO_0_0 {
             InType: u16::try_from(field.input)?,
             OutType: u16::try_from(field.output)?,

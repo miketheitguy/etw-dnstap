@@ -1,54 +1,12 @@
 //! Independent wire and storage checks for direct packet filling.
 
-use super::{EncodeError, Encoder};
+use super::{
+    EncodeError, Encoder,
+    test_oracle::{ReferenceTap, read_varint, reference},
+};
 use crate::event::{DnsEventMetadata, Transport};
 use prost::Message as _;
-use std::{
-    net::IpAddr,
-    time::{Duration, SystemTime},
-};
-
-// Separate Prost models keep the oracle independent of the encoder's schema
-// types, field ordering helpers, length calculations, and enum definitions.
-#[derive(Clone, PartialEq, prost::Message)]
-struct ReferenceTap {
-    #[prost(bytes = "vec", optional, tag = "1")]
-    identity: Option<Vec<u8>>,
-    #[prost(message, optional, tag = "14")]
-    message: Option<ReferenceMessage>,
-    #[prost(uint32, required, tag = "15")]
-    kind: u32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct ReferenceMessage {
-    #[prost(uint32, required, tag = "1")]
-    kind: u32,
-    #[prost(uint32, optional, tag = "2")]
-    family: Option<u32>,
-    #[prost(uint32, optional, tag = "3")]
-    protocol: Option<u32>,
-    #[prost(bytes = "vec", optional, tag = "4")]
-    query_address: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "5")]
-    response_address: Option<Vec<u8>>,
-    #[prost(uint32, optional, tag = "6")]
-    query_port: Option<u32>,
-    #[prost(uint32, optional, tag = "7")]
-    response_port: Option<u32>,
-    #[prost(uint64, optional, tag = "8")]
-    query_seconds: Option<u64>,
-    #[prost(fixed32, optional, tag = "9")]
-    query_nanoseconds: Option<u32>,
-    #[prost(bytes = "vec", optional, tag = "10")]
-    query_packet: Option<Vec<u8>>,
-    #[prost(uint64, optional, tag = "12")]
-    response_seconds: Option<u64>,
-    #[prost(fixed32, optional, tag = "13")]
-    response_nanoseconds: Option<u32>,
-    #[prost(bytes = "vec", optional, tag = "14")]
-    response_packet: Option<Vec<u8>>,
-}
+use std::time::{Duration, SystemTime};
 
 fn fixture(id: u16, endpoints: usize, tcp: bool) -> DnsEventMetadata {
     let (peer, local) = match endpoints {
@@ -74,62 +32,6 @@ fn packet(id: u16, length: usize) -> Vec<u8> {
     let mut bytes = vec![0x5a; length];
     bytes[2] = if id == 257 { 0x81 } else { 0x01 };
     bytes
-}
-
-fn address(ip: IpAddr) -> Vec<u8> {
-    match ip {
-        IpAddr::V4(ip) => ip.octets().to_vec(),
-        IpAddr::V6(ip) => ip.octets().to_vec(),
-    }
-}
-
-fn reference(event: DnsEventMetadata, bytes: &[u8], identity: &[u8]) -> ReferenceTap {
-    let response = event.event_id == 257;
-    let (query_ip, response_ip, query_port, response_port) = (
-        event.peer_address,
-        event.local_address,
-        event.peer_port,
-        event.local_port,
-    );
-    let timestamp = event
-        .timestamp
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("fixture time");
-    let mut message = ReferenceMessage {
-        kind: match event.event_id {
-            256 => 5,
-            257 => 6,
-            _ => panic!("unsupported fixture event"),
-        },
-        family: event
-            .peer_address
-            .or(event.local_address)
-            .map(|ip| if ip.is_ipv4() { 1 } else { 2 }),
-        protocol: Some(if event.transport == Transport::Tcp {
-            2
-        } else {
-            1
-        }),
-        query_address: query_ip.map(address),
-        response_address: response_ip.map(address),
-        query_port: query_port.map(u32::from),
-        response_port: response_port.map(u32::from),
-        ..ReferenceMessage::default()
-    };
-    if response {
-        message.response_seconds = Some(timestamp.as_secs());
-        message.response_nanoseconds = Some(timestamp.subsec_nanos());
-        message.response_packet = Some(bytes.to_vec());
-    } else {
-        message.query_seconds = Some(timestamp.as_secs());
-        message.query_nanoseconds = Some(timestamp.subsec_nanos());
-        message.query_packet = Some(bytes.to_vec());
-    }
-    ReferenceTap {
-        identity: (!identity.is_empty()).then(|| identity.to_vec()),
-        message: Some(message),
-        kind: 1,
-    }
 }
 
 fn compare(encoder: &mut Encoder, event: DnsEventMetadata, bytes: &[u8], identity: &[u8]) {
@@ -208,29 +110,15 @@ fn enclosing_message_lengths_cross_both_varint_boundaries() {
     }
 }
 
-fn varint(input: &mut &[u8]) -> usize {
-    let mut value = 0;
-    for shift in (0..64).step_by(7) {
-        let (&byte, rest) = input.split_first().expect("complete varint");
-        *input = rest;
-        value |= usize::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return value;
-        }
-    }
-    panic!("oversized test varint")
-}
-
-fn length_field(mut input: &[u8], tag: usize) -> &[u8] {
+fn length_field(mut input: &[u8], tag: u64) -> &[u8] {
     while !input.is_empty() {
-        let key = varint(&mut input);
+        let (key, rest) = read_varint(input);
+        input = rest;
         match key & 7 {
-            0 => {
-                varint(&mut input);
-            }
+            0 => input = read_varint(input).1,
             2 => {
-                let length = varint(&mut input);
-                let (bytes, rest) = input.split_at(length);
+                let (length, rest) = read_varint(input);
+                let (bytes, rest) = rest.split_at(usize::try_from(length).expect("length"));
                 if key >> 3 == tag {
                     return bytes;
                 }

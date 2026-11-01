@@ -1,20 +1,10 @@
+use super::test_support::{handshake, retry_policy};
 use super::*;
 use std::net::TcpListener;
 
+/// Retries within tens of milliseconds, so reconnect tests finish quickly.
 fn fast_policy() -> BackoffPolicy {
-    BackoffPolicy {
-        initial: Duration::from_millis(10),
-        max: Duration::from_millis(40),
-    }
-}
-
-/// Completes the receiver side of the Frame Streams handshake.
-fn handshake(stream: TcpStream) -> DeadlineTcp {
-    let mut stream = DeadlineTcp::new(stream, Duration::from_secs(10));
-    read_control(&mut stream, CONTROL_READY, true).expect("READY");
-    write_control(&mut stream, CONTROL_ACCEPT, true).expect("ACCEPT");
-    read_control(&mut stream, 2, true).expect("START");
-    stream
+    retry_policy(10, 40)
 }
 
 enum Item {

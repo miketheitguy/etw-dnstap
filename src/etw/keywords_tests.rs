@@ -1,9 +1,6 @@
 use super::*;
+use crate::etw::test_support::{offset_u32, utf16_nul_bytes};
 use anyhow::anyhow;
-
-fn offset_u32(offset: usize) -> u32 {
-    u32::try_from(offset).expect("test offsets fit u32")
-}
 
 fn keyword_list(entries: &[(&str, u64)]) -> Vec<(String, u64)> {
     entries
@@ -139,9 +136,7 @@ fn keyword_image(entries: &[(&str, u64)], name_offset: Option<u32>) -> Vec<u8> {
     let mut offsets = Vec::new();
     for (name, _) in entries {
         offsets.push(offset_u32(first + entries.len() * entry_size + names.len()));
-        for unit in name.encode_utf16().chain([0]) {
-            names.extend_from_slice(&unit.to_le_bytes());
-        }
+        names.extend_from_slice(&utf16_nul_bytes(name));
     }
     let mut image = vec![0u8; first];
     image[..4].copy_from_slice(&offset_u32(entries.len()).to_le_bytes());

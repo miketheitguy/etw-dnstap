@@ -11,7 +11,7 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
     TDH_OUTTYPE_IPV6, TDH_OUTTYPE_PORT,
 };
 
-use super::decode::{DecodePlan, Decoded, FieldSpec};
+use super::decode::{DecodePlan, Decoded, FieldSpec, saved_template};
 
 /// One schema property as a fuzzer describes it, using small selectors instead
 /// of raw ETW constants.
@@ -113,17 +113,6 @@ pub fn compile_and_decode(fields: &[FuzzField], response: bool, payload: &[u8]) 
     true
 }
 
-fn property(name: &str, input: i32, output: i32) -> FieldSpec {
-    FieldSpec {
-        name: name.to_owned(),
-        input,
-        output,
-        flags: 0,
-        count: 1,
-        length: 0,
-    }
-}
-
 /// Decodes `payload` with the saved v0 DNS Server template for event 256
 /// (`response == false`) or 257.
 ///
@@ -132,34 +121,7 @@ fn property(name: &str, input: i32, output: i32) -> FieldSpec {
 /// `payload`.
 #[must_use]
 pub fn decode_reference(response: bool, payload: &[u8]) -> bool {
-    let u8_field = |name| property(name, TDH_INTYPE_UINT8, 0);
-    let u32_field = |name| property(name, TDH_INTYPE_UINT32, 0);
-    let text = |name| property(name, TDH_INTYPE_ANSISTRING, 0);
-    let wide = |name| property(name, TDH_INTYPE_UNICODESTRING, 0);
-    let mut fields = vec![
-        u8_field("TCP"),
-        text("InterfaceIP"),
-        text(if response { "Destination" } else { "Source" }),
-    ];
-    if response {
-        fields.extend([u8_field("AA"), u8_field("AD")]);
-    } else {
-        fields.push(u8_field("RD"));
-    }
-    fields.extend([text("QNAME"), u32_field("QTYPE"), u32_field("XID")]);
-    if response {
-        fields.extend([u8_field("DNSSEC"), u32_field("RCODE")]);
-    }
-    fields.extend([u32_field("Port"), u32_field("Flags")]);
-    if response {
-        fields.extend([wide("Scope"), wide("Zone"), wide("PolicyName")]);
-    }
-    let dependency = fields.len();
-    fields.push(u32_field("BufferSize"));
-    let mut packet = property("PacketData", TDH_INTYPE_BINARY, 0);
-    packet.flags = PropertyParamLength.cast_unsigned();
-    packet.length = u16::try_from(dependency).unwrap_or(0);
-    fields.push(packet);
+    let fields = saved_template(response);
     let plan = DecodePlan::compile(&fields, if response { "Destination" } else { "Source" })
         .expect("the saved template must compile");
     match plan.decode(payload) {

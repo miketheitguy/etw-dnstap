@@ -94,7 +94,7 @@ impl Encoder {
     /// retain the destination pointer. All output space, including the outer
     /// suffix, is reserved first, so no packet bytes move after filling.
     /// Every error clears the output. This validates the DNS envelope, not records.
-    pub(crate) fn encode_with(
+    fn encode_with(
         &mut self,
         event: DnsEventMetadata,
         packet_length: usize,
@@ -106,6 +106,17 @@ impl Encoder {
             return Err(error);
         }
         Ok(&self.output)
+    }
+
+    /// Test-only entry to [`Self::encode_with`] for tests outside this module.
+    #[cfg(test)]
+    pub(crate) fn encode_with_for_test(
+        &mut self,
+        event: DnsEventMetadata,
+        packet_length: usize,
+        fill: impl FnOnce(&mut [u8]) -> anyhow::Result<()>,
+    ) -> anyhow::Result<&[u8]> {
+        self.encode_with(event, packet_length, fill)
     }
 
     fn encode_into(
@@ -252,28 +263,6 @@ struct EnvelopeMetadata {
     extra: Option<Vec<u8>>,
 }
 
-#[cfg(test)]
-#[derive(Clone, PartialEq, prost::Message)]
-struct Dnstap {
-    #[prost(bytes = "vec", optional, tag = "1")]
-    identity: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "2")]
-    version: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "3")]
-    extra: Option<Vec<u8>>,
-    #[prost(message, optional, tag = "14")]
-    message: Option<DnsMessage>,
-    #[prost(enumeration = "DnstapType", required, tag = "15")]
-    r#type: i32,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
-#[repr(i32)]
-enum DnstapType {
-    Message = 1,
-}
-
 #[derive(Clone, PartialEq, prost::Message)]
 struct DnsMessage {
     #[prost(enumeration = "MessageType", required, tag = "1")]
@@ -294,16 +283,10 @@ struct DnsMessage {
     query_time_sec: Option<u64>,
     #[prost(fixed32, optional, tag = "9")]
     query_time_nsec: Option<u32>,
-    #[cfg(test)]
-    #[prost(bytes = "vec", optional, tag = "10")]
-    query_message: Option<Vec<u8>>,
     #[prost(uint64, optional, tag = "12")]
     response_time_sec: Option<u64>,
     #[prost(fixed32, optional, tag = "13")]
     response_time_nsec: Option<u32>,
-    #[cfg(test)]
-    #[prost(bytes = "vec", optional, tag = "14")]
-    response_message: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
@@ -336,6 +319,10 @@ mod direct_tests;
 mod golden_tests;
 
 #[cfg(test)]
+#[path = "dnstap/test_oracle.rs"]
+mod test_oracle;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{net::Ipv4Addr, time::Duration};
@@ -366,7 +353,7 @@ mod tests {
         let mut encoder = Encoder::new(b"view").expect("identity");
         for id in [256, 257] {
             let (metadata, packet) = event(id);
-            let expected = reference(&metadata, packet.clone(), b"view").expect("baseline");
+            let expected = test_oracle::reference_bytes(metadata, &packet, b"view");
             let decoded = DecodedDnsEvent {
                 metadata,
                 packet: &packet,
@@ -432,8 +419,7 @@ mod tests {
                 let original = packet.clone();
                 let pointer = packet.as_ptr();
                 let capacity = packet.capacity();
-                let expected =
-                    reference(&fixture, packet.clone(), identity).expect("baseline encodes");
+                let expected = test_oracle::reference_bytes(fixture, &packet, identity);
                 let bytes = encoder
                     .encode_with(fixture, packet.len(), |destination| {
                         destination.copy_from_slice(&packet);
@@ -441,7 +427,7 @@ mod tests {
                     })
                     .expect("valid fixture encodes");
                 assert_eq!(bytes, expected);
-                let tap = Dnstap::decode(bytes).expect("protobuf decodes");
+                let tap = test_oracle::ReferenceTap::decode(bytes).expect("protobuf decodes");
                 assert_eq!(
                     tap.identity.as_deref(),
                     (!identity.is_empty()).then_some(identity)
@@ -449,7 +435,7 @@ mod tests {
                 let message = tap.message.expect("DNS message");
                 let response = id == 257;
                 assert_eq!(
-                    message.r#type,
+                    message.kind,
                     match id {
                         256 => 5,
                         _ => 6,
@@ -457,17 +443,17 @@ mod tests {
                 );
                 if response {
                     assert_eq!(
-                        message.response_message.as_deref(),
+                        message.response_packet.as_deref(),
                         Some(original.as_slice())
                     );
-                    assert_eq!(message.query_message, None);
-                    assert_eq!(message.query_time_sec, None);
-                    assert_eq!(message.query_time_nsec, None);
+                    assert_eq!(message.query_packet, None);
+                    assert_eq!(message.query_seconds, None);
+                    assert_eq!(message.query_nanoseconds, None);
                 } else {
-                    assert_eq!(message.query_message.as_deref(), Some(original.as_slice()));
-                    assert_eq!(message.response_message, None);
-                    assert_eq!(message.response_time_sec, None);
-                    assert_eq!(message.response_time_nsec, None);
+                    assert_eq!(message.query_packet.as_deref(), Some(original.as_slice()));
+                    assert_eq!(message.response_packet, None);
+                    assert_eq!(message.response_seconds, None);
+                    assert_eq!(message.response_nanoseconds, None);
                 }
                 assert_restored(&packet, pointer, capacity, &original);
                 assert!(encoder.output.capacity() <= MAX_ENCODED_LENGTH);
@@ -575,8 +561,7 @@ mod tests {
             assert_restored(&packet, pointer, capacity, &original);
             assert_eq!(encoder.output, [] as [u8; 0]);
             let (valid, packet) = event(256);
-            let expected =
-                reference(&valid, packet.clone(), &[1; 1_024]).expect("baseline encodes");
+            let expected = test_oracle::reference_bytes(valid, &packet, &[1; 1_024]);
             assert_eq!(
                 encoder
                     .encode_with(valid, packet.len(), |destination| {
@@ -614,7 +599,7 @@ mod tests {
         assert_eq!(encoder.output.capacity(), 0);
         encoder.tap.extra = None;
         let (fixture, packet) = event(256);
-        let expected = reference(&fixture, packet.clone(), b"").expect("baseline encodes");
+        let expected = test_oracle::reference_bytes(fixture, &packet, b"");
         assert_eq!(
             encoder
                 .encode_with(fixture, packet.len(), |destination| {
@@ -624,112 +609,5 @@ mod tests {
                 .expect("recovery"),
             expected
         );
-    }
-
-    #[test]
-    fn warmed_encoder_reuses_storage_without_heap_operations() {
-        let mut encoder = Encoder::new(b"dns-server").expect("identity");
-        let (fixture, packet) = event(256);
-        encoder
-            .encode_with(fixture, packet.len(), |destination| {
-                destination.copy_from_slice(&packet);
-                Ok(())
-            })
-            .expect("warmup");
-        let (fixture, _) = event(256);
-        let mut result = false;
-        crate::etw::assert_no_allocations(|| {
-            result = encoder
-                .encode_with(fixture, packet.len(), |destination| {
-                    destination.copy_from_slice(&packet);
-                    Ok(())
-                })
-                .is_ok();
-        });
-        assert!(result);
-    }
-
-    // Independent allocating baseline, retained only as a compatibility oracle.
-    fn reference(
-        event: &DnsEventMetadata,
-        packet_data: Vec<u8>,
-        identity: &[u8],
-    ) -> Result<Vec<u8>, EncodeError> {
-        let (message_type, is_response) = match event.event_id {
-            256 => (MessageType::ClientQuery, false),
-            257 => (MessageType::ClientResponse, true),
-            other => return Err(EncodeError::UnsupportedEvent(other)),
-        };
-        if !(DNS_HEADER_LENGTH..=MAX_DNS_MESSAGE_LENGTH).contains(&packet_data.len()) {
-            return Err(EncodeError::InvalidPacketLength(packet_data.len()));
-        }
-        // The length check above guarantees the third byte is present.
-        let flags_high = packet_data
-            .get(2)
-            .copied()
-            .ok_or(EncodeError::InvalidPacketLength(packet_data.len()))?;
-        if (flags_high & 0x80 != 0) != is_response {
-            return Err(EncodeError::IncorrectDirection(event.event_id));
-        }
-        if identity.len() > MAX_IDENTITY_LENGTH {
-            return Err(EncodeError::IdentityTooLong);
-        }
-        let timestamp = event
-            .timestamp
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| EncodeError::InvalidTimestamp)?;
-        let socket_family = match (event.local_address, event.peer_address) {
-            (Some(IpAddr::V4(_)), Some(IpAddr::V6(_)))
-            | (Some(IpAddr::V6(_)), Some(IpAddr::V4(_))) => {
-                return Err(EncodeError::MixedAddressFamilies);
-            }
-            (Some(IpAddr::V4(_)), _) | (_, Some(IpAddr::V4(_))) => Some(SocketFamily::Inet as i32),
-            (Some(IpAddr::V6(_)), _) | (_, Some(IpAddr::V6(_))) => Some(SocketFamily::Inet6 as i32),
-            (None, None) => None,
-        };
-        // The peer is always the client, which initiated the query.
-        let (query_address, response_address, query_port, response_port) = (
-            event.peer_address,
-            event.local_address,
-            event.peer_port,
-            event.local_port,
-        );
-        let mut message = DnsMessage {
-            r#type: message_type as i32,
-            socket_family,
-            socket_protocol: Some(match event.transport {
-                Transport::Udp => SocketProtocol::Udp as i32,
-                Transport::Tcp => SocketProtocol::Tcp as i32,
-            }),
-            query_address: query_address.map(address_bytes),
-            response_address: response_address.map(address_bytes),
-            query_port: query_port.map(u32::from),
-            response_port: response_port.map(u32::from),
-            ..DnsMessage::default()
-        };
-        if is_response {
-            message.response_time_sec = Some(timestamp.as_secs());
-            message.response_time_nsec = Some(timestamp.subsec_nanos());
-            message.response_message = Some(packet_data);
-        } else {
-            message.query_time_sec = Some(timestamp.as_secs());
-            message.query_time_nsec = Some(timestamp.subsec_nanos());
-            message.query_message = Some(packet_data);
-        }
-        Ok(Dnstap {
-            identity: (!identity.is_empty()).then(|| identity.to_vec()),
-            version: None,
-            extra: None,
-            message: Some(message),
-            r#type: DnstapType::Message as i32,
-        }
-        .encode_to_vec())
-    }
-
-    fn address_bytes(address: IpAddr) -> Vec<u8> {
-        match address {
-            IpAddr::V4(address) => address.octets().to_vec(),
-            IpAddr::V6(address) => address.octets().to_vec(),
-        }
     }
 }

@@ -38,6 +38,7 @@ use super::{
     CaptureCounters, PROVIDER, PoolManager, RawEtwEvent, SUPPORTED_EVENT_IDS, check_status,
     intake::{self, CallbackContext, native_etw_callback},
     keywords::{KeywordChoice, KeywordSelection, resolve_keywords},
+    same_guid,
     session_guid::{format_guid, session_guid},
     target::{DNS_SERVICE, service_process_id, service_process_id_raw},
 };
@@ -60,10 +61,11 @@ mod tests;
 pub(crate) struct SessionConfig {
     /// Buffer size in KiB (4..=128, a multiple of 4; see [`SessionConfig::new`]).
     pub(crate) buffer_kib: u32,
-    /// Maximum buffer count (4..=4096). A defensive 1 GiB guard (unreachable with these ranges, at most 512 MiB) bounds the requested
-    /// `buffer_kib * maximum_buffers` only: ETW reserves at least two buffers per
-    /// logical processor and raises `MaximumBuffers` to at least that adjusted
-    /// minimum, so actual peak memory can be higher.
+    /// Maximum buffer count (4..=4096). A defensive 1 GiB guard bounds the
+    /// requested `buffer_kib * maximum_buffers` only. The ranges cap that product
+    /// at 512 MiB, so the guard cannot trip today. ETW reserves at least two
+    /// buffers per logical processor and raises `MaximumBuffers` to at least that
+    /// adjusted minimum, so actual peak memory can be higher.
     pub(crate) maximum_buffers: u32,
     /// Real-time flush interval in seconds (1..=60); bounds delivery latency.
     pub(crate) flush_seconds: u32,
@@ -79,18 +81,29 @@ impl Default for SessionConfig {
     }
 }
 
+/// Largest accepted buffer size and count, in the units `SessionConfig::new` checks.
+const MAX_BUFFER_KIB: u32 = 128;
+const MAX_BUFFERS: u32 = 4096;
+/// Defensive cap on requested buffer memory (1 GiB), in KiB.
+const MAX_PEAK_KIB: u64 = 1_048_576;
+// The range maxima give at most 512 MiB, so the cap in `SessionConfig::new` cannot
+// trip today. This assertion fails the build if a range is widened past it, and
+// the cap stays as a guard for that change.
+const _: () = assert!(MAX_BUFFER_KIB as u64 * MAX_BUFFERS as u64 <= MAX_PEAK_KIB);
+
 impl SessionConfig {
     /// Validates each range, that the buffer size is a multiple of 4 KiB, and the
-    /// requested maximum buffer memory (defensive guard at 1 GiB). A page multiple is expected
+    /// requested maximum buffer memory (a defensive 1 GiB cap that the ranges
+    /// cannot reach today). A page multiple is expected
     /// not to be adjusted for real-time-only sessions, which keeps the reclaim
     /// fingerprint exact; the elevated reclaim tests verify this live.
     pub(crate) fn new(buffer_kib: u32, maximum_buffers: u32, flush_seconds: u32) -> Result<Self> {
         ensure!(
-            (4..=128).contains(&buffer_kib),
+            (4..=MAX_BUFFER_KIB).contains(&buffer_kib),
             "ETW buffer size must be 4..=128 KiB, got {buffer_kib}"
         );
         ensure!(
-            (4..=4096).contains(&maximum_buffers),
+            (4..=MAX_BUFFERS).contains(&maximum_buffers),
             "ETW maximum buffers must be 4..=4096, got {maximum_buffers}"
         );
         ensure!(
@@ -103,7 +116,7 @@ impl SessionConfig {
         );
         let peak_kib = u64::from(buffer_kib) * u64::from(maximum_buffers);
         ensure!(
-            peak_kib <= 1_048_576,
+            peak_kib <= MAX_PEAK_KIB,
             "ETW buffer memory {buffer_kib} KiB x {maximum_buffers} buffers = {peak_kib} KiB \
              exceeds the 1 GiB limit (1048576 KiB)"
         );
@@ -194,10 +207,6 @@ const FILE_MODE_BITS: u32 = EVENT_TRACE_FILE_MODE_SEQUENTIAL
 fn reclaimable(query: &QueryProperties, expected: &GUID) -> bool {
     let properties = &query.properties;
     let guid = properties.Wnode.Guid;
-    let same_guid = guid.data1 == expected.data1
-        && guid.data2 == expected.data2
-        && guid.data3 == expected.data3
-        && guid.data4 == expected.data4;
     let forbidden_modes = FILE_MODE_BITS
         | EVENT_TRACE_SYSTEM_LOGGER_MODE
         | EVENT_TRACE_BUFFERING_MODE
@@ -207,7 +216,7 @@ fn reclaimable(query: &QueryProperties, expected: &GUID) -> bool {
     let no_log_file = properties.LogFileNameOffset == 0
         || (properties.LogFileNameOffset as usize == offset_of!(QueryProperties, log_file_name)
             && query.log_file_name[0] == 0);
-    same_guid
+    same_guid(&guid, expected)
         && properties.LogFileMode & EVENT_TRACE_REAL_TIME_MODE != 0
         && properties.LogFileMode & forbidden_modes == 0
         && no_log_file
@@ -556,10 +565,11 @@ impl Capture {
         };
         check_enable_status(status)?;
 
-        let mut context = Box::new(
-            CallbackContext::new(Arc::clone(&pool), Arc::clone(&capture.counters))
-                .with_expected_pid(dns_pid),
-        );
+        let mut context = Box::new(CallbackContext::new(
+            Arc::clone(&pool),
+            Arc::clone(&capture.counters),
+            dns_pid,
+        ));
         let mut logfile = EVENT_TRACE_LOGFILEW {
             LoggerName: name.as_mut_ptr(),
             Context: (&raw mut *context).cast(),

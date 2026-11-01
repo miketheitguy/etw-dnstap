@@ -1,5 +1,6 @@
+use super::test_support::handshake;
 use super::*;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, net::TcpListener, rc::Rc};
 
 #[derive(Default)]
 struct ScriptState {
@@ -188,4 +189,57 @@ fn malformed_or_wrong_finish_is_rejected() {
             io::ErrorKind::InvalidData
         );
     }
+}
+
+#[test]
+fn shutdown_deadline_bounds_wait_for_receiver_finish() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let (release, receive) = mpsc::channel();
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("sender connects");
+        let mut stream = handshake(stream);
+        read_control(&mut stream, 3, false).expect("STOP arrives");
+        receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("sender releases receiver");
+    });
+    let sender = Connection::connect(address).expect("handshake succeeds");
+    let started = Instant::now();
+    let result = sender.finish();
+    release.send(()).expect("release receiver");
+    receiver.join().expect("receiver assertions pass");
+    assert!(result.is_err(), "missing FINISH is a shutdown failure");
+    assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+#[test]
+fn deadline_is_not_extended_by_partial_reads() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let (release, receive) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("client connects");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .expect("server write bound");
+        let mut accept = Vec::new();
+        write_control(&mut accept, CONTROL_ACCEPT, true).expect("valid ACCEPT fixture");
+        // Every byte arrives sooner than a per-call 100 ms socket timeout,
+        // but the whole valid frame takes over a second. Only a shared
+        // operation deadline rejects this trickle before it completes.
+        for byte in accept {
+            stream.write_all(&[byte]).expect("partial header writes");
+            if receive.recv_timeout(Duration::from_millis(25)).is_ok() {
+                break;
+            }
+        }
+    });
+    let stream = TcpStream::connect(address).expect("loopback connects");
+    let mut stream = DeadlineTcp::new(stream, Duration::from_millis(100));
+    let started = Instant::now();
+    assert!(read_control(&mut stream, CONTROL_ACCEPT, true).is_err());
+    assert!(started.elapsed() < Duration::from_millis(500));
+    release.send(()).expect("release server");
+    server.join().expect("server exits");
 }
