@@ -7,6 +7,7 @@ import difflib
 import hashlib
 import json
 from pathlib import Path
+from perf_common import read_json as read
 
 parser = argparse.ArgumentParser()
 parser.add_argument("campaign", type=Path)
@@ -15,10 +16,6 @@ base = args.campaign
 output = base / "build" / "management-overlap-audit-v1.json"
 if output.exists():
     raise SystemExit("Preserve existing management audit")
-
-
-def read(path):
-    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def epoch_ms(stamp):
@@ -82,7 +79,7 @@ for name, window in windows.items():
         if call["dns_records_enumerated"] and name in call["receipt_inside_sending_windows"]]
 
 before = base / "build" / "status-helper-before-fix.ps1"
-after = Path("scripts/performance/windows-pooled-campaign.ps1")
+after = Path(__file__).resolve().parent / "archive" / "windows-service-campaign.ps1"
 diff = "".join(difflib.unified_diff(before.read_text(encoding="utf-8-sig").splitlines(True),
                                   after.read_text(encoding="utf-8-sig").splitlines(True),
                                   fromfile=str(before), tofile=str(after)))

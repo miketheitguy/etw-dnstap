@@ -1,4 +1,8 @@
-"""Exercise service ledger validation and the actual analysis command paths."""
+"""Exercise service ledger validation and the actual analysis command paths.
+
+Run with ``python -I scripts/performance/test_metrics_ledger.py`` (or ``python -m unittest``
+from this directory).  The analysis scripts keep their hyphenated command names.
+"""
 import copy
 import json
 from pathlib import Path
@@ -8,9 +12,10 @@ import sys
 import unittest
 import uuid
 
-from metrics_ledger import ledger_summary, normalize_metrics
+SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS))  # `python -I` does not put the script directory on sys.path
 
-SCRIPTS = Path(__file__).parent
+from metrics_ledger import ledger_summary, normalize_metrics  # noqa: E402
 
 
 def fixture(schema=2, loss=None):

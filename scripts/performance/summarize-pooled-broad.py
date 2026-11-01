@@ -6,10 +6,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
-
-
-def normalize_process(value):
-    return re.sub(r'\(\s*(\d+)\)', r'(\1)', value.strip())
+from perf_common import normalize_process
 
 
 def summarize(directory, processes):

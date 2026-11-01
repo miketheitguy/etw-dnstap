@@ -12,8 +12,10 @@ import signal
 import subprocess
 import sys
 import time
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
-HOST = 'dnstap-ubuntu2604'
+HOST = lab_config.get('ubuntu_vm.hostname')
 DEFAULT_CAMPAIGN = 'service-stop-20261030-0633'
 BASE = Path('/home/dnstaplab') / DEFAULT_CAMPAIGN
 TCPDUMP = Path('/usr/bin/tcpdump')
@@ -280,7 +282,7 @@ sub = parser.add_subparsers(dest='command', required=True)
 start_parser = sub.add_parser('start')
 start_parser.add_argument('--run-id', required=True)
 start_parser.add_argument('--client-ip', required=True)
-start_parser.add_argument('--collector-ip', default='172.27.215.60')
+start_parser.add_argument('--collector-ip', default=lab_config.get('network.receiver_ip'))
 stop_parser = sub.add_parser('stop')
 stop_parser.add_argument('--run-id', required=True)
 worker_parser = sub.add_parser('_worker')

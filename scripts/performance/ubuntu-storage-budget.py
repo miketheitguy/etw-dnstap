@@ -4,13 +4,22 @@ import datetime
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--campaign-id', required=True, help='campaign whose archive base is performance-<id>')
+parser.add_argument('--archive-filesystem-uuid', required=True, help='UUID of the (root) filesystem that holds the archives')
 parser.add_argument('--forecast-raw-bytes', type=int, required=True)
 parser.add_argument('--raw-budget-bytes', type=int, default=48*1024**3)
 args = parser.parse_args()
-base = Path('/home/dnstaplab/performance-pooled-vm-20261029-0942')
+if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', args.campaign_id):
+    raise SystemExit('--campaign-id must be 1-64 letters, digits, _ or -')
+base = Path(lab_config.get('ubuntu_vm.home')) / f'performance-{args.campaign_id}'
 saved = json.loads((base/'temporary-data-disk.json').read_text())
 mount = Path(saved['mountpoint'])
 def filesystem(path):
@@ -25,7 +34,7 @@ if (not mount.is_mount() or raw['filesystem_uuid'] != saved['filesystem_uuid']
         or raw['major_minor'] != saved['major_minor']
         or device['serial'] != saved['device_serial'] or device['wwn'] != saved['device_wwn']
         or raw['major_minor'] == archive['major_minor']
-        or archive['filesystem_uuid'] != 'a9c87573-c170-44a0-8c14-09fcc03a56a9'):
+        or archive['filesystem_uuid'] != args.archive_filesystem_uuid):
     raise SystemExit('Live raw/archive volume identities do not match the approved layout')
 for option in ('discard', 'commit=30'):
     if option not in raw['mount_options'].split(',') or option not in archive['mount_options'].split(','):

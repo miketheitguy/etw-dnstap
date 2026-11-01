@@ -1,13 +1,42 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+Generates the authoritative/recursive name lists and the auth zone file from the downloaded source names.
+
+.DESCRIPTION
+Reads source-names.txt and source-commit.json (from Get-DnsWorkloadSource.ps1), keeps the first
+TargetCount valid unique names (excluding blocked labels), and writes auth-names.txt,
+rec-names.txt, relative-names.txt, rejected-names.txt, auth.stress.test.dns and
+provenance.json as UTF-8 without BOM. Uses only reserved .test zones; no DNS traffic.
+
+.PARAMETER SourceDirectory
+Directory holding source-names.txt and source-commit.json (default: the lab workload directory, target/performance/workload).
+.PARAMETER OutputDirectory
+Destination directory (default: the lab workload directory, target/performance/workload).
+.PARAMETER TargetCount
+Number of names to select (default 5000).
+.PARAMETER ExcludeLabels
+Labels to reject (default wpad, isatap).
+
+.OUTPUTS
+The generated workload files plus provenance.json (also written to the pipeline).
+#>
 [CmdletBinding()]
 param(
-    [string]$SourceDirectory = 'target/performance/workload',
-    [string]$OutputDirectory = 'target/performance/workload',
+    [string]$SourceDirectory,
+    [string]$OutputDirectory,
     [int]$TargetCount = 5000,
     [string[]]$ExcludeLabels = @('wpad', 'isatap')
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'LabCommon.psm1') -Force
+$dnsConfig = (Get-LabConfig).dns
+$defaultWorkload = Resolve-LabPath (Get-LabConfig).paths.workload_dir
+if (-not $SourceDirectory) { $SourceDirectory = $defaultWorkload }
+if (-not $OutputDirectory) { $OutputDirectory = $defaultWorkload }
 $source = Join-Path $SourceDirectory 'source-names.txt'
-$commit = (Get-Content -LiteralPath (Join-Path $SourceDirectory 'source-commit.json') -Raw | ConvertFrom-Json).sha
+$commit = (Get-Content -LiteralPath (Join-Path $SourceDirectory 'source-commit.json') -Raw -Encoding UTF8 | ConvertFrom-Json).sha
 if ($commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source commit.' }
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $valid = [Collections.Generic.List[string]]::new()
@@ -53,12 +82,12 @@ $provenance = [ordered]@{
     Selection = "First $TargetCount valid unique names after excluding blocked labels"
     ExcludedLabels = $ExcludeLabels
     RejectedOrDuplicate = $rejected.Count
-    AuthoritativeZone = 'auth.stress.test'
-    RecursiveZone = 'rec.stress.test'
-    AnswerIPv4 = '192.0.2.53'
+    AuthoritativeZone = $dnsConfig.auth_zone
+    RecursiveZone = $dnsConfig.rec_zone
+    AnswerIPv4 = $dnsConfig.answer_ip
     AuthoritativeTTLSeconds = 300
     RecursiveUpstreamTTLSeconds = 0
     Safety = 'Queries use reserved .test zones and a controlled private upstream; no public DNS load.'
 }
-$provenance | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'provenance.json') -Encoding utf8
+Write-LabJson -Path (Join-Path $OutputDirectory 'provenance.json') -InputObject $provenance -Force
 $provenance | ConvertTo-Json

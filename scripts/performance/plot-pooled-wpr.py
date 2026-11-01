@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import sys
 import xml.etree.ElementTree as ET
+from perf_common import sha256_file as digest
 
 ROOT = Path(__file__).resolve().parents[2]
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / "target/performance/matplotlib-cache"))
@@ -25,10 +26,6 @@ RUNS = {
     "pooled-auth-48000-300s-1": ("Authoritative high-rate confirmation", 48000, "PASS"),
     "pooled-rec-28000-300s-1": ("Recursive high-rate confirmation", 28000, "PASS"),
 }
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def render(run_id, source, output, previews):

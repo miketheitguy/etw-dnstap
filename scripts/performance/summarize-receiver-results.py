@@ -5,7 +5,7 @@ from pathlib import Path
 from metrics_ledger import ledger_summary, normalize_metrics
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--directory', type=Path, default=Path('target/performance'))
+parser.add_argument('--directory', type=Path, default=Path(__file__).resolve().parents[2] / 'target/performance', help='evidence directory (default: <repo>/target/performance)')
 parser.add_argument('--runs', nargs='+', default=['auth-1', 'rec-1', 'rec-2'])
 parser.add_argument('--output', type=Path)
 parser.add_argument('--service-metrics-directory', type=Path)

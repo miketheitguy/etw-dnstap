@@ -1,13 +1,13 @@
 """Check evidence rejection; these fixtures do not simulate the Rust callback."""
 
 import copy
-import importlib.util
 from pathlib import Path
+import sys
 import unittest
 
-SPEC = importlib.util.spec_from_file_location("runner", Path(__file__).with_name("pooled-intake-run.py"))
-RUNNER = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(RUNNER)
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # `python -I` does not add the script directory
+
+import pooled_intake_run as RUNNER  # noqa: E402
 
 
 def fixture():

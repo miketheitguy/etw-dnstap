@@ -1,3 +1,37 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+Inspects, exports or summarizes pooled-VM evidence from a WPR trace (scheduling, sampling, disk, hard faults).
+
+.DESCRIPTION
+Run only between load stages; evidence is never appended to or overwritten (the output
+directory must not exist). Inspect gathers trace statistics, Context produces per-vCPU/DPC/
+sampled summaries for a window, Export runs wpaexporter with pooled-evidence.wpaProfile
+filtered to exact target processes. Requires the Windows Performance Toolkit from the
+Windows ADK on the host.
+
+.PARAMETER Action
+Inspect, Export or Context.
+.PARAMETER TracePath
+Path to the .etl trace.
+.PARAMETER OutputDirectory
+New directory for the evidence (must not exist).
+.PARAMETER ViewStartSeconds
+Window start in seconds (Export/Context; finite, >= 0).
+.PARAMETER ViewEndSeconds
+Window end in seconds (Export/Context; finite, > start).
+.PARAMETER TargetProcess
+Export only: exact 'name (pid)' values bounding the raw stack output.
+.PARAMETER Tables
+Export only: Scheduling, Sampled, Disk and/or HardFault.
+.PARAMETER Symbols
+Export only: resolve symbols (uses _NT_SYMBOL_PATH).
+.PARAMETER FileEvents
+Export only: also dump classic FileIo events for the window.
+
+.OUTPUTS
+<OutputDirectory>/ with receipt.json and per-tool command/log/result files.
+#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateSet('Inspect','Export','Context')][string]$Action,
@@ -10,7 +44,9 @@ param(
     [switch]$Symbols,
     [switch]$FileEvents
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'LabCommon.psm1') -Force
 # Run only between load stages. Never append to or overwrite prior evidence.
 $trace = (Resolve-Path -LiteralPath $TracePath).Path
 if (Test-Path -LiteralPath $OutputDirectory) { throw "Preserve existing evidence: $OutputDirectory" }
@@ -23,12 +59,10 @@ $profile = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'pooled-evidence.
 function Invoke-RecordedTool {
     param([string]$Executable, [string[]]$ToolArguments, [string]$Name)
     $started = [DateTime]::UtcNow.ToString('o')
-    @{ executable=$Executable; arguments=$ToolArguments; started_utc=$started } |
-        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output "$Name-command.json") -Encoding utf8
+    Write-LabJson -Path (Join-Path $output "$Name-command.json") -InputObject @{ executable=$Executable; arguments=$ToolArguments; started_utc=$started } -Depth 5
     & $Executable @ToolArguments *> (Join-Path $output "$Name.log")
     $toolExit = $LASTEXITCODE
-    @{ exit_code=$toolExit; started_utc=$started; ended_utc=[DateTime]::UtcNow.ToString('o') } |
-        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output "$Name-result.json") -Encoding utf8
+    Write-LabJson -Path (Join-Path $output "$Name-result.json") -InputObject @{ exit_code=$toolExit; started_utc=$started; ended_utc=[DateTime]::UtcNow.ToString('o') }
     if ($toolExit -ne 0) { throw "$Name failed ($toolExit); preserve and inspect its log" }
 }
 
@@ -42,14 +76,15 @@ $receipt = @{
     exporter_version=(Get-Item -LiteralPath $exporter).VersionInfo.FileVersion
     symbol_path=$env:_NT_SYMBOL_PATH; symcache_path=$env:_NT_SYMCACHE_PATH
 }
-$receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'receipt.json') -Encoding utf8
+Write-LabJson -Path (Join-Path $output 'receipt.json') -InputObject $receipt -Depth 5
 if ($Action -eq 'Inspect') {
     Invoke-RecordedTool $xperf @('-i',$trace,'-a','tracestats','-timespan','actual') 'trace-timespan'
     Invoke-RecordedTool $xperf @('-i',$trace,'-a','tracestats','-detail','stack') 'trace-events-stacks'
     Invoke-RecordedTool $xperf @('-i',$trace,'-a','cswitch','-util') 'cswitch-full-coverage'
     Invoke-RecordedTool $xperf @('-i',$trace,'-a','process','-thread') 'process-thread-lifetimes'
 } else {
-    if (-not [double]::IsFinite($ViewStartSeconds) -or -not [double]::IsFinite($ViewEndSeconds) -or
+    if ([double]::IsNaN($ViewStartSeconds) -or [double]::IsInfinity($ViewStartSeconds) -or
+        [double]::IsNaN($ViewEndSeconds) -or [double]::IsInfinity($ViewEndSeconds) -or
         $ViewStartSeconds -lt 0 -or $ViewEndSeconds -le $ViewStartSeconds) {
         throw 'Export requires a finite 0 <= ViewStartSeconds < ViewEndSeconds'
     }
@@ -88,7 +123,7 @@ if ($Action -eq 'Inspect') {
         $graph.Preset.SetAttribute('InitialFilterShouldKeep','true')
     }
     $runtimeProfile = Join-Path $output 'view.wpaProfile'
-    $view.Save($runtimeProfile)
+    $view.Save($runtimeProfile)  # XmlDocument.Save writes UTF-8 with the declared encoding
     $exportArguments = @('-i',$trace,'-range',$start,$end,'-profile',$runtimeProfile,
         '-nodefault','-addsearchdir',(Join-Path $toolRoot 'CustomDataSources/Event_Tracing_for_Windows'),
         '-outputfolder',$output,'-prefix','evidence_')

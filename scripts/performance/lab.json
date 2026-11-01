@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "windows_vm": {
+    "name": "DNSTap-WS2025",
+    "id": "24bafedb-0998-4430-a0c6-7e90350cd9ac",
+    "processor_count": 2,
+    "memory_bytes": 4294967296,
+    "credential_path": "target/lab-windows/private/administrator.clixml",
+    "service_name": "EtwDnstap",
+    "install_dir": "C:/Program Files/EtwDnstap",
+    "install_exe": "C:/Program Files/EtwDnstap/etw-dnstap.exe",
+    "data_dir": "C:/ProgramData/EtwDnstap/performance",
+    "session_name": "EtwDnstap-Lab"
+  },
+  "ubuntu_vm": {
+    "name": "DNSTap-Ubuntu2604",
+    "id": "d5ca1bde-da5c-4c08-9625-e845c1443b0b",
+    "hostname": "dnstap-ubuntu2604",
+    "ssh_alias": "dnstap-ubuntu",
+    "ssh_config": "target/lab-ubuntu/ssh_config",
+    "user": "dnstaplab",
+    "home": "/home/dnstaplab",
+    "lab_lib_dir": "/usr/local/lib/etw-dnstap-lab",
+    "vhdx_dir": "D:/VMs/DNSTap-Ubuntu2604",
+    "os_vhdx": "D:/VMs/DNSTap-Ubuntu2604/DNSTap-Ubuntu2604.vhdx",
+    "processor_count": 2,
+    "memory_bytes": 4294967296
+  },
+  "network": {
+    "receiver_ip": "172.27.215.60",
+    "receiver_port": 6000,
+    "dns_ip": "172.27.215.163"
+  },
+  "dns": {
+    "auth_zone": "auth.stress.test",
+    "rec_zone": "rec.stress.test",
+    "auth_record_count": 5000,
+    "answer_name": "www.auth.stress.test",
+    "answer_ip": "192.0.2.53",
+    "answer_ttl": 300
+  },
+  "paths": {
+    "evidence_root": "target/performance",
+    "workload_dir": "target/performance/workload",
+    "dns_stress_exe": "tools/dns-stress/target/x86_64-pc-windows-msvc/release/dns-stress.exe"
+  }
+}

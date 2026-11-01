@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from perf_common import sha256_file as sha256
 
 
 def validate(payload, capacity, mode):
@@ -84,10 +85,6 @@ class ProcessEvidence:
                         memory_samples=self.samples)
         finally:
             self.kernel.CloseHandle(self.handle)
-
-
-def sha256(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def run(args):

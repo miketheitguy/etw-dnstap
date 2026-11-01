@@ -1,4 +1,13 @@
-"""Record receiver, upstream, kernel, and disk evidence once per second."""
+"""Record receiver, upstream, kernel, and disk evidence once per second.
+
+Started by setup-ubuntu-workload.sh as a root systemd unit from the root-owned lab library
+directory.  Configuration is by environment variable: DNSTAP_PERF_BASE (required, evidence
+directory), DNSTAP_PERF_LOG, DNSTAP_PERF_MIN_FREE, DNSTAP_PERF_RAW_LIMIT and
+DNSTAP_PERF_UPSTREAM_UNIT.  Appends one JSON line per second for up to two hours.
+"""
+from __future__ import annotations
+
+import argparse
 import datetime
 import json
 import os
@@ -8,13 +17,13 @@ import subprocess
 import time
 import urllib.request
 
-BASE = Path(os.environ.get('DNSTAP_PERF_BASE', '/home/dnstaplab/performance'))
+BASE = Path(os.environ['DNSTAP_PERF_BASE'])  # required: no baked-in home directory
 LOG = Path(os.environ.get('DNSTAP_PERF_LOG', '/var/log/dnscollector/performance.jsonl'))
 MIN_FREE = int(os.environ.get('DNSTAP_PERF_MIN_FREE', 3 * 1024**3))
 RAW_LIMIT = int(os.environ.get('DNSTAP_PERF_RAW_LIMIT', 12 * 1024**3))
 UPSTREAM = os.environ.get('DNSTAP_PERF_UPSTREAM_UNIT', 'dnstap-performance-upstream')
 
-def process(unit):
+def process(unit: str) -> dict:
     pid = int(subprocess.check_output(['systemctl', 'show', unit, '-p', 'MainPID', '--value']))
     if not pid:
         return {'pid': 0}
@@ -23,6 +32,7 @@ def process(unit):
             'rss_bytes': int(stat[23]) * os.sysconf('SC_PAGE_SIZE'),
             'io': Path(f'/proc/{pid}/io').read_text()}
 
+argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args()
 with (BASE / 'monitor.jsonl').open('a', buffering=1) as out:
     for _ in range(7200):
         started = time.monotonic()

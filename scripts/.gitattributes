@@ -1,0 +1,2 @@
+# Guest-side shell scripts are copied to Linux: keep LF line endings regardless of core.autocrlf.
+*.sh text eol=lf

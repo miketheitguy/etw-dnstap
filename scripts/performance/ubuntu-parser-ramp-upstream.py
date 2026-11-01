@@ -10,7 +10,10 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import time
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
 DEFAULT_CAMPAIGN_ID = 'parser-ramp-20261030'
 CAMPAIGN_ID = DEFAULT_CAMPAIGN_ID
@@ -20,8 +23,8 @@ CONFIG = BASE / 'dnsmasq.conf'
 RULES = BASE / 'dnstap-performance.nft'
 TABLE = 'dnstap_performance'
 EXPECTED_NAMES_SHA256 = '9B918CC7DA1155583B1E032741CCCE8B4665C26103DBC394FDF49A9BFF885BA6'
-WINDOWS = '172.27.215.163'
-UBUNTU = '172.27.215.60'
+WINDOWS = lab_config.get('network.dns_ip')
+UBUNTU = lab_config.get('network.receiver_ip')
 
 
 def call(argv, *, check=True, input_text=None):
@@ -125,7 +128,7 @@ def configure_campaign(args):
 
 def prepare(args):
     configure_campaign(args)
-    if Path('/etc/hostname').read_text().strip() != 'dnstap-ubuntu2604':
+    if Path('/etc/hostname').read_text().strip() != lab_config.get('ubuntu_vm.hostname'):
         raise RuntimeError('Unexpected Ubuntu guest')
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not NAMES.exists() and not args.resume:

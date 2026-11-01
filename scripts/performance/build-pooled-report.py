@@ -5,6 +5,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from perf_common import read_json as read
 
 parser = argparse.ArgumentParser()
 parser.add_argument("campaign", type=Path)
@@ -13,10 +14,6 @@ parser.add_argument("--complete", action="store_true",
                     help="Require 22 reconciled, classified stages, native trace integrity, and restoration proofs")
 args = parser.parse_args()
 base = args.campaign
-
-
-def read(path):
-    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def obj(path):

@@ -8,9 +8,12 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import sys
 import urllib.request
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
+import lab_config  # noqa: E402
 
-BASE = Path(os.environ.get('DNSTAP_PERF_BASE', '/home/dnstaplab/performance'))
+BASE = Path(os.environ.get('DNSTAP_PERF_BASE') or Path(lab_config.get('ubuntu_vm.home')) / 'performance')
 LOG = Path(os.environ.get('DNSTAP_PERF_LOG', '/var/log/dnscollector/performance.jsonl'))
 parser = argparse.ArgumentParser()
 sub = parser.add_subparsers(dest='command', required=True)

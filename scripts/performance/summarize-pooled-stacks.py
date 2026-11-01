@@ -6,24 +6,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from pathlib import Path
-
-
-def number(value):
-    result = float(value.replace(',', ''))
-    if not math.isfinite(result):
-        raise ValueError('nonfinite exported number')
-    return result
-
-
-def distribution(values):
-    ordered = sorted(values)
-    return dict(count=len(ordered), sum=sum(ordered), max=max(ordered, default=None),
-                **{f'p{p}': ordered[math.ceil(len(ordered) * p / 100) - 1]
-                   if ordered else None for p in (50, 95, 99)})
-
-
-def top(counter, limit=12):
-    return [dict(value=value, weight=weight) for value, weight in counter.most_common(limit)]
+from perf_common import distribution, finite_number as number, top
 
 
 def read_rows(path):
