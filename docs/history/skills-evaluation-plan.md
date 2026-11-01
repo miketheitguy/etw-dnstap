@@ -8,12 +8,12 @@ Every line number below was read from the file at plan time.
 
 ## 1. Task summary
 
-Goal: evaluate `C:\Users\kn6py\Git\etw-dnstap` (a Rust Windows service that consumes Microsoft-Windows-DNSServer ETW events and emits dnstap Frame Streams) and its build/CI/provisioning process against the rules in the newly installed Claude Code skills, then report findings. Whether to fix anything is an open human decision (section 7).
+Goal: evaluate this repository (a Rust Windows service that consumes Microsoft-Windows-DNSServer ETW events and emits dnstap Frame Streams) and its build/CI/provisioning process against the rules in the newly installed Claude Code skills, then report findings. Whether to fix anything is an open human decision (section 7).
 
 Deliverables: relevance matrix, findings list (observed vs to verify), phased workflow with agents, risks/decision points.
 
 Inventory facts (counted):
-- 15 skills exist under `C:\Users\kn6py\.claude\skills\<name>\` (`asd-ste100` is a symlink; see the correction above).
+- 15 skills exist under the user-level Claude Code skills directory, `<profile>\.claude\skills\<name>\` (`asd-ste100` is a symlink; see the correction above).
 - `skills\synced\` holds a bucket of general-purpose skills (docs, pdf, docx, deep-research, google-workspace, computer-use, skill-creator, browser, morning, import-memory), not part of the requested list. Only `deep-research`/`docs` could conceivably help, and neither is needed.
 - Repo source: 37 `.rs` files under `src/` (about 17 contain `unsafe`/FFI tokens), one binary crate with a lib (`src/lib.rs`, `src/main.rs`), separate `fuzz/` workspace (3 targets) and `tools/dns-stress/` crate. **No `.c/.cpp/.h/.idl/.acf/.wxs/.lua` file and no `build.rs`** (Glob of repo root, `docs/`, `tools/`, `scripts/` found none; the repo `target/` tree contains Windows ISO media and a vendored DNS-collector Go tree, which are build artifacts, not project source, and `.gitignore:1` ignores `/target/`).
 - No installer: service install is manual PowerShell (`docs/guide/install.md:192-235`, copy at `:205`). No tags (`CHANGELOG.md:8`). Workflows: only `.github/workflows/ci.yml` and `lab.yml`.
