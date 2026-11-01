@@ -4,9 +4,12 @@ fn offset_u32(offset: usize) -> u32 {
     u32::try_from(offset).expect("test offsets fit u32")
 }
 
+const TEST_GUID: GUID = GUID::from_u128(0x43b7_b2fc_777a_5214_b6ed_665c_1ff9_e972);
+
 /// A query result shaped like this program's own real-time session.
 fn own_query(config: &SessionConfig) -> QueryProperties {
     let mut query = QueryProperties::new();
+    query.properties.Wnode.Guid = TEST_GUID;
     query.properties.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
     query.properties.BufferSize = config.buffer_kib;
     query.properties.LogFileNameOffset = offset_u32(offset_of!(QueryProperties, log_file_name));
@@ -21,7 +24,7 @@ fn query_result(edit: impl FnOnce(&mut QueryProperties)) -> QueryProperties {
 
 /// Fingerprint check against the default configuration.
 fn reclaimable_by_default(query: &QueryProperties) -> bool {
-    reclaimable(query)
+    reclaimable(query, &TEST_GUID)
 }
 
 #[test]
@@ -100,6 +103,31 @@ fn fingerprint_rejects_foreign_sessions() {
 }
 
 #[test]
+fn fingerprint_rejects_a_session_with_another_guid() {
+    // Same shape, same name, but not started with this program's GUID.
+    assert!(!reclaimable(
+        &query_result(|q| q.properties.Wnode.Guid = GUID::from_u128(1)),
+        &TEST_GUID
+    ));
+    assert!(!reclaimable(
+        &query_result(|q| q.properties.Wnode.Guid = GUID::default()),
+        &TEST_GUID
+    ));
+}
+
+#[test]
+fn reclaim_decision_refuses_foreign_guid_without_stopping() {
+    let (result, stopped, count) = run_decision(
+        ERROR_SUCCESS,
+        |q| q.properties.Wnode.Guid = GUID::from_u128(7),
+        ERROR_SUCCESS,
+    );
+    assert!(result.is_err());
+    assert!(!stopped);
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn query_outcome_classifies_statuses() {
     assert_eq!(query_outcome(ERROR_SUCCESS), QueryOutcome::Inspect);
     assert_eq!(
@@ -129,17 +157,26 @@ fn session_properties_write_configured_values() {
 #[test]
 fn fingerprint_ignores_buffer_size_so_a_changed_flag_does_not_block_restart() {
     let config = SessionConfig::new(128, 512, 5).expect("valid configuration");
-    assert!(reclaimable(&own_query(&config)));
-    assert!(reclaimable(&own_query(&SessionConfig::default())));
+    assert!(reclaimable(&own_query(&config), &TEST_GUID));
+    assert!(reclaimable(
+        &own_query(&SessionConfig::default()),
+        &TEST_GUID
+    ));
     // The shape checks still apply regardless of size.
-    assert!(!reclaimable(&query_result(|q| {
-        q.properties.BufferSize = 128;
-        q.properties.LogFileMode = 0;
-    })));
-    assert!(!reclaimable(&query_result(|q| {
-        q.properties.BufferSize = 128;
-        q.log_file_name[0] = u16::from(b'C');
-    })));
+    assert!(!reclaimable(
+        &query_result(|q| {
+            q.properties.BufferSize = 128;
+            q.properties.LogFileMode = 0;
+        }),
+        &TEST_GUID
+    ));
+    assert!(!reclaimable(
+        &query_result(|q| {
+            q.properties.BufferSize = 128;
+            q.log_file_name[0] = u16::from(b'C');
+        }),
+        &TEST_GUID
+    ));
 }
 
 fn utf16_nul(text: &str) -> Vec<u16> {
@@ -257,8 +294,14 @@ fn assert_log_file_session_refused(name_text: &str, mode: u32) {
     print_query("log-file session", &name);
 
     let counters = CaptureCounters::default();
-    let error = reclaim_stale_session(&name, name_text, &counters, &config)
-        .expect_err("a session that writes a log file must not be reclaimed");
+    let error = reclaim_stale_session(
+        &name,
+        name_text,
+        &counters,
+        &config,
+        &session_guid(name_text).expect("guid"),
+    )
+    .expect_err("a session that writes a log file must not be reclaimed");
     assert!(
         error
             .to_string()
@@ -311,7 +354,14 @@ fn reclaim_replaces_leaked_real_time_session() {
     );
 
     let counters = CaptureCounters::default();
-    reclaim_stale_session(&name, NAME, &counters, &config).expect("reclaim succeeds");
+    reclaim_stale_session(
+        &name,
+        NAME,
+        &counters,
+        &config,
+        &session_guid(NAME).expect("guid"),
+    )
+    .expect("reclaim succeeds");
     let (status, _session) = start_session(&name, session_guid(NAME).expect("guid"), &config);
     assert_eq!(status, ERROR_SUCCESS, "retry after reclaim should start");
     print_query("restarted session", &name);
@@ -348,6 +398,7 @@ fn run_decision(
         "test",
         &counters,
         &config,
+        &TEST_GUID,
         |properties| {
             *properties = own_query(&config);
             query_edit(properties);
@@ -360,6 +411,11 @@ fn run_decision(
     );
     let count = counters.stale_sessions_reclaimed.load(Ordering::Relaxed);
     (result, stopped, count)
+}
+
+#[test]
+fn exit_reason_names_the_process() {
+    assert!(exited_reason(77).contains("exited") && exited_reason(77).contains("77"));
 }
 
 #[test]

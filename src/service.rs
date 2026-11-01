@@ -140,8 +140,9 @@ fn run_registered(handle: SERVICE_STATUS_HANDLE) -> Result<()> {
     let mut startup_guard = Some(pipeline::ShutdownWatchdog::arm());
     let result = (|| {
         report_status(handle, SERVICE_START_PENDING, false)?;
-        // Identity is verified before argument validation, so an unprivileged
-        // or misconfigured host never reads its configuration.
+        // Identity is verified before the arguments are used: the command line
+        // is already parsed, but an unprivileged or misconfigured host never
+        // acts on its configuration.
         verify_identity()?;
         let args = ARGS
             .lock()
