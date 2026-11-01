@@ -47,6 +47,16 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- The parser is woken once per delivered ETW buffer that enqueued events
+  (`EVENT_TRACE_LOGFILEW.BufferCallback`), and after data it polls for up to
+  200 µs before it parks (adaptive: off after an empty linger, on again after an
+  idle park). A real-time session delivers each flush interval as one burst; the
+  timed poll woke too late, so a 10,000-event burst overflowed the 8,192-slot
+  queue. Lab, default settings: 5,000 QPS ring loss fell from about 19% to 0,
+  and 10,000 QPS loss from 60.7% to 0.3%-1.1%. The per-event callback stays
+  wake-free.
+  New counters `etw_buffers_delivered` and `parser_wake_requests`. See
+  [the validation record](docs/history/buffer-wake-validation.md).
 - Receiver reconnect with jittered backoff (250 ms to 30 s). Each new session
   repeats the Frame Streams handshake. Frames are never resent. Commit `f0b51f4`.
 - Periodic counter logs, `capture stats` and `output stats`, every

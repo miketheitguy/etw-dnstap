@@ -2,8 +2,9 @@
 
 > **Status:** Historical · **Evidence dated:** October 29, 2026 UTC · **Commit:** not recorded · **Reviewed:** 2026-11-01
 
-> **Scope note:** This experiment rejected a wake on each enqueue. It does not
-> rule out a wake once per ETW buffer, which was not tested.
+> **Scope note:** This experiment rejected a wake on each enqueue. A wake once
+> per ETW buffer was later tested and adopted; see
+> [ETW buffer wake validation](buffer-wake-validation.md).
 
 This historical note records the rejected `wake-1024-v1` candidate for
 maintainers reviewing the ring-drop investigation. The active implementation

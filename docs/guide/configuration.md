@@ -67,9 +67,13 @@ settings.
 With the periodic flush off (`--etw-flush-ms 0`), ETW delivers real-time events
 in batches about `--etw-flush-seconds` (1 second by default) apart. Delivery
 latency is therefore up to about 2 seconds, and usually under 1 second. A batch
-that holds more events than the channel can take drops the excess. Two
-arithmetic estimates put the start of drops for the default 8,192-event channel
-between about 2,000 and 4,000 queries per second. Neither has been measured.
+that holds more events than the channel can take drops the excess unless the
+parser drains it while it arrives. The ETW buffer callback wakes the parser for
+each delivered buffer, so it does. On the 6-vCPU lab VM with all defaults, the
+authoritative loss was 0 at 1,000 and 5,000 queries per second and 1.1% at
+10,000 queries per second (50 s runs; see
+[ETW buffer wake validation](../history/buffer-wake-validation.md)). Before this
+wake, the same 5,000 queries-per-second load lost about 19%.
 
 Lab evidence (6-vCPU VM, Windows Server 2025, authoritative workload, default
 8,192-event channel) for the flush-off configuration with 64 KiB buffers and 256
@@ -342,6 +346,8 @@ These fields appear on `capture stats` and `capture stopped`.
 | `etw_flushes` | Successful periodic ETW flush requests. |
 | `etw_flush_errors` | Failed flush requests. Only the first is logged. |
 | `etw_flush_max_us` | Longest flush call in microseconds, including supervisor scheduling delay. |
+| `etw_buffers_delivered` | ETW buffers whose delivery finished (calls of the buffer callback). |
+| `parser_wake_requests` | Delivered buffers that enqueued at least one event. Each sends one wake request to the parser; the request costs nothing when the parser is already running, so this is not a count of parser wakeups. |
 
 ### Output counters
 

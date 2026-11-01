@@ -496,6 +496,7 @@ impl Capture {
         pool: Arc<PoolManager>,
         counters: Arc<CaptureCounters>,
         config: SessionConfig,
+        parser: thread::Thread,
         #[cfg(feature = "diag-timing")] consumer_priority: Option<ThreadPriority>,
     ) -> Result<Self> {
         ensure!(
@@ -578,6 +579,7 @@ impl Capture {
         logfile.Anonymous1.ProcessTraceMode =
             PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
         logfile.Anonymous2.EventRecordCallback = Some(native_etw_callback);
+        logfile.BufferCallback = Some(intake::native_buffer_callback);
         // SAFETY: All pointers in logfile remain valid throughout OpenTrace. Context
         // has a stable Box address, retained by the worker until ProcessTrace ends.
         let consumer = unsafe { OpenTraceW(&raw mut logfile) };
@@ -595,7 +597,7 @@ impl Capture {
                 .name("etw-consumer".into())
                 .spawn(move || {
                     // Keep the callback's pointee alive through the entire native call.
-                    intake::install_producer(&context, sender, pool);
+                    intake::install_producer(&context, sender, pool, parser);
                     let _context = context;
                     #[cfg(feature = "diag-timing")]
                     if let Some(priority) = consumer_priority {

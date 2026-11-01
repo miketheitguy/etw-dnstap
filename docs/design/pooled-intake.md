@@ -143,8 +143,11 @@ The callback leases with `ArrayQueue::pop` and submits with
 event, which immediately recycles its lease. There is no capacity wait, callback
 logging, vector growth, or fallback allocation.
 
-The event-channel receiver uses only `try_recv` and parks between empty polls,
-backing off from 2 ms to 20 ms and resetting after each event. It never registers a blocking receiver or selector.
+The event-channel receiver uses only `try_recv`. The ETW buffer callback wakes
+it once per delivered buffer that enqueued events. After data it polls for up to
+200 µs before it parks (the linger turns off after one that finds nothing, and
+back on after an idle park). Between empty polls it parks, backing off from
+2 ms to 20 ms and resetting after each event. It never registers a blocking receiver or selector.
 `crossbeam-channel` 0.5.15 checks an atomic empty-waiter flag before locking its
 notification mutex; the production event path keeps that waiter list empty.
 Adding `recv`, `recv_timeout`, iteration, or selection on this channel would
@@ -232,6 +235,8 @@ loss categories:
 | `queue_backlog` | Records remaining in the channel |
 | `etw_flushes` | Successful periodic ETW session flush requests |
 | `etw_flush_errors` | Failed flush requests; the first is logged with its Win32 status |
+| `etw_buffers_delivered` | ETW buffers whose delivery finished (buffer callback calls) |
+| `parser_wake_requests` | Delivered buffers that enqueued events and so sent the parser a wake request |
 | `etw_flush_max_us` | Longest wall-clock duration of one flush call in microseconds, including scheduling delay on the supervisor thread (lab maxima of 11-46 ms under load were near multiples of the 15.6 ms timer tick; idle maximum about 0.35 ms) |
 
 At quiescence, the accounting identities are:

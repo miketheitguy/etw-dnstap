@@ -109,6 +109,11 @@ pub(crate) struct CaptureCounters {
     pub(crate) etw_flush_slow_warned: AtomicBool,
     /// Leaked sessions from an earlier instance that startup stopped and replaced.
     pub(crate) stale_sessions_reclaimed: AtomicU64,
+    /// ETW buffers whose delivery finished (calls of the buffer callback).
+    pub(crate) etw_buffers_delivered: AtomicU64,
+    /// Buffer deliveries that enqueued at least one event. Each one sends a wake
+    /// request to the parser, which costs nothing when the parser is running.
+    pub(crate) parser_wake_requests: AtomicU64,
 }
 
 fn supported(id: u16) -> bool {

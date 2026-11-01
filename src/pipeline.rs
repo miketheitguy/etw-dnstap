@@ -582,6 +582,9 @@ struct ProducerStart<'a> {
     pub(crate) pool: Arc<PoolManager>,
     pub(crate) counters: Arc<CaptureCounters>,
     pub(crate) session: SessionConfig,
+    /// The parser thread. The ETW producer wakes it once per delivered buffer
+    /// that enqueued events; fakes may ignore it.
+    pub(crate) parser: thread::Thread,
     /// Read only by diagnostic producers.
     #[cfg(feature = "diag-timing")]
     pub(crate) diag: DiagContext,
@@ -669,6 +672,7 @@ pub(crate) fn run_capture(
                 start.pool,
                 start.counters,
                 start.session,
+                start.parser,
                 #[cfg(feature = "diag-timing")]
                 start.diag.thread_priority,
             )
@@ -723,6 +727,7 @@ where
         pool,
         counters: Arc::clone(&capture_counts),
         session: config.session,
+        parser: parser.thread().clone(),
         #[cfg(feature = "diag-timing")]
         diag: config.diag,
     });
@@ -890,8 +895,8 @@ fn supervise(
         // (docs/history/ring-wakeup.md). The park ends at the next flush deadline, so the
         // cadence is the setting plus at most one timer tick (about 15.6 ms).
         if monitor.flush.poll(now) && flush_etw(capture, monitor.capture) {
-            // The batch just delivered is queued; wake the parser instead of
-            // letting it finish a backed-off idle park first.
+            // The ETW buffer callback also wakes the parser when the flushed
+            // buffers arrive; this wake is a cheap backstop.
             parser.thread().unpark();
         }
         if monitor.target.poll(now)
@@ -1162,14 +1167,20 @@ pub(crate) fn parse_and_encode<'e>(
     result
 }
 
-// The ETW callback must stay wake-free; see docs/history/ring-wakeup.md. The parser
-// therefore polls with a bounded backoff: each empty poll doubles the park from
-// 2 ms to at most 20 ms, and any received event resets it to 2 ms. Windows'
-// default ~15.6 ms timer granularity stretches these requests, so a 20 ms park
-// can last about 31 ms. Nominal idle wake-ups fall from about 500/s to about
-// 50/s (about 37/s measured). Shutdown is unaffected because completion is
+// The per-event ETW callback stays wake-free; see docs/history/ring-wakeup.md.
+// A real-time session delivers events in bursts (about once per flush interval).
+// The ETW buffer callback wakes the parser once per delivered buffer that
+// enqueued events, so draining starts within microseconds of a burst. After
+// data, the parser lingers for LINGER_AFTER_DATA before it parks, so a burst
+// costs about one wake, not one per buffer. The timed polls below are a fallback
+// for test producers, flushing the sink, and shutdown: each empty poll doubles
+// the park from 2 ms to at most 20 ms, and any received event resets it to 2 ms.
+// Windows' default ~15.6 ms timer granularity stretches these requests, so a
+// 20 ms park can last about 31 ms. Shutdown is unaffected because completion is
 // followed by unpark, which ends any park.
 const IDLE_POLL_MIN: Duration = Duration::from_millis(2);
+/// After a drain that found data, poll this long before parking.
+const LINGER_AFTER_DATA: Duration = Duration::from_micros(200);
 /// With bytes pending, an idle parser flushes if the last flush is older than this.
 const IDLE_FLUSH_AFTER: Duration = Duration::from_millis(100);
 /// While busy the sink's buffer fills and flushes itself; this bounds the wait
@@ -1214,6 +1225,13 @@ fn drain_queue_inner<T>(
     mut consume: impl FnMut(Option<T>) -> Result<()>,
 ) -> Result<()> {
     let mut idle_poll = IDLE_POLL_MIN;
+    // True after an event was consumed since the last park or linger.
+    let mut had_data = false;
+    // Off after a linger that found no data, back on after a park that timed out
+    // with nothing queued. When ETW delivers buffers one by one and further apart
+    // than the linger window (high, steady rates), the parser then parks between
+    // buffers instead of spinning through most of each gap.
+    let mut linger_armed = true;
     #[cfg(feature = "diag-timing")]
     let (mut run, mut just_parked) = (0_u64, false);
     loop {
@@ -1226,6 +1244,7 @@ fn drain_queue_inner<T>(
         }
         if let Ok(event) = queue.try_recv() {
             idle_poll = idle_poll_after(true, idle_poll);
+            had_data = true;
             #[cfg(feature = "diag-timing")]
             {
                 run += 1;
@@ -1246,9 +1265,32 @@ fn drain_queue_inner<T>(
             return Ok(());
         } else {
             consume(None)?;
+            if had_data && linger_armed {
+                had_data = false;
+                // Inside an ETW delivery burst the next buffer usually follows
+                // within microseconds. Polling briefly avoids a park and a costly
+                // wake (about 17 us for the waker on the lab VM) per buffer.
+                let linger = Instant::now();
+                while queue.is_empty()
+                    && !producer_done.load(Ordering::Acquire)
+                    && linger.elapsed() < LINGER_AFTER_DATA
+                {
+                    std::hint::spin_loop();
+                }
+                // New data, or completion: loop without parking.
+                if !queue.is_empty() || producer_done.load(Ordering::Acquire) {
+                    continue;
+                }
+                linger_armed = false;
+            }
+            had_data = false;
             #[cfg(feature = "diag-timing")]
             let parked = Instant::now();
             thread::park_timeout(idle_poll);
+            if queue.is_empty() {
+                // A quiet period (or a spurious wake): the next burst may linger.
+                linger_armed = true;
+            }
             #[cfg(feature = "diag-timing")]
             if let Some(diag) = diag {
                 diag.record_park(parked.elapsed(), idle_poll);
@@ -1297,6 +1339,8 @@ macro_rules! emit_counts {
             etw_flushes = capture.etw_flushes.load(Ordering::Relaxed),
             etw_flush_errors = capture.etw_flush_errors.load(Ordering::Relaxed),
             etw_flush_max_us = capture.etw_flush_max_us.load(Ordering::Relaxed),
+            etw_buffers_delivered = capture.etw_buffers_delivered.load(Ordering::Relaxed),
+            parser_wake_requests = capture.parser_wake_requests.load(Ordering::Relaxed),
             $capture_message
         );
         tracing::info!(
@@ -1947,23 +1991,30 @@ mod tests {
         let done = AtomicBool::new(false);
         let timing = DiagTiming::default();
         let mut idle_calls = 0;
+        // Idle call 1 follows data: the linger finds nothing and the parser parks
+        // (an empty wake). Idle call 2 enqueues before the second park. Idle call 3
+        // follows data again and completes, which ends the linger without a park.
         drain_queue_inner(&queue, &done, Some(&timing), |value| {
             if value.is_none() {
                 idle_calls += 1;
-                if idle_calls == 1 {
-                    for value in 0..3 {
-                        send.try_send(value).expect("space available");
+                match idle_calls {
+                    1 => {}
+                    2 => {
+                        for value in 0..3 {
+                            send.try_send(value).expect("space available");
+                        }
                     }
-                } else {
-                    done.store(true, Ordering::Release);
+                    _ => done.store(true, Ordering::Release),
                 }
             }
             Ok(())
         })
         .expect("drain succeeds");
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        assert_eq!(idle_calls, 3);
         assert_eq!(load(&timing.parks), 2);
-        assert_eq!(load(&timing.backoff_parks), 0);
+        // The second park follows an empty one, so it backs off to 4 ms.
+        assert_eq!(load(&timing.backoff_parks), 1);
         assert!(load(&timing.park_ns) > 0);
         assert_eq!(load(&timing.max_run), 5);
         assert_eq!(load(&timing.wake_len_max), 3);

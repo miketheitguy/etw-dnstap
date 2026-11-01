@@ -1,16 +1,20 @@
-//! The native ETW callback and the deep copy of records into pooled storage.
+//! The native ETW callbacks and the deep copy of records into pooled storage.
 //!
-//! The callback is allocation-free and wake-free; see `docs/history/ring-wakeup.md`.
+//! The per-event callback is allocation-free and wake-free; see
+//! `docs/history/ring-wakeup.md`. The buffer callback, which ETW calls once after
+//! it delivers each buffer, wakes the parser when that buffer enqueued events.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ptr::null_mut,
     sync::{Arc, atomic::Ordering},
+    thread::Thread,
 };
 
 use crossbeam_channel::{Sender, TrySendError};
 use windows_sys::Win32::System::Diagnostics::Etw::{
     ETW_BUFFER_CONTEXT, EVENT_HEADER, EVENT_HEADER_EXTENDED_DATA_ITEM, EVENT_RECORD,
+    EVENT_TRACE_LOGFILEW,
 };
 
 use super::{
@@ -66,6 +70,12 @@ struct CallbackProducer {
     context: usize,
     sender: Sender<RawEtwEvent>,
     pool: Arc<PoolManager>,
+    counters: Arc<CaptureCounters>,
+    /// The parser thread, woken at most once per delivered ETW buffer.
+    parser: Thread,
+    /// Set by the event callback after an enqueue and cleared by the buffer
+    /// callback. Both run on this thread, so a `Cell` is enough.
+    enqueued: Cell<bool>,
 }
 
 thread_local! {
@@ -80,15 +90,49 @@ pub(super) fn install_producer(
     context: &CallbackContext,
     sender: Sender<RawEtwEvent>,
     pool: Arc<PoolManager>,
+    parser: Thread,
 ) {
     let context_address = std::ptr::from_ref(context) as usize;
+    let counters = Arc::clone(&context.counters);
     PRODUCER.with(|state| {
         *state.borrow_mut() = Some(CallbackProducer {
             context: context_address,
             sender,
             pool,
+            counters,
+            parser,
+            enqueued: Cell::new(false),
         });
     });
+}
+
+/// The `BufferCallback` registered with `OpenTraceW`. `ProcessTrace` calls it on
+/// the consumer thread after it has delivered every event of one buffer. A real-
+/// time session delivers its buffers in bursts (about once per flush interval),
+/// so the parser is woken while the burst arrives instead of after its next
+/// timed poll. The parser keeps one wake token, so no wake is lost.
+///
+/// It reads no pointer and cannot panic. It returns TRUE, because FALSE would
+/// end `ProcessTrace`.
+pub(super) extern "system" fn native_buffer_callback(_logfile: *mut EVENT_TRACE_LOGFILEW) -> u32 {
+    let _ = PRODUCER.try_with(|state| {
+        if let Ok(state) = state.try_borrow()
+            && let Some(producer) = state.as_ref()
+        {
+            producer
+                .counters
+                .etw_buffers_delivered
+                .fetch_add(1, Ordering::Relaxed);
+            if producer.enqueued.replace(false) {
+                producer
+                    .counters
+                    .parser_wake_requests
+                    .fetch_add(1, Ordering::Relaxed);
+                producer.parser.unpark();
+            }
+        }
+    });
+    1
 }
 
 /// Drops the calling thread's producer state, closing the channel's last sender.
@@ -162,7 +206,8 @@ pub(super) unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECO
                 }
             };
             match producer.sender.try_send(owned) {
-                Ok(()) => {}
+                // The buffer callback wakes the parser; this path never does.
+                Ok(()) => producer.enqueued.set(true),
                 Err(TrySendError::Full(_owned)) => {
                     context.counters.dropped.fetch_add(1, Ordering::Relaxed);
                     context
