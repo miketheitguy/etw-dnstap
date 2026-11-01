@@ -2,8 +2,8 @@
 name = "dns-stress"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.96"
 description = "Bounded, pipelined UDP DNS laboratory load generator"
+license = "MIT"
 publish = false
 
 [dependencies]
