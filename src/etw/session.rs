@@ -36,11 +36,10 @@ use windows_sys::{
 
 use super::{
     CaptureCounters, PROVIDER, PoolManager, RawEtwEvent, SUPPORTED_EVENT_IDS, check_status,
-    instance::InstanceLock,
     intake::{self, CallbackContext, native_etw_callback},
     keywords::{KeywordChoice, KeywordSelection, resolve_keywords},
     session_guid::{format_guid, session_guid},
-    target::{DNS_SERVICE, service_process_id, service_process_id_raw},
+    target::{DNS_SERVICE, ProcessHandle, service_process_id, service_process_id_raw},
 };
 #[cfg(feature = "diag-timing")]
 use super::{ThreadPriority, set_current_thread_priority};
@@ -187,10 +186,18 @@ const FILE_MODE_BITS: u32 = EVENT_TRACE_FILE_MODE_SEQUENTIAL
 /// only, no file or other logger modes, and no log file. Buffer size, buffer
 /// counts, flush timer, and clock type are ignored: the first three are tuning
 /// the operator may have changed since a crash (a mismatch must not block
-/// restart), and ETW may normalize them anyway. The instance mutex, not this
-/// fingerprint, protects a live instance.
-fn reclaimable(query: &QueryProperties) -> bool {
+/// restart), and ETW may normalize them anyway. Exclusion of a second live
+/// instance comes from the SCM (one process per service) and the identity gate
+/// that admits only the service account, not from this fingerprint. The session
+/// GUID must be this program's own, so a foreign session that merely reuses the
+/// name is never stopped.
+fn reclaimable(query: &QueryProperties, expected: &GUID) -> bool {
     let properties = &query.properties;
+    let guid = properties.Wnode.Guid;
+    let same_guid = guid.data1 == expected.data1
+        && guid.data2 == expected.data2
+        && guid.data3 == expected.data3
+        && guid.data4 == expected.data4;
     let forbidden_modes = FILE_MODE_BITS
         | EVENT_TRACE_SYSTEM_LOGGER_MODE
         | EVENT_TRACE_BUFFERING_MODE
@@ -200,7 +207,8 @@ fn reclaimable(query: &QueryProperties) -> bool {
     let no_log_file = properties.LogFileNameOffset == 0
         || (properties.LogFileNameOffset as usize == offset_of!(QueryProperties, log_file_name)
             && query.log_file_name[0] == 0);
-    properties.LogFileMode & EVENT_TRACE_REAL_TIME_MODE != 0
+    same_guid
+        && properties.LogFileMode & EVENT_TRACE_REAL_TIME_MODE != 0
         && properties.LogFileMode & forbidden_modes == 0
         && no_log_file
 }
@@ -288,6 +296,7 @@ fn reclaim_stale_session(
     display_name: &str,
     counters: &CaptureCounters,
     config: &SessionConfig,
+    guid: &GUID,
 ) -> Result<()> {
     let control = |properties: &mut QueryProperties, code: u32| {
         // SAFETY: `name` is NUL-terminated and the aligned, sized properties outlive
@@ -305,6 +314,7 @@ fn reclaim_stale_session(
         display_name,
         counters,
         config,
+        guid,
         |properties| control(properties, EVENT_TRACE_CONTROL_QUERY),
         |properties| control(properties, EVENT_TRACE_CONTROL_STOP),
     )
@@ -318,6 +328,7 @@ fn reclaim_decision(
     display_name: &str,
     counters: &CaptureCounters,
     config: &SessionConfig,
+    guid: &GUID,
     query: impl FnOnce(&mut QueryProperties) -> u32,
     stop: impl FnOnce(&mut QueryProperties) -> u32,
 ) -> Result<()> {
@@ -332,7 +343,7 @@ fn reclaim_decision(
         ),
     }
     ensure!(
-        reclaimable(&queried),
+        reclaimable(&queried, guid),
         "ETW session '{display_name}' already exists and does not match this program's session \
          shape; choose another --session-name or stop it manually, for example: logman stop \
          {display_name} -ets"
@@ -373,8 +384,40 @@ pub(crate) struct Capture {
     /// The DNS Server service process, resolved at start. If it changes, the
     /// supervisor ends capture so SCM can restart this service with the new PID.
     dns_pid: u32,
-    // Last, so the instance lock outlives the session teardown in `stop`.
-    _instance: InstanceLock,
+    /// Held open so the kernel cannot reuse `dns_pid` between supervisor polls;
+    /// `None` when the open was denied (SCM polling still applies).
+    dns_process: Option<ProcessHandle>,
+}
+
+fn exited_reason(pid: u32) -> String {
+    format!("the DNS Server process exited (process ID {pid})")
+}
+
+/// Opens the DNS process so its PID cannot be reused while capture runs. The
+/// SCM is asked again after the open: if it still reports `pid`, the process
+/// opened is the one the SCM meant. Any failure is logged once and capture
+/// continues with SCM polling alone.
+fn open_dns_process(pid: u32) -> Option<ProcessHandle> {
+    let handle = match ProcessHandle::open(pid) {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::warn!(
+                "cannot hold the DNS Server process open; PID reuse is detected only by \
+                 polling the SCM: {error:#}"
+            );
+            return None;
+        }
+    };
+    match service_process_id_raw(DNS_SERVICE) {
+        Ok(current) if current == pid => Some(handle),
+        _ => {
+            tracing::warn!(
+                "the DNS Server process ID changed while it was being opened; \
+                 relying on SCM polling"
+            );
+            None
+        }
+    }
 }
 
 /// What the supervisor concluded from re-reading the DNS service process ID.
@@ -485,10 +528,9 @@ impl Capture {
             "invalid ETW session name"
         );
         let display_name = name;
-        // First, so a second instance never reaches the reclaim path below.
-        let instance = InstanceLock::acquire(display_name)?;
         let dns_pid = service_process_id(DNS_SERVICE)
             .context("resolve the DNS Server service process ID for the PID filter")?;
+        let dns_process = open_dns_process(dns_pid);
         let mut name: Vec<u16> = name.encode_utf16().collect();
         ensure!(
             name.len() <= 1024,
@@ -507,7 +549,7 @@ impl Capture {
         let (mut status, mut session) = start_session(&name, guid, &config);
         if status == ERROR_ALREADY_EXISTS {
             // One reclaim and one retry; a second failure is a startup error.
-            reclaim_stale_session(&name, display_name, &counters, &config)?;
+            reclaim_stale_session(&name, display_name, &counters, &config, &guid)?;
             (status, session) = start_session(&name, guid, &config);
         }
         check_start_status(status, display_name, &format_guid(&guid))?;
@@ -519,7 +561,7 @@ impl Capture {
             counters,
             keywords,
             dns_pid,
-            _instance: instance,
+            dns_process,
         };
         // The payloads, descriptors, and parameters are locals that outlive the
         // synchronous EnableTraceEx2 call below. Two filters: event IDs and the
@@ -668,6 +710,13 @@ impl Capture {
     /// service stopped or restarted, which invalidates the PID filter. A failed
     /// query is inconclusive and returns `None`.
     pub(crate) fn target_change(&self) -> Option<String> {
+        if self
+            .dns_process
+            .as_ref()
+            .is_some_and(ProcessHandle::has_exited)
+        {
+            return Some(exited_reason(self.dns_pid));
+        }
         classify_target(self.dns_pid, service_process_id_raw(DNS_SERVICE).ok())
     }
 
@@ -748,7 +797,7 @@ impl Drop for Capture {
     fn drop(&mut self) {
         // stop is also needed on partially initialized startup failures.
         if let Err(error) = self.stop() {
-            eprintln!("ETW cleanup: {error:#}");
+            tracing::error!(%error, "ETW cleanup failed");
         }
     }
 }

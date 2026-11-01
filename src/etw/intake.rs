@@ -334,6 +334,9 @@ impl RawEtwEvent {
             UserData: if self.data_length == 0 {
                 null_mut()
             } else {
+                // The `*mut` is a type requirement of EVENT_RECORD only. TDH reads
+                // UserData and never writes it, so deriving the pointer from this
+                // shared borrow does not permit a write through it.
                 self.buffer.bytes().cast_mut().cast()
             },
             UserContext: null_mut(),

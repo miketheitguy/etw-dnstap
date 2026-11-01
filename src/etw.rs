@@ -3,7 +3,6 @@
 //! Module map:
 //! - `session`: `StartTrace`/`ControlTrace`, stale-session reclaim, and [`Capture`].
 //! - `target`: the DNS Server service process ID used by the PID filter.
-//! - `instance`: the per-session named mutex that blocks a second instance.
 //! - `keywords`: provider keyword metadata and the subscription masks.
 //! - `intake`: the native callback and the deep copy into pooled storage.
 //! - `schema`: TDH schema loading, the fallback reader, and [`Parser`], which
@@ -22,8 +21,6 @@ mod decode;
 mod diag;
 #[cfg(feature = "fuzzing")]
 pub(crate) mod fuzzing;
-#[allow(unsafe_code)]
-mod instance;
 #[allow(unsafe_code)]
 mod intake;
 #[allow(unsafe_code)]
