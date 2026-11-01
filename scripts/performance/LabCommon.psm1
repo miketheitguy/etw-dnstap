@@ -21,7 +21,6 @@ Set-StrictMode -Version Latest
 
 $script:LabRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $script:LabConfig = $null
-$script:IdPattern = '^[A-Za-z0-9_-]{1,64}$'
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Get-LabRoot {
@@ -56,16 +55,6 @@ function Resolve-LabPath {
     $prefix = $script:LabRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Path must stay within the repository: $RelativePath" }
     $full
-}
-
-function Assert-LabId {
-    <#
-    .SYNOPSIS
-    Validates a run or campaign identifier (letters, digits, underscore, hyphen; 1-64 characters).
-    #>
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Value, [string]$Name = 'Id')
-    if ($Value -notmatch $script:IdPattern) { throw "Invalid $Name '$Value': use 1-64 letters, digits, '_' or '-'." }
 }
 
 function Write-LabText {

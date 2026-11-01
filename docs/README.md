@@ -1,6 +1,6 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** `main` at commit `5f610f5` for the rows marked with that commit (other rows show the commit they were last checked against) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `40a6b65` for the rows marked with that commit (other rows show the commit they were last checked against) · **Reviewed:** 2026-11-01
 
 This index lists every document in `docs/`, with its status. Operators should start
 with the [project README](../README.md) and the [guides](#guides). Maintainers can use the
@@ -67,14 +67,14 @@ install, configuration, troubleshooting, and removal.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Install and provision](guide/install.md) | Current; LocalService restricted-SID profile validated on one lab host (build 26100) | Nov 1, 2026 (lab validation) | `5f610f5` | Toolchain, build, LocalService restricted-SID identity, privileges, SCM recovery, receiver setup, validation checklist |
+| [Install and provision](guide/install.md) | Current; LocalService restricted-SID profile validated on one lab host (build 26100) | Nov 1, 2026 (lab validation) | `40a6b65` | Toolchain, build, LocalService restricted-SID identity, privileges, SCM recovery, receiver setup, validation checklist |
 | [Configuration reference](guide/configuration.md) | Current | not applicable | `efb47af` | Every option and default, the low-rate limits, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters |
 | [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `efb47af` | Event log messages, startup failures, receiver outages, DNS restarts, counters, watchdog aborts |
 | [Service shutdown remediation](guide/service-stop-remediation.md) | Current (operator guide) | not applicable | not recorded | Diagnosing receiver resets during STOP/FINISH and the close behavior |
-| [Uninstall](guide/uninstall.md) | Current | not applicable | `5f610f5` | Service, group membership, event source, ETW session, and directory removal |
+| [Uninstall](guide/uninstall.md) | Current | not applicable | `40a6b65` | Service, group membership, event source, ETW session, and directory removal |
 | [Security policy](../SECURITY.md) | Current | not applicable | `5f610f5` | Reporting, threat model summary, producer identity, LocalService restricted-SID profile |
-| [Contributing](../CONTRIBUTING.md) | Current | not applicable | `5f610f5` | Build, test, lint, documentation status and layout, commit style |
-| [Changelog](../CHANGELOG.md) | Current | not applicable | `5f610f5` | Keep a Changelog format; versioning policy at the top; no tag yet; commit log through `9172f2d` |
+| [Contributing](../CONTRIBUTING.md) | Current | not applicable | `40a6b65` | Build, test, lint, documentation status and layout, commit style |
+| [Changelog](../CHANGELOG.md) | Current | not applicable | `40a6b65` | Keep a Changelog format; versioning policy at the top; no tag yet; commit log through `40a6b65` |
 
 ## Design and reference
 
@@ -132,7 +132,6 @@ These documents are in `plans/`. Each status block gives its execution state. Th
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading. Its fail-fast contract predates `f0b51f4`. |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed; partly executed (P0 and diagnostic runs recorded Oct 31, 2026; P1a next; P4 deferred) | Oct 31, 2026 | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. |
 | [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Proposed | not applicable | not applicable | Future per-stage counters; no task has been executed. Its baseline predates periodic counter logging and `f0b51f4`. |
-| [Obsolete and legacy code cleanup plan](plans/cleanup-plan.md) | Proposed; in progress (waves run in order; the plan moves to history when it completes) | Nov 1, 2026 | `efb47af` (written at) | Removal of dead code, legacy names, duplicate scaffolding, and stale docs. Each wave is one commit with a gate. |
 
 ## History
 
@@ -148,6 +147,8 @@ commands as procedures.
 | [LocalService restricted-SID validation](history/localservice-restricted-validation.md) | Historical | Nov 1, 2026 | parent `6718863` | ETW rights the restricted token needs; the 0x20-only grant |
 | [Skills-driven evaluation plan](history/skills-evaluation-plan.md) | Historical (executed Nov 1, 2026) | Nov 1, 2026 | plan `e8560ac`; execution through `5f610f5` | Evaluation of code, build, CI and service hardening against the installed skills. Results: [lab record](history/skills-evaluation-lab-validation.md) and the commit log. |
 | [Skills evaluation lab validation](history/skills-evaluation-lab-validation.md) | Historical | Nov 1, 2026 | `77d7c47` (with one uncommitted script fix, now in `d721569`) | Lab run of the evaluation changes: mutex removal, reclaim, DNS handle (denied), pinned SDDL, delayed-auto start, backup and restore, SCM recovery with a DNS restart |
+| [Obsolete and legacy code cleanup plan](history/cleanup-plan.md) | Historical (executed Nov 1, 2026) | Nov 1, 2026 | written at `efb47af`; executed through `0865e19` and later | Removal of dead code, legacy names, duplicate test scaffolding, finished-campaign scripts and stale docs. Results: [validation record](history/cleanup-validation.md) |
+| [Cleanup validation](history/cleanup-validation.md) | Historical | Nov 1, 2026 | `0865e19` (deployed build) | Gates per wave, lab run of the cleaned build, code and security review results, differences from the plan, open problems |
 | [DNS capture performance review, 2026-10-28](history/performance-review-2026-10-28.md) | Historical | Oct 28, 2026 | not recorded | Original unpaced three-run experiment |
 | [Windows DNS capture performance test plan](history/performance-test-plan.md) | Historical | Oct 28, 2026 | not recorded | Method for the unpaced experiment |
 | [Performance repeat at global 1,000 QPS, plan](history/performance-1000qps-plan.md) | Historical | Oct 29, 2026 UTC | not recorded | Method for the repeat with the original 1,024-entry ring. Results are in [the review](history/performance-1000qps-review.md). |

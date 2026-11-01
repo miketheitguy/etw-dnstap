@@ -111,6 +111,9 @@ jobs:
         run: python -I scripts/performance/test_metrics_ledger.py
       - name: pooled intake run
         run: python -I scripts/performance/test_pooled_intake_run.py
+      # Archived analyzers still import metrics_ledger; keep them working.
+      - name: archived analyzers
+        run: python -I scripts/performance/archive/test_archived_analyzers.py
 
   docs:
     name: Markdown relative links

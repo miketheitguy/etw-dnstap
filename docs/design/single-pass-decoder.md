@@ -81,7 +81,9 @@ or self reference is rejected.
 
 - The decoder reads the payload once, in order. It uses checked slices and does
   not allocate.
-- Scalars are little-endian. `Port` is read as big-endian (network byte order).
+- Scalars are little-endian. A `Port` field is read as big-endian only when its
+  output type is `PORT`, which requires `UINT16`. The DNS Server schema declares
+  `Port` as `UINT32` with output `UNSIGNEDINT`, so it is read little-endian.
 - A string is read up to its terminator. A UTF-16 scan starts at the field's own
   offset and moves in 2-byte units, even when that offset is odd. A missing
   terminator is an error.
@@ -98,7 +100,7 @@ The fast path and the fallback use the same checks after the fields are read:
 - An address is at most 512 bytes. The text before any `%` scope suffix must
   parse as an IP address. An unspecified address (`0.0.0.0` or `::`) means that
   the endpoint is absent.
-- The timestamp must convert to a time after the Unix epoch.
+- The timestamp must convert to a time at or after the Unix epoch.
 - The packet length must be 12 through 65,535 bytes. The encoder checks this.
 - The DNS QR bit must match the event: a query for 256, a response for 257. The
   encoder checks this.
@@ -122,7 +124,8 @@ The fast path and the fallback use the same checks after the fields are read:
 
 - On the fast path, `PacketData` borrows the pooled event payload. It is copied
   once into the final output. The pooled event is released before the TCP write.
-- A supported schema-cache hit makes no TDH metadata or property calls.
+- A schema-cache hit on a compiled plan makes no TDH metadata or property calls.
+  A cached fallback schema still reads each event through TDH property calls.
 - In the focused tests, warmed successful decoding and encoding allocate nothing.
 - Cold metadata loads, fallback reads, and error construction do allocate.
 

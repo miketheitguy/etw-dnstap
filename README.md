@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `5f610f5` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `40a6b65` · **Reviewed:** 2026-11-01
 >
 > **Validation status:** the LocalService profile with a restricted service SID
 > (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) was
