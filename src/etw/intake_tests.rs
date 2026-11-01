@@ -900,3 +900,78 @@ fn jumbo_exhaustion_is_counted_separately_from_regular() {
     assert_eq!(counters.pool_exhausted_jumbo.load(Ordering::Relaxed), 1);
     drop(held);
 }
+
+mod copy_record_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Model of the admission rule: nonnull sources, at most 16 items, and at
+    /// most 65535 aggregate extended bytes.
+    fn admissible(data: &[u8], null_data: bool, items: &[(Vec<u8>, bool)]) -> bool {
+        let aggregate: usize = items.iter().map(|(bytes, _)| bytes.len()).sum();
+        (!null_data || data.is_empty())
+            && items.len() <= MAX_EXTENDED_ITEMS
+            && items.iter().all(|(bytes, null)| !*null || bytes.is_empty())
+            && aggregate <= 65535
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Hostile lengths, counts and null pointers never panic; admitted
+        /// records are copied byte for byte at aligned, in-bounds offsets.
+        #[test]
+        fn hostile_descriptors_are_rejected_or_copied_exactly(
+            data in prop::collection::vec(any::<u8>(), 0..4096),
+            null_data in any::<bool>(),
+            items in prop::collection::vec(
+                (prop::collection::vec(any::<u8>(), 0..3000), any::<bool>()),
+                0..=20,
+            ),
+        ) {
+            let pool = PoolManager::new(1, 1).expect("pool");
+            let mut data = data;
+            let mut sources: Vec<Vec<u8>> = items.iter().map(|(bytes, _)| bytes.clone()).collect();
+            let mut descriptors: Vec<EVENT_HEADER_EXTENDED_DATA_ITEM> = items
+                .iter()
+                .zip(sources.iter_mut())
+                .map(|((bytes, null), source)| EVENT_HEADER_EXTENDED_DATA_ITEM {
+                    DataSize: u16::try_from(bytes.len()).expect("bounded item"),
+                    DataPtr: if *null { 0 } else { source.as_mut_ptr() as u64 },
+                    ..Default::default()
+                })
+                .collect();
+            let record = EVENT_RECORD {
+                UserData: if null_data { null_mut() } else { data.as_mut_ptr().cast() },
+                UserDataLength: u16::try_from(data.len()).expect("bounded payload"),
+                ExtendedData: if descriptors.is_empty() {
+                    null_mut()
+                } else {
+                    descriptors.as_mut_ptr()
+                },
+                ExtendedDataCount: u16::try_from(descriptors.len()).expect("bounded count"),
+                ..Default::default()
+            };
+            // SAFETY: Every nonnull advertised pointer is backed by a live Vec of
+            // at least the advertised length; null pointers are paired with
+            // nonzero lengths only to exercise rejection before any read.
+            let result = unsafe { copy_record(&record, &pool) };
+            if admissible(&data, null_data, &items) {
+                let owned = result.expect("admissible record is copied");
+                prop_assert_eq!(owned.payload(), &data[..]);
+                for (index, (bytes, _)) in items.iter().enumerate() {
+                    let offset = owned.buffer.offset(index);
+                    prop_assert_eq!(offset % 8, 0);
+                    prop_assert_eq!(owned.buffer.items()[index].DataPtr, 0);
+                    // SAFETY: copy_record initialized this in-bounds range in the lease.
+                    let copied = unsafe {
+                        std::slice::from_raw_parts(owned.buffer.bytes().add(offset), bytes.len())
+                    };
+                    prop_assert_eq!(copied, &bytes[..]);
+                }
+            } else {
+                prop_assert!(matches!(result, Err(CopyError::Malformed)));
+            }
+        }
+    }
+}
