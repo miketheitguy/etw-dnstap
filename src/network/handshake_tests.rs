@@ -1,5 +1,6 @@
 //! Negative and fragmentation cases for the Frame Streams control handshake.
 
+use super::test_support::handshake;
 use super::*;
 use proptest::prelude::*;
 use std::net::TcpListener;
@@ -263,4 +264,82 @@ fn receiver_that_answers_ready_with_garbage_or_eof_is_not_a_protocol_error_loop(
         .expect("garbage rejected");
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     receiver.join().expect("receiver ends");
+}
+
+#[test]
+fn round_trip_negotiates_and_waits_for_finish() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("client connects");
+        let mut stream = handshake(stream);
+        let mut data = [0; 6];
+        stream
+            .read_exact(&mut data)
+            .expect("one complete data frame");
+        assert_eq!(data, [0, 0, 0, 2, 0x78, 1]);
+        read_control(&mut stream, 3, false).expect("STOP arrives");
+        write_control(&mut stream, CONTROL_FINISH, false).expect("FINISH writes");
+    });
+    let mut sender = Connection::connect(address).expect("handshake succeeds");
+    sender.write_frame(&[0x78, 1]).expect("payload writes");
+    sender.finish().expect("STOP/FINISH succeeds");
+    server.join().expect("server assertions pass");
+}
+
+#[test]
+fn connect_uses_write_buffer_capacity() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let (release, receive) = mpsc::channel();
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("sender connects");
+        let _stream = handshake(stream);
+        receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("sender releases receiver");
+    });
+    let mut sender = Connection::connect(address).expect("handshake succeeds");
+    assert!(sender.writer.get_mut().capacity() >= WRITE_BUFFER_BYTES);
+    release.send(()).expect("release receiver");
+    drop(sender);
+    receiver.join().expect("receiver assertions pass");
+}
+
+#[test]
+fn rejects_malformed_and_incompatible_controls_without_unbounded_allocations() {
+    for bytes in [
+        vec![0, 0, 0, 1, 0, 0, 0, 4],
+        vec![0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff],
+        vec![0, 0, 0, 0, 0, 0, 0, 3],
+    ] {
+        assert!(read_control(&mut bytes.as_slice(), CONTROL_ACCEPT, true).is_err());
+    }
+    assert!(validate_control(&[0, 0, 0, 1], CONTROL_ACCEPT, true).is_err());
+    assert!(validate_control(&[0, 0, 0, 5, 1], CONTROL_FINISH, false).is_err());
+    assert!(
+        validate_control(
+            &[0, 0, 0, 1, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff],
+            CONTROL_ACCEPT,
+            true
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn incompatible_receiver_is_fatal_before_start_or_data() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("sender connects");
+        let mut stream = DeadlineTcp::new(stream, Duration::from_secs(3));
+        read_control(&mut stream, CONTROL_READY, true).expect("READY arrives");
+        write_control(&mut stream, CONTROL_ACCEPT, false).expect("incompatible ACCEPT");
+        let mut byte = [0];
+        assert_eq!(stream.read(&mut byte).expect("sender closes"), 0);
+    });
+    let result = Connection::connect(address);
+    assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidData));
+    receiver.join().expect("receiver assertions pass");
 }

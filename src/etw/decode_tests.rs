@@ -1,4 +1,5 @@
-use super::{DecodePlan, FieldSpec};
+use super::{DecodePlan, FieldSpec, saved_template, template_field as field};
+use crate::etw::test_support::utf16_nul_bytes;
 use std::ops::Range;
 use windows_sys::Win32::System::Diagnostics::Etw::*;
 
@@ -16,24 +17,6 @@ pub(in crate::etw) struct Fixture {
     pub(in crate::etw) length_offset: usize,
 }
 
-fn field(name: &str, input: i32) -> FieldSpec {
-    let output = match input {
-        TDH_INTYPE_UNICODESTRING | TDH_INTYPE_ANSISTRING => TDH_OUTTYPE_STRING,
-        TDH_INTYPE_UINT8 => TDH_OUTTYPE_UNSIGNEDBYTE,
-        TDH_INTYPE_UINT32 => TDH_OUTTYPE_UNSIGNEDINT,
-        TDH_INTYPE_BINARY => TDH_OUTTYPE_HEXBINARY,
-        _ => 0,
-    };
-    FieldSpec {
-        name: name.into(),
-        input,
-        output,
-        flags: 0,
-        count: 1,
-        length: 0,
-    }
-}
-
 fn append(payload: &mut Vec<u8>, bytes: &[u8]) -> Range<usize> {
     let start = payload.len();
     payload.extend_from_slice(bytes);
@@ -41,9 +24,7 @@ fn append(payload: &mut Vec<u8>, bytes: &[u8]) -> Range<usize> {
 }
 
 fn unicode(payload: &mut Vec<u8>, text: &str) {
-    for unit in text.encode_utf16().chain([0]) {
-        payload.extend_from_slice(&unit.to_le_bytes());
-    }
+    payload.extend_from_slice(&utf16_nul_bytes(text));
 }
 
 fn append_trailing_metadata(fields: &mut Vec<FieldSpec>, payload: &mut Vec<u8>, id: u16) {
@@ -61,23 +42,18 @@ fn append_trailing_metadata(fields: &mut Vec<FieldSpec>, payload: &mut Vec<u8>, 
     }
 }
 
-fn append_response_scope(fields: &mut Vec<FieldSpec>, payload: &mut Vec<u8>, variant: usize) {
-    for name in ["Scope", "Zone", "PolicyName"] {
-        fields.push(field(name, TDH_INTYPE_UNICODESTRING));
+fn append_response_scope(payload: &mut Vec<u8>, variant: usize) {
+    // Scope, Zone, PolicyName.
+    for _ in 0..3 {
         unicode(payload, &"aĀ🦀".repeat(variant));
     }
 }
 
 pub(in crate::etw) fn fixture(id: u16, ipv6: bool, tcp: bool, variant: usize) -> Fixture {
     assert!(matches!(id, 256 | 257));
-    let mut fields = vec![
-        field("TCP", TDH_INTYPE_UINT8),
-        field("InterfaceIP", TDH_INTYPE_ANSISTRING),
-        field(
-            if id == 256 { "Source" } else { "Destination" },
-            TDH_INTYPE_ANSISTRING,
-        ),
-    ];
+    // The field list is the shared saved template; the payload below is encoded
+    // independently, recording offsets as it goes.
+    let mut fields = saved_template(id == 257);
     let mut payload = Vec::new();
     let tcp = append(&mut payload, &[u8::from(tcp)]);
     let local = append(
@@ -97,44 +73,25 @@ pub(in crate::etw) fn fixture(id: u16, ipv6: bool, tcp: bool, variant: usize) ->
         },
     );
     if id == 256 {
-        fields.push(field("RD", TDH_INTYPE_UINT8));
         payload.push(1);
     } else {
-        fields.extend([field("AA", TDH_INTYPE_UINT8), field("AD", TDH_INTYPE_UINT8)]);
         payload.extend_from_slice(&[1, 0]);
     }
-    fields.push(field("QNAME", TDH_INTYPE_ANSISTRING));
     payload.extend(std::iter::repeat_n(b'q', variant));
     payload.push(0);
-    fields.extend([
-        field("QTYPE", TDH_INTYPE_UINT32),
-        field("XID", TDH_INTYPE_UINT32),
-    ]);
     payload.extend_from_slice(&28_u32.to_le_bytes());
     payload.extend_from_slice(&0x1234_u32.to_le_bytes());
     if id == 257 {
-        fields.extend([
-            field("DNSSEC", TDH_INTYPE_UINT8),
-            field("RCODE", TDH_INTYPE_UINT32),
-        ]);
         payload.push(1);
         payload.extend_from_slice(&0_u32.to_le_bytes());
     }
-    fields.push(field("Port", TDH_INTYPE_UINT32));
     let port = append(&mut payload, &53000_u32.to_le_bytes());
-    fields.push(field("Flags", TDH_INTYPE_UINT32));
     payload.extend_from_slice(&0x8100_u32.to_le_bytes());
     if id == 257 {
-        append_response_scope(&mut fields, &mut payload, variant);
+        append_response_scope(&mut payload, variant);
     }
-    let dependency = fields.len();
-    fields.push(field("BufferSize", TDH_INTYPE_UINT32));
     let length_offset = payload.len();
     payload.extend_from_slice(&17_u32.to_le_bytes());
-    let mut packet_field = field("PacketData", TDH_INTYPE_BINARY);
-    packet_field.flags = PropertyParamLength.cast_unsigned();
-    packet_field.length = u16::try_from(dependency).expect("fixture field index fits u16");
-    fields.push(packet_field);
     let packet = append(
         &mut payload,
         &[

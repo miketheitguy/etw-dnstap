@@ -181,3 +181,17 @@ fn help_and_version_win_when_they_come_first() {
         ));
     }
 }
+
+#[test]
+fn jumbo_capacity_bound_comes_from_the_pool_and_validate_repeats_it() {
+    let max = crate::etw::MAX_JUMBO_CAPACITY;
+    let over = (u32::from(max) + 1).to_string();
+    assert!(parse(&["--jumbo-capacity", &max.to_string()]).is_ok());
+    assert!(parse(&["--jumbo-capacity", "0"]).is_ok());
+    assert!(parse(&["--jumbo-capacity", &over]).is_err());
+    let mut config = PipelineConfig::try_from(parse(&[]).expect("valid")).expect("config");
+    config.jumbo_capacity = max;
+    assert!(config.validate().is_ok());
+    config.jumbo_capacity = max + 1;
+    assert!(config.validate().is_err());
+}

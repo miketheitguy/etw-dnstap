@@ -1,8 +1,6 @@
 use super::*;
 
-fn offset_u32(offset: usize) -> u32 {
-    u32::try_from(offset).expect("test offsets fit u32")
-}
+use crate::etw::test_support::{offset_u32, utf16_nul};
 
 const TEST_GUID: GUID = GUID::from_u128(0x43b7_b2fc_777a_5214_b6ed_665c_1ff9_e972);
 
@@ -179,10 +177,6 @@ fn fingerprint_ignores_buffer_size_so_a_changed_flag_does_not_block_restart() {
     ));
 }
 
-fn utf16_nul(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 /// Stops a session by name on drop, so ignored tests clean up even when an
 /// assertion fails. Optionally deletes the log file the session wrote.
 struct StopSessionOnDrop {
@@ -320,10 +314,7 @@ fn assert_log_file_session_refused(name_text: &str, mode: u32) {
     // would make the refusal below pass without reaching the log-file checks.
     let reported = queried_guid(&name);
     assert!(
-        reported.data1 == guid.data1
-            && reported.data2 == guid.data2
-            && reported.data3 == guid.data3
-            && reported.data4 == guid.data4,
+        same_guid(&reported, &guid),
         "ETW must report the GUID the session was started with"
     );
 

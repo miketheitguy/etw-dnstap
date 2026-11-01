@@ -1,5 +1,23 @@
 //! Test-only helpers shared by the ETW module tests: an allocation-counting
-//! global allocator and common event-ID fixtures.
+//! global allocator, common event-ID fixtures, and small conversion helpers.
+
+/// Converts a test offset or length to the `u32` the native structures use.
+pub(super) fn offset_u32(offset: usize) -> u32 {
+    u32::try_from(offset).expect("test offsets fit u32")
+}
+
+/// UTF-16 code units of `text` followed by a NUL.
+pub(super) fn utf16_nul(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Little-endian bytes of [`utf16_nul`], as ETW stores UTF-16 strings.
+pub(super) fn utf16_nul_bytes(text: &str) -> Vec<u8> {
+    utf16_nul(text)
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct AllocCounts {

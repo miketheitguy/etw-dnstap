@@ -7,6 +7,11 @@
 //! - `intake`: the native callback and the deep copy into pooled storage.
 //! - `schema`: TDH schema loading, the fallback reader, and [`Parser`], which
 //!   yields a format-neutral [`crate::event::DecodedDnsEvent`].
+//! - `decode`: the single-pass decoder driven by a compiled plan.
+//! - `pool`: the bounded pool of reusable record buffers (leases).
+//! - `session_guid`: the per-run session GUID.
+//! - `diag` (feature `diag-timing`): timer and thread-priority diagnostics.
+//! - `fuzzing` (feature `fuzzing`): entry points for the fuzz targets.
 //!
 //! Only the modules that call native APIs allow `unsafe` code.
 
@@ -46,7 +51,7 @@ pub(crate) use diag::{
 };
 pub(crate) use intake::RawEtwEvent;
 pub(crate) use keywords::KeywordSelection;
-pub(crate) use pool::{MAX_CAPACITY, MIN_CAPACITY, PoolManager};
+pub(crate) use pool::{MAX_CAPACITY, MAX_JUMBO_CAPACITY, MIN_CAPACITY, PoolManager};
 pub(crate) use schema::Parser;
 pub(crate) use session::{Capture, SessionConfig};
 
@@ -110,11 +115,13 @@ fn supported(id: u16) -> bool {
     SUPPORTED_EVENT_IDS.contains(&id)
 }
 
+/// Field-by-field GUID equality (`GUID` has no `PartialEq`).
+fn same_guid(a: &GUID, b: &GUID) -> bool {
+    a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+}
+
 fn dns_provider(guid: &GUID) -> bool {
-    guid.data1 == PROVIDER.data1
-        && guid.data2 == PROVIDER.data2
-        && guid.data3 == PROVIDER.data3
-        && guid.data4 == PROVIDER.data4
+    same_guid(guid, &PROVIDER)
 }
 
 fn check_status(status: u32, operation: &str) -> Result<()> {

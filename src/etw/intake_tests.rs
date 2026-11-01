@@ -149,7 +149,7 @@ fn scoped_native_record_empty_view_is_null_and_keeps_lease_exclusive() {
     let mut encoder = Encoder::new(b"lease").expect("encoder");
     let mut fills = 0;
     let failed = event.with_record(|record| {
-        encoder.encode_with(metadata, 12, |destination| {
+        encoder.encode_with_for_test(metadata, 12, |destination| {
             fills += 1;
             assert!(record.UserData.is_null());
             assert!(pool.acquire(1).is_none(), "fill retains event lease");
@@ -163,7 +163,7 @@ fn scoped_native_record_empty_view_is_null_and_keeps_lease_exclusive() {
     let mut destination_address = 0;
     let payload = event
         .with_record(|record| {
-            encoder.encode_with(metadata, 12, |destination| {
+            encoder.encode_with_for_test(metadata, 12, |destination| {
                 fills += 1;
                 assert!(record.UserData.is_null());
                 assert!(pool.acquire(1).is_none(), "fill retains event lease");
@@ -396,6 +396,9 @@ fn copies_payload_and_extended_data_before_callback_returns() -> Result<()> {
     Ok(())
 }
 
+/// The process ID the test callback context accepts.
+const TEST_PID: u32 = 4242;
+
 struct Fixture {
     context: Box<CallbackContext>,
     record: EVENT_RECORD,
@@ -405,11 +408,11 @@ struct Fixture {
 impl Fixture {
     fn new(capacity: usize, jumbo: usize) -> Self {
         let pool = PoolManager::new(capacity, jumbo).expect("test pool initializes");
-        let mut context = Box::new(CallbackContext {
-            pool: Arc::clone(&pool),
-            counters: Arc::default(),
-            expected_pid: None,
-        });
+        let mut context = Box::new(CallbackContext::new(
+            Arc::clone(&pool),
+            Arc::default(),
+            TEST_PID,
+        ));
         let (sender, receive) = crossbeam_channel::bounded(capacity);
         let context_address = (&raw const *context) as usize;
         PRODUCER.with(|state| {
@@ -422,6 +425,7 @@ impl Fixture {
         let record = EVENT_RECORD {
             EventHeader: EVENT_HEADER {
                 ProviderId: PROVIDER,
+                ProcessId: TEST_PID,
                 EventDescriptor: EVENT_DESCRIPTOR {
                     Id: 256,
                     ..Default::default()
@@ -848,17 +852,16 @@ fn synthetic_pooled_intake_benchmark() {
 
 #[test]
 fn pid_allowed_matches_only_the_expected_process() {
-    assert!(pid_allowed(None, 1));
-    assert!(pid_allowed(Some(7), 7));
-    assert!(!pid_allowed(Some(7), 8));
-    assert!(!pid_allowed(Some(7), 0));
+    assert!(pid_allowed(7, 7));
+    assert!(!pid_allowed(7, 8));
+    assert!(!pid_allowed(7, 0));
 }
 
 #[test]
 fn callback_rejects_records_from_other_processes_without_allocating() {
     let mut fixture = Fixture::new(2, 0);
-    fixture.context.expected_pid = Some(4242);
-    fixture.record.EventHeader.ProcessId = 4242;
+    assert_eq!(fixture.context.expected_pid, TEST_PID);
+    fixture.record.EventHeader.ProcessId = TEST_PID;
     assert_no_allocations(|| fixture.invoke());
     fixture.record.EventHeader.ProcessId = 99;
     assert_no_allocations(|| fixture.invoke());
@@ -871,11 +874,10 @@ fn callback_rejects_records_from_other_processes_without_allocating() {
 }
 
 #[test]
-fn with_expected_pid_sets_the_filter() {
+fn new_stores_the_required_expected_pid() {
     let pool = PoolManager::new(1, 0).expect("test pool");
-    let context = CallbackContext::new(pool, Arc::default());
-    assert_eq!(context.expected_pid, None);
-    assert_eq!(context.with_expected_pid(5).expected_pid, Some(5));
+    let context = CallbackContext::new(pool, Arc::default(), 5);
+    assert_eq!(context.expected_pid, 5);
 }
 
 #[test]

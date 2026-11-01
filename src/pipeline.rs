@@ -44,7 +44,7 @@ pub(crate) struct CaptureArgs {
     capacity: usize,
 
     /// Concurrent records over 2 KiB; zero disables their capture (maximum 256).
-    #[arg(long, default_value = "64", value_parser = clap::value_parser!(u16).range(0..=256))]
+    #[arg(long, default_value = "64", value_parser = clap::value_parser!(u16).range(0..=i64::from(crate::etw::MAX_JUMBO_CAPACITY)))]
     jumbo_capacity: u16,
 
     /// Stop after this many seconds; otherwise capture until SCM requests STOP.
@@ -229,6 +229,16 @@ fn check_capacity(capacity: usize) -> Result<usize, String> {
     Ok(capacity)
 }
 
+fn check_jumbo_capacity(capacity: u16) -> Result<u16, String> {
+    if capacity > crate::etw::MAX_JUMBO_CAPACITY {
+        return Err(format!(
+            "jumbo capacity must be at most {} (zero disables it)",
+            crate::etw::MAX_JUMBO_CAPACITY
+        ));
+    }
+    Ok(capacity)
+}
+
 fn parse_session_name(value: &str) -> Result<String, String> {
     check_session_name(value)?;
     Ok(value.into())
@@ -265,9 +275,10 @@ pub(crate) struct DiagContext {
     pub(crate) thread_priority: Option<etw::ThreadPriority>,
 }
 
-/// Validated runtime settings, independent of how they were supplied. The
-/// command line fills it through [`CaptureArgs`]; tests and other front ends can
-/// build one directly and call [`PipelineConfig::validate`].
+/// Validated runtime settings. The command line is the only front end: it fills
+/// this through [`CaptureArgs`] (`TryFrom`). Tests may build one directly.
+/// [`PipelineConfig::validate`] repeats the clap bounds as defence in depth, so a
+/// config built any other way is held to the same rules.
 #[derive(Clone, Debug)]
 pub(crate) struct PipelineConfig {
     pub(crate) receiver: SocketAddr,
@@ -293,6 +304,7 @@ impl PipelineConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         check_receiver(self.receiver).map_err(anyhow::Error::msg)?;
         check_capacity(self.capacity).map_err(anyhow::Error::msg)?;
+        check_jumbo_capacity(self.jumbo_capacity).map_err(anyhow::Error::msg)?;
         check_session_name(&self.session_name).map_err(anyhow::Error::msg)?;
         check_identity(&self.identity).map_err(anyhow::Error::msg)?;
         check_etw_flush_ms(self.etw_flush_ms).map_err(anyhow::Error::msg)?;
@@ -562,7 +574,7 @@ where
 }
 
 /// Everything an event producer needs to start delivering into the pipeline.
-pub(crate) struct ProducerStart<'a> {
+struct ProducerStart<'a> {
     pub(crate) session_name: &'a str,
     /// Bounded channel to the parser thread; the producer owns the only sender,
     /// so dropping it ends the stream.
@@ -577,7 +589,7 @@ pub(crate) struct ProducerStart<'a> {
 
 /// The source of [`RawEtwEvent`]s the pipeline supervises. [`Capture`] is the
 /// production implementation; tests supply fakes.
-pub(crate) trait EventProducer {
+trait EventProducer {
     /// The keyword masks the producer subscribed with, for the startup log.
     fn keywords(&self) -> KeywordSelection;
     /// True once the producer stopped delivering on its own.
@@ -672,7 +684,7 @@ pub(crate) fn run_capture(
 /// reports through the shared [`SinkStats`]), `start` begins event delivery, and
 /// the call returns after both workers have stopped and the counters have been
 /// reported.
-pub(crate) fn run_pipeline<S, P>(
+fn run_pipeline<S, P>(
     config: &PipelineConfig,
     connect: impl FnOnce(SocketAddr, Arc<SinkStats>) -> io::Result<S>,
     start: impl FnOnce(ProducerStart<'_>) -> Result<P>,
@@ -1057,12 +1069,7 @@ fn parse_loop<S: FrameSink>(
             // The decoded view borrows the pooled record. Encoding copies the packet
             // into encoder storage, so the record is released before network I/O and
             // the returned payload borrows only reusable encoder storage.
-            let result = match parser.parse(&event) {
-                Ok(Some(decoded)) => encoder.encode(&decoded).map(Some),
-                Ok(None) => Ok(None),
-                Err(error) => Err(error),
-            };
-            drop(event);
+            let result = parse_and_encode(&mut parser, event, &mut encoder);
             if result.is_err() {
                 counters
                     .schema_rejected
@@ -1127,15 +1134,32 @@ fn parse_loop<S: FrameSink>(
         Ok(())
     };
     #[cfg(not(feature = "diag-timing"))]
-    drain_ring(queue, producer_done, consume)?;
+    drain_queue(queue, producer_done, consume)?;
     #[cfg(feature = "diag-timing")]
-    drain_ring_inner(queue, producer_done, Some(&counters.timing), consume)?;
+    drain_queue_inner(queue, producer_done, Some(&counters.timing), consume)?;
     writer
         .finish()
         .context("finish dnstap STOP/FINISH exchange")
         .inspect_err(|_error| {
             counters.output_errors.fetch_add(1, Ordering::Relaxed);
         })
+}
+
+/// Decodes one record and encodes it to dnstap bytes, the production step of the
+/// parser thread. The record (and its pool lease) is released before this
+/// returns, so the bytes borrow only the encoder.
+pub(crate) fn parse_and_encode<'e>(
+    parser: &mut etw::Parser,
+    event: RawEtwEvent,
+    encoder: &'e mut Encoder,
+) -> Result<Option<&'e [u8]>> {
+    let result = match parser.parse(&event) {
+        Ok(Some(decoded)) => encoder.encode(&decoded).map(Some),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error),
+    };
+    drop(event);
+    result
 }
 
 // The ETW callback must stay wake-free; see docs/history/ring-wakeup.md. The parser
@@ -1168,22 +1192,22 @@ fn idle_poll_after(received: bool, current: Duration) -> Duration {
 // The completion flag is separate from the queue: after observing completion,
 // retry receive so a final send between the previous receive and flag load drains.
 #[cfg(any(test, not(feature = "diag-timing")))]
-fn drain_ring<T>(
+fn drain_queue<T>(
     queue: &Receiver<T>,
     producer_done: &AtomicBool,
     consume: impl FnMut(Option<T>) -> Result<()>,
 ) -> Result<()> {
     #[cfg(feature = "diag-timing")]
     {
-        drain_ring_inner(queue, producer_done, None, consume)
+        drain_queue_inner(queue, producer_done, None, consume)
     }
     #[cfg(not(feature = "diag-timing"))]
     {
-        drain_ring_inner(queue, producer_done, consume)
+        drain_queue_inner(queue, producer_done, consume)
     }
 }
 
-fn drain_ring_inner<T>(
+fn drain_queue_inner<T>(
     queue: &Receiver<T>,
     producer_done: &AtomicBool,
     #[cfg(feature = "diag-timing")] diag: Option<&DiagTiming>,
@@ -1731,7 +1755,7 @@ mod tests {
         );
         let done = AtomicBool::new(true);
         let mut values = Vec::new();
-        drain_ring(&queue, &done, |value| {
+        drain_queue(&queue, &done, |value| {
             values.extend(value);
             Ok(())
         })
@@ -1744,7 +1768,7 @@ mod tests {
         let (send, queue) = crossbeam_channel::bounded(1);
         let done = AtomicBool::new(false);
         let mut values = Vec::new();
-        drain_ring(&queue, &done, |value| {
+        drain_queue(&queue, &done, |value| {
             if let Some(value) = value {
                 values.push(value);
             } else {
@@ -1769,7 +1793,7 @@ mod tests {
             thread::spawn(move || {
                 let mut idle_send = Some(idle_send);
                 let mut values = Vec::new();
-                let result = drain_ring(&queue, &done, |value| {
+                let result = drain_queue(&queue, &done, |value| {
                     if let Some(value) = value {
                         values.push(value);
                     } else if let Some(send) = idle_send.take() {
@@ -1806,11 +1830,11 @@ mod tests {
     }
 
     #[test]
-    fn startup_failure_completion_finishes_an_empty_ring() -> Result<()> {
+    fn startup_failure_completion_finishes_an_empty_queue() -> Result<()> {
         let (_send, queue) = crossbeam_channel::bounded::<u8>(1);
         let done = AtomicBool::new(true);
-        drain_ring(&queue, &done, |_| {
-            bail!("empty completed ring must not consume")
+        drain_queue(&queue, &done, |_| {
+            bail!("empty completed queue must not consume")
         })
     }
 
@@ -1849,7 +1873,7 @@ mod tests {
     fn consumer_failure_is_propagated() {
         let (send, queue) = crossbeam_channel::bounded(1);
         send.try_send(1).expect("space available");
-        let error = drain_ring(&queue, &AtomicBool::new(true), |_| bail!("output failed"))
+        let error = drain_queue(&queue, &AtomicBool::new(true), |_| bail!("output failed"))
             .expect_err("output error must escape");
         assert_eq!(error.to_string(), "output failed");
     }
@@ -1923,7 +1947,7 @@ mod tests {
         let done = AtomicBool::new(false);
         let timing = DiagTiming::default();
         let mut idle_calls = 0;
-        drain_ring_inner(&queue, &done, Some(&timing), |value| {
+        drain_queue_inner(&queue, &done, Some(&timing), |value| {
             if value.is_none() {
                 idle_calls += 1;
                 if idle_calls == 1 {
@@ -1961,7 +1985,7 @@ mod tests {
         let timing = DiagTiming::default();
         let mut idle_calls = 0;
         let mut before_event = 0;
-        drain_ring_inner(&queue, &done, Some(&timing), |value| {
+        drain_queue_inner(&queue, &done, Some(&timing), |value| {
             if value.is_none() {
                 idle_calls += 1;
                 match idle_calls {

@@ -6,7 +6,7 @@
 //! (<https://github.com/dnstap/dnstap.pb/blob/main/dnstap.proto>), not only the
 //! subset the encoder emits.
 
-use super::Encoder;
+use super::{Encoder, test_oracle::read_varint};
 use crate::event::{DecodedDnsEvent, DnsEventMetadata, Transport};
 use proptest::prelude::*;
 use prost::Message as _;
@@ -352,17 +352,6 @@ fn arbitrary_event() -> impl Strategy<Value = Case> {
                     })
             },
         )
-}
-
-fn read_varint(input: &[u8]) -> (u64, &[u8]) {
-    let mut value = 0_u64;
-    for (index, byte) in input.iter().enumerate() {
-        value |= u64::from(byte & 0x7f) << (7 * index);
-        if byte & 0x80 == 0 {
-            return (value, &input[index + 1..]);
-        }
-    }
-    panic!("truncated varint");
 }
 
 /// Walks the top-level fields without schema knowledge; returns field numbers.

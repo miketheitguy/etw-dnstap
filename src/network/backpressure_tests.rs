@@ -1,22 +1,12 @@
 //! Slow and blackhole receivers: bounded waits and exact loss accounting.
 
+use super::test_support::{handshake, retry_policy};
 use super::*;
 use std::net::TcpListener;
 
 /// A policy that never retries within a test, so counts are deterministic.
 fn no_retry() -> BackoffPolicy {
-    BackoffPolicy {
-        initial: Duration::from_secs(600),
-        max: Duration::from_secs(600),
-    }
-}
-
-fn complete_handshake(stream: TcpStream) -> DeadlineTcp {
-    let mut stream = DeadlineTcp::new(stream, Duration::from_secs(10));
-    read_control(&mut stream, CONTROL_READY, true).expect("READY");
-    write_control(&mut stream, CONTROL_ACCEPT, true).expect("ACCEPT");
-    read_control(&mut stream, 2, true).expect("START");
-    stream
+    retry_policy(600_000, 600_000)
 }
 
 #[test]
@@ -51,7 +41,7 @@ fn receiver_that_stops_reading_causes_one_bounded_stall_then_counted_drops() {
     let (release, hold) = mpsc::channel::<()>();
     let receiver = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("sender connects");
-        let stream = complete_handshake(stream);
+        let stream = handshake(stream);
         // Never read again: the socket buffers fill and the sender must block.
         hold.recv_timeout(Duration::from_secs(60)).ok();
         drop(stream);

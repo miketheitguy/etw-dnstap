@@ -21,7 +21,8 @@ const _: () = {
 pub(crate) const MAX_CAPACITY: usize = 262_144;
 /// Smallest capacity accepted on the command line (`PoolManager::new` accepts 1).
 pub(crate) const MIN_CAPACITY: usize = 1_024;
-pub(crate) const MAX_JUMBO_CAPACITY: usize = 256;
+/// Largest `--jumbo-capacity`; the command line and `PoolManager::new` both enforce it.
+pub(crate) const MAX_JUMBO_CAPACITY: u16 = 256;
 
 struct Slot {
     bytes: Box<[u64]>,
@@ -43,7 +44,7 @@ impl PoolManager {
             "invalid channel capacity"
         );
         ensure!(
-            jumbo_capacity <= MAX_JUMBO_CAPACITY,
+            jumbo_capacity <= usize::from(MAX_JUMBO_CAPACITY),
             "invalid jumbo capacity"
         );
         let pool = Arc::new(Self {

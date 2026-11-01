@@ -36,30 +36,30 @@ pub(crate) struct RawEtwEvent {
 pub(super) struct CallbackContext {
     pool: Arc<PoolManager>,
     counters: Arc<CaptureCounters>,
-    /// The only process allowed to emit accepted records; `None` disables the check.
-    expected_pid: Option<u32>,
+    /// The only process allowed to emit accepted records (the DNS Server service).
+    expected_pid: u32,
 }
 
 impl CallbackContext {
-    /// Callers box the context so the address handed to `OpenTraceW` stays stable.
-    pub(super) fn new(pool: Arc<PoolManager>, counters: Arc<CaptureCounters>) -> Self {
+    /// Requires `EventHeader.ProcessId == expected_pid` on every accepted record;
+    /// there is no way to build a context without that filter. Callers box the
+    /// context so the address handed to `OpenTraceW` stays stable.
+    pub(super) fn new(
+        pool: Arc<PoolManager>,
+        counters: Arc<CaptureCounters>,
+        expected_pid: u32,
+    ) -> Self {
         Self {
             pool,
             counters,
-            expected_pid: None,
+            expected_pid,
         }
-    }
-
-    /// Requires `EventHeader.ProcessId == pid` on every accepted record.
-    pub(super) fn with_expected_pid(mut self, pid: u32) -> Self {
-        self.expected_pid = Some(pid);
-        self
     }
 }
 
 /// True when a record from `actual` may be accepted given the expected emitter.
-fn pid_allowed(expected: Option<u32>, actual: u32) -> bool {
-    expected.is_none_or(|pid| pid == actual)
+fn pid_allowed(expected: u32, actual: u32) -> bool {
+    expected == actual
 }
 
 struct CallbackProducer {

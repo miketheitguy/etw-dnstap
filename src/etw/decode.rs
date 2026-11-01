@@ -264,6 +264,67 @@ fn valid_target(target: usize, field: &FieldSpec, layout: Layout) -> bool {
     }
 }
 
+/// One property of the saved template, with the output type TDH reports for its
+/// input type.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(super) fn template_field(name: &str, input: i32) -> FieldSpec {
+    use windows_sys::Win32::System::Diagnostics::Etw::{
+        TDH_OUTTYPE_HEXBINARY, TDH_OUTTYPE_STRING, TDH_OUTTYPE_UNSIGNEDBYTE,
+        TDH_OUTTYPE_UNSIGNEDINT,
+    };
+    let output = match input {
+        TDH_INTYPE_UNICODESTRING | TDH_INTYPE_ANSISTRING => TDH_OUTTYPE_STRING,
+        TDH_INTYPE_UINT8 => TDH_OUTTYPE_UNSIGNEDBYTE,
+        TDH_INTYPE_UINT32 => TDH_OUTTYPE_UNSIGNEDINT,
+        TDH_INTYPE_BINARY => TDH_OUTTYPE_HEXBINARY,
+        _ => 0,
+    };
+    FieldSpec {
+        name: name.into(),
+        input,
+        output,
+        flags: 0,
+        count: 1,
+        length: 0,
+    }
+}
+
+/// The saved v0 DNS Server manifest field order for event 256 (`response ==
+/// false`) or 257, from `TCP` through `PacketData`. The packet length comes from
+/// the preceding `BufferSize` property. Trailing metadata is not included.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(super) fn saved_template(response: bool) -> Vec<FieldSpec> {
+    let u8_field = |name| template_field(name, TDH_INTYPE_UINT8);
+    let u32_field = |name| template_field(name, TDH_INTYPE_UINT32);
+    let text = |name| template_field(name, TDH_INTYPE_ANSISTRING);
+    let wide = |name| template_field(name, TDH_INTYPE_UNICODESTRING);
+    let mut fields = vec![
+        u8_field("TCP"),
+        text("InterfaceIP"),
+        text(if response { "Destination" } else { "Source" }),
+    ];
+    if response {
+        fields.extend([u8_field("AA"), u8_field("AD")]);
+    } else {
+        fields.push(u8_field("RD"));
+    }
+    fields.extend([text("QNAME"), u32_field("QTYPE"), u32_field("XID")]);
+    if response {
+        fields.extend([u8_field("DNSSEC"), u32_field("RCODE")]);
+    }
+    fields.extend([u32_field("Port"), u32_field("Flags")]);
+    if response {
+        fields.extend([wide("Scope"), wide("Zone"), wide("PolicyName")]);
+    }
+    let dependency = fields.len();
+    fields.push(u32_field("BufferSize"));
+    let mut packet = template_field("PacketData", TDH_INTYPE_BINARY);
+    packet.flags = PropertyParamLength.cast_unsigned();
+    packet.length = u16::try_from(dependency).unwrap_or(0);
+    fields.push(packet);
+    fields
+}
+
 #[cfg(test)]
 #[path = "decode_tests.rs"]
 pub(crate) mod tests;
