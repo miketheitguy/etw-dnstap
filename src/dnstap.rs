@@ -332,6 +332,10 @@ enum SocketProtocol {
 mod direct_tests;
 
 #[cfg(test)]
+#[path = "dnstap/golden_tests.rs"]
+mod golden_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{net::Ipv4Addr, time::Duration};

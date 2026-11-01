@@ -1326,6 +1326,10 @@ fn report_timing(timing: &DiagTiming) {
 }
 
 #[cfg(test)]
+#[path = "pipeline/cli_tests.rs"]
+mod cli_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{

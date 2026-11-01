@@ -433,6 +433,14 @@ mod shutdown_tests;
 #[path = "network/reconnect_tests.rs"]
 mod reconnect_tests;
 
+#[cfg(test)]
+#[path = "network/handshake_tests.rs"]
+mod handshake_tests;
+
+#[cfg(test)]
+#[path = "network/backpressure_tests.rs"]
+mod backpressure_tests;
+
 struct DeadlineTcp {
     stream: TcpStream,
     deadline: Instant,
@@ -608,6 +616,12 @@ fn validate_control(mut cursor: &[u8], expected: u32, require_content: bool) -> 
         ));
     }
     Ok(())
+}
+
+/// Fuzzing entry point: reads a control frame from `bytes` and validates it.
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_read_control(mut bytes: &[u8], expected: u32, require_content: bool) -> bool {
+    read_control(&mut bytes, expected, require_content).is_ok()
 }
 
 #[cfg(test)]

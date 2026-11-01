@@ -1,0 +1,39 @@
+# cargo-deny policy: https://embarkstudios.github.io/cargo-deny/
+# Run from the repository root with `cargo deny --locked check`.
+# The project is MIT licensed and Windows only.
+
+[graph]
+# This service builds only for 64-bit Windows; ignore other platforms' crates.
+targets = ["x86_64-pc-windows-msvc"]
+all-features = true
+
+[advisories]
+version = 2
+# Fail on yanked crates. Vulnerability and unmaintained advisories always fail.
+yanked = "deny"
+# Add RUSTSEC IDs here with a written reason when an advisory cannot be fixed.
+ignore = []
+
+[licenses]
+version = 2
+# Every dependency must be usable under MIT. Add a license only after reading it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Duplicate versions are reported, not fatal: the Windows and proptest trees
+# pull some crates twice and a new duplicate is worth noticing, not blocking.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

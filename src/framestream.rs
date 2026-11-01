@@ -177,3 +177,7 @@ mod tests {
         assert!(writer.finish().is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "framestream/proptests.rs"]
+mod proptests;

@@ -21,6 +21,12 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media",
 [features]
 # Diagnostic only: times the parser thread idle parks and socket writes.
 diag-timing = []
+# Fuzzing only: exposes `#[doc(hidden)] etw_dnstap::fuzzing` entry points used by
+# the separate `fuzz/` crate. Never enable it in a shipped build.
+fuzzing = []
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [profile.dev]
 debug = 2
