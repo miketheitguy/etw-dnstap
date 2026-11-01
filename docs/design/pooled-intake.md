@@ -167,25 +167,23 @@ property names of at most 256 UTF-16 units. Each plan walks only the prefix
 through the last required property. Supported layouts include 8-, 16-, and
 32-bit integer scalars, Boolean scalars, terminated ANSI and UTF-16 strings,
 and binary fields with a fixed length or a preceding unsigned scalar length.
-Arrays, structures, custom schemas, and unknown layouts in that prefix use the
-TDH fallback. Binary fields with zero length and no explicit fixed-length flag
-also use fallback. Unsupported trailing layouts can remain as names-only
+Arrays, structures, custom schemas, and unknown layouts in that prefix make the
+schema unsupported, and its events are rejected and counted in
+`schema_rejected`. Binary fields with zero length and no explicit fixed-length
+flag are also unsupported. There is no per-event TDH fallback. Unsupported trailing layouts can remain as names-only
 sentinels; the decoder doesn't inspect their bytes. Duplicate required property
 names prevent plan compilation, including duplicates after the required prefix.
 
-A supported schema-cache hit makes no TDH calls. A native cold load makes two
-`TdhGetEventInformation` calls to obtain metadata. The valid fallback cache-hit
-path retains five `TdhGetPropertySize` calls and five `TdhGetProperty` calls,
-using static UTF-16 property names. It reuses 512 bytes of property scratch and
-768 bytes of text scratch. Malformed payloads under a supported plan are
-rejected without retrying through TDH. Both paths preserve the shared metadata,
-endpoint, timestamp, packet-length, DNS direction, and output-size validation.
+A schema-cache hit makes no TDH calls. A native cold load makes two
+`TdhGetEventInformation` calls to obtain metadata. The parser reuses 768 bytes
+of address text scratch. Malformed payloads under a plan are rejected without
+retrying through TDH. Every decoded event passes the shared metadata, endpoint,
+timestamp, packet-length, DNS direction, and output-size validation.
 
-`Parser::parse` consumes the pooled event. The supported path borrows
+`Parser::parse` borrows the pooled event. The parser borrows
 `PacketData` from its payload and copies it once into the initialized, exact
 packet range in the final protobuf output through `Encoder::encode_with` (private to `src/dnstap.rs`).
-The fallback writes that range through `TdhGetProperty`. Only cold metadata
-loads and fallback reconstruct a native event view. Parsing releases the pool
+Only cold metadata loads reconstruct a native event view. Parsing releases the pool
 lease before the TCP write; the returned payload borrows only encoder output.
 
 The encoder retains identity, two address vectors, Prost metadata, and at most

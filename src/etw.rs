@@ -5,7 +5,7 @@
 //! - `target`: the DNS Server service process ID used by the PID filter.
 //! - `keywords`: provider keyword metadata and the subscription masks.
 //! - `intake`: the native callback and the deep copy into pooled storage.
-//! - `schema`: TDH schema loading, the fallback reader, and [`Parser`], which
+//! - `schema`: TDH schema loading, plan compilation, and [`Parser`], which
 //!   yields a format-neutral [`crate::event::DecodedDnsEvent`].
 //! - `decode`: the single-pass decoder driven by a compiled plan.
 //! - `pool`: the bounded pool of reusable record buffers (leases).

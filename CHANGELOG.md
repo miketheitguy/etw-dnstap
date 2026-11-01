@@ -154,6 +154,15 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Removed
 
+- The per-event TDH fallback reader. Every captured event is now decoded by a
+  plan compiled from the manifest schema. A DNS Server schema that does not
+  compile is no longer decoded through `TdhGetPropertySize` and `TdhGetProperty`.
+  Its events are rejected, counted in `schema_rejected` and `rejected`, and one
+  warning per (event ID, version) names the reason: `DNS event schema is
+  unsupported and its events are rejected`. The supported Windows Server 2025
+  schema compiles, so its output does not change. Each parser also drops a
+  64 KiB packet buffer and a 512-byte property buffer. See
+  [the removal plan](docs/history/tdh-fallback-removal-plan.md).
 - **Breaking.** The single-instance guard, a named mutex
   `Global\EtwDnstap-<session>`. It is removed, and no mutex is created. Only
   the SCM starts one process for the service, and the identity check refuses a

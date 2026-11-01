@@ -3,7 +3,7 @@
 > **Status:** Current · **Describes:** `main` at commit `efb47af` (decoder added in `e59425f`) · **Evidence dated:** not applicable (reference; local tests only) · **Reviewed:** 2026-11-01
 
 This page states the rules that the code enforces today. It covers the fast path
-in `src/etw/decode.rs`, the schema compiler and fallback in `src/etw/schema.rs`,
+in `src/etw/decode.rs`, the schema compiler in `src/etw/schema.rs`,
 and the encoder bounds in `src/dnstap.rs`. For ownership of pooled events, read
 [Pooled ETW intake](pooled-intake.md). The
 [implementation plan and completion record](../history/single-pass-decoder-plan.md)
@@ -18,13 +18,14 @@ is historical.
 - The parser caches at most 8 schemas. Each schema is keyed by event ID and
   version. When the cache is full, the parser clears it.
 
-## Fast path and fallback
+## Supported schemas
 
-Each schema is either compiled into a plan (fast path) or left without a plan
-(fallback). The decision is made once, when the schema is first loaded.
+Every captured event is decoded by a compiled plan. There is no per-event TDH
+reader. TDH is used only once per schema key, to read the manifest metadata that
+the plan is compiled from. The decision is made when the schema is first loaded.
 
-A schema uses the fallback when its plan does not compile. This happens when any
-of these is true:
+A schema is unsupported when its plan does not compile. This happens when any of
+these is true:
 
 - The schema has more than 256 properties, or a property name has more than
   256 UTF-16 units.
@@ -33,21 +34,22 @@ of these is true:
   schema, not only the prefix described below.
 - A property in the prefix is an array (count other than 1), a structure, a
   custom schema, or has a flag other than `PropertyParamLength` or
-  `PropertyParamFixedLength`. Setting both of these flags also selects the
-  fallback.
+  `PropertyParamFixedLength`. Setting both of these flags also makes the
+  schema unsupported.
 - A property in the prefix has a layout that the grammar below does not allow.
 
-In the fallback, the parser reads each property with TDH property calls. Packet
-bytes are copied into parser storage.
+Events are rejected in these cases:
 
-Two cases do not use the fallback:
-
-- **Metadata load failure.** If the manifest metadata cannot be loaded (for
-  example, the provider or event schema does not match, or the size is invalid),
-  the event is rejected. The parser remembers the failed key, for up to 8 keys.
+- **Unsupported schema or metadata load failure.** The event is rejected and
+  counted in `schema_rejected`. The cause can be a schema that does not compile,
+  a provider or event schema that does not match, or an invalid size. One
+  warning is logged for each key. The parser remembers the key, for up to 8 keys.
   Later events with that key are rejected without a TDH call.
 - **Malformed payload under a plan.** A payload that does not decode under a
-  compiled plan is rejected. The parser never retries it through TDH.
+  compiled plan is rejected. There is no TDH retry.
+
+Earlier builds decoded an unsupported schema through per-event TDH property
+calls instead of rejecting it. The CHANGELOG records the removal.
 
 ## Grammar of the fast path
 
@@ -71,7 +73,7 @@ Each required property has these further rules:
 - `InterfaceIP` and the peer must be a string whose output type is not IPv4 or
   IPv6. Alternatively, they must be a fixed-width binary of 4 bytes with the IPv4
   output type, or 16 bytes with the IPv6 output type. Any other binary is
-  rejected, which selects the fallback.
+  rejected, which makes the schema unsupported.
 - `PacketData` must be binary.
 
 A length that comes from a property must refer to an earlier property. A forward
@@ -93,7 +95,7 @@ or self reference is rejected.
 
 ## Checks after decoding
 
-The fast path and the fallback use the same checks after the fields are read:
+The parser applies these checks after the fields are read:
 
 - `TCP` must be 0 or 1.
 - `Port` must fit in 16 bits. A value of 0 means that the port is absent.
@@ -114,31 +116,29 @@ The fast path and the fallback use the same checks after the fields are read:
 | Properties per plan | 256 | `src/etw/decode.rs`, `src/etw/schema.rs` |
 | Property name length | 256 UTF-16 units | `src/etw/schema.rs` |
 | Address length | 512 bytes | `src/etw/schema.rs` |
-| Fallback property scratch | 512 bytes | `src/etw/schema.rs` |
-| Fallback text scratch | 768 bytes | `src/etw/schema.rs` |
+| Address text scratch | 768 bytes | `src/etw/schema.rs` |
 | DNS packet length | 12 through 65,535 bytes | `src/dnstap.rs` |
 | Identity | 1,024 bytes | `src/dnstap.rs` |
 | Encoded output | 70 KiB (71,680 bytes) | `src/dnstap.rs` |
 
 ## Ownership and allocation
 
-- On the fast path, `PacketData` borrows the pooled event payload. It is copied
-  once into the final output. The pooled event is released before the TCP write.
-- A schema-cache hit on a compiled plan makes no TDH metadata or property calls.
-  A cached fallback schema still reads each event through TDH property calls.
+- `PacketData` borrows the pooled event payload. It is copied once into the
+  final output. The pooled event is released before the TCP write.
+- A schema-cache hit makes no TDH call.
 - In the focused tests, warmed successful decoding and encoding allocate nothing.
-- Cold metadata loads, fallback reads, and error construction do allocate.
+- Cold metadata loads and error construction do allocate.
 
 ## Validation scope
 
 The local tests check:
 
-- Both recorded event layouts (256 and 257). Their fields and protobuf output
-  match the fallback.
+- Both recorded event layouts (256 and 257), with golden protobuf output.
 - Malformed payloads, which are rejected under a plan without TDH calls.
-- Unsupported layouts, which use the fallback.
-- A process-local manifest that compares decoded fields with real TDH extraction
-  for synthetic records. It does not capture live DNS Server traffic.
+- Unsupported layouts, which are rejected and counted.
+- A process-local manifest: a plan compiled from real TDH metadata produces the
+  same output as the plan compiled from the fixture template. It does not
+  capture live DNS Server traffic.
 
 These tests do not measure live throughput or CPU use. They do not resolve the
 capture deficit in the

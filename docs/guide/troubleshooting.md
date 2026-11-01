@@ -230,10 +230,13 @@ Then confirm `ring_dropped` stops rising. The defaults are tested only to about
 - **`rejected ETW event; further errors counted`.** The first four rejections
   are logged, and `rejected` counts every one. The message never includes
   payloads or names.
-- **`DNS event schema failed to load and is cached as rejected`.** Logged once
-  for each (event ID, version) key. Later events for that key are rejected
-  without a TDH call and counted in `schema_rejected`. The cache holds eight keys
-  and is cleared when full. A new Windows build or manifest can cause this.
+- **`DNS event schema is unsupported and its events are rejected`.** Logged
+  once for each (event ID, version) key, with the reason. The schema could not
+  be loaded, or it does not match the single-pass decoder grammar. There is no
+  slower decoding path: every event for that key is rejected without a TDH call
+  and counted in `schema_rejected` and `rejected`. The cache holds eight keys and
+  is cleared when full. A new Windows build or DNS Server manifest can cause
+  this. Report the warning text; capture of those events needs a decoder change.
 
 ## No records arrive at the collector
 
