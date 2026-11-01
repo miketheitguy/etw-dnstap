@@ -44,17 +44,17 @@ Search the Application log for the text, then go to the section named.
 | `service 'DNS' is not running` | Event ID 1 | The `DNS` service is stopped. | [RUNNING](#the-service-does-not-reach-running) |
 | `EnableTraceEx2: access denied` | Event ID 1 | The DNS provider GUID has a descriptor of its own that grants neither LocalService nor Performance Log Users `TRACELOG_GUID_ENABLE`. Not seen in the lab. | [install.md](install.md#if-an-etw-access-check-is-denied) |
 | `StartTraceW: access denied` | Event ID 1 | The service SID lacks `TRACELOG_CREATE_REALTIME` on the session GUID in the message, the session name changed, or the computer has not restarted since the grant. | [install.md](install.md#if-an-etw-access-check-is-denied) |
-| `CreateMutexW` with `access denied` | Event ID 1 | Another account owns the mutex, or the restricted token cannot open it. | [RUNNING](#the-service-does-not-reach-running) |
 | `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied` | Event ID 1 | The restricted token cannot query the `DNS` service. | [RUNNING](#the-service-does-not-reach-running) |
-| `already exists and does not match this program's session shape` | Event ID 1 | A session with the name exists and cannot be reclaimed. | [Stale session](#stale-etw-session-blocks-startup) |
-| `another EtwDnstap instance is already running` | Event ID 1 | The instance mutex is held. | [RUNNING](#the-service-does-not-reach-running) |
+| `already exists and does not match this program's session shape` | Event ID 1 | A session with the name exists and cannot be reclaimed. Its shape or its GUID differs from this service's. | [Stale session](#stale-etw-session-blocks-startup) |
 | `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | Event ID 5 | A deadline expired, and the process aborted. | [Watchdog](#watchdog-aborts-or-stop-hangs) |
 | `dnstap receiver unavailable at startup` | Event ID 3 | The service is running and reconnecting. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver connection lost` | Event ID 3 | An established session failed. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. Logged for the first four failures and then every 60th. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver reconnected` | Event ID 2 | A session was re-established. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `shutting down while the dnstap receiver is disconnected` | Event ID 3 | The service stopped without sending STOP. | [Receiver](#the-receiver-is-down-or-unreachable) |
-| `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
+| `the DNS Server service restarted`, `the DNS Server service stopped`, or `the DNS Server process exited (process ID N)` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
+| `cannot hold the DNS Server process open; PID reuse is detected only by polling the SCM` | Event ID 3 | The service could not open the DNS Server process at startup. Capture continues. | [Restarts](#the-service-keeps-restarting) |
+| `the DNS Server process ID changed while it was being opened; relying on SCM polling` | Event ID 3 | The DNS Server restarted during startup. Capture continues. | [Restarts](#the-service-keeps-restarting) |
 | `a capture worker exited before shutdown was requested` | Event ID 1 | A worker thread ended on its own. | [Restarts](#the-service-keeps-restarting) |
 | `ETW session flush failed` | Event ID 3 | A periodic flush failed once. Capture continues. | [ETW warnings](#etw-flush-and-consumer-warnings) |
 | `ETW session flush took` | Event ID 3 | One flush call took over 1 second. | [ETW warnings](#etw-flush-and-consumer-warnings) |
@@ -83,10 +83,13 @@ exit code. Work through these causes in order.
 | Receiver protocol mismatch | Event ID 1: `connect/negotiation with dnstap receiver` with `did not accept dnstap content type`. | Configure the collector for content type `protobuf:dnstap.Dnstap`. Network failures do not stop startup; see [the receiver section](#the-receiver-is-down-or-unreachable). |
 | ETW access denied | Event ID 1: `StartTraceW: access denied` or `EnableTraceEx2: access denied`. | Run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` with the session name from the message, then restart the computer. See [install.md](install.md#if-an-etw-access-check-is-denied). |
 | SCM query of `DNS` denied | Event ID 1: `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied`. | The restricted token needs `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` for Everyone or the service SID. Inspect `sc.exe sdshow DNS`. The query succeeded in the lab on build 26100. |
-| Leaked ETW session with the same name | Event ID 1: a session with the name exists and is not reclaimable. | See [Stale ETW session](#stale-etw-session-blocks-startup). |
-| Another instance | Event ID 1: `another EtwDnstap instance is already running for ETW session`. | Stop the other instance, or use a different `--session-name`. |
-| Mutex access denied | Event ID 1: `CreateMutexW ... access denied`. | A mutex of that name exists with a DACL the token cannot open. Stop any other EtwDnstap or use a different `--session-name`. |
+| Leaked ETW session with the same name | Event ID 1: a session with the name exists and is not reclaimable (different shape or different GUID). | See [Stale ETW session](#stale-etw-session-blocks-startup). |
 | Watchdog abort | No Event ID 1. Event ID 5 names the startup deadline. | See [Watchdog aborts](#watchdog-aborts-or-stop-hangs). |
+
+Only one copy of the service runs. The SCM starts one process for the service,
+and a second `sc.exe start` fails with error 1056 (already running). The
+identity check refuses a process that does not run as this service. The service
+has no instance mutex, so there is no mutex to clear.
 
 Repeat `sc.exe query EtwDnstap` while the state is `START_PENDING` or
 `STOP_PENDING`. The startup deadline is 10 seconds plus 1 second per 16,384
@@ -133,8 +136,17 @@ The service exits with a service-specific error in these cases, and SCM restarts
 it under the recovery policy in [install.md](install.md#5-configure-scm-recovery):
 
 - **The DNS Server process changed or stopped.** Event ID 4 names the reason, for
-  example `the DNS Server service restarted (process ID 4242 -> 5151)`. Event ID 1
+  example `the DNS Server service restarted (process ID 4242 -> 5151)` or
+  `the DNS Server process exited (process ID 4242)`. Event ID 1
   follows. The service checks this every 5 seconds.
+- **Startup warnings about the DNS Server process.** At startup the service
+  holds the DNS Server process open, so that Windows cannot give its process ID
+  to another process. Two warnings (Event ID 3) report that it could not do so:
+  `cannot hold the DNS Server process open; PID reuse is detected only by
+  polling the SCM`, and `the DNS Server process ID changed while it was being
+  opened; relying on SCM polling`. Both are informational. Capture continues,
+  and the 5-second SCM check still detects a changed process. If the second
+  warning is followed by a restart, the DNS Server restarted during startup.
 - **A capture worker ended on its own.** Event ID 1, `a capture worker exited
   before shutdown was requested`.
 - **A shutdown failure.** Event ID 1 names `finish dnstap STOP/FINISH exchange`.
@@ -257,20 +269,27 @@ Check the layers in order.
 ## Stale ETW session blocks startup
 
 A session that a crashed or aborted service left behind is reclaimed at startup
-if its name and real-time shape match. The buffer size does not have to match.
-A reclaim logs `reclaimed stale ETW session`, and a size difference logs
-`stale ETW session used a different buffer size; reclaiming anyway`.
+if its name, its real-time shape, and its session GUID match. The GUID is the
+one that the service derives from the session name. The buffer size does not
+have to match. A reclaim logs `reclaimed stale ETW session`, and a size
+difference logs `stale ETW session used a different buffer size; reclaiming
+anyway`.
 
 If startup still reports `already exists and does not match this program's
-session shape`, the session has a file or other logger mode, or a log file. Stop
-it manually:
+session shape`, the session has a file or other logger mode, a log file, or a
+different GUID. The service does not stop such a session, because another
+program or account may own it. Find the owner first. Then stop the session
+manually:
 
 ```powershell
 logman query -ets
 logman stop EtwDnstap -ets
 ```
 
-Use the `--session-name` you configured in place of `EtwDnstap`. Sessions named
+Use the `--session-name` you configured in place of `EtwDnstap`. Other accounts
+that may create ETW sessions (Administrators, LocalService, NetworkService, and
+Performance Log Users) can create a session with this name and block startup.
+Remove the cause, and then stop that session. Sessions named
 `etw-dnstap-<pid>` from earlier builds are not reclaimed automatically. Stop them
 the same way. Only stop a session you can identify as this service's.
 
