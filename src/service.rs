@@ -148,6 +148,15 @@ fn run_registered(handle: SERVICE_STATUS_HANDLE) -> Result<()> {
             .take()
             .context("missing service arguments")?
             .map_err(|text| anyhow!("invalid service arguments: {text}"))?;
+        // The startup budget grows with --capacity, because the event pool is
+        // allocated and touched before the service reports Running.
+        if let Some(guard) = startup_guard.take() {
+            guard.disarm()?;
+        }
+        startup_guard = Some(pipeline::ShutdownWatchdog::arm_for(
+            "startup",
+            pipeline::startup_budget(&args),
+        ));
         let stop = STOP.get().context("missing service stop state")?;
         pipeline::run_capture(
             args,
@@ -346,6 +355,39 @@ fn event_source() -> Option<&'static EventSource> {
     EVENT_SOURCE.get_or_init(EventSource::open).as_ref()
 }
 
+/// Opens the Event Log source now, so the watchdog expiry path can report
+/// without registering anything. A failed registration is remembered and later
+/// reports are skipped.
+pub(crate) fn preopen_event_source() {
+    let _ = event_source();
+}
+
+/// Event ID for a watchdog abort; 1 is reserved for fatal service failures and
+/// 2-4 map tracing levels.
+const WATCHDOG_EVENT_ID: u32 = 5;
+
+/// Writes the watchdog abort reason to the Event Log, bounded to one second.
+///
+/// Uses only the source opened earlier by [`preopen_event_source`]; it never
+/// registers a new one. The report runs on a helper thread because the Event Log
+/// can block, and the caller aborts the process whether or not it finishes.
+pub(crate) fn report_watchdog_expiry(message: &str) {
+    let Some(Some(source)) = EVENT_SOURCE.get() else {
+        return;
+    };
+    let text = event_text(message);
+    let (done, finished) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("watchdog-report".into())
+        .spawn(move || {
+            source.report(EVENTLOG_ERROR_TYPE, WATCHDOG_EVENT_ID, &text);
+            let _ = done.send(());
+        });
+    if spawned.is_ok() {
+        let _ = finished.recv_timeout(std::time::Duration::from_secs(1));
+    }
+}
+
 /// Buffers one formatted tracing event and reports it when dropped or flushed.
 pub(crate) struct EventLogLine {
     kind: u16,
@@ -497,9 +539,46 @@ fn bounded_sid(buffer: &[u8], address: usize) -> Result<&[u8]> {
         .context("SID exceeds token buffer")
 }
 
-/// This first deployment profile intentionally supports `LocalSystem` only.
+/// `S-1-5-32-559`, the built-in Performance Log Users group.
+const PERFORMANCE_LOG_USERS: &[u8] = &[1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x2f, 0x02, 0, 0];
+
+/// One token group: its SID bytes and attribute flags.
+struct GroupEntry<'a> {
+    sid: &'a [u8],
+    attributes: u32,
+}
+
+/// Checks the token profile this service supports: the process runs as the
+/// service virtual account (the token user is the service SID,
+/// `S-1-5-80-...`), and that account is an enabled, non-deny-only member of
+/// Performance Log Users so it may create and control ETW sessions.
+fn check_identity_profile(
+    user_sid: &[u8],
+    expected_service_sid: &[u8],
+    groups: &[GroupEntry<'_>],
+) -> Result<()> {
+    ensure!(
+        user_sid == expected_service_sid,
+        "EtwDnstap must run as the virtual account NT SERVICE\\EtwDnstap (the token user is \
+         not the service SID); configure: sc.exe config EtwDnstap obj= \"NT SERVICE\\EtwDnstap\""
+    );
+    // The group must be enabled and must not be restricted to deny-only use.
+    let restriction_mask = (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY).cast_unsigned();
+    let enabled_only = SE_GROUP_ENABLED.cast_unsigned();
+    let member = groups.iter().any(|group| {
+        group.sid == PERFORMANCE_LOG_USERS && group.attributes & restriction_mask == enabled_only
+    });
+    ensure!(
+        member,
+        "NT SERVICE\\EtwDnstap must be an enabled member of Performance Log Users (S-1-5-32-559) \
+         to control ETW sessions; run: net localgroup \"Performance Log Users\" \
+         \"NT SERVICE\\EtwDnstap\" /add, then restart the service"
+    );
+    Ok(())
+}
+
+/// Verifies the process token before any capture initialization.
 fn verify_identity() -> Result<()> {
-    const LOCAL_SYSTEM: &[u8] = &[1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
     let mut raw = null_mut();
     // SAFETY: GetCurrentProcess returns a borrowed pseudo-handle; OpenProcessToken
     // creates the separate owned query handle written to raw.
@@ -512,10 +591,7 @@ fn verify_identity() -> Result<()> {
     // SAFETY: The aligned buffer contains the complete TOKEN_USER header; the
     // embedded SID pointer is range-validated before inspecting SID bytes.
     let user_header = unsafe { &*user.storage.as_ptr().cast::<TOKEN_USER>() };
-    ensure!(
-        user.sid(user_header.User.Sid)? == LOCAL_SYSTEM,
-        "EtwDnstap currently requires the LocalSystem account"
-    );
+    let user_sid = user.sid(user_header.User.Sid)?;
     let expected_sid = service_sid()?;
     let groups = TokenBuffer::read(&token, TokenGroups)?;
     ensure!(
@@ -546,21 +622,38 @@ fn verify_identity() -> Result<()> {
             count,
         )
     };
-    // The SID must be enabled and must not be restricted to deny-only use.
-    let restriction_mask = (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY).cast_unsigned();
-    let enabled_only = SE_GROUP_ENABLED.cast_unsigned();
-    let mut service_enabled = false;
+    let mut parsed = Vec::with_capacity(count);
     for entry in entries {
-        let sid = groups.sid(entry.Sid)?;
-        if sid == expected_sid.as_slice() && entry.Attributes & restriction_mask == enabled_only {
-            service_enabled = true;
-        }
+        parsed.push(GroupEntry {
+            sid: groups.sid(entry.Sid)?,
+            attributes: entry.Attributes,
+        });
     }
-    ensure!(
-        service_enabled,
-        "EtwDnstap service SID must be enabled and not deny-only (configure sc.exe sidtype EtwDnstap unrestricted)"
-    );
+    check_identity_profile(user_sid, expected_sid.as_slice(), &parsed)?;
     verify_privileges(&token)?;
+    Ok(())
+}
+
+/// A token privilege: its LUID parts and attribute flags.
+struct PrivilegeEntry {
+    luid: (u32, i32),
+    attributes: u32,
+}
+
+/// Strict allowlist: exactly one privilege, `allowed`, and it is enabled. A
+/// virtual account normally also holds `SeCreateGlobalPrivilege`,
+/// `SeImpersonatePrivilege` and `SeIncreaseWorkingSetPrivilege`; the SCM
+/// `RequiredPrivileges` setting removes them.
+fn check_privilege_profile(privileges: &[PrivilegeEntry], allowed: (u32, i32)) -> Result<()> {
+    let [privilege] = privileges else {
+        anyhow::bail!(
+            "configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege before starting EtwDnstap: sc.exe privs EtwDnstap SeChangeNotifyPrivilege"
+        );
+    };
+    ensure!(
+        privilege.luid == allowed && privilege.attributes & SE_PRIVILEGE_ENABLED != 0,
+        "EtwDnstap requires only an enabled SeChangeNotifyPrivilege in its process token"
+    );
     Ok(())
 }
 
@@ -587,25 +680,29 @@ fn verify_privileges(token: &Token) -> Result<()> {
         .and_then(|n| offset.checked_add(n))
         .context("token privilege array overflow")?;
     ensure!(
-        count == 1 && end <= buffer.used,
-        "configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege before starting EtwDnstap"
+        count <= 64 && end <= buffer.used,
+        "invalid token privileges array"
     );
-    // SAFETY: Exactly one complete native-aligned entry fits in the initialized
-    // token buffer, as checked above.
-    let privilege = unsafe {
-        &*buffer
-            .storage
-            .as_ptr()
-            .byte_add(offset)
-            .cast::<LUID_AND_ATTRIBUTES>()
+    // SAFETY: The native-aligned array of `count` entries fits entirely in the
+    // initialized token buffer, as checked above.
+    let entries = unsafe {
+        std::slice::from_raw_parts(
+            buffer
+                .storage
+                .as_ptr()
+                .byte_add(offset)
+                .cast::<LUID_AND_ATTRIBUTES>(),
+            count,
+        )
     };
-    ensure!(
-        privilege.Luid.LowPart == allowed.LowPart
-            && privilege.Luid.HighPart == allowed.HighPart
-            && privilege.Attributes & SE_PRIVILEGE_ENABLED != 0,
-        "EtwDnstap requires only an enabled SeChangeNotifyPrivilege in its process token"
-    );
-    Ok(())
+    let parsed: Vec<PrivilegeEntry> = entries
+        .iter()
+        .map(|entry| PrivilegeEntry {
+            luid: (entry.Luid.LowPart, entry.Luid.HighPart),
+            attributes: entry.Attributes,
+        })
+        .collect();
+    check_privilege_profile(&parsed, (allowed.LowPart, allowed.HighPart))
 }
 
 fn service_sid() -> Result<Vec<u8>> {
@@ -696,6 +793,108 @@ mod tests {
         assert!(bounded_sid(bytes, address + 1).is_err());
         assert!(bounded_sid(bytes, address + bytes.len()).is_err());
         assert!(bounded_sid(bytes, address - 1).is_err());
+    }
+
+    /// A service SID such as `S-1-5-80-1-2-3-4-5` in wire layout.
+    fn virtual_account_sid(last: u8) -> Vec<u8> {
+        let mut sid = vec![1, 6, 0, 0, 0, 0, 0, 5];
+        for subauthority in [80u32, 1, 2, 3, 4, u32::from(last)] {
+            sid.extend_from_slice(&subauthority.to_le_bytes());
+        }
+        sid
+    }
+
+    const ENABLED: u32 = SE_GROUP_ENABLED.cast_unsigned();
+
+    fn local_system() -> Vec<u8> {
+        vec![1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0]
+    }
+
+    #[test]
+    fn identity_accepts_the_virtual_account_in_performance_log_users() {
+        let service = virtual_account_sid(5);
+        let groups = [GroupEntry {
+            sid: PERFORMANCE_LOG_USERS,
+            attributes: ENABLED,
+        }];
+        assert!(check_identity_profile(&service, &service, &groups).is_ok());
+    }
+
+    #[test]
+    fn identity_rejects_local_system_and_other_accounts() {
+        let service = virtual_account_sid(5);
+        let groups = [GroupEntry {
+            sid: PERFORMANCE_LOG_USERS,
+            attributes: ENABLED,
+        }];
+        let error = check_identity_profile(&local_system(), &service, &groups)
+            .expect_err("LocalSystem is no longer accepted")
+            .to_string();
+        assert!(error.contains("NT SERVICE\\EtwDnstap"));
+        assert!(check_identity_profile(&virtual_account_sid(6), &service, &groups).is_err());
+    }
+
+    #[test]
+    fn identity_requires_enabled_performance_log_users_membership() {
+        let service = virtual_account_sid(5);
+        let none: [GroupEntry<'_>; 0] = [];
+        let error = check_identity_profile(&service, &service, &none)
+            .expect_err("membership is required")
+            .to_string();
+        assert!(error.contains("Performance Log Users"));
+        assert!(error.contains("net localgroup"));
+        let other = [GroupEntry {
+            sid: &local_system(),
+            attributes: ENABLED,
+        }];
+        assert!(check_identity_profile(&service, &service, &other).is_err());
+        for attributes in [
+            0,
+            SE_GROUP_USE_FOR_DENY_ONLY.cast_unsigned(),
+            ENABLED | SE_GROUP_USE_FOR_DENY_ONLY.cast_unsigned(),
+        ] {
+            let groups = [GroupEntry {
+                sid: PERFORMANCE_LOG_USERS,
+                attributes,
+            }];
+            assert!(
+                check_identity_profile(&service, &service, &groups).is_err(),
+                "attributes {attributes:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn performance_log_users_sid_matches_s_1_5_32_559() {
+        // Revision 1, two sub-authorities, authority 5, then 32 and 0x22f (559).
+        assert_eq!(PERFORMANCE_LOG_USERS.len(), 8 + 2 * 4);
+        assert_eq!(u32::from_le_bytes([0x2f, 0x02, 0, 0]), 559);
+        assert_eq!(PERFORMANCE_LOG_USERS[1], 2);
+    }
+
+    #[test]
+    fn privilege_allowlist_is_exactly_one_enabled_privilege() {
+        let allowed = (23, 0);
+        let enabled = |luid| PrivilegeEntry {
+            luid,
+            attributes: SE_PRIVILEGE_ENABLED,
+        };
+        assert!(check_privilege_profile(&[enabled(allowed)], allowed).is_ok());
+        assert!(check_privilege_profile(&[], allowed).is_err());
+        assert!(check_privilege_profile(&[enabled(allowed), enabled((24, 0))], allowed).is_err());
+        assert!(check_privilege_profile(&[enabled((24, 0))], allowed).is_err());
+        let disabled = PrivilegeEntry {
+            luid: allowed,
+            attributes: 0,
+        };
+        assert!(check_privilege_profile(&[disabled], allowed).is_err());
+    }
+
+    #[test]
+    fn watchdog_report_without_a_preopened_source_returns_promptly() {
+        let started = std::time::Instant::now();
+        report_watchdog_expiry("test watchdog expiry");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]

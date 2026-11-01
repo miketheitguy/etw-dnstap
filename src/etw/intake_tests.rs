@@ -408,6 +408,7 @@ impl Fixture {
         let mut context = Box::new(CallbackContext {
             pool: Arc::clone(&pool),
             counters: Arc::default(),
+            expected_pid: None,
         });
         let (sender, receive) = crossbeam_channel::bounded(capacity);
         let context_address = (&raw const *context) as usize;
@@ -843,4 +844,59 @@ fn synthetic_pooled_intake_benchmark() {
         load(&counters.pool_exhausted),
         load(&counters.receiver_disconnected)
     );
+}
+
+#[test]
+fn pid_allowed_matches_only_the_expected_process() {
+    assert!(pid_allowed(None, 1));
+    assert!(pid_allowed(Some(7), 7));
+    assert!(!pid_allowed(Some(7), 8));
+    assert!(!pid_allowed(Some(7), 0));
+}
+
+#[test]
+fn callback_rejects_records_from_other_processes_without_allocating() {
+    let mut fixture = Fixture::new(2, 0);
+    fixture.context.expected_pid = Some(4242);
+    fixture.record.EventHeader.ProcessId = 4242;
+    assert_no_allocations(|| fixture.invoke());
+    fixture.record.EventHeader.ProcessId = 99;
+    assert_no_allocations(|| fixture.invoke());
+    assert_no_allocations(|| fixture.invoke());
+    let counters = &fixture.context.counters;
+    assert_eq!(counters.received.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.foreign_pid_rejected.load(Ordering::Relaxed), 2);
+    assert_eq!(counters.callback_errors.load(Ordering::Relaxed), 0);
+    assert_eq!(fixture.receive.len(), 1, "only the genuine record queued");
+}
+
+#[test]
+fn with_expected_pid_sets_the_filter() {
+    let pool = PoolManager::new(1, 0).expect("test pool");
+    let context = CallbackContext::new(pool, Arc::default());
+    assert_eq!(context.expected_pid, None);
+    assert_eq!(context.with_expected_pid(5).expected_pid, Some(5));
+}
+
+#[test]
+fn jumbo_exhaustion_is_counted_separately_from_regular() {
+    // No jumbo slots exist, so a 4 KiB record cannot be stored.
+    let mut fixture = Fixture::new(2, 0);
+    let mut payload = vec![0x11u8; 4096];
+    fixture.record.UserData = payload.as_mut_ptr().cast();
+    fixture.record.UserDataLength = 4096;
+    fixture.invoke();
+    let counters = Arc::clone(&fixture.context.counters);
+    assert_eq!(counters.pool_exhausted.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.pool_exhausted_jumbo.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.intake_dropped.load(Ordering::Relaxed), 1);
+    // A regular-size record that finds no free slot does not touch the jumbo count.
+    let held: Vec<_> = (0..4)
+        .map(|_| fixture.context.pool.acquire(1).expect("regular slot"))
+        .collect();
+    fixture.record.UserDataLength = 16;
+    fixture.invoke();
+    assert_eq!(counters.pool_exhausted.load(Ordering::Relaxed), 2);
+    assert_eq!(counters.pool_exhausted_jumbo.load(Ordering::Relaxed), 1);
+    drop(held);
 }

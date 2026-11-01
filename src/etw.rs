@@ -2,6 +2,8 @@
 //!
 //! Module map:
 //! - `session`: `StartTrace`/`ControlTrace`, stale-session reclaim, and [`Capture`].
+//! - `target`: the DNS Server service process ID used by the PID filter.
+//! - `instance`: the per-session named mutex that blocks a second instance.
 //! - `keywords`: provider keyword metadata and the subscription masks.
 //! - `intake`: the native callback and the deep copy into pooled storage.
 //! - `schema`: TDH schema loading, the fallback reader, and [`Parser`], which
@@ -19,6 +21,8 @@ mod decode;
 #[allow(unsafe_code)]
 mod diag;
 #[allow(unsafe_code)]
+mod instance;
+#[allow(unsafe_code)]
 mod intake;
 #[allow(unsafe_code)]
 mod keywords;
@@ -29,6 +33,8 @@ mod pool;
 mod schema;
 #[allow(unsafe_code)]
 mod session;
+#[allow(unsafe_code)]
+mod target;
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod test_support;
@@ -58,9 +64,20 @@ const MAX_METADATA: usize = 1_048_576;
 #[derive(Default)]
 pub(crate) struct CaptureCounters {
     pub(crate) received: AtomicU64,
+    /// Events dropped because the channel was full. A subset of `intake_dropped`;
+    /// never add the two together.
     pub(crate) dropped: AtomicU64,
+    /// Every event the callback accepted but did not enqueue (full channel, pool
+    /// exhaustion, or a closed channel).
     pub(crate) intake_dropped: AtomicU64,
+    /// Events dropped because no pool slot was free, regular and jumbo together.
+    /// Also counted in `intake_dropped`; the report splits it into regular and jumbo.
     pub(crate) pool_exhausted: AtomicU64,
+    /// The jumbo share of `pool_exhausted`.
+    pub(crate) pool_exhausted_jumbo: AtomicU64,
+    /// Records whose `EventHeader.ProcessId` was not the DNS Server service
+    /// process. They are not counted as `received`.
+    pub(crate) foreign_pid_rejected: AtomicU64,
     pub(crate) receiver_disconnected: AtomicU64,
     pub(crate) etw_lost: AtomicU64,
     pub(crate) etw_buffers_lost: AtomicU64,

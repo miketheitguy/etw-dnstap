@@ -5,45 +5,55 @@ use std::{
     ptr::null,
     sync::{Arc, atomic::Ordering},
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use crossbeam_channel::Sender;
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_CTX_CLOSE_PENDING, ERROR_INVALID_HANDLE,
-        ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND, GetLastError,
+        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_CTX_CLOSE_PENDING,
+        ERROR_INVALID_HANDLE, ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
+        GetLastError,
     },
     System::Diagnostics::Etw::{
         CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, ENABLE_TRACE_PARAMETERS,
         ENABLE_TRACE_PARAMETERS_VERSION_2, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
         EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_EVENT_ID,
-        EVENT_FILTER_TYPE_EVENT_ID, EVENT_TRACE_BUFFERING_MODE, EVENT_TRACE_CONTROL_FLUSH,
-        EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FILE_MODE_APPEND,
-        EVENT_TRACE_FILE_MODE_CIRCULAR, EVENT_TRACE_FILE_MODE_NEWFILE,
-        EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PRIVATE_LOGGER_MODE,
-        EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE,
-        EnableTraceEx2, OpenTraceW, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
-        PROCESSTRACE_HANDLE, ProcessTrace, StartTraceW, WNODE_FLAG_TRACED_GUID,
+        EVENT_FILTER_TYPE_EVENT_ID, EVENT_FILTER_TYPE_PID, EVENT_TRACE_BUFFERING_MODE,
+        EVENT_TRACE_CONTROL_FLUSH, EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP,
+        EVENT_TRACE_FILE_MODE_APPEND, EVENT_TRACE_FILE_MODE_CIRCULAR,
+        EVENT_TRACE_FILE_MODE_NEWFILE, EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW,
+        EVENT_TRACE_PRIVATE_LOGGER_MODE, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
+        EVENT_TRACE_SYSTEM_LOGGER_MODE, EnableTraceEx2, OpenTraceW,
+        PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
+        ProcessTrace, StartTraceW, WNODE_FLAG_TRACED_GUID,
     },
 };
 
 use super::{
     CaptureCounters, PROVIDER, PoolManager, RawEtwEvent, SUPPORTED_EVENT_IDS, check_status,
+    instance::InstanceLock,
     intake::{self, CallbackContext, native_etw_callback},
     keywords::{KeywordChoice, KeywordSelection, resolve_keywords},
+    target::{DNS_SERVICE, service_process_id, service_process_id_raw},
 };
 #[cfg(feature = "diag-timing")]
 use super::{ThreadPriority, set_current_thread_priority};
 
 const SUBSCRIPTION_LEVEL: u8 = 4;
+/// How long `Capture::stop` waits for `ProcessTrace` to return on its own after
+/// the session stops, before `CloseTrace` forces it. Half of the pipeline's
+/// 10 s shutdown watchdog, so the parser join and Frame Streams FINISH keep the
+/// rest.
+const WORKER_EXIT_WAIT: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
 
 /// ETW session buffer settings, validated by `SessionConfig::new`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SessionConfig {
     /// Buffer size in KiB (4..=128, a multiple of 4; see [`SessionConfig::new`]).
     pub(crate) buffer_kib: u32,
@@ -167,10 +177,12 @@ const FILE_MODE_BITS: u32 = EVENT_TRACE_FILE_MODE_SEQUENTIAL
     | EVENT_TRACE_FILE_MODE_NEWFILE;
 
 /// Whether a queried session has the shape this program creates: real-time
-/// only, no file or other logger modes, no log file, and the configured buffer
-/// size. Buffer counts, flush timer, and clock type are ignored because ETW may
-/// normalize them.
-fn reclaimable(query: &QueryProperties, config: &SessionConfig) -> bool {
+/// only, no file or other logger modes, and no log file. Buffer size, buffer
+/// counts, flush timer, and clock type are ignored: the first three are tuning
+/// the operator may have changed since a crash (a mismatch must not block
+/// restart), and ETW may normalize them anyway. The instance mutex, not this
+/// fingerprint, protects a live instance.
+fn reclaimable(query: &QueryProperties) -> bool {
     let properties = &query.properties;
     let forbidden_modes = FILE_MODE_BITS
         | EVENT_TRACE_SYSTEM_LOGGER_MODE
@@ -183,7 +195,6 @@ fn reclaimable(query: &QueryProperties, config: &SessionConfig) -> bool {
             && query.log_file_name[0] == 0);
     properties.LogFileMode & EVENT_TRACE_REAL_TIME_MODE != 0
         && properties.LogFileMode & forbidden_modes == 0
-        && properties.BufferSize == config.buffer_kib
         && no_log_file
 }
 
@@ -314,11 +325,19 @@ fn reclaim_decision(
         ),
     }
     ensure!(
-        reclaimable(&queried, config),
+        reclaimable(&queried),
         "ETW session '{display_name}' already exists and does not match this program's session \
          shape; choose another --session-name or stop it manually, for example: logman stop \
          {display_name} -ets"
     );
+    if queried.properties.BufferSize != config.buffer_kib {
+        tracing::warn!(
+            session = display_name,
+            stale_buffer_kib = queried.properties.BufferSize,
+            configured_buffer_kib = config.buffer_kib,
+            "stale ETW session used a different buffer size; reclaiming anyway"
+        );
+    }
     let mut stopping = QueryProperties::new();
     let status = stop(&mut stopping);
     ensure!(
@@ -344,6 +363,70 @@ pub(crate) struct Capture {
     worker: Option<JoinHandle<u32>>,
     counters: Arc<CaptureCounters>,
     keywords: KeywordSelection,
+    /// The DNS Server service process, resolved at start. If it changes, the
+    /// supervisor ends capture so SCM can restart this service with the new PID.
+    dns_pid: u32,
+    // Last, so the instance lock outlives the session teardown in `stop`.
+    _instance: InstanceLock,
+}
+
+/// What the supervisor concluded from re-reading the DNS service process ID.
+/// `observed` is `None` when the query itself failed, which proves nothing.
+fn classify_target(expected: u32, observed: Option<u32>) -> Option<String> {
+    match observed {
+        None => None,
+        Some(pid) if pid == expected => None,
+        Some(0) => Some(format!(
+            "the DNS Server service stopped (it ran as process ID {expected})"
+        )),
+        Some(pid) => Some(format!(
+            "the DNS Server service restarted (process ID {expected} -> {pid})"
+        )),
+    }
+}
+
+/// Polls `done` every `poll` until it holds or `budget` elapses.
+fn wait_until(mut done: impl FnMut() -> bool, budget: Duration, poll: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        if done() {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep(poll.min(deadline - now));
+    }
+}
+
+/// `CloseTrace` statuses that are not failures. After a successful STOP the
+/// consumer handle may already be invalid because `ProcessTrace` returned and
+/// released it.
+fn close_trace_benign(status: u32, session_stopped: bool) -> bool {
+    matches!(status, ERROR_SUCCESS | ERROR_CTX_CLOSE_PENDING)
+        || (session_stopped && status == ERROR_INVALID_HANDLE)
+}
+
+/// `ProcessTrace` return statuses that are not failures; see
+/// [`close_trace_benign`] for `ERROR_INVALID_HANDLE`.
+fn process_trace_benign(status: u32, session_stopped: bool) -> bool {
+    matches!(status, ERROR_SUCCESS | ERROR_CANCELLED)
+        || (session_stopped && status == ERROR_INVALID_HANDLE)
+}
+
+/// Turns an `EnableTraceEx2` status into an error that names the access right a
+/// non-administrator service account may be missing.
+fn check_enable_status(status: u32) -> Result<()> {
+    if status == ERROR_ACCESS_DENIED {
+        bail!(
+            "EnableTraceEx2: access denied enabling the Microsoft-Windows-DNSServer provider \
+             {{eb79061a-a566-4698-9119-3ed2807060e7}}. The account running EtwDnstap needs \
+             TRACELOG_GUID_ENABLE (0x80) on that provider GUID in addition to membership in \
+             'Performance Log Users' (code {status})"
+        );
+    }
+    check_status(status, "EnableTraceEx2")
 }
 
 impl Capture {
@@ -363,6 +446,10 @@ impl Capture {
             "invalid ETW session name"
         );
         let display_name = name;
+        // First, so a second instance never reaches the reclaim path below.
+        let instance = InstanceLock::acquire(display_name)?;
+        let dns_pid = service_process_id(DNS_SERVICE)
+            .context("resolve the DNS Server service process ID for the PID filter")?;
         let mut name: Vec<u16> = name.encode_utf16().collect();
         ensure!(
             name.len() <= 1024,
@@ -385,7 +472,7 @@ impl Capture {
         }
         check_status(
             status,
-            "StartTraceW (run elevated; use an unused session name)",
+            "StartTraceW (run as an administrator or a member of 'Performance Log Users'; use an unused session name)",
         )?;
         let keywords = choice.selection();
         let mut capture = Self {
@@ -394,16 +481,24 @@ impl Capture {
             worker: None,
             counters,
             keywords,
+            dns_pid,
+            _instance: instance,
         };
-        // The payload, descriptor, and parameters are locals that outlive the
-        // synchronous EnableTraceEx2 call below.
+        // The payloads, descriptors, and parameters are locals that outlive the
+        // synchronous EnableTraceEx2 call below. Two filters: event IDs and the
+        // DNS Server process ID.
         let filter_payload = EventIdFilterPayload::new();
-        let mut filter_descriptor = event_id_descriptor(&filter_payload);
-        let parameters = enable_parameters(&raw mut filter_descriptor);
+        let pid_payload = PidFilterPayload::new(dns_pid);
+        let mut descriptors = [
+            event_id_descriptor(&filter_payload),
+            pid_descriptor(&pid_payload),
+        ];
+        let parameters = enable_parameters(descriptors.as_mut_ptr(), 2);
         // SAFETY: The successful StartTrace call owns this handle. The provider GUID
-        // is a constant GUID. `parameters` points at `filter_descriptor`, which points at
-        // `filter_payload`; all three are stack locals that remain alive and
-        // unmoved for this synchronous call, and ETW copies them before returning.
+        // is a constant GUID. `parameters` points at the two-element `descriptors`
+        // array, whose entries point at `filter_payload` and `pid_payload`; all of
+        // them are stack locals that remain alive and unmoved for this synchronous
+        // call, and ETW copies them before returning.
         let status = unsafe {
             EnableTraceEx2(
                 session,
@@ -416,12 +511,12 @@ impl Capture {
                 &raw const parameters,
             )
         };
-        check_status(status, "EnableTraceEx2")?;
+        check_enable_status(status)?;
 
-        let mut context = Box::new(CallbackContext::new(
-            Arc::clone(&pool),
-            Arc::clone(&capture.counters),
-        ));
+        let mut context = Box::new(
+            CallbackContext::new(Arc::clone(&pool), Arc::clone(&capture.counters))
+                .with_expected_pid(dns_pid),
+        );
         let mut logfile = EVENT_TRACE_LOGFILEW {
             LoggerName: name.as_mut_ptr(),
             Context: (&raw mut *context).cast(),
@@ -501,9 +596,52 @@ impl Capture {
         flush_session(session)
     }
 
+    /// Queries the live session and stores ETW's lost-event counters. The error
+    /// carries the Win32 status; failures are also counted in `stats_errors`.
+    pub(crate) fn query_statistics(&self) -> Result<(), u32> {
+        let Some(session) = self.session else {
+            return Err(ERROR_INVALID_HANDLE);
+        };
+        let mut properties = QueryProperties::new();
+        // SAFETY: The properties buffer is aligned, sized (Wnode.BufferSize and both
+        // offsets set), and outlives this synchronous call; a null name selects the
+        // session by handle, and a stale handle only yields an error status.
+        let status = unsafe {
+            ControlTraceW(
+                session,
+                null(),
+                &raw mut properties.properties,
+                EVENT_TRACE_CONTROL_QUERY,
+            )
+        };
+        let status = if status == ERROR_MORE_DATA {
+            ERROR_SUCCESS
+        } else {
+            status
+        };
+        self.store_statistics(status, &properties.properties);
+        if status == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(status)
+        }
+    }
+
+    /// Re-reads the DNS Server service process ID. Returns a reason when the
+    /// service stopped or restarted, which invalidates the PID filter. A failed
+    /// query is inconclusive and returns `None`.
+    pub(crate) fn target_change(&self) -> Option<String> {
+        classify_target(self.dns_pid, service_process_id_raw(DNS_SERVICE).ok())
+    }
+
     /// Stops collection, waits for native callbacks to end, and reports loss.
+    ///
+    /// Order: `ControlTrace(STOP)`, then a bounded wait for `ProcessTrace` to
+    /// deliver its remaining buffers and return on its own, then `CloseTrace`
+    /// (which only forces the worker out if the wait expired), then the join.
     pub(crate) fn stop(&mut self) -> Result<()> {
         let mut failure = None;
+        let mut session_stopped = false;
         if let Some(session) = self.session.take() {
             let mut properties = SessionProperties::new(&SessionConfig::default());
             // SAFETY: Only the handle successfully created above is stopped; null
@@ -522,19 +660,37 @@ impl Capture {
                 // second stop attempt after the consumer has been closed.
                 self.session = Some(session);
                 failure = Some(anyhow!("ControlTraceW(stop) failed: {status}"));
+            } else {
+                session_stopped = true;
+            }
+        }
+        if session_stopped {
+            // The stopped session flushes its buffers to the consumer, and
+            // ProcessTrace returns once they are delivered. Closing the handle
+            // first could cut that final delivery short.
+            let exited = wait_until(
+                || self.worker.as_ref().is_none_or(JoinHandle::is_finished),
+                WORKER_EXIT_WAIT,
+                Duration::from_millis(5),
+            );
+            if !exited {
+                tracing::warn!(
+                    "ETW consumer did not return within {} s of STOP; closing the trace handle",
+                    WORKER_EXIT_WAIT.as_secs()
+                );
             }
         }
         if let Some(consumer) = self.consumer.take() {
             // SAFETY: This is the OpenTrace handle, closed exactly once. Native
             // callbacks and their Box remain alive until the worker joins below.
             let status = unsafe { CloseTrace(consumer) };
-            if status != ERROR_SUCCESS && status != ERROR_CTX_CLOSE_PENDING && failure.is_none() {
+            if !close_trace_benign(status, session_stopped) && failure.is_none() {
                 failure = Some(anyhow!("CloseTrace failed: {status}"));
             }
         }
         if let Some(worker) = self.worker.take() {
             match worker.join() {
-                Ok(ERROR_SUCCESS | ERROR_CANCELLED) => {}
+                Ok(status) if process_trace_benign(status, session_stopped) => {}
                 Ok(status) if failure.is_none() => {
                     failure = Some(anyhow!("ProcessTrace failed: {status}"));
                 }
@@ -616,14 +772,40 @@ fn event_id_descriptor(payload: &EventIdFilterPayload) -> EVENT_FILTER_DESCRIPTO
     }
 }
 
-/// Builds version 2 enable parameters carrying one filter descriptor.
-fn enable_parameters(descriptor: *mut EVENT_FILTER_DESCRIPTOR) -> ENABLE_TRACE_PARAMETERS {
+/// An `EVENT_FILTER_TYPE_PID` payload: a packed array of process IDs (ETW allows
+/// at most 8; this program supplies one).
+#[repr(C)]
+struct PidFilterPayload {
+    pids: [u32; 1],
+}
+
+impl PidFilterPayload {
+    const fn new(pid: u32) -> Self {
+        Self { pids: [pid] }
+    }
+}
+
+/// Describes `payload` as a process-ID filter; the caller keeps `payload` alive.
+fn pid_descriptor(payload: &PidFilterPayload) -> EVENT_FILTER_DESCRIPTOR {
+    EVENT_FILTER_DESCRIPTOR {
+        Ptr: std::ptr::from_ref(payload) as u64,
+        #[expect(clippy::cast_possible_truncation, reason = "the payload is 4 bytes")]
+        Size: size_of::<PidFilterPayload>() as u32,
+        Type: EVENT_FILTER_TYPE_PID,
+    }
+}
+
+/// Builds version 2 enable parameters carrying `count` filter descriptors.
+fn enable_parameters(
+    descriptors: *mut EVENT_FILTER_DESCRIPTOR,
+    count: u32,
+) -> ENABLE_TRACE_PARAMETERS {
     ENABLE_TRACE_PARAMETERS {
         Version: ENABLE_TRACE_PARAMETERS_VERSION_2,
         // Drop keyword-0 events, which pass any keyword mask by default.
         EnableProperty: EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0,
-        EnableFilterDesc: descriptor,
-        FilterDescCount: 1,
+        EnableFilterDesc: descriptors,
+        FilterDescCount: count,
         ..Default::default()
     }
 }
