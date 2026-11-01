@@ -7,3 +7,6 @@ __pycache__/
 # Written by the CI coverage job when run locally.
 lcov.info
 coverage-summary.txt
+
+# Local link to .agents/skills/asd-ste100 (the tracked copy)
+/.claude/skills/asd-ste100
