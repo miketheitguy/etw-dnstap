@@ -581,8 +581,9 @@ fn check_identity_profile(
     ensure!(
         user_sid == LOCAL_SERVICE,
         "EtwDnstap must run as NT AUTHORITY\\LocalService (S-1-5-19); the token user is a \
-         different account (a virtual account or LocalSystem is not accepted); configure: \
-         sc.exe config EtwDnstap obj= \"NT AUTHORITY\\LocalService\" password= \"\""
+         different account (a virtual account or LocalSystem is not accepted); configure \
+         (through cmd.exe, because Windows PowerShell drops the empty password argument): \
+         cmd.exe /c 'sc.exe config EtwDnstap obj= \"NT AUTHORITY\\LocalService\" password= \"\"'"
     );
     ensure!(
         groups
@@ -619,14 +620,17 @@ fn check_identity_profile(
 }
 
 /// Parses a `TOKEN_GROUPS` buffer, also the layout of `TokenRestrictedSids`.
+///
+/// An unrestricted token reports `TokenRestrictedSids` as a bare `GroupCount`
+/// of zero, shorter than `TOKEN_GROUPS`, so only the count is required up front.
 fn parse_groups(buffer: &TokenBuffer) -> Result<Vec<GroupEntry<'_>>> {
-    ensure!(
-        buffer.used >= size_of::<TOKEN_GROUPS>(),
-        "truncated token groups"
-    );
-    // SAFETY: read supplies native alignment and the complete fixed header.
-    let header = unsafe { &*buffer.storage.as_ptr().cast::<TOKEN_GROUPS>() };
-    let count = header.GroupCount as usize;
+    ensure!(buffer.used >= size_of::<u32>(), "truncated token groups");
+    // SAFETY: GroupCount is the leading u32 of TOKEN_GROUPS; the u64 storage is
+    // aligned and at least 8 bytes, and used covers these 4 initialized bytes.
+    let count = unsafe { buffer.storage.as_ptr().cast::<u32>().read() } as usize;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
     let offset = offset_of!(TOKEN_GROUPS, Groups);
     let end = count
         .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
@@ -1047,5 +1051,44 @@ mod tests {
         assert_eq!(event_kind(Level::WARN), (EVENTLOG_WARNING_TYPE, 3));
         assert_eq!(event_kind(Level::INFO), (EVENTLOG_INFORMATION_TYPE, 2));
         assert_eq!(event_kind(Level::DEBUG), (EVENTLOG_INFORMATION_TYPE, 2));
+    }
+
+    #[test]
+    fn unrestricted_token_restricted_sids_parse_as_empty() {
+        // An unrestricted token reports TokenRestrictedSids as a bare
+        // GroupCount of zero, 4 bytes, shorter than TOKEN_GROUPS.
+        let buffer = TokenBuffer {
+            storage: vec![0u64],
+            used: size_of::<u32>(),
+        };
+        let restricted: Vec<&[u8]> = parse_groups(&buffer)
+            .expect("empty list")
+            .iter()
+            .map(|entry| entry.sid)
+            .collect();
+        assert_eq!(restricted.len(), 0);
+        let service = service_sid_bytes(5);
+        let groups = [
+            group(&service, ENABLED),
+            group(PERFORMANCE_LOG_USERS, ENABLED),
+        ];
+        let error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &restricted)
+            .expect_err("unrestricted")
+            .to_string();
+        assert!(error.contains("not restricted"), "{error}");
+    }
+
+    #[test]
+    fn token_groups_shorter_than_the_count_are_rejected() {
+        let short = TokenBuffer {
+            storage: vec![0u64],
+            used: 2,
+        };
+        assert!(parse_groups(&short).is_err());
+        let claims_one = TokenBuffer {
+            storage: vec![1u64],
+            used: size_of::<u32>(),
+        };
+        assert!(parse_groups(&claims_one).is_err());
     }
 }

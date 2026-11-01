@@ -16,7 +16,7 @@ prost = "0.14"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
 
 [features]
 # Diagnostic only: times the parser thread idle parks and socket writes.

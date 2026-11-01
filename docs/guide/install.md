@@ -1,26 +1,22 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `54eafae` (service identity and reconnect behavior from `f0b51f4`) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` after commit `6718863`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
 
-> **Validation status: the LocalService restricted-SID profile has not been
-> validated on a live DNS Server.** The lab record,
-> [lab-validation.md](../history/lab-validation.md), validated the earlier
-> LocalSystem profile only. The provisioning steps below are written from the
-> source and have not been run on a live DNS Server under
-> `NT AUTHORITY\LocalService` with a restricted service SID. Whether ETW access
-> checks pass for a write-restricted token is an assumption. Run the steps on a
-> disposable DNS host first, complete the
-> [validation checklist](#validation-checklist-for-the-localservice-restricted-profile),
-> and record the result before production use.
+> **Validation status:** the LocalService restricted-SID profile was validated
+> on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
+> [localservice-restricted-validation.md](../history/localservice-restricted-validation.md).
+> The SCM recovery policy, a DNS Server restart, and load were not covered. On
+> other builds, run the
+> [validation checklist](#validation-checklist-for-the-localservice-restricted-profile)
+> on a disposable host first.
 
 This guide covers the toolchain, the build, the service identity, and the SCM
 registration for a new installation. Options are in
 [configuration.md](configuration.md). Problems are in
 [troubleshooting.md](troubleshooting.md). Removal is in [uninstall.md](uninstall.md).
 
-The commands below were written from the source and the reviewed lab procedure.
-They were **not executed** as part of this documentation pass. Run them on a
-disposable host first.
+Steps 3, 4 and 7 were run on the lab host recorded above. The other steps were
+written from the source and the reviewed lab procedure.
 
 ## Prerequisites
 
@@ -129,7 +125,9 @@ assume the service and the installation directory do not exist yet. For an
 existing installation, see [Repair or upgrade](#repair-or-upgrade) below.
 
 The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with a
-**restricted** service SID type, which gives it a write-restricted token. At
+**restricted** service SID type. Windows calls the resulting token
+*write-restricted*. The name refers to Windows access checks, not to ETW data:
+the service only reads events. At
 startup it requires all of the following, and refuses to start otherwise:
 
 - the token user is `S-1-5-19`;
@@ -141,9 +139,20 @@ startup it requires all of the following, and refuses to start otherwise:
   because the service SID is a member of that group;
 - the only privilege is an enabled `SeChangeNotifyPrivilege`.
 
-Because the token is write-restricted, write-type access checks must also be
-satisfied by a restricting SID. Group membership alone may not be enough, so
-step 4 grants the ETW rights directly to the service SID.
+For any access that Windows classes as a write (a change of state), a
+write-restricted token must also pass a second check. That check considers only
+the restricting SIDs. Creating the service's own real-time trace session is
+such a change. LocalService and Performance Log Users do not count for it, so
+step 4 grants `TRACELOG_CREATE_REALTIME` directly to the service SID. Every
+other ETW call the service makes passed in the lab without a grant: enabling
+the provider, consuming the session, and querying and stopping it.
+
+The grant is scoped to the service's own session. The service starts its ETW
+session with a stable GUID derived from `--session-name`, and ETW checks the
+right against that GUID's descriptor. Step 4 grants on that GUID only and
+leaves the shared default descriptor unchanged. This matches how Windows
+provisions its own restricted LocalService services, such as `DPS`: their ETW
+rights are granted to their service SIDs on specific GUIDs.
 
 Starting the collector listener first is still the simplest path, but it is not
 required. If the receiver is unreachable at startup, the service runs
@@ -209,24 +218,27 @@ out so the value is visible. Add other options from
 The name `NT SERVICE\EtwDnstap` resolves once the service exists, so the
 `icacls` grant comes after `New-Service`. Step 2 removed inherited ACEs. Without
 this grant, the copied executable is not readable by the service, and the
-service cannot start. **Unverified:** read and execute access should pass the
-normal access check, because the second, restricting-SID pass applies only to
-write-type access. Confirm on a disposable host that the service starts.
+service cannot start. Read and execute is not a write, so this grant to the
+service SID is enough. The lab confirmed it.
 
 ### 4. Set the service identity, privileges, ETW access, and event source
 
 ```powershell
-sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""
+cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'
 sc.exe sidtype EtwDnstap restricted
 sc.exe privs EtwDnstap SeChangeNotifyPrivilege
 net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add
-.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -WhatIf
-.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1
+.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap -WhatIf
+.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap
 New-EventLog -LogName Application -Source EtwDnstap
+Restart-Computer
 ```
 
-- `obj=` runs the service as LocalService, which has no password. A service
-  still set to LocalSystem or a virtual account fails the identity check.
+- `obj=` runs the service as LocalService, which has no password. Run it
+  through `cmd.exe`. Windows PowerShell 5.1 drops an empty `""` argument, so
+  `sc.exe` prints its usage and the account stays unchanged. Check the result
+  with `sc.exe qc EtwDnstap`. A service still set to LocalSystem or a virtual
+  account fails the identity check.
 - `sidtype restricted` makes the SCM build a write-restricted token. The
   restricting SIDs are the service SID, Everyone, the logon SID, and
   `S-1-5-33`. An unrestricted token fails the identity check.
@@ -237,31 +249,41 @@ New-EventLog -LogName Application -Source EtwDnstap
   Performance Log Users. That lets the service create and control ETW sessions.
   The membership must be enabled in the token, not deny-only. Restart the
   service after you change membership.
-- `Grant-EtwDnstapEtwAccess.ps1` grants rights directly to the service SID with
-  `EventAccessControl`: `TRACELOG_GUID_ENABLE` (0x80) on the DNS provider GUID,
-  and query, set, `TRACELOG_CREATE_REALTIME` and `TRACELOG_ACCESS_REALTIME` (mask
-  0x423) on the default WMI security GUID. These are needed because a
-  write-restricted token only matches restricting SIDs on write-type checks. Run
-  it with `-WhatIf` first. It prints the resulting SDDL. Details are in
-  [scripts/provision/README.md](../../scripts/provision/README.md).
+- `Grant-EtwDnstapEtwAccess.ps1` grants one right to the service SID with
+  `EventAccessControl`: `TRACELOG_CREATE_REALTIME` (0x20) on the session GUID
+  for each `-SessionName`. The GUID for the default name `EtwDnstap` is
+  `{05e1db3c-1322-58c7-8235-0463fccba32b}`. Pass every `--session-name` this host uses, spelled
+  exactly as in the binary path; the name is hashed without case folding. The
+  script grants no right to log events. It also removes any other ACE for the
+  service SID from every ETW descriptor, including grants from earlier versions
+  of the script. Run it with `-WhatIf` first. It prints the resulting SDDL.
+  Details are in [scripts/provision/README.md](../../scripts/provision/README.md).
 - `New-EventLog` registers the `EtwDnstap` source. Without it, service failures
   and the capture start and stop lines are not written to the Application log.
-  The default security descriptor of the Application channel is believed to
-  grant write to `S-1-5-33`, so `ReportEvent` should work for a restricted
-  service. **Unverified:** confirm that Event ID 2 appears after start.
+  The lab confirmed that the restricted token can write these events.
+- `Restart-Computer` is required. ETW applies its security descriptors at boot.
+  In the lab, a grant applied without a restart had no effect.
 
 If the source already exists, `New-EventLog` fails. Check it first with
 `[System.Diagnostics.EventLog]::SourceExists('EtwDnstap')`.
 
 ### If an ETW access check is denied
 
-If the log shows `StartTraceW: access denied` or
-`EnableTraceEx2: access denied enabling the Microsoft-Windows-DNSServer provider`,
-the service SID lacks a right the message names. Run
-`scripts\provision\Grant-EtwDnstapEtwAccess.ps1` as an administrator, confirm
-the service SID is in Performance Log Users, and restart the service. If it is
-still denied, the access mask in the script is incomplete for this OS build.
-Inspect the printed SDDL, and record the mask that works.
+- **`StartTraceW: access denied`:** the service SID lacks
+  `TRACELOG_CREATE_REALTIME` on the session GUID the message names, or the
+  computer has not restarted since the grant. A changed `--session-name` also
+  changes the GUID. Run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1
+  -SessionName <name>` with the name from the message, restart the computer,
+  then start the service.
+- **`EnableTraceEx2: access denied`:** this did not occur in the lab. The
+  default descriptor already grants LocalService and Performance Log Users
+  `TRACELOG_GUID_ENABLE`. A denial means this host has a descriptor of its own
+  for the DNS provider GUID. Inspect
+  `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security\eb79061a-a566-4698-9119-3ed2807060e7`,
+  grant `TRACELOG_GUID_ENABLE` (0x80) on that GUID to `NT SERVICE\EtwDnstap`,
+  and restart the computer.
+
+Record the OS build and the grant that worked.
 
 ### 5. Configure SCM recovery
 
@@ -337,28 +359,33 @@ files. Retention is the collector's job.
 
 ### Validation checklist for the LocalService restricted profile
 
-Complete this checklist on a disposable DNS host before you rely on the profile.
-Record each result with the binary's commit. None of it has been run.
+Complete this checklist on a disposable DNS host before you rely on the profile
+on a build other than 26100. Record each result with the binary's commit. Items
+marked *lab* passed on build 26100. See
+[localservice-restricted-validation.md](../history/localservice-restricted-validation.md).
 
-- The service reaches `RUNNING`, and `capture started` shows the expected keyword
-  masks without `keyword_fallback` set.
-- `foreign_pid_rejected` stays 0 under DNS traffic, and `received` rises.
-- `StartTraceW` and `EnableTraceEx2` are not denied. If they are, follow
+- *lab:* The service reaches `RUNNING`, and `capture started` shows the
+  expected keyword masks without `keyword_fallback` set.
+- *lab:* `foreign_pid_rejected` stays 0 under DNS traffic, and `received` rises.
+- *lab:* With only the `0x20` grant and a restart, `StartTraceW` and
+  `EnableTraceEx2` are not denied. Without the grant, `StartTraceW` is denied.
+  If either is denied, follow
   [the ETW access step](#if-an-etw-access-check-is-denied).
-- Application log writes work: Event ID 2 (`capture started`) appears.
-- Under DNS traffic, `output stats` shows `receiver_connected` true, and the
-  collector receives the records.
-- After `sc.exe stop`, the service reaches `STOPPED` with exit code 0, and the
-  final `output stopped` line reports `output_errors` 0.
+- *lab:* Application log writes work: Event ID 2 (`capture started`) appears.
+- *lab:* Under DNS traffic, `receiver_connected` is true, and the collector
+  receives the records.
+- *lab:* After `sc.exe stop`, the service reaches `STOPPED` with exit code 0,
+  and the final `output stopped` line reports `output_errors` 0.
+- *lab:* After the process is killed, the next start reclaims the stale session
+  (`stale_sessions_reclaimed=1`).
 - A DNS Server restart produces a gap and an automatic EtwDnstap restart under
   the recovery policy.
-- The `Global\EtwDnstap-<session>` instance mutex is created. LocalService
-  normally holds `SeCreateGlobalPrivilege`, and the restricted privilege list
-  removes it. No unit test or lab run has covered this combination.
-- The SCM query of the `DNS` service (`OpenSCManagerW`, `OpenServiceW`,
+- *lab:* The `Global\EtwDnstap-<session>` instance mutex is created under the
+  restricted privilege list.
+- *lab:* The SCM query of the `DNS` service (`OpenSCManagerW`, `OpenServiceW`,
   `QueryServiceStatusEx`) succeeds under the restricted token.
-- `sc.exe sidtype EtwDnstap none` (a negative test) makes the service stop at
-  startup with the restricted-token message.
+- *lab:* `sc.exe sidtype EtwDnstap unrestricted` (a negative test) makes the
+  service stop at startup with `the process token is not restricted`.
 
 ## Receiver configuration
 
@@ -415,6 +442,16 @@ ACLs, and recovery policy as they are. Change only what you need.
   start the service. Confirm the account with `sc.exe qc EtwDnstap`. Changing
   `obj=` can clear the SID type, so rerun `sc.exe sidtype EtwDnstap restricted`
   and check it with `sc.exe qsidtype EtwDnstap`.
+- **Upgrading from the first version of the grant script** (commit `6718863`).
+  That version granted `0x423` on the default GUID and `0x80` on the DNS
+  provider GUID, and created a descriptor of its own for the provider. Replace
+  the executable, run the current script with `-SessionName`, then restart the
+  computer. The script removes the old grants, deletes the provider
+  descriptor once it matches the default again, and grants on the session GUID.
+  The lab tested this path.
+- **Changing `--session-name`.** The session GUID follows the name. Run the
+  grant script with the new name (and any others still in use), then restart
+  the computer before starting the service.
 - **Upgrading from a build with `--output`, `--max-output-bytes`, or `--metrics`.**
   Remove those arguments from the binary path before starting the new
   executable. They now fail command-line parsing. Add `--receiver` with the

@@ -36,6 +36,8 @@ mod schema;
 #[allow(unsafe_code)]
 mod session;
 #[allow(unsafe_code)]
+mod session_guid;
+#[allow(unsafe_code)]
 mod target;
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -50,6 +52,14 @@ pub(crate) use keywords::KeywordSelection;
 pub(crate) use pool::{MAX_CAPACITY, MIN_CAPACITY, PoolManager};
 pub(crate) use schema::Parser;
 pub(crate) use session::{Capture, SessionConfig};
+
+/// The service's ETW session GUID for `name`, as text for logs.
+pub(crate) fn session_guid_text(name: &str) -> String {
+    session_guid::session_guid(name).map_or_else(
+        |error| format!("unavailable ({error})"),
+        |guid| session_guid::format_guid(&guid),
+    )
+}
 #[cfg(test)]
 pub(crate) use test_support::assert_no_allocations;
 

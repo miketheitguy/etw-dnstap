@@ -114,13 +114,13 @@ fn query_outcome_classifies_statuses() {
 #[test]
 fn session_properties_write_configured_values() {
     let config = SessionConfig::new(128, 512, 5).expect("valid configuration");
-    let properties = SessionProperties::new(&config);
+    let properties = SessionProperties::new(&config, GUID::default());
     assert_eq!(properties.properties.BufferSize, 128);
     assert_eq!(properties.properties.MaximumBuffers, 512);
     assert_eq!(properties.properties.FlushTimer, 5);
     assert_eq!(properties.properties.MinimumBuffers, 4);
 
-    let defaults = SessionProperties::new(&SessionConfig::default());
+    let defaults = SessionProperties::new(&SessionConfig::default(), GUID::default());
     assert_eq!(defaults.properties.BufferSize, 16);
     assert_eq!(defaults.properties.MaximumBuffers, 12);
     assert_eq!(defaults.properties.FlushTimer, 1);
@@ -278,7 +278,7 @@ fn flush_succeeds_on_live_real_time_session() {
         name: name.clone(),
         log_file: None,
     };
-    let (status, session) = start_session(&name, &config);
+    let (status, session) = start_session(&name, session_guid(NAME).expect("guid"), &config);
     assert_eq!(status, ERROR_SUCCESS, "session should start");
     assert_eq!(flush_session(session), Ok(()), "flush should succeed");
     assert_eq!(
@@ -300,11 +300,11 @@ fn reclaim_replaces_leaked_real_time_session() {
         log_file: None,
     };
     // Leak a real-time-only session with this program's shape.
-    let (status, _leaked) = start_session(&name, &config);
+    let (status, _leaked) = start_session(&name, session_guid(NAME).expect("guid"), &config);
     assert_eq!(status, ERROR_SUCCESS, "leaking a session should start");
     print_query("leaked session", &name);
 
-    let (status, _duplicate) = start_session(&name, &config);
+    let (status, _duplicate) = start_session(&name, session_guid(NAME).expect("guid"), &config);
     assert_eq!(
         status, ERROR_ALREADY_EXISTS,
         "the leaked session must block a second start"
@@ -312,7 +312,7 @@ fn reclaim_replaces_leaked_real_time_session() {
 
     let counters = CaptureCounters::default();
     reclaim_stale_session(&name, NAME, &counters, &config).expect("reclaim succeeds");
-    let (status, _session) = start_session(&name, &config);
+    let (status, _session) = start_session(&name, session_guid(NAME).expect("guid"), &config);
     assert_eq!(status, ERROR_SUCCESS, "retry after reclaim should start");
     print_query("restarted session", &name);
     assert_eq!(counters.stale_sessions_reclaimed.load(Ordering::Relaxed), 1);
@@ -569,4 +569,31 @@ fn access_denied_enable_names_the_missing_right() {
     assert!(message.contains("TRACELOG_GUID_ENABLE"));
     assert!(message.contains("eb79061a-a566-4698-9119-3ed2807060e7"));
     assert!(check_enable_status(ERROR_SUCCESS).is_ok());
+}
+
+#[test]
+fn access_denied_start_names_create_realtime_on_the_session_guid() {
+    let guid = format_guid(&session_guid("EtwDnstap").expect("guid"));
+    let message = check_start_status(ERROR_ACCESS_DENIED, "EtwDnstap", &guid)
+        .expect_err("denied")
+        .to_string();
+    assert!(message.contains("TRACELOG_CREATE_REALTIME (0x20)"));
+    assert!(
+        message.contains("{05e1db3c-1322-58c7-8235-0463fccba32b}"),
+        "{message}"
+    );
+    assert!(message.contains("-SessionName 'EtwDnstap'"));
+    assert!(message.contains("restart the computer"));
+    assert!(!message.contains("0811c1af"));
+    assert!(check_start_status(ERROR_SUCCESS, "EtwDnstap", &guid).is_ok());
+}
+
+#[test]
+fn session_properties_carry_the_session_guid() {
+    let guid = session_guid("EtwDnstap").expect("guid");
+    let properties = SessionProperties::new(&SessionConfig::default(), guid);
+    assert_eq!(
+        format_guid(&properties.properties.Wnode.Guid),
+        "05e1db3c-1322-58c7-8235-0463fccba32b"
+    );
 }

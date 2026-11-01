@@ -10,25 +10,28 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use crossbeam_channel::Sender;
-use windows_sys::Win32::{
-    Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_CTX_CLOSE_PENDING,
-        ERROR_INVALID_HANDLE, ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
-        GetLastError,
+use windows_sys::{
+    Win32::{
+        Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_CTX_CLOSE_PENDING,
+            ERROR_INVALID_HANDLE, ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
+            GetLastError,
+        },
+        System::Diagnostics::Etw::{
+            CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, ENABLE_TRACE_PARAMETERS,
+            ENABLE_TRACE_PARAMETERS_VERSION_2, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
+            EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_EVENT_ID,
+            EVENT_FILTER_TYPE_EVENT_ID, EVENT_FILTER_TYPE_PID, EVENT_TRACE_BUFFERING_MODE,
+            EVENT_TRACE_CONTROL_FLUSH, EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP,
+            EVENT_TRACE_FILE_MODE_APPEND, EVENT_TRACE_FILE_MODE_CIRCULAR,
+            EVENT_TRACE_FILE_MODE_NEWFILE, EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW,
+            EVENT_TRACE_PRIVATE_LOGGER_MODE, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
+            EVENT_TRACE_SYSTEM_LOGGER_MODE, EnableTraceEx2, OpenTraceW,
+            PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
+            ProcessTrace, StartTraceW, WNODE_FLAG_TRACED_GUID,
+        },
     },
-    System::Diagnostics::Etw::{
-        CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, ENABLE_TRACE_PARAMETERS,
-        ENABLE_TRACE_PARAMETERS_VERSION_2, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
-        EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_EVENT_ID,
-        EVENT_FILTER_TYPE_EVENT_ID, EVENT_FILTER_TYPE_PID, EVENT_TRACE_BUFFERING_MODE,
-        EVENT_TRACE_CONTROL_FLUSH, EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP,
-        EVENT_TRACE_FILE_MODE_APPEND, EVENT_TRACE_FILE_MODE_CIRCULAR,
-        EVENT_TRACE_FILE_MODE_NEWFILE, EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW,
-        EVENT_TRACE_PRIVATE_LOGGER_MODE, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
-        EVENT_TRACE_SYSTEM_LOGGER_MODE, EnableTraceEx2, OpenTraceW,
-        PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
-        ProcessTrace, StartTraceW, WNODE_FLAG_TRACED_GUID,
-    },
+    core::GUID,
 };
 
 use super::{
@@ -36,6 +39,7 @@ use super::{
     instance::InstanceLock,
     intake::{self, CallbackContext, native_etw_callback},
     keywords::{KeywordChoice, KeywordSelection, resolve_keywords},
+    session_guid::{format_guid, session_guid},
     target::{DNS_SERVICE, service_process_id, service_process_id_raw},
 };
 #[cfg(feature = "diag-timing")]
@@ -123,13 +127,16 @@ impl SessionProperties {
         clippy::cast_possible_truncation,
         reason = "The fixed native header plus 1025 UTF-16 units fits u32."
     )]
-    fn new(config: &SessionConfig) -> Self {
+    fn new(config: &SessionConfig, guid: GUID) -> Self {
         let mut result = Self {
             properties: EVENT_TRACE_PROPERTIES::default(),
             logger_name: [0; 1025],
         };
         result.properties.Wnode.BufferSize = size_of::<Self>() as u32;
         result.properties.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+        // The session's own GUID: ETW checks TRACELOG_CREATE_REALTIME against
+        // its descriptor, which provisioning grants to the service SID.
+        result.properties.Wnode.Guid = guid;
         // System time, in 100 ns FILETIME units. ProcessTrace also converts timestamps
         // to this representation because RAW_TIMESTAMP is deliberately omitted.
         result.properties.Wnode.ClientContext = 2;
@@ -257,8 +264,8 @@ fn flush_session(session: CONTROLTRACE_HANDLE) -> Result<(), u32> {
 }
 
 /// Calls `StartTraceW` with fresh properties and returns its status and handle.
-fn start_session(name: &[u16], config: &SessionConfig) -> (u32, CONTROLTRACE_HANDLE) {
-    let mut properties = SessionProperties::new(config);
+fn start_session(name: &[u16], guid: GUID, config: &SessionConfig) -> (u32, CONTROLTRACE_HANDLE) {
+    let mut properties = SessionProperties::new(config, guid);
     let mut session = CONTROLTRACE_HANDLE::default();
     // SAFETY: `name` is NUL-terminated by the caller and, with the aligned
     // properties (including trailing name storage), outlives this synchronous call.
@@ -417,40 +424,47 @@ fn process_trace_benign(status: u32, session_stopped: bool) -> bool {
 
 /// Turns an `EnableTraceEx2` status into an error that names the access right a
 /// non-administrator service account may be missing.
+///
+/// On the validated host the restricted token enables the provider without a
+/// grant: the default descriptor gives `LocalService` and Performance Log Users
+/// `TRACELOG_GUID_ENABLE`, and the restricted second check does not apply to
+/// it. A denial therefore points at a provider descriptor of its own.
 fn check_enable_status(status: u32) -> Result<()> {
     if status == ERROR_ACCESS_DENIED {
         bail!(
             "EnableTraceEx2: access denied enabling the Microsoft-Windows-DNSServer provider \
-             {{eb79061a-a566-4698-9119-3ed2807060e7}}. The service SID NT SERVICE\\EtwDnstap \
-             needs TRACELOG_GUID_ENABLE (0x80) granted directly on that provider GUID: the \
-             write-restricted token (restricted service SID) only matches restricting SIDs, so \
-             'Performance Log Users' alone may not satisfy it. Run \
-             scripts\\provision\\Grant-EtwDnstapEtwAccess.ps1 as an administrator, then restart \
-             the service (code {status})"
+             {{eb79061a-a566-4698-9119-3ed2807060e7}}. The default ETW security grants \
+             LocalService and 'Performance Log Users' TRACELOG_GUID_ENABLE (0x80), so this \
+             host probably has a security descriptor of its own for that provider GUID \
+             (HKLM\\SYSTEM\\CurrentControlSet\\Control\\WMI\\Security) that does not. Grant \
+             TRACELOG_GUID_ENABLE on that GUID to NT SERVICE\\EtwDnstap, restart the computer \
+             (ETW applies these descriptors at boot), then start the service (code {status})"
         );
     }
     check_status(status, "EnableTraceEx2")
 }
 
-/// Turns a `StartTraceW` status into an error that names the access rights the
-/// restricted service SID may be missing.
-fn check_start_status(status: u32) -> Result<()> {
+/// Turns a `StartTraceW` status into an error that names the access right the
+/// restricted service SID is missing.
+///
+/// The restricted (write-restricted) token passes the session-creation check
+/// only if a restricting SID, in practice the service SID, holds
+/// `TRACELOG_CREATE_REALTIME` on the descriptor of the session's own GUID.
+fn check_start_status(status: u32, session_name: &str, session_guid: &str) -> Result<()> {
     if status == ERROR_ACCESS_DENIED {
         bail!(
-            "StartTraceW: access denied creating the real-time session. The service SID \
-             NT SERVICE\\EtwDnstap needs WMIGUID_QUERY (0x1), TRACELOG_CREATE_REALTIME (0x20) \
-             and TRACELOG_ACCESS_REALTIME (0x400) on the default WMI security GUID \
-             {{0811c1af-7a07-4a06-82ed-869455cdf713}}, and the token must be in \
-             'Performance Log Users'. A write-restricted token only matches restricting SIDs, \
-             so the grant must name the service SID. Run \
-             scripts\\provision\\Grant-EtwDnstapEtwAccess.ps1 as an administrator and confirm \
-             'net localgroup \"Performance Log Users\"' lists NT SERVICE\\EtwDnstap, then \
-             restart the service (code {status})"
+            "StartTraceW: access denied creating the real-time session '{session_name}'. The \
+             restricted service token needs TRACELOG_CREATE_REALTIME (0x20) granted to the \
+             service SID NT SERVICE\\EtwDnstap on this session's GUID {{{session_guid}}}; \
+             LocalService and 'Performance Log Users' do not count for this check. Run \
+             scripts\\provision\\Grant-EtwDnstapEtwAccess.ps1 -SessionName '{session_name}' as \
+             an administrator, restart the computer (ETW applies these descriptors at boot), \
+             then start the service (code {status})"
         );
     }
     check_status(
         status,
-        "StartTraceW (use an unused session name; the service SID needs ETW session rights, see scripts\\provision\\README.md)",
+        "StartTraceW (use an unused session name; the service SID needs TRACELOG_CREATE_REALTIME, see scripts\\provision\\README.md)",
     )
 }
 
@@ -489,13 +503,14 @@ impl Capture {
                 "ETW keyword narrowing unavailable; subscribing to the full Analytical channel"
             );
         }
-        let (mut status, mut session) = start_session(&name, &config);
+        let guid = session_guid(display_name)?;
+        let (mut status, mut session) = start_session(&name, guid, &config);
         if status == ERROR_ALREADY_EXISTS {
             // One reclaim and one retry; a second failure is a startup error.
             reclaim_stale_session(&name, display_name, &counters, &config)?;
-            (status, session) = start_session(&name, &config);
+            (status, session) = start_session(&name, guid, &config);
         }
-        check_start_status(status)?;
+        check_start_status(status, display_name, &format_guid(&guid))?;
         let keywords = choice.selection();
         let mut capture = Self {
             session: Some(session),
@@ -665,7 +680,7 @@ impl Capture {
         let mut failure = None;
         let mut session_stopped = false;
         if let Some(session) = self.session.take() {
-            let mut properties = SessionProperties::new(&SessionConfig::default());
+            let mut properties = SessionProperties::new(&SessionConfig::default(), GUID::default());
             // SAFETY: Only the handle successfully created above is stopped; null
             // name forces handle lookup. The output buffer is aligned and sized.
             let status = unsafe {

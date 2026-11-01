@@ -39,10 +39,21 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   the service SID and `S-1-5-33` as restricting SIDs, the service SID must be an
   enabled group and a member of Performance Log Users, and only
   `SeChangeNotifyPrivilege` may be held. `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`
-  grants the ETW rights to the service SID. Existing installs must be
-  reprovisioned. Not validated on a live DNS Server.
+  grants the ETW right to the service SID. Existing installs must be
+  reprovisioned. Validated on build 26100; see below.
 - ETW and instance-lock access-denied errors name the missing right, the GUID, and
   the provisioning script.
+- The ETW session now has a stable GUID derived from `--session-name`
+  (SHA-1, RFC 9562 version 5; `{05e1db3c-1322-58c7-8235-0463fccba32b}` for the default name), logged as
+  `session_guid` in `capture started`. The grant script grants only
+  `TRACELOG_CREATE_REALTIME` (0x20), on that session GUID, and no longer edits
+  the shared default descriptor. It no longer grants `0x423` on the default, or
+  `0x80` on the DNS provider GUID. Every run strips the service SID from every
+  other ETW descriptor, which removes the first version's grants and the copies
+  that other components made of the default. A lab run on build 26100 showed
+  that this is the only right the restricted token needs, and that ETW applies
+  descriptor changes at boot. See
+  [the validation record](docs/history/localservice-restricted-validation.md).
 - Connection loss no longer ends capture. A failed session is reconnected, and
   events are dropped and counted until it is. A receiver that is unreachable at
   startup no longer stops the service; only a protocol failure at startup is
@@ -65,7 +76,12 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Fixed
 
-- _pending_
+- The identity check reported `truncated token groups` for an unrestricted
+  token instead of `the process token is not restricted`. An unrestricted token
+  returns `TokenRestrictedSids` as a bare zero count.
+- The documented `sc.exe config ... password= ""` did nothing in Windows
+  PowerShell 5.1, which drops the empty argument. The docs and the identity
+  error now run it through `cmd.exe /c`.
 
 ### Security
 

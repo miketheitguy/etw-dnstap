@@ -74,14 +74,24 @@ and [README.md](README.md).
   Everyone, the logon SID, and `S-1-5-33`). The service can therefore write only
   to objects whose ACL grants one of those, such as the service SID, Everyone, or
   Write Restricted. Reads use the normal check only.
-- ETW rights are granted to the service SID alone, by
-  [`scripts/provision/Grant-EtwDnstapEtwAccess.ps1`](scripts/provision/README.md),
-  and not to all LocalService processes. The script also adds only that SID to
+- The service only consumes ETW events. It holds no right to log events into
+  ETW. Its one ETW grant is `TRACELOG_CREATE_REALTIME` on its own session's
+  GUID, derived from `--session-name`, given to the service SID alone, not to
+  all LocalService processes, by
+  [`scripts/provision/Grant-EtwDnstapEtwAccess.ps1`](scripts/provision/README.md).
+  Creating a session is a change of state, so the write-restricted token needs a
+  restricting SID in the ACL for it. Enabling the provider, consuming, querying
+  and stopping need no grant. Provisioning also adds only the service SID to
   Performance Log Users.
-- The profile and the restricting-SID set are assumptions from Microsoft
-  documentation and have **not been validated on a live DNS Server**.
-  The lab record, [docs/history/lab-validation.md](docs/history/lab-validation.md),
-  covers the earlier LocalSystem profile. The provisioning checklist is in
+- The shared default ETW descriptor is not changed. Windows provisions its own
+  restricted LocalService services the same way: `DPS`, `WdiServiceHost`,
+  `EventLog`, `BFE` and `mpssvc` hold ETW rights on specific GUIDs, never on the
+  default. A grant on the default would let the service SID create any session
+  that has no descriptor of its own. In the lab it also spread: other
+  components copy the default when they create descriptors.
+- The profile was validated on Windows Server 2025, build 26100, on 2026-11-01.
+  See [docs/history/localservice-restricted-validation.md](docs/history/localservice-restricted-validation.md).
+  Other builds are covered by the checklist in
   [docs/guide/install.md](docs/guide/install.md).
 
 **Protected or limited**
