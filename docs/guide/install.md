@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
 
 > **Validation status:** the LocalService restricted-SID profile was validated
 > on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
@@ -244,13 +244,41 @@ icacls.exe $installDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(RX)'
 Arguments go in the binary path. Arguments passed to `sc.exe start` are not used
 as configuration. The `--capacity 8192` shown here is the default. It is written
 out so the value is visible. Add other options from
-[configuration.md](configuration.md) to the same string.
+[configuration.md](configuration.md) to the same string. The connection is TLS
+by default, so complete the [receiver certificate step](#receiver-certificate)
+below. To send plaintext to a receiver on a trusted network, add `--plaintext`
+to the string instead.
 
 The name `NT SERVICE\EtwDnstap` resolves once the service exists, so the
 `icacls` grant comes after `New-Service`. Step 2 removed inherited ACEs. Without
 this grant, the copied executable is not readable by the service, and the
 service cannot start. Read and execute is not a write, so this grant to the
 service SID is enough. The lab confirmed it.
+
+### Receiver certificate
+
+The service connects with TLS and verifies the receiver certificate with the
+Windows machine certificate store. Skip this step only if the binary path
+contains `--plaintext`. The connection fails if any of these conditions is not
+met:
+
+- The receiver certificate chains to a CA in `Cert:\LocalMachine\Root`. The
+  service runs as LocalService and cannot see a user store. A CA in
+  `Cert:\CurrentUser\Root` does not count.
+- The certificate carries the receiver IP as an `iPAddress` SAN, or it carries
+  the name that you pass to `--tls-server-name`.
+- The revocation endpoints named in the chain are reachable from the host, or
+  the CRL is already cached.
+
+To import a private CA into the machine root store:
+
+```powershell
+Import-Certificate -FilePath '.\receiver-ca.cer' -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+A certificate that does not verify stops the service at startup with Event ID 1.
+A receiver that speaks plaintext while TLS is on has the same effect. See
+[TLS](configuration.md#tls).
 
 ### Create a protected snapshot folder
 
@@ -560,7 +588,9 @@ The service keeps one outbound TCP connection to `--receiver`. It negotiates
 content type `protobuf:dnstap.Dnstap` with READY, ACCEPT, and START, then sends
 data frames. On shutdown it sends STOP and waits for FINISH. After a failure it
 reconnects and negotiates again. Frames lost in the gap are counted, not resent.
-There is no TLS and no peer authentication.
+The connection is TLS by default, and the service verifies the receiver
+certificate. It sends no client certificate. With `--plaintext`, the connection
+is plaintext with no peer authentication.
 
 An example receiver for DNS-collector 3.2.3 listens for dnstap and writes text to
 the console. Replace the placeholders with your collector's address:
@@ -588,11 +618,15 @@ pipelines:
 The service accepts control payloads up to 512 bytes and content-type fields up
 to 256 bytes. A normal dnstap ACCEPT is well within those limits.
 
-**Transport security.** Plaintext is suitable only for a trusted lab or an
-independently protected transport. A Hyper-V Default Switch is reachable by the
-host and by other connected guests, so it is not a confidentiality boundary.
-Restrict the listener to the intended guest IP, and restrict its firewall to the
-Windows DNS guest. Do not expose the listener to an untrusted network. See
+**Transport security.** The example above is a plaintext listener, so the
+service needs `--plaintext` to reach it. Plaintext is suitable only for a
+trusted lab or an independently protected transport. A Hyper-V Default Switch
+is reachable by the host and by other connected guests, so it is not a
+confidentiality boundary. Restrict the listener to the intended guest IP, and
+restrict its firewall to the Windows DNS guest. Do not expose the listener to an
+untrusted network. On any other network, keep the TLS default and give the
+receiver a certificate. See the
+[receiver certificate step](#receiver-certificate) and
 [SECURITY.md](../../SECURITY.md#threat-model-summary).
 
 ## Repair or upgrade

@@ -16,6 +16,10 @@ clap = { version = "4.5", features = ["derive"] }
 crossbeam-queue = "0.3"
 crossbeam-channel = "0.5.15"
 prost = "0.14"
+# ring, not aws-lc-rs: aws-lc-rs needs CMake and NASM on Windows MSVC.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Verifies receiver certificates with the Windows system store and revocation.
+rustls-platform-verifier = "0.7"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
@@ -31,6 +35,8 @@ diag-timing = ["windows-sys/Win32_Media"]
 fuzzing = []
 
 [dev-dependencies]
+# Generates a throwaway CA and server certificate for the TLS transport tests.
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [profile.dev]
