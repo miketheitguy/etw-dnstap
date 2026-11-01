@@ -142,15 +142,6 @@ function Get-LabGuestPrelude {
     [CmdletBinding()] param()
     @'
 $ErrorActionPreference = 'Stop'
-function ConvertTo-LabCommandLine {
-    # Builds a Windows command line from an executable and an argument array (quotes only when needed).
-    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @())
-    $parts = @('"' + $FilePath + '"')
-    foreach ($argument in $Arguments) {
-        if ($argument -match '[\s"]') { $parts += '"' + ($argument -replace '"', '\"') + '"' } else { $parts += $argument }
-    }
-    $parts -join ' '
-}
 function Get-LabOwnedZones {
     # Union of the uniform marker and the legacy per-script markers written by earlier campaigns.
     param([Parameter(Mandatory)][string]$Base)
@@ -291,25 +282,6 @@ function Initialize-LabDnsZones {
     }
 }
 
-function Test-LabAnswer {
-    <#
-    .SYNOPSIS
-    Resolves a name against the guest's own DNS server and checks the A record and TTL. Throws on mismatch with -ThrowOnFail.
-    #>
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][Management.Automation.Runspaces.PSSession]$Session,
-          [string]$Name, [string]$ExpectedAddress, [Nullable[int]]$ExpectedTtl, [switch]$ThrowOnFail)
-    $dns = (Get-LabConfig).dns
-    if (-not $Name) { $Name = $dns.answer_name }
-    if (-not $ExpectedAddress) { $ExpectedAddress = $dns.answer_ip }
-    if ($null -eq $ExpectedTtl) { $ExpectedTtl = [int]$dns.answer_ttl }
-    $result = Invoke-LabGuest -Session $Session -ArgumentList $Name, $ExpectedAddress, ([int]$ExpectedTtl) -ScriptBlock {
-        param($n, $a, $t) Test-LabAnswerLocal -Name $n -Address $a -Ttl $t
-    }
-    if ($ThrowOnFail -and -not $result.passed) { throw "DNS answer check failed for $Name (expected $ExpectedAddress TTL $ExpectedTtl)" }
-    $result
-}
-
 function Invoke-LabNative {
     <#
     .SYNOPSIS
@@ -343,6 +315,6 @@ function Get-LabServiceCommandLine {
     '"' + $exe + '" ' + (Join-LabArguments -Arguments $arguments)
 }
 
-Export-ModuleMember -Function Get-LabRoot, Get-LabConfig, Resolve-LabPath, Assert-LabId, Write-LabText, Write-LabJson,
-    Get-LabCredential, Get-LabVm, Get-LabSession, Get-LabGuestPrelude, Invoke-LabGuest, Receive-LabFile,
-    Receive-LabDirectory, Initialize-LabDnsZones, Test-LabAnswer, Invoke-LabNative, Join-LabArguments, Get-LabServiceCommandLine
+Export-ModuleMember -Function Get-LabRoot, Get-LabConfig, Resolve-LabPath, Write-LabText, Write-LabJson,
+    Get-LabVm, Get-LabSession, Invoke-LabGuest, Receive-LabFile,
+    Receive-LabDirectory, Initialize-LabDnsZones, Invoke-LabNative, Join-LabArguments, Get-LabServiceCommandLine

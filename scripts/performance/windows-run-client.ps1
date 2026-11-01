@@ -51,7 +51,7 @@ if ($Qps -gt 0) { $arguments += @('--qps', "$Qps") }
 $manifest = [ordered]@{command=$exe;arguments=$arguments;exe_sha256=(Get-FileHash -LiteralPath $exe).Hash;names_sha256=(Get-FileHash -LiteralPath $names).Hash;host_start_utc=[DateTime]::UtcNow.ToString('o');logical_processors=[Environment]::ProcessorCount}
 Write-LabJson -Path (Join-Path $directory 'invocation.json') -InputObject $manifest -Depth 4
 $process = Start-Process -FilePath $exe -ArgumentList (Join-LabArguments -Arguments $arguments) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $directory 'stdout.txt') -RedirectStandardError (Join-Path $directory 'stderr.txt')
-# Retain the handle so ExitCode stays readable after the process exits.
+# Reading .Handle keeps the exit code available in Windows PowerShell 5.1.
 $processHandle = $process.Handle
 $samples = [Collections.Generic.List[object]]::new()
 while (-not $process.HasExited) {
