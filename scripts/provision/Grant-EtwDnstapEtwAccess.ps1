@@ -216,8 +216,8 @@ function Write-ChangeLog {
         Written  = (Get-Date).ToString('o')
         Computer = $env:COMPUTERNAME
         Key      = $WmiSecurityKeyNative
-        Changed  = @($script:ChangedValues)
-        Created  = @($script:CreatedValues)
+        Changed  = $script:ChangedValues.ToArray()
+        Created  = $script:CreatedValues.ToArray()
     }
     $json = ConvertTo-Json -InputObject $log -Depth 4
     Set-Content -LiteralPath (Join-Path $BackupPath 'changes.json') -Value $json -Encoding UTF8

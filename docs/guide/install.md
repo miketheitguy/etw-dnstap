@@ -260,9 +260,11 @@ Restart-Computer
   by any principal. Run `sdset` through `cmd.exe` for the same reason as `obj=`:
   it keeps the quotes and the parentheses of the string intact. The default
   descriptor also gives interactive and service logons the user-defined control
-  right. The service does not use it, so the new descriptor omits it. Lab
-  check pending: confirm that `sc.exe sdshow EtwDnstap` prints this exact string
-  after `sdset`.
+  right. The service does not use it, so the new descriptor omits it. The lab
+  confirmed on build 26100 that `sc.exe sdshow EtwDnstap` prints exactly the
+  string in step 6 after `sdset`. A standard user got "Access is denied" (error
+  5) from `sc.exe stop`, `start`, `config`, and `control EtwDnstap 200`, and
+  could query the service.
 - `net localgroup` adds the **service SID**, not all LocalService processes, to
   Performance Log Users. That lets the service create and control ETW sessions.
   The membership must be enabled in the token, not deny-only. Restart the
@@ -329,7 +331,9 @@ sc.exe failureflag EtwDnstap 1
 A restart does not resend lost data. It only restarts capture. A restart that
 happens while the receiver is still down does not fail: the service starts
 disconnected and retries. A restart that happens while the `DNS` service is
-stopped fails at startup. See
+stopped fails at startup, unless the service depends on `DNS` (see
+[Start type](#start-type)). The SCM counts every failure, including a refused
+start, so the delay is 60 seconds from the third failure on. See
 [troubleshooting.md](troubleshooting.md#the-service-keeps-restarting).
 
 Check the policy:
@@ -354,7 +358,20 @@ sc.exe qc EtwDnstap
 
 - `depend= DNS` keeps the dependency on the `DNS` service. Include it so that
   the dependency does not change.
-- `sc.exe qc` should show `START_TYPE` as `AUTO_START (DELAYED)`.
+- `sc.exe qc` should show `START_TYPE` as `AUTO_START  (DELAYED)`. The lab
+  confirmed this. `Get-Service` shows `Automatic`.
+- With `depend= DNS`, the SCM stops `EtwDnstap` whenever it stops `DNS` on
+  request. `Restart-Service DNS` fails because `DNS` has a dependent service.
+  Use `Restart-Service DNS -Force`. The lab showed that this stops `EtwDnstap`
+  with exit code 0, restarts `DNS`, restarts `EtwDnstap`, and starts a new
+  capture of the new DNS Server process in less than 2 seconds. After
+  `Stop-Service DNS -Force` and `Start-Service DNS`, `EtwDnstap` stays stopped.
+  Start it with `Start-Service EtwDnstap`.
+- If the DNS Server process crashes, the `DNS` dependency does not stop
+  `EtwDnstap`. The service stops itself with a service-specific error about 5
+  seconds later, and the recovery policy restarts it 5 seconds after that. The
+  lab showed that this restart also starts `DNS` again, because of the
+  dependency.
 - Do not set this before step 7 succeeds. A service that fails at startup would
   then fail again at each boot.
 
@@ -428,8 +445,14 @@ marked *lab* passed on build 26100. See
 - *lab:* After the process is killed, the next start reclaims the stale session
   (`stale_sessions_reclaimed=1`). The service reclaims a session only if its
   name, its real-time shape, and its session GUID all match.
-- A DNS Server restart produces a gap and an automatic EtwDnstap restart under
-  the recovery policy.
+- *lab:* A DNS Server restart or crash produces a gap and an automatic
+  EtwDnstap restart under the recovery policy. In the lab, the service stopped
+  4 to 5 seconds after the restart, and capture resumed with the new process ID
+  5 seconds later (9 to 10 seconds in total).
+- *lab:* On build 26100, the service cannot open the DNS Server process
+  (`OpenProcess` returns access denied for the restricted LocalService token).
+  Every start logs the warning `cannot hold the DNS Server process open`.
+  Capture continues, and the SCM polling detects a changed process.
 - While the service runs, a second `sc.exe start EtwDnstap` fails with error
   1056. Only one instance runs because the SCM starts one process for the
   service and the identity check refuses any other process. The service has no
@@ -566,10 +589,11 @@ relative to the parent.
      Keep the recovery policy from [step 5](#5-configure-scm-recovery).
   6. Start the service. Confirm the account with `sc.exe qc EtwDnstap`.
 
-  Changing `obj=` may clear the SID type. **To be verified in the lab.** Do not
-  rely on either result. After any `obj=` change, run
+  In the lab on build 26100, `obj=` did not clear the SID type or the privilege
+  list. This held for a change to the same account, and for a change to
+  LocalSystem and back. After any `obj=` change, still run
   `sc.exe sidtype EtwDnstap restricted` and check it with
-  `sc.exe qsidtype EtwDnstap`.
+  `sc.exe qsidtype EtwDnstap`. The check costs little.
 - **Upgrading from the first version of the grant script** (commit `6718863`).
   That version granted `0x423` on the default GUID and `0x80` on the DNS
   provider GUID, and created a descriptor of its own for the provider. Replace

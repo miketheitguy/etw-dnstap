@@ -145,7 +145,12 @@ it under the recovery policy in [install.md](install.md#5-configure-scm-recovery
   `cannot hold the DNS Server process open; PID reuse is detected only by
   polling the SCM`, and `the DNS Server process ID changed while it was being
   opened; relying on SCM polling`. Both are informational. Capture continues,
-  and the 5-second SCM check still detects a changed process. If the second
+  and the 5-second SCM check still detects a changed process. On Windows Server
+  2025 build 26100, the first warning appears at every start, because the
+  restricted LocalService token cannot open the DNS Server process (access
+  denied). In that case the stop reasons are `the DNS Server service restarted`
+  and `the DNS Server service stopped`, and the reason `the DNS Server process
+  exited` does not occur. If the second
   warning is followed by a restart, the DNS Server restarted during startup.
 - **A capture worker ended on its own.** Event ID 1, `a capture worker exited
   before shutdown was requested`.
