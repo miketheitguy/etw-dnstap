@@ -4,14 +4,12 @@ use crate::{
     etw::{
         PROVIDER, PoolManager, decode,
         intake::copy_record,
-        test_support::{
-            AllocCounts, EXCLUDED_EVENT_IDS, assert_no_allocations, measured, utf16_nul_bytes,
-        },
+        test_support::{EXCLUDED_EVENT_IDS, assert_no_allocations, utf16_nul_bytes},
     },
 };
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-use windows_sys::Win32::System::Diagnostics::Etw::EVENT_DESCRIPTOR;
+use windows_sys::Win32::System::Diagnostics::Etw::{EVENT_DESCRIPTOR, TDH_INTYPE_BINARY};
 
 /// Test-only adapter that decodes and encodes in one step, releasing the event
 /// lease before returning bytes that borrow only the encoder.
@@ -31,38 +29,6 @@ impl ParseEncode for Parser {
     ) -> Result<Option<&'e [u8]>> {
         crate::pipeline::parse_and_encode(self, event, encoder)
     }
-}
-
-#[test]
-fn fixed_property_descriptors_are_terminated_static_and_allocation_free() {
-    let names = [
-        PropertyName::Tcp,
-        PropertyName::Port,
-        PropertyName::InterfaceIp,
-        PropertyName::Source,
-        PropertyName::Destination,
-        PropertyName::PacketData,
-    ];
-    let counts = measured(|| {
-        for name in names {
-            let (display, wide) = name.native();
-            let descriptor = name.descriptor();
-            assert_eq!(descriptor.ArrayIndex, u32::MAX);
-            assert_eq!(descriptor.Reserved, 0);
-            // Constant UTF-16 literals can be duplicated after inlining;
-            // correctness depends on static lifetime and content, not identity.
-            for pointer in [wide, descriptor.PropertyName as *const u16] {
-                for (index, expected) in display.encode_utf16().chain(Some(0)).enumerate() {
-                    // SAFETY: Both pointers come from terminated w! literals.
-                    // Prior iterations matched nonzero units; a shorter native
-                    // spelling fails at its terminator before advancing.
-                    let actual = unsafe { pointer.add(index).read() };
-                    assert_eq!(actual, expected, "static name spelling or terminator");
-                }
-            }
-        }
-    });
-    assert_eq!(counts, AllocCounts::default());
 }
 
 #[test]
@@ -182,39 +148,6 @@ fn binary_addresses_require_the_native_length() -> Result<()> {
 }
 
 #[test]
-fn bounded_property_seam_initializes_and_limits_every_native_view() -> Result<()> {
-    // This seam covers buffer handling, not the DNS provider's native TDH implementation.
-    let mut scratch = [0x55; 512];
-    for size in [512, 1, 0, 4, 511] {
-        let bytes = scratch_property(&mut scratch, size, |bytes| {
-            assert_eq!(bytes.len(), size);
-            assert!(bytes.iter().all(|byte| *byte == 0));
-            bytes.fill(0xab);
-            Ok(())
-        })?;
-        assert!(bytes.iter().all(|byte| *byte == 0xab));
-    }
-    assert!(scratch_property(&mut scratch, 513, |_| panic!("oversize extraction")).is_err());
-    assert!(
-        scratch_property(&mut scratch, 8, |bytes| {
-            bytes.fill(0xff);
-            bail!("injected native failure")
-        })
-        .is_err()
-    );
-    assert_no_allocations(|| {
-        for size in [512, 1, 4, 0, 512] {
-            let result = scratch_property(&mut scratch, size, |bytes| {
-                bytes.fill(0x53);
-                Ok(())
-            });
-            std::hint::black_box(result).expect("bounded extraction");
-        }
-    });
-    Ok(())
-}
-
-#[test]
 fn parser_excludes_other_ids_before_tdh_and_recycles_storage() -> Result<()> {
     let pool = PoolManager::new(1, 0)?;
     let mut parser = Parser::new();
@@ -257,14 +190,6 @@ fn cached_schema(parser: &Parser, key: (u16, u8)) -> Option<&Schema> {
         .map(|(_, schema)| schema)
 }
 
-fn cached_schema_mut(parser: &mut Parser, key: (u16, u8)) -> Option<&mut Schema> {
-    parser
-        .schemas
-        .iter_mut()
-        .find(|(cached, _)| *cached == key)
-        .map(|(_, schema)| schema)
-}
-
 fn cached_fixture_schema(fields: &[FieldSpec], peer_name: &str) -> Schema {
     let kind = |name: &str| {
         let field = fields
@@ -277,12 +202,11 @@ fn cached_fixture_schema(fields: &[FieldSpec], peer_name: &str) -> Schema {
         }
     };
     Schema {
-        plan: DecodePlan::compile(fields, peer_name),
+        plan: DecodePlan::compile(fields, peer_name).expect("fixture template compiles"),
         tcp: kind("TCP"),
         port: kind("Port"),
         local: kind("InterfaceIP"),
         peer: kind(peer_name),
-        packet: kind("PacketData"),
     }
 }
 
@@ -322,12 +246,11 @@ fn cached_supported_parser_has_zero_tdh_calls_and_no_allocations() -> Result<()>
             &fixture.fields,
             if id == 256 { "Source" } else { "Destination" },
         );
-        assert!(schema.plan.is_some());
         parser.schemas.push(((id, 0), schema));
         // Warm final encoder capacity; subsequent pooled-buffer reuse is measured.
         let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
         assert!(parser.parse_encode(event, &mut encoder)?.is_some());
-        TDH_CALLS.with(|calls| calls.set([0; 3]));
+        TDH_CALLS.with(|calls| calls.set(0));
         for _ in 0..4 {
             let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
             assert_no_allocations(|| {
@@ -339,7 +262,7 @@ fn cached_supported_parser_has_zero_tdh_calls_and_no_allocations() -> Result<()>
                 );
             });
         }
-        assert_eq!(TDH_CALLS.with(std::cell::Cell::get), [0; 3]);
+        assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
         // The consuming parser released every lease before returning encoder bytes.
         let leases: Vec<_> = (0..3)
             .map(|_| pool.acquire(1).expect("lease returned"))
@@ -380,7 +303,7 @@ fn full_schema_cache_hits_alternate_ids_and_versions_without_tdh() -> Result<()>
         }
     }
     assert_eq!(parser.schemas.len(), MAX_CACHED_SCHEMAS);
-    TDH_CALLS.with(|calls| calls.set([0; 3]));
+    TDH_CALLS.with(|calls| calls.set(0));
     // Interleave IDs and versions so an accidentally incomplete key uses the
     // wrong TCP width or packet direction.
     for index in (0..4).flat_map(|version| [version, version + 4]) {
@@ -397,11 +320,11 @@ fn full_schema_cache_hits_alternate_ids_and_versions_without_tdh() -> Result<()>
         });
         assert_eq!(parser.schemas.len(), MAX_CACHED_SCHEMAS);
     }
-    assert_eq!(TDH_CALLS.with(std::cell::Cell::get), [0; 3]);
+    assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
     let mut fixture = decode::tests::fixture(256, false, false, 0);
     let event = pooled_fixture(&mut fixture.payload, 256, 249, &pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
-    assert_eq!(TDH_CALLS.with(std::cell::Cell::get)[0], 1);
+    assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 1);
     assert_eq!(parser.schemas.len(), MAX_CACHED_SCHEMAS);
     assert!(cached_schema(&parser, (256, 249)).is_none());
     for (id, version, _) in &fixtures {
@@ -409,12 +332,12 @@ fn full_schema_cache_hits_alternate_ids_and_versions_without_tdh() -> Result<()>
     }
     let (id, version, fixture) = &mut fixtures[0];
     let event = pooled_fixture(&mut fixture.payload, *id, *version, &pool);
-    TDH_CALLS.with(|calls| calls.set([0; 3]));
+    TDH_CALLS.with(|calls| calls.set(0));
     assert_eq!(
         parser.parse_encode(event, &mut encoder)?.expect("recovery"),
         expected[0]
     );
-    assert_eq!(TDH_CALLS.with(std::cell::Cell::get), [0; 3]);
+    assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
     Ok(())
 }
 
@@ -437,7 +360,7 @@ fn schema_cache_never_exceeds_bound_or_reallocates() {
 }
 
 #[test]
-fn supported_malformed_rejects_without_tdh_but_unsupported_schema_uses_fallback() -> Result<()> {
+fn supported_malformed_payload_is_rejected_without_tdh() -> Result<()> {
     let pool = PoolManager::new(1, 0)?;
     let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"test")?;
@@ -448,18 +371,55 @@ fn supported_malformed_rejects_without_tdh_but_unsupported_schema_uses_fallback(
     let event = pooled_fixture(&mut fixture.payload, 256, 0, &pool);
     assert!(parser.parse_encode(event, &mut encoder)?.is_some());
     fixture.payload.truncate(fixture.packet.end - 1);
-    TDH_CALLS.with(|calls| calls.set([0; 3]));
+    TDH_CALLS.with(|calls| calls.set(0));
     let event = pooled_fixture(&mut fixture.payload, 256, 0, &pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
-    assert_eq!(TDH_CALLS.with(std::cell::Cell::get), [0; 3]);
-    let mut unsupported = cached_fixture_schema(&fixture.fields, "Source");
-    unsupported.plan = None;
-    parser.schemas.push(((256, 249), unsupported));
-    let event = pooled_fixture(&mut fixture.payload, 256, 249, &pool);
-    assert!(parser.parse_encode(event, &mut encoder).is_err());
-    let calls = TDH_CALLS.with(std::cell::Cell::get);
-    assert_eq!(calls[0], 0);
-    assert_eq!(calls[1], 1);
+    assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
+    Ok(())
+}
+
+/// Native property metadata built from a fixture template, as TDH returns it.
+fn native_properties(fields: &[FieldSpec]) -> Result<(Vec<EVENT_PROPERTY_INFO>, Vec<u8>)> {
+    use windows_sys::Win32::System::Diagnostics::Etw::EVENT_PROPERTY_INFO_0_0;
+    let mut bytes = Vec::new();
+    let mut properties = Vec::new();
+    for field in fields {
+        let mut property = EVENT_PROPERTY_INFO {
+            NameOffset: u32::try_from(bytes.len())?,
+            Flags: field.flags.cast_signed(),
+            ..Default::default()
+        };
+        bytes.extend(utf16_nul_bytes(&field.name));
+        property.Anonymous1.nonStructType = EVENT_PROPERTY_INFO_0_0 {
+            InType: u16::try_from(field.input)?,
+            OutType: u16::try_from(field.output)?,
+            MapNameOffset: 0,
+        };
+        property.Anonymous2.count = field.count;
+        property.Anonymous3.length = field.length;
+        properties.push(property);
+    }
+    Ok((properties, bytes))
+}
+
+#[test]
+fn schema_that_does_not_compile_is_rejected_not_decoded_through_tdh() -> Result<()> {
+    let fixture = decode::tests::fixture(256, false, false, 0);
+    let (mut properties, bytes) = native_properties(&fixture.fields)?;
+    let schema = compile_schema(&properties, &bytes, PropertyName::Source)?;
+    assert!(schema.plan.decode(&fixture.payload).is_ok());
+    // A structured required property is outside the decoder grammar.
+    properties[3].Flags = PropertyStruct;
+    let error = compile_schema(&properties, &bytes, PropertyName::Source)
+        .err()
+        .expect("unsupported schema is rejected");
+    assert!(
+        format!("{error:#}").contains("single-pass decoder grammar"),
+        "{error:#}"
+    );
+    // More than 256 properties is also unsupported.
+    let many = vec![properties[0]; 257];
+    assert!(compile_schema(&many, &bytes, PropertyName::Source).is_err());
     Ok(())
 }
 
@@ -501,12 +461,12 @@ fn cached_parser_rejects_semantic_mutations_and_recovers_without_tdh() -> Result
             if mutation == 6 {
                 event.header_mut().TimeStamp = 0;
             }
-            TDH_CALLS.with(|calls| calls.set([0; 3]));
+            TDH_CALLS.with(|calls| calls.set(0));
             assert!(
                 parser.parse_encode(event, &mut encoder).is_err(),
                 "mutation {mutation}, event {id}"
             );
-            assert_eq!(TDH_CALLS.with(std::cell::Cell::get), [0; 3]);
+            assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
             let leases: Vec<_> = (0..3)
                 .map(|_| pool.acquire(1).expect("rejected lease recycled"))
                 .collect();
@@ -518,7 +478,7 @@ fn cached_parser_rejects_semantic_mutations_and_recovers_without_tdh() -> Result
                     .expect("recovery accepted"),
                 expected
             );
-            assert_eq!(TDH_CALLS.with(std::cell::Cell::get), [0; 3]);
+            assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
         }
     }
     Ok(())
@@ -558,58 +518,36 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
         for (ipv6, tcp, variant) in [(false, false, 0), (true, true, 2), (false, true, 1)] {
             let mut fixture = decode::tests::fixture(id, ipv6, tcp, variant);
             let event = pooled_fixture(&mut fixture.payload, id, 250, &pool);
-            event.with_record(|record| -> Result<()> {
-                let peer = if id == 256 {
-                    PropertyName::Source
-                } else {
-                    PropertyName::Destination
-                };
-                let mut scratch = [0; 512];
-                for (name, range) in [
-                    (PropertyName::Tcp, fixture.tcp.clone()),
-                    (PropertyName::Port, fixture.port.clone()),
-                    (PropertyName::InterfaceIp, fixture.local.clone()),
-                    (peer, fixture.peer.clone()),
-                ] {
-                    assert_eq!(
-                        property(record, name, 512, &mut scratch)?,
-                        &fixture.payload[range]
-                    );
-                }
-                let size = property_size(record, PropertyName::PacketData, 65535)?;
-                let mut packet = vec![0; size];
-                read_property(record, PropertyName::PacketData, &mut packet)?;
-                assert_eq!(packet, fixture.payload[fixture.packet.clone()]);
-                Ok(())
-            })?;
             let was_missing = cached_schema(&parser, (id, 250)).is_none();
             let was_full = parser.schemas.len() == MAX_CACHED_SCHEMAS;
-            TDH_CALLS.with(|calls| calls.set([0; 3]));
+            TDH_CALLS.with(|calls| calls.set(0));
             let fast = parser
                 .parse_encode(event, &mut encoder)?
                 .expect("fixture supported")
                 .to_vec();
             assert_eq!(
-                TDH_CALLS.with(std::cell::Cell::get)[0],
+                TDH_CALLS.with(std::cell::Cell::get),
                 2 * usize::from(was_missing)
             );
             if was_full {
                 assert_eq!(parser.schemas.len(), 1);
                 assert!(cached_schema(&parser, (id, 250)).is_some());
             }
-            let schema = cached_schema_mut(&mut parser, (id, 250)).expect("native schema cached");
-            let plan = schema.plan.take().expect("native template compiles");
-            let event = pooled_fixture(&mut fixture.payload, id, 250, &pool);
+            // The plan compiled from native TDH metadata matches the plan
+            // compiled from the fixture template.
+            let peer = if id == 256 { "Source" } else { "Destination" };
+            let mut reference = Parser::new();
+            reference
+                .schemas
+                .push(((id, 0), cached_fixture_schema(&fixture.fields, peer)));
+            let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
             assert_eq!(
-                parser
+                reference
                     .parse_encode(event, &mut encoder)?
-                    .expect("TDH fallback"),
+                    .expect("fixture plan"),
                 fast
             );
-            cached_schema_mut(&mut parser, (id, 250))
-                .expect("schema retained")
-                .plan = Some(plan);
-            TDH_CALLS.with(|calls| calls.set([0; 3]));
+            TDH_CALLS.with(|calls| calls.set(0));
             let event = pooled_fixture(&mut fixture.payload, id, 250, &pool);
             assert_no_allocations(|| {
                 assert_eq!(
@@ -620,7 +558,7 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
                     fast
                 );
             });
-            assert_eq!(TDH_CALLS.with(std::cell::Cell::get), [0; 3]);
+            assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
         }
     }
     Ok(())
@@ -628,26 +566,8 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
 
 #[test]
 fn native_normalization_keeps_unsupported_trailing_names_without_reading_unions() -> Result<()> {
-    use windows_sys::Win32::System::Diagnostics::Etw::EVENT_PROPERTY_INFO_0_0;
     let fixture = decode::tests::fixture(256, false, false, 0);
-    let mut bytes = Vec::new();
-    let mut properties = Vec::new();
-    for field in &fixture.fields {
-        let mut property = EVENT_PROPERTY_INFO {
-            NameOffset: u32::try_from(bytes.len())?,
-            Flags: field.flags.cast_signed(),
-            ..Default::default()
-        };
-        bytes.extend(utf16_nul_bytes(&field.name));
-        property.Anonymous1.nonStructType = EVENT_PROPERTY_INFO_0_0 {
-            InType: u16::try_from(field.input)?,
-            OutType: u16::try_from(field.output)?,
-            MapNameOffset: 0,
-        };
-        property.Anonymous2.count = field.count;
-        property.Anonymous3.length = field.length;
-        properties.push(property);
-    }
+    let (mut properties, bytes) = native_properties(&fixture.fields)?;
     let trailing = properties.len() - 1;
     for flags in [PropertyStruct, PropertyHasCustomSchema, i32::MIN] {
         properties[trailing].Flags = flags;
@@ -741,16 +661,13 @@ fn failed_schema_load_is_cached_and_not_retried() -> Result<()> {
     let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"negative cache")?;
     let mut fixture = decode::tests::fixture(256, false, false, 0);
-    TDH_CALLS.with(|calls| calls.set([0; 3]));
+    TDH_CALLS.with(|calls| calls.set(0));
     // No manifest exists for this provider version in the test process, so the
     // first load fails.
     let event = pooled_fixture(&mut fixture.payload, 256, 77, &pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
     let after_first = TDH_CALLS.with(std::cell::Cell::get);
-    assert!(
-        after_first.iter().sum::<usize>() > 0,
-        "first load calls TDH"
-    );
+    assert!(after_first > 0, "first load calls TDH");
     assert_eq!(parser.schema_rejected_events(), 1);
     assert!(parser.schemas.is_empty());
     for _ in 0..3 {
@@ -817,5 +734,43 @@ fn mixed_ipv4_ipv6_endpoints_are_rejected_and_recovered_from() -> Result<()> {
         let event = pooled_fixture(&mut valid.payload, id, 0, &pool);
         assert!(parser.parse_encode(event, &mut encoder)?.is_some());
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual parse-and-encode benchmark; run with --ignored --nocapture"]
+fn parse_encode_benchmark() -> Result<()> {
+    // ETW_PARSE_BENCH_EVENTS sets the iteration count (default 2,000,000). Each
+    // iteration parses one cached-schema event and encodes its dnstap frame.
+    let iterations: u32 = std::env::var("ETW_PARSE_BENCH_EVENTS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(2_000_000);
+    let pool = PoolManager::new(1, 0)?;
+    let mut parser = Parser::new();
+    let mut encoder = Encoder::new(b"benchmark")?;
+    let mut fixtures = Vec::new();
+    for id in [256, 257] {
+        let mut fixture = decode::tests::fixture(id, false, false, 0);
+        let peer = if id == 256 { "Source" } else { "Destination" };
+        parser
+            .schemas
+            .push(((id, 0), cached_fixture_schema(&fixture.fields, peer)));
+        fixtures.push(pooled_fixture(&mut fixture.payload, id, 0, &pool));
+    }
+    let mut bytes = 0usize;
+    let start = std::time::Instant::now();
+    for index in 0..iterations {
+        let event = &fixtures[(index & 1) as usize];
+        let decoded = parser.parse(event)?.expect("supported fixture");
+        bytes += std::hint::black_box(encoder.encode(&decoded)?).len();
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "parse_encode_benchmark iterations={iterations} elapsed_ns={} ns_per_event={:.2} bytes={bytes} parser_size={}",
+        elapsed.as_nanos(),
+        elapsed.as_secs_f64() * 1e9 / f64::from(iterations),
+        size_of::<Parser>()
+    );
     Ok(())
 }
