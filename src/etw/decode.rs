@@ -16,6 +16,8 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 
 /// Bounds both cold-path plan storage and the stack-resident dependency table.
 pub(super) const MAX_PLAN_FIELDS: usize = 256;
+/// Plans up to this many steps use the small dependency table.
+const SMALL_PLAN_STEPS: usize = 32;
 
 #[derive(Debug)]
 pub(super) struct FieldSpec {
@@ -112,8 +114,23 @@ impl DecodePlan {
     /// Borrows every result from `payload`; this walk performs no allocations.
     /// Semantic endpoint and DNS packet validation remains with the caller.
     pub(super) fn decode<'a>(&self, payload: &'a [u8]) -> Result<Decoded<'a>, DecodeError> {
+        // Real DNS plans have about ten steps. Zeroing a 128-byte table instead of
+        // 1 KiB per event is measurable; longer plans still get the full table.
+        if self.steps.len() <= SMALL_PLAN_STEPS {
+            self.decode_with(payload, &mut [0u32; SMALL_PLAN_STEPS])
+        } else {
+            self.decode_with(payload, &mut [0u32; MAX_PLAN_FIELDS])
+        }
+    }
+
+    /// `dependencies` must have at least one slot per step; a shorter slice
+    /// surfaces as `InvalidDependency` through the checked accesses below.
+    fn decode_with<'a>(
+        &self,
+        payload: &'a [u8],
+        dependencies: &mut [u32],
+    ) -> Result<Decoded<'a>, DecodeError> {
         let mut offset = 0usize;
-        let mut dependencies = [0u32; MAX_PLAN_FIELDS];
         let mut values: [&[u8]; 5] = [&[]; 5];
         for (index, step) in self.steps.iter().enumerate() {
             let remaining = payload.get(offset..).ok_or(DecodeError::Truncated)?;

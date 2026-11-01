@@ -21,7 +21,7 @@ fn query_result(edit: impl FnOnce(&mut QueryProperties)) -> QueryProperties {
 
 /// Fingerprint check against the default configuration.
 fn reclaimable_by_default(query: &QueryProperties) -> bool {
-    reclaimable(query, &SessionConfig::default())
+    reclaimable(query)
 }
 
 #[test]
@@ -127,13 +127,19 @@ fn session_properties_write_configured_values() {
 }
 
 #[test]
-fn fingerprint_compares_against_configured_buffer_size() {
+fn fingerprint_ignores_buffer_size_so_a_changed_flag_does_not_block_restart() {
     let config = SessionConfig::new(128, 512, 5).expect("valid configuration");
-    assert!(reclaimable(&own_query(&config), &config));
-    // A session leaked under the default 16 KiB size is not reclaimed by a
-    // process configured for 128 KiB, and vice versa.
-    assert!(!reclaimable(&own_query(&SessionConfig::default()), &config));
-    assert!(!reclaimable(&own_query(&config), &SessionConfig::default()));
+    assert!(reclaimable(&own_query(&config)));
+    assert!(reclaimable(&own_query(&SessionConfig::default())));
+    // The shape checks still apply regardless of size.
+    assert!(!reclaimable(&query_result(|q| {
+        q.properties.BufferSize = 128;
+        q.properties.LogFileMode = 0;
+    })));
+    assert!(!reclaimable(&query_result(|q| {
+        q.properties.BufferSize = 128;
+        q.log_file_name[0] = u16::from(b'C');
+    })));
 }
 
 fn utf16_nul(text: &str) -> Vec<u16> {
@@ -475,7 +481,7 @@ fn event_id_descriptor_and_parameters_describe_payload() {
     assert_eq!(descriptor.Ptr, std::ptr::from_ref(&payload) as u64);
 
     let descriptor_ptr = &raw mut descriptor;
-    let parameters = enable_parameters(descriptor_ptr);
+    let parameters = enable_parameters(descriptor_ptr, 1);
     assert_eq!(parameters.Version, ENABLE_TRACE_PARAMETERS_VERSION_2);
     assert_eq!(parameters.EnableProperty, 0x10);
     assert_eq!(
@@ -484,4 +490,83 @@ fn event_id_descriptor_and_parameters_describe_payload() {
     );
     assert_eq!(parameters.FilterDescCount, 1);
     assert_eq!(parameters.EnableFilterDesc, descriptor_ptr);
+}
+
+#[test]
+fn pid_descriptor_describes_a_single_pid() {
+    let payload = PidFilterPayload::new(0x1234);
+    let descriptor = pid_descriptor(&payload);
+    assert_eq!(descriptor.Type, EVENT_FILTER_TYPE_PID);
+    assert_eq!(descriptor.Type, 0x8000_0004);
+    assert_eq!(descriptor.Size, 4);
+    assert_eq!(descriptor.Ptr, std::ptr::from_ref(&payload) as u64);
+    assert_eq!(payload.pids, [0x1234]);
+}
+
+#[test]
+fn both_filters_are_passed_to_enable_parameters() {
+    let ids = EventIdFilterPayload::new();
+    let pid = PidFilterPayload::new(7);
+    let mut descriptors = [event_id_descriptor(&ids), pid_descriptor(&pid)];
+    let parameters = enable_parameters(descriptors.as_mut_ptr(), 2);
+    assert_eq!(parameters.FilterDescCount, 2);
+    assert_eq!(parameters.EnableFilterDesc, descriptors.as_mut_ptr());
+}
+
+#[test]
+fn target_change_classification() {
+    assert_eq!(classify_target(10, Some(10)), None);
+    assert_eq!(classify_target(10, None), None);
+    assert!(
+        classify_target(10, Some(0))
+            .expect("stopped")
+            .contains("stopped")
+    );
+    assert!(
+        classify_target(10, Some(11))
+            .expect("restarted")
+            .contains("10 -> 11")
+    );
+}
+
+#[test]
+fn invalid_handle_is_benign_only_after_a_successful_stop() {
+    assert!(close_trace_benign(ERROR_INVALID_HANDLE, true));
+    assert!(!close_trace_benign(ERROR_INVALID_HANDLE, false));
+    assert!(close_trace_benign(ERROR_CTX_CLOSE_PENDING, false));
+    assert!(!close_trace_benign(5, true));
+    assert!(process_trace_benign(ERROR_INVALID_HANDLE, true));
+    assert!(!process_trace_benign(ERROR_INVALID_HANDLE, false));
+    assert!(process_trace_benign(ERROR_CANCELLED, false));
+    assert!(!process_trace_benign(5, true));
+}
+
+#[test]
+fn wait_until_is_bounded_and_returns_early() {
+    let ms = Duration::from_millis;
+    let started = Instant::now();
+    assert!(wait_until(|| true, Duration::from_secs(5), ms(1)));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let mut polls = 0;
+    assert!(wait_until(
+        || {
+            polls += 1;
+            polls >= 3
+        },
+        Duration::from_secs(5),
+        ms(1)
+    ));
+    let started = Instant::now();
+    assert!(!wait_until(|| false, ms(30), ms(5)));
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn access_denied_enable_names_the_missing_right() {
+    let message = check_enable_status(ERROR_ACCESS_DENIED)
+        .expect_err("denied")
+        .to_string();
+    assert!(message.contains("TRACELOG_GUID_ENABLE"));
+    assert!(message.contains("eb79061a-a566-4698-9119-3ed2807060e7"));
+    assert!(check_enable_status(ERROR_SUCCESS).is_ok());
 }

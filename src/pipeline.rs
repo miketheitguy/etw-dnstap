@@ -23,7 +23,7 @@ use crate::{
         self, Capture, CaptureCounters, KeywordSelection, PoolManager, RawEtwEvent, SessionConfig,
     },
     network::NetworkSink,
-    sink::FrameSink,
+    sink::{FrameSink, SinkStats},
 };
 
 /// Fixed default so a restart finds and reclaims a session leaked by a crash.
@@ -85,6 +85,12 @@ pub(crate) struct CaptureArgs {
     /// --etw-buffer-kib 64`.
     #[arg(long, default_value = "0", value_parser = parse_etw_flush_ms)]
     etw_flush_ms: u32,
+
+    /// Seconds between counter snapshots in the log (queue depth, drops, ETW loss,
+    /// receiver connection state), 0-86400; 0 disables the snapshots. The final
+    /// report at shutdown is always written.
+    #[arg(long, default_value = "60", value_parser = clap::value_parser!(u32).range(0..=86_400))]
+    stats_interval_seconds: u32,
 
     /// Diagnostic only: request this system timer resolution in milliseconds
     /// (`timeBeginPeriod`) for the whole run.
@@ -189,8 +195,9 @@ fn record_etw_flush(counters: &CaptureCounters, result: Result<(), u32>) {
     }
 }
 
-/// Runs one flush, counts it, and records its duration.
-fn flush_etw(capture: &impl EventProducer, counters: &CaptureCounters) {
+/// Runs one flush, counts it, and records its duration. Returns whether it
+/// succeeded.
+fn flush_etw(capture: &impl EventProducer, counters: &CaptureCounters) -> bool {
     let flush_started = Instant::now();
     let result = capture.flush();
     let elapsed = flush_started.elapsed();
@@ -201,7 +208,9 @@ fn flush_etw(capture: &impl EventProducer, counters: &CaptureCounters) {
     if elapsed > SLOW_ETW_FLUSH && !counters.etw_flush_slow_warned.swap(true, Ordering::Relaxed) {
         tracing::warn!("ETW session flush took {} ms", elapsed.as_millis());
     }
+    let succeeded = result.is_ok();
     record_etw_flush(counters, result);
+    succeeded
 }
 
 fn parse_capacity(value: &str) -> Result<usize, String> {
@@ -270,6 +279,8 @@ pub(crate) struct PipelineConfig {
     pub(crate) session: SessionConfig,
     /// Explicit ETW flush interval in milliseconds; zero disables it.
     pub(crate) etw_flush_ms: u32,
+    /// Seconds between counter snapshots; zero disables them.
+    pub(crate) stats_interval_seconds: u32,
     pub(crate) diag: DiagContext,
 }
 
@@ -297,6 +308,17 @@ impl PipelineConfig {
     fn etw_flush_interval(&self) -> Option<Duration> {
         (self.etw_flush_ms != 0).then(|| Duration::from_millis(u64::from(self.etw_flush_ms)))
     }
+
+    /// The counter snapshot interval, or `None` when disabled.
+    fn stats_interval(&self) -> Option<Duration> {
+        (self.stats_interval_seconds != 0)
+            .then(|| Duration::from_secs(u64::from(self.stats_interval_seconds)))
+    }
+
+    /// True when the ETW buffer and flush settings are the low-rate defaults.
+    fn uses_default_etw_settings(&self) -> bool {
+        self.etw_flush_ms == 0 && self.session == SessionConfig::default()
+    }
 }
 
 impl TryFrom<CaptureArgs> for PipelineConfig {
@@ -316,6 +338,7 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
                 args.etw_flush_seconds,
             )?,
             etw_flush_ms: args.etw_flush_ms,
+            stats_interval_seconds: args.stats_interval_seconds,
             diag: DiagContext {
                 #[cfg(feature = "diag-timing")]
                 timer_resolution_ms: args.diag_timer_resolution_ms,
@@ -366,6 +389,12 @@ struct ParseCounters {
     rejected: AtomicU64,
     output_failed_events: AtomicU64,
     output_errors: AtomicU64,
+    /// Events rejected because their schema failed to load (first failure and
+    /// every cached rejection). Also counted in `rejected`.
+    schema_rejected: AtomicU64,
+    /// Deepest the event channel was seen: sampled by the parser on the first
+    /// event after each idle wake and every 256 events, so a lower bound.
+    queue_depth_max: AtomicU64,
     #[cfg(feature = "diag-timing")]
     timing: DiagTiming,
 }
@@ -452,6 +481,24 @@ impl DiagTiming {
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Startup budget: the base timeout plus one second per 16384 channel slots,
+/// because allocating and touching the event pool (about 2.3 KiB per slot, up to
+/// roughly 640 MB) dominates startup at large `--capacity`.
+pub(crate) fn startup_budget(args: &CaptureArgs) -> Duration {
+    let slots = u64::try_from(args.capacity).unwrap_or(u64::MAX);
+    SHUTDOWN_TIMEOUT + Duration::from_secs(slots.div_ceil(16_384))
+}
+
+/// Records the abort in the Event Log (best effort, bounded) and terminates.
+fn fail_stop(phase: &str, timeout: Duration) {
+    crate::service::report_watchdog_expiry(&format!(
+        "EtwDnstap watchdog: the {phase} deadline of {} s expired; aborting the process so \
+         the Service Control Manager can apply its recovery actions",
+        timeout.as_secs()
+    ));
+    std::process::abort();
+}
+
 /// Holds the shutdown deadline until all native callbacks and network writes end.
 pub(crate) struct ShutdownWatchdog {
     disarm: Sender<()>,
@@ -460,7 +507,14 @@ pub(crate) struct ShutdownWatchdog {
 
 impl ShutdownWatchdog {
     pub(crate) fn arm() -> Self {
-        match Self::spawn(SHUTDOWN_TIMEOUT, || std::process::abort()) {
+        Self::arm_for("shutdown", SHUTDOWN_TIMEOUT)
+    }
+
+    /// Arms a watchdog for `phase` ("startup" or "shutdown") with `timeout`. The
+    /// Event Log source is opened now, so the expiry path never has to.
+    pub(crate) fn arm_for(phase: &'static str, timeout: Duration) -> Self {
+        crate::service::preopen_event_source();
+        match Self::spawn(timeout, move || fail_stop(phase, timeout)) {
             Ok(watchdog) => watchdog,
             // Failure reporting can itself block; the fail-stop path performs
             // no logging or cleanup before process termination.
@@ -538,6 +592,18 @@ pub(crate) trait EventProducer {
     /// # Errors
     /// Returns an error if the source could not be stopped cleanly.
     fn stop(&mut self) -> Result<()>;
+    /// Refreshes the source's own loss counters into the shared counters.
+    ///
+    /// # Errors
+    /// Returns the native status when the query fails.
+    fn query_statistics(&self) -> Result<(), u32> {
+        Ok(())
+    }
+    /// A reason capture can no longer be trusted (for example the process the
+    /// source filters on was replaced), or `None`.
+    fn target_change(&self) -> Option<String> {
+        None
+    }
 }
 
 impl EventProducer for Capture {
@@ -555,6 +621,14 @@ impl EventProducer for Capture {
 
     fn stop(&mut self) -> Result<()> {
         Capture::stop(self)
+    }
+
+    fn query_statistics(&self) -> Result<(), u32> {
+        Capture::query_statistics(self)
+    }
+
+    fn target_change(&self) -> Option<String> {
+        Capture::target_change(self)
     }
 }
 
@@ -575,7 +649,7 @@ pub(crate) fn run_capture(
     let config = PipelineConfig::try_from(args)?;
     run_pipeline(
         &config,
-        NetworkSink::connect,
+        NetworkSink::start,
         |start| {
             Capture::start(
                 start.session_name,
@@ -594,11 +668,13 @@ pub(crate) fn run_capture(
 }
 
 /// Runs the pipeline against any sink and producer. `connect` opens the sink
-/// before capture starts, `start` begins event delivery, and the call returns
-/// after both workers have stopped and the counters have been reported.
+/// before capture starts (it may return a sink that reconnects on its own and
+/// reports through the shared [`SinkStats`]), `start` begins event delivery, and
+/// the call returns after both workers have stopped and the counters have been
+/// reported.
 pub(crate) fn run_pipeline<S, P>(
     config: &PipelineConfig,
-    connect: impl FnOnce(SocketAddr) -> io::Result<S>,
+    connect: impl FnOnce(SocketAddr, Arc<SinkStats>) -> io::Result<S>,
     start: impl FnOnce(ProducerStart<'_>) -> Result<P>,
     stop: &AtomicBool,
     on_running: impl FnOnce() -> Result<()>,
@@ -610,7 +686,9 @@ where
 {
     // Declared before any worker thread so it drops after both are joined.
     let _diag_levers = begin_diag_levers(config.diag)?;
-    let writer = connect(config.receiver).context("connect/negotiation with dnstap receiver")?;
+    let sink_stats = Arc::new(SinkStats::default());
+    let writer = connect(config.receiver, Arc::clone(&sink_stats))
+        .context("connect/negotiation with dnstap receiver")?;
     let (sender, queue) = crossbeam_channel::bounded(config.capacity);
     let pool = PoolManager::new(config.capacity, usize::from(config.jumbo_capacity))?;
     let producer_done = Arc::new(AtomicBool::new(false));
@@ -626,7 +704,7 @@ where
         config.diag,
     )?;
 
-    let startup_watchdog = ShutdownWatchdog::arm();
+    let startup_watchdog = ShutdownWatchdog::arm_for("startup", SHUTDOWN_TIMEOUT);
     let producer = start(ProducerStart {
         session_name: &config.session_name,
         sender,
@@ -644,7 +722,7 @@ where
             producer_done.store(true, Ordering::Release);
             parser.thread().unpark();
             let parser_result = join_parser(parser);
-            report_counts(&capture_counts, &parse_counts);
+            report_counts(&capture_counts, &parse_counts, &sink_stats);
             watchdog.disarm()?;
             return combine_results(Err(error), parser_result);
         }
@@ -654,15 +732,20 @@ where
     log_diag_settings(config.diag);
     startup_watchdog.disarm()?;
     let started = Instant::now();
-    let schedule = FlushSchedule::new(config.etw_flush_interval(), Instant::now());
+    let mut monitor = Monitor::new(
+        config,
+        &capture_counts,
+        &parse_counts,
+        &sink_stats,
+        Instant::now(),
+    );
     let unexpected_exit = supervise(
         stop,
         config.duration.map(|limit| started + limit),
         running_result.is_err(),
         &parser,
         &producer,
-        &capture_counts,
-        schedule,
+        &mut monitor,
     );
 
     let watchdog = ShutdownWatchdog::arm();
@@ -675,45 +758,165 @@ where
     producer_done.store(true, Ordering::Release);
     parser.thread().unpark();
     let parser_result = join_parser(parser);
-    report_counts(&capture_counts, &parse_counts);
+    report_counts(&capture_counts, &parse_counts, &sink_stats);
     watchdog.disarm()?;
     combine_results(capture_result, parser_result)?;
     running_result?;
     stopping_result?;
-    if unexpected_exit {
-        bail!("a capture worker exited before shutdown was requested");
+    if let Some(reason) = unexpected_exit {
+        bail!("{reason}");
     }
     Ok(())
 }
 
-/// Supervises the workers until shutdown. Returns whether a worker exited
-/// before shutdown was requested.
+/// Received-rate threshold above which the low-rate ETW defaults are inadequate.
+const LOW_RATE_WARN_EVENTS_PER_SEC: f64 = 1500.0;
+/// How often the supervisor re-reads the DNS Server service process ID.
+const TARGET_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// Rate window when counter snapshots are disabled.
+const DEFAULT_RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Measures the received-event rate over fixed windows.
+struct RateMonitor {
+    window: Duration,
+    window_start: Instant,
+    received_at_start: u64,
+}
+
+impl RateMonitor {
+    fn new(window: Duration, now: Instant, received: u64) -> Self {
+        Self {
+            window,
+            window_start: now,
+            received_at_start: received,
+        }
+    }
+
+    /// At the end of each window returns the average events per second over it
+    /// and starts the next window.
+    fn poll(&mut self, now: Instant, received: u64) -> Option<f64> {
+        let elapsed = now.saturating_duration_since(self.window_start);
+        if elapsed < self.window {
+            return None;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "an approximate rate; counts stay far below 2^52"
+        )]
+        let delta = received.saturating_sub(self.received_at_start) as f64;
+        self.window_start = now;
+        self.received_at_start = received;
+        Some(delta / elapsed.as_secs_f64())
+    }
+}
+
+/// True when the default ETW settings are in use and the rate exceeds what they
+/// were sized for.
+fn low_rate_defaults_exceeded(defaults_in_use: bool, events_per_second: f64) -> bool {
+    defaults_in_use && events_per_second > LOW_RATE_WARN_EVENTS_PER_SEC
+}
+
+/// Everything the supervisor schedules and reads while capture runs.
+struct Monitor<'a> {
+    capture: &'a CaptureCounters,
+    parse: &'a ParseCounters,
+    sink: &'a SinkStats,
+    flush: FlushSchedule,
+    stats: FlushSchedule,
+    target: FlushSchedule,
+    rate: RateMonitor,
+    defaults_in_use: bool,
+}
+
+impl<'a> Monitor<'a> {
+    fn new(
+        config: &PipelineConfig,
+        capture: &'a CaptureCounters,
+        parse: &'a ParseCounters,
+        sink: &'a SinkStats,
+        now: Instant,
+    ) -> Self {
+        Self {
+            capture,
+            parse,
+            sink,
+            flush: FlushSchedule::new(config.etw_flush_interval(), now),
+            stats: FlushSchedule::new(config.stats_interval(), now),
+            target: FlushSchedule::new(Some(TARGET_CHECK_INTERVAL), now),
+            rate: RateMonitor::new(
+                config.stats_interval().unwrap_or(DEFAULT_RATE_WINDOW),
+                now,
+                capture.received.load(Ordering::Relaxed),
+            ),
+            defaults_in_use: config.uses_default_etw_settings(),
+        }
+    }
+}
+
+/// Supervises the workers until shutdown. Returns the reason when a worker
+/// exited, or capture became untrustworthy, before shutdown was requested.
 fn supervise(
     stop: &AtomicBool,
     deadline: Option<Instant>,
     startup_failed: bool,
     parser: &thread::JoinHandle<Result<()>>,
     capture: &impl EventProducer,
-    counters: &CaptureCounters,
-    mut schedule: FlushSchedule,
-) -> bool {
+    monitor: &mut Monitor<'_>,
+) -> Option<String> {
     loop {
         if startup_failed {
-            break false;
+            break None;
         }
         if stop.load(Ordering::Relaxed) || deadline.is_some_and(|limit| Instant::now() >= limit) {
-            break false;
+            break None;
         }
         if parser.is_finished() || capture.is_finished() {
-            break true;
+            break Some("a capture worker exited before shutdown was requested".to_owned());
         }
+        let now = Instant::now();
         // Flushing here, not in the ETW callback, keeps the callback wake-free
         // (docs/ring-wakeup.md). The park ends at the next flush deadline, so the
         // cadence is the setting plus at most one timer tick (about 15.6 ms).
-        if schedule.poll(Instant::now()) {
-            flush_etw(capture, counters);
+        if monitor.flush.poll(now) && flush_etw(capture, monitor.capture) {
+            // The batch just delivered is queued; wake the parser instead of
+            // letting it finish a backed-off idle park first.
+            parser.thread().unpark();
         }
-        thread::park_timeout(schedule.park_for(Instant::now(), Duration::from_millis(50)));
+        if monitor.target.poll(now)
+            && let Some(reason) = capture.target_change()
+        {
+            // The PID filter and callback check now match no process. Exiting
+            // with a failure lets SCM recovery restart the service, which
+            // resolves the new PID at startup.
+            tracing::error!(
+                "{reason}; stopping so the service can be restarted and re-resolve the DNS \
+                 Server process"
+            );
+            break Some(reason);
+        }
+        if let Some(rate) = monitor
+            .rate
+            .poll(now, monitor.capture.received.load(Ordering::Relaxed))
+            && low_rate_defaults_exceeded(monitor.defaults_in_use, rate)
+        {
+            tracing::warn!(
+                events_per_second = rate.round(),
+                "received rate is above what the default low-rate ETW settings are sized \
+                 for (about 1,500 events/s) and events may be dropped; restart with \
+                 --etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64"
+            );
+        }
+        if monitor.stats.poll(now) {
+            if let Err(status) = capture.query_statistics() {
+                tracing::debug!(code = status, "periodic ETW session query failed");
+            }
+            report_snapshot(monitor.capture, monitor.parse, monitor.sink);
+        }
+        thread::park_timeout(
+            monitor
+                .flush
+                .park_for(Instant::now(), Duration::from_millis(50)),
+        );
     }
 }
 
@@ -831,9 +1034,25 @@ fn parse_loop<S: FrameSink>(
     let mut parser = etw::Parser::new();
     let mut encoder = Encoder::new(identity.as_bytes())?;
     let mut last_flush = Instant::now();
+    // Bytes may sit in the sink's buffer since the last flush.
+    let mut dirty = false;
+    // True after an idle poll, so the next event samples the queue depth.
+    let mut sample_depth = true;
+    let mut events_since_clock = 0u32;
     let consume = |event: Option<RawEtwEvent>| {
+        let idle = event.is_none();
+        if idle {
+            sample_depth = true;
+        }
         if let Some(event) = event {
-            counters.dequeued.fetch_add(1, Ordering::Relaxed);
+            let dequeued = counters.dequeued.fetch_add(1, Ordering::Relaxed);
+            if sample_depth || dequeued.is_multiple_of(256) {
+                sample_depth = false;
+                let depth = u64::try_from(queue.len()).unwrap_or(u64::MAX);
+                counters
+                    .queue_depth_max
+                    .fetch_max(depth.saturating_add(1), Ordering::Relaxed);
+            }
             // The decoded view borrows the pooled record. Encoding copies the packet
             // into encoder storage, so the record is released before network I/O and
             // the returned payload borrows only reusable encoder storage.
@@ -843,6 +1062,11 @@ fn parse_loop<S: FrameSink>(
                 Err(error) => Err(error),
             };
             drop(event);
+            if result.is_err() {
+                counters
+                    .schema_rejected
+                    .store(parser.schema_rejected_events(), Ordering::Relaxed);
+            }
             match result {
                 Ok(Some(payload)) => {
                     #[cfg(feature = "diag-timing")]
@@ -856,6 +1080,7 @@ fn parse_loop<S: FrameSink>(
                             .fetch_add(1, Ordering::Relaxed);
                         counters.output_errors.fetch_add(1, Ordering::Relaxed);
                     })?;
+                    dirty = true;
                     counters.encoded.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(None) => {
@@ -870,7 +1095,21 @@ fn parse_loop<S: FrameSink>(
                 }
             }
         }
-        if last_flush.elapsed() >= Duration::from_secs(1) {
+        // Read the clock only when it can matter: on every idle poll that has
+        // unflushed bytes (so a trickle is not held for a second), and once per
+        // CLOCK_CHECK_EVENTS events while busy.
+        let flush_due = if idle {
+            dirty && last_flush.elapsed() >= IDLE_FLUSH_AFTER
+        } else {
+            events_since_clock += 1;
+            if events_since_clock >= CLOCK_CHECK_EVENTS {
+                events_since_clock = 0;
+                dirty && last_flush.elapsed() >= BUSY_FLUSH_AFTER
+            } else {
+                false
+            }
+        };
+        if flush_due {
             #[cfg(feature = "diag-timing")]
             let flush_started = Instant::now();
             let flushed = writer.flush();
@@ -882,6 +1121,7 @@ fn parse_loop<S: FrameSink>(
                     counters.output_errors.fetch_add(1, Ordering::Relaxed);
                 })?;
             last_flush = Instant::now();
+            dirty = false;
         }
         Ok(())
     };
@@ -905,6 +1145,13 @@ fn parse_loop<S: FrameSink>(
 // 50/s (about 37/s measured). Shutdown is unaffected because completion is
 // followed by unpark, which ends any park.
 const IDLE_POLL_MIN: Duration = Duration::from_millis(2);
+/// With bytes pending, an idle parser flushes if the last flush is older than this.
+const IDLE_FLUSH_AFTER: Duration = Duration::from_millis(100);
+/// While busy the sink's buffer fills and flushes itself; this bounds the wait
+/// for a partly full buffer.
+const BUSY_FLUSH_AFTER: Duration = Duration::from_secs(1);
+/// While busy, the flush clock is read once per this many events.
+const CLOCK_CHECK_EVENTS: u32 = 64;
 const IDLE_POLL_MAX: Duration = Duration::from_millis(20);
 
 /// Resets the idle poll interval after an event and otherwise doubles it, clamped
@@ -989,30 +1236,67 @@ fn drain_ring_inner<T>(
     }
 }
 
-fn report_counts(capture: &CaptureCounters, parser: &ParseCounters) {
-    tracing::info!(
-        received = capture.received.load(Ordering::Relaxed),
-        dequeued = parser.dequeued.load(Ordering::Relaxed),
-        encoded = parser.encoded.load(Ordering::Relaxed),
-        ignored = parser.ignored.load(Ordering::Relaxed),
-        ring_dropped = capture.dropped.load(Ordering::Relaxed),
-        intake_dropped = capture.intake_dropped.load(Ordering::Relaxed),
-        pool_exhausted = capture.pool_exhausted.load(Ordering::Relaxed),
-        receiver_disconnected = capture.receiver_disconnected.load(Ordering::Relaxed),
-        etw_lost = capture.etw_lost.load(Ordering::Relaxed),
-        etw_buffers_lost = capture.etw_buffers_lost.load(Ordering::Relaxed),
-        callback_errors = capture.callback_errors.load(Ordering::Relaxed),
-        rejected = parser.rejected.load(Ordering::Relaxed),
-        output_failed_events = parser.output_failed_events.load(Ordering::Relaxed),
-        output_errors = parser.output_errors.load(Ordering::Relaxed),
-        etw_stats_valid = capture.stats_valid.load(Ordering::Relaxed),
-        etw_stats_errors = capture.stats_errors.load(Ordering::Relaxed),
-        stale_sessions_reclaimed = capture.stale_sessions_reclaimed.load(Ordering::Relaxed),
-        etw_flushes = capture.etw_flushes.load(Ordering::Relaxed),
-        etw_flush_errors = capture.etw_flush_errors.load(Ordering::Relaxed),
-        etw_flush_max_us = capture.etw_flush_max_us.load(Ordering::Relaxed),
-        "capture stopped"
-    );
+/// Emits the two counter events. A macro because `tracing` needs a literal
+/// message, and the final report and the periodic snapshot share every field.
+///
+/// Counter relationships: `ring_dropped` (channel full) is a subset of
+/// `intake_dropped`, which also includes pool exhaustion and a closed channel;
+/// never add them. `pool_exhausted_regular + pool_exhausted_jumbo` is likewise
+/// part of `intake_dropped`. `disconnected_dropped` counts frames lost after the
+/// parser, in the sink, and is not part of `intake_dropped`.
+macro_rules! emit_counts {
+    ($capture_message:literal, $output_message:literal, $capture:expr, $parser:expr, $sink:expr) => {{
+        let (capture, parser, sink): (&CaptureCounters, &ParseCounters, &SinkStats) =
+            ($capture, $parser, $sink);
+        let pool_exhausted = capture.pool_exhausted.load(Ordering::Relaxed);
+        let pool_exhausted_jumbo = capture.pool_exhausted_jumbo.load(Ordering::Relaxed);
+        tracing::info!(
+            received = capture.received.load(Ordering::Relaxed),
+            dequeued = parser.dequeued.load(Ordering::Relaxed),
+            encoded = parser.encoded.load(Ordering::Relaxed),
+            ignored = parser.ignored.load(Ordering::Relaxed),
+            ring_dropped = capture.dropped.load(Ordering::Relaxed),
+            intake_dropped = capture.intake_dropped.load(Ordering::Relaxed),
+            pool_exhausted_regular = pool_exhausted.saturating_sub(pool_exhausted_jumbo),
+            pool_exhausted_jumbo,
+            foreign_pid_rejected = capture.foreign_pid_rejected.load(Ordering::Relaxed),
+            receiver_disconnected = capture.receiver_disconnected.load(Ordering::Relaxed),
+            etw_lost = capture.etw_lost.load(Ordering::Relaxed),
+            etw_buffers_lost = capture.etw_buffers_lost.load(Ordering::Relaxed),
+            callback_errors = capture.callback_errors.load(Ordering::Relaxed),
+            rejected = parser.rejected.load(Ordering::Relaxed),
+            schema_rejected = parser.schema_rejected.load(Ordering::Relaxed),
+            etw_stats_valid = capture.stats_valid.load(Ordering::Relaxed),
+            etw_stats_errors = capture.stats_errors.load(Ordering::Relaxed),
+            stale_sessions_reclaimed = capture.stale_sessions_reclaimed.load(Ordering::Relaxed),
+            etw_flushes = capture.etw_flushes.load(Ordering::Relaxed),
+            etw_flush_errors = capture.etw_flush_errors.load(Ordering::Relaxed),
+            etw_flush_max_us = capture.etw_flush_max_us.load(Ordering::Relaxed),
+            $capture_message
+        );
+        tracing::info!(
+            output_failed_events = parser.output_failed_events.load(Ordering::Relaxed),
+            output_errors = parser.output_errors.load(Ordering::Relaxed),
+            receiver_connected = sink.connected.load(Ordering::Relaxed),
+            receiver_disconnects = sink.disconnects.load(Ordering::Relaxed),
+            receiver_reconnects = sink.reconnects.load(Ordering::Relaxed),
+            receiver_reconnect_failures = sink.reconnect_failures.load(Ordering::Relaxed),
+            disconnected_dropped = sink.disconnected_dropped.load(Ordering::Relaxed),
+            slow_writes = sink.slow_writes.load(Ordering::Relaxed),
+            write_max_us = sink.write_max_us.load(Ordering::Relaxed),
+            queue_depth_max = parser.queue_depth_max.load(Ordering::Relaxed),
+            $output_message
+        );
+    }};
+}
+
+/// The periodic counter snapshot.
+fn report_snapshot(capture: &CaptureCounters, parser: &ParseCounters, sink: &SinkStats) {
+    emit_counts!("capture stats", "output stats", capture, parser, sink);
+}
+
+fn report_counts(capture: &CaptureCounters, parser: &ParseCounters, sink: &SinkStats) {
+    emit_counts!("capture stopped", "output stopped", capture, parser, sink);
     #[cfg(feature = "diag-timing")]
     report_timing(&parser.timing);
 }
@@ -1161,7 +1445,7 @@ mod tests {
                 }
                 Ok(())
             });
-            let writer = NetworkSink::connect(address)?;
+            let writer = crate::network::Connection::connect(address)?;
             let (_send, queue) = crossbeam_channel::bounded(1);
             let counters = ParseCounters::default();
             let result = parse_loop(
@@ -1244,7 +1528,7 @@ mod tests {
         let stop = AtomicBool::new(true);
         run_pipeline(
             &config,
-            NetworkSink::connect,
+            |address, _stats| crate::network::Connection::connect(address),
             |_start| {
                 Ok(FakeProducer {
                     stopped: producer_stopped,
@@ -1752,5 +2036,244 @@ mod tests {
         .expect("watchdog starts");
         watchdog.worker.join().expect("watchdog finishes");
         assert!(expired.load(Ordering::Relaxed));
+    }
+
+    fn config_from(extra: &[&str]) -> PipelineConfig {
+        let mut arguments = vec!["etw-dnstap", "--receiver", "127.0.0.1:6000"];
+        arguments.extend_from_slice(extra);
+        PipelineConfig::try_from(parse_args_from(arguments).expect("valid arguments"))
+            .expect("valid configuration")
+    }
+
+    #[test]
+    fn stats_interval_flag_defaults_to_60_and_zero_disables() {
+        assert_eq!(
+            config_from(&[]).stats_interval(),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(
+            config_from(&["--stats-interval-seconds", "5"]).stats_interval(),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            config_from(&["--stats-interval-seconds=0"]).stats_interval(),
+            None
+        );
+        for bad in ["-1", "86401", "x", ""] {
+            assert!(
+                parse_args_from([
+                    "etw-dnstap",
+                    "--receiver",
+                    "127.0.0.1:6000",
+                    &format!("--stats-interval-seconds={bad}"),
+                ])
+                .is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_etw_settings_are_detected() {
+        assert!(config_from(&[]).uses_default_etw_settings());
+        assert!(!config_from(&["--etw-flush-ms", "50"]).uses_default_etw_settings());
+        assert!(!config_from(&["--etw-max-buffers", "256"]).uses_default_etw_settings());
+        assert!(!config_from(&["--etw-buffer-kib", "64"]).uses_default_etw_settings());
+        assert!(!config_from(&["--etw-flush-seconds", "2"]).uses_default_etw_settings());
+    }
+
+    #[test]
+    fn low_rate_warning_needs_defaults_and_a_high_rate() {
+        assert!(low_rate_defaults_exceeded(true, 1501.0));
+        assert!(!low_rate_defaults_exceeded(true, 1500.0));
+        assert!(!low_rate_defaults_exceeded(true, 10.0));
+        assert!(!low_rate_defaults_exceeded(false, 50_000.0));
+    }
+
+    #[test]
+    fn rate_monitor_reports_once_per_window() {
+        let start = Instant::now();
+        let mut rate = RateMonitor::new(Duration::from_secs(10), start, 100);
+        assert_eq!(rate.poll(start + Duration::from_secs(9), 99_999), None);
+        let measured = rate
+            .poll(start + Duration::from_secs(10), 20_100)
+            .expect("window complete");
+        assert!((measured - 2000.0).abs() < 0.001, "{measured}");
+        // The next window starts from the previous reading.
+        assert_eq!(rate.poll(start + Duration::from_secs(15), 20_200), None);
+        let slow = rate
+            .poll(start + Duration::from_secs(20), 20_200)
+            .expect("second window");
+        assert!((slow - 10.0).abs() < 0.001, "{slow}");
+    }
+
+    #[test]
+    fn startup_budget_scales_with_capacity() {
+        let budget = |capacity: &str| {
+            startup_budget(
+                &parse_args_from([
+                    "etw-dnstap",
+                    "--receiver",
+                    "127.0.0.1:6000",
+                    "--capacity",
+                    capacity,
+                ])
+                .expect("valid arguments"),
+            )
+        };
+        assert_eq!(budget("8192"), SHUTDOWN_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(budget("262144"), SHUTDOWN_TIMEOUT + Duration::from_secs(16));
+        assert!(budget("262144") > budget("1024"));
+    }
+
+    /// A producer scripted for supervisor tests.
+    struct ScriptedProducer {
+        flushes: Arc<std::sync::atomic::AtomicU32>,
+        moved: bool,
+    }
+
+    impl EventProducer for ScriptedProducer {
+        fn keywords(&self) -> KeywordSelection {
+            KeywordSelection {
+                match_any: 0,
+                match_all: 0,
+                fallback: true,
+            }
+        }
+
+        fn is_finished(&self) -> bool {
+            false
+        }
+
+        fn flush(&self) -> Result<(), u32> {
+            self.flushes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn stop(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn target_change(&self) -> Option<String> {
+            self.moved
+                .then(|| "the DNS Server service restarted (process ID 1 -> 2)".to_owned())
+        }
+    }
+
+    #[test]
+    fn supervisor_ends_capture_when_the_dns_process_changes() {
+        let config = config_from(&[]);
+        let (capture, parse, sink) = (
+            CaptureCounters::default(),
+            ParseCounters::default(),
+            SinkStats::default(),
+        );
+        let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+        monitor.target = FlushSchedule::new(Some(Duration::from_millis(10)), Instant::now());
+        let done = Arc::new(AtomicBool::new(false));
+        let parser_done = Arc::clone(&done);
+        let parser = thread::spawn(move || {
+            while !parser_done.load(Ordering::Relaxed) {
+                thread::park_timeout(Duration::from_millis(10));
+            }
+            Ok(())
+        });
+        let producer = ScriptedProducer {
+            flushes: Arc::default(),
+            moved: true,
+        };
+        let reason = supervise(
+            &AtomicBool::new(false),
+            None,
+            false,
+            &parser,
+            &producer,
+            &mut monitor,
+        )
+        .expect("a changed PID ends supervision");
+        assert!(reason.contains("restarted"), "{reason}");
+        done.store(true, Ordering::Relaxed);
+        parser.join().expect("parser stub exits").expect("ok");
+    }
+
+    #[test]
+    fn supervisor_wakes_the_parser_after_each_successful_flush() {
+        let config = config_from(&["--etw-flush-ms", "20"]);
+        let (capture, parse, sink) = (
+            CaptureCounters::default(),
+            ParseCounters::default(),
+            SinkStats::default(),
+        );
+        let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+        let done = Arc::new(AtomicBool::new(false));
+        let wakes = Arc::new(AtomicU64::new(0));
+        let (parser_done, parser_wakes) = (Arc::clone(&done), Arc::clone(&wakes));
+        let parser = thread::spawn(move || {
+            // A long park: only an explicit unpark ends it early.
+            while !parser_done.load(Ordering::Relaxed) {
+                thread::park_timeout(Duration::from_secs(30));
+                parser_wakes.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        let flushes = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let producer = ScriptedProducer {
+            flushes: Arc::clone(&flushes),
+            moved: false,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopper = {
+            let stop = Arc::clone(&stop);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(400));
+                stop.store(true, Ordering::Relaxed);
+            })
+        };
+        assert!(supervise(&stop, None, false, &parser, &producer, &mut monitor).is_none());
+        stopper.join().expect("stopper exits");
+        done.store(true, Ordering::Relaxed);
+        parser.thread().unpark();
+        parser.join().expect("parser stub exits").expect("ok");
+        let flush_count = u64::from(flushes.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(flush_count >= 3, "flushed {flush_count} times");
+        // One wake per flush, plus the final one that observes `done`.
+        assert!(wakes.load(Ordering::Relaxed) >= flush_count.min(3));
+    }
+
+    #[test]
+    fn pipeline_starts_and_stops_promptly_while_the_receiver_is_down() -> Result<()> {
+        // A port that was just released refuses connections.
+        let address = {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            listener.local_addr()?
+        };
+        let config = PipelineConfig::try_from(parse_args_from([
+            "etw-dnstap",
+            "--receiver",
+            &address.to_string(),
+        ])?)?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let producer_stopped = Arc::clone(&stopped);
+        let stop = AtomicBool::new(true);
+        let started = Instant::now();
+        run_pipeline(
+            &config,
+            NetworkSink::start,
+            |_start| {
+                Ok(FakeProducer {
+                    stopped: producer_stopped,
+                })
+            },
+            &stop,
+            || Ok(()),
+            || Ok(()),
+        )?;
+        assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "prompt shutdown"
+        );
+        Ok(())
     }
 }

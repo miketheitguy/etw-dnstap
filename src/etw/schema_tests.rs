@@ -751,3 +751,54 @@ fn decodes_host_and_network_order_ports_and_binary_addresses() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn failed_schema_load_is_cached_and_not_retried() -> Result<()> {
+    let pool = PoolManager::new(1, 0)?;
+    let mut parser = Parser::new();
+    let mut encoder = Encoder::new(b"negative cache")?;
+    let mut fixture = decode::tests::fixture(256, false, false, 0);
+    TDH_CALLS.with(|calls| calls.set([0; 3]));
+    // No manifest exists for this provider version in the test process, so the
+    // first load fails.
+    let event = pooled_fixture(&mut fixture.payload, 256, 77, &pool);
+    assert!(parser.parse_encode(event, &mut encoder).is_err());
+    let after_first = TDH_CALLS.with(std::cell::Cell::get);
+    assert!(
+        after_first.iter().sum::<usize>() > 0,
+        "first load calls TDH"
+    );
+    assert_eq!(parser.schema_rejected_events(), 1);
+    assert!(parser.schemas.is_empty());
+    for _ in 0..3 {
+        let event = pooled_fixture(&mut fixture.payload, 256, 77, &pool);
+        let error = parser
+            .parse_encode(event, &mut encoder)
+            .expect_err("rejected key stays rejected");
+        assert!(error.to_string().contains("rejected earlier"));
+    }
+    assert_eq!(
+        TDH_CALLS.with(std::cell::Cell::get),
+        after_first,
+        "cached rejections make no TDH calls"
+    );
+    assert_eq!(parser.schema_rejected_events(), 4);
+    // Another version is a different key and still reaches TDH once.
+    let event = pooled_fixture(&mut fixture.payload, 256, 78, &pool);
+    assert!(parser.parse_encode(event, &mut encoder).is_err());
+    assert_ne!(TDH_CALLS.with(std::cell::Cell::get), after_first);
+    assert_eq!(parser.rejected_keys.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn rejected_key_list_is_bounded_without_reallocating() {
+    let mut parser = Parser::new();
+    let capacity = parser.rejected_keys.capacity();
+    for version in 0..=u8::try_from(MAX_CACHED_SCHEMAS).expect("bounded cache") {
+        parser.remember_rejected((256, version));
+        assert!(parser.rejected_keys.len() <= MAX_CACHED_SCHEMAS);
+    }
+    assert_eq!(parser.rejected_keys.len(), 1);
+    assert_eq!(parser.rejected_keys.capacity(), capacity);
+}

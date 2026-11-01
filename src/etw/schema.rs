@@ -65,11 +65,20 @@ pub(crate) struct Parser {
     // Backing storage for packets the TDH fallback extracts. Reserved once so the
     // fallback never reallocates; fast-path packets borrow the event payload.
     packet: Vec<u8>,
+    // Keys whose schema failed to load. Without this every such event would repeat
+    // the TDH calls and their allocations on the parser thread. Bounded like the
+    // positive cache and reserved up front.
+    rejected_keys: Vec<(u16, u8)>,
+    // Events rejected without a TDH call because their key is in `rejected_keys`,
+    // plus the first failure of each key.
+    rejected_events: u64,
 }
 
 impl Parser {
     pub(crate) fn new() -> Self {
         Self {
+            rejected_keys: Vec::with_capacity(MAX_CACHED_SCHEMAS),
+            rejected_events: 0,
             schemas: Vec::with_capacity(MAX_CACHED_SCHEMAS),
             property: [0; 512],
             text: [0; 768],
@@ -84,6 +93,19 @@ impl Parser {
             self.schemas.clear();
         }
         self.schemas.push((key, schema));
+    }
+
+    /// Events rejected because their (event id, version) schema failed to load.
+    pub(crate) fn schema_rejected_events(&self) -> u64 {
+        self.rejected_events
+    }
+
+    /// Remembers a failed schema key, clearing the list first when it is full.
+    fn remember_rejected(&mut self, key: (u16, u8)) {
+        if self.rejected_keys.len() >= MAX_CACHED_SCHEMAS {
+            self.rejected_keys.clear();
+        }
+        self.rejected_keys.push(key);
     }
 
     /// Decodes one event into a format-neutral view, or `None` for events this
@@ -117,9 +139,27 @@ impl Parser {
             )
             .map(Some);
         }
-        let schema = event
-            .with_record(|record| load_schema(record, peer_name))
-            .with_context(|| format!("DNS event {id} version {} schema", key.1))?;
+        if self.rejected_keys.contains(&key) {
+            self.rejected_events += 1;
+            bail!(
+                "DNS event {id} version {} schema was rejected earlier (cached)",
+                key.1
+            );
+        }
+        let schema = match event.with_record(|record| load_schema(record, peer_name)) {
+            Ok(schema) => schema,
+            Err(error) => {
+                self.remember_rejected(key);
+                self.rejected_events += 1;
+                // Logged once per key; later events hit the cache silently.
+                tracing::warn!(
+                    event_id = id,
+                    version = key.1,
+                    "DNS event schema failed to load and is cached as rejected: {error:#}"
+                );
+                return Err(error.context(format!("DNS event {id} version {} schema", key.1)));
+            }
+        };
         self.insert_schema(key, schema);
         let schema = self
             .schemas

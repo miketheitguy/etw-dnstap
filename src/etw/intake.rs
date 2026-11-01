@@ -14,7 +14,9 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 };
 
 use super::{
-    CaptureCounters, MAX_EXTENDED_ITEMS, PoolManager, dns_provider, pool::PooledBuffer, supported,
+    CaptureCounters, MAX_EXTENDED_ITEMS, PoolManager, dns_provider,
+    pool::{PooledBuffer, REGULAR_BYTES},
+    supported,
 };
 
 #[cfg(test)]
@@ -34,13 +36,30 @@ pub(crate) struct RawEtwEvent {
 pub(super) struct CallbackContext {
     pool: Arc<PoolManager>,
     counters: Arc<CaptureCounters>,
+    /// The only process allowed to emit accepted records; `None` disables the check.
+    expected_pid: Option<u32>,
 }
 
 impl CallbackContext {
     /// Callers box the context so the address handed to `OpenTraceW` stays stable.
     pub(super) fn new(pool: Arc<PoolManager>, counters: Arc<CaptureCounters>) -> Self {
-        Self { pool, counters }
+        Self {
+            pool,
+            counters,
+            expected_pid: None,
+        }
     }
+
+    /// Requires `EventHeader.ProcessId == pid` on every accepted record.
+    pub(super) fn with_expected_pid(mut self, pid: u32) -> Self {
+        self.expected_pid = Some(pid);
+        self
+    }
+}
+
+/// True when a record from `actual` may be accepted given the expected emitter.
+fn pid_allowed(expected: Option<u32>, actual: u32) -> bool {
+    expected.is_none_or(|pid| pid == actual)
 }
 
 struct CallbackProducer {
@@ -96,6 +115,15 @@ pub(super) unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECO
     let Some(context) = (unsafe { record.UserContext.cast::<CallbackContext>().as_ref() }) else {
         return;
     };
+    // A forged provider registration in another process is rejected here even if
+    // the ETW-side PID filter was not honored. Allocation-free: one compare.
+    if !pid_allowed(context.expected_pid, record.EventHeader.ProcessId) {
+        context
+            .counters
+            .foreign_pid_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     context.counters.received.fetch_add(1, Ordering::Relaxed);
     let handled = PRODUCER
         .try_with(|state| {
@@ -115,11 +143,17 @@ pub(super) unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECO
             let owned = match unsafe { copy_record(record, &producer.pool) } {
                 Ok(owned) => owned,
                 Err(CopyError::Malformed) => return false,
-                Err(CopyError::Exhausted) => {
+                Err(CopyError::Exhausted { jumbo }) => {
                     context
                         .counters
                         .pool_exhausted
                         .fetch_add(1, Ordering::Relaxed);
+                    if jumbo {
+                        context
+                            .counters
+                            .pool_exhausted_jumbo
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     context
                         .counters
                         .intake_dropped
@@ -162,7 +196,10 @@ pub(super) unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECO
 #[derive(Debug)]
 pub(super) enum CopyError {
     Malformed,
-    Exhausted,
+    /// No free slot; `jumbo` says whether the record needed a jumbo slot.
+    Exhausted {
+        jumbo: bool,
+    },
 }
 
 fn align_payload(length: usize) -> Option<usize> {
@@ -209,7 +246,9 @@ pub(super) unsafe fn copy_record(
         length = length.checked_add(size).ok_or_else(invalid)?;
         items[index] = item;
     }
-    let mut buffer = pool.acquire(length).ok_or(CopyError::Exhausted)?;
+    let mut buffer = pool.acquire(length).ok_or(CopyError::Exhausted {
+        jumbo: length > REGULAR_BYTES,
+    })?;
     if data_length != 0 {
         // SAFETY: The validated nonempty source is readable by caller contract.
         // The exclusive pool slot has at least length >= data_length bytes;
