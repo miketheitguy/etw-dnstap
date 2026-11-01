@@ -98,6 +98,7 @@ try {
     $started=$true
     Invoke-LabGuest -Session $session -ArgumentList $config.windows_vm.service_name -ScriptBlock { param($serviceName) Start-Service $serviceName; if ((Get-Service $serviceName).Status -ne 'Running') { throw 'Service failed to start' } }
     $client=Start-Process -FilePath $exe -ArgumentList (Join-LabArguments -Arguments $arguments) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$clientOut/stdout.txt" -RedirectStandardError "$clientOut/stderr.txt"
+    # Reading .Handle keeps the exit code available in Windows PowerShell 5.1.
     $handle=$client.Handle
     $deadline=[DateTime]::UtcNow.AddSeconds($Duration+30)
     while (-not $client.HasExited) {

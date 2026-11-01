@@ -25,7 +25,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'LabCommon.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '../LabCommon.psm1') -Force
 if ($Action -in 'Prepare','Deploy','Start','UpdateNames') { throw 'Historical service-metrics harness: new campaigns are disabled because the TCP-only service no longer supports JSONL metrics. Existing evidence and cleanup actions remain available.' }
 $config = Get-LabConfig
 $root = Get-LabRoot
