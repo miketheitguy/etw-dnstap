@@ -107,7 +107,8 @@ and [README.md](README.md).
   log payloads, and it writes no capture or metrics files. The collector is
   responsible for retention and access control.
 - The executable and its install directory must not be writable by ordinary
-  users. The service SID needs read and execute on the executable only.
+  users. The service SID needs read and execute on the install directory, which
+  covers the executable. The service writes no files.
 - The ETW session name is fixed by default (`EtwDnstap`) and is reclaimed at
   startup when it matches the program's shape. An administrator or a member of
   Performance Log Users can stop it.
@@ -115,8 +116,8 @@ and [README.md](README.md).
 **Not provided**
 
 - No runtime process mitigations beyond the link-time flags listed in
-  [README.md](README.md) (CFG, CET-compatible marker, ASLR, NX, stack
-  protection).
+  [install.md](docs/guide/install.md#build-the-executable) (CFG, EH continuation
+  guard, ASLR, NX, CET-compatible marker, stack protection).
 - No resend. Frames that are lost while the receiver is disconnected are counted
   in `disconnected_dropped` and are not retried. See
   [docs/guide/configuration.md](docs/guide/configuration.md#receiver-connection).

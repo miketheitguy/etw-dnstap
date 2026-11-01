@@ -1,6 +1,6 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** `main` at commit `54eafae` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `e8560ac` · **Reviewed:** 2026-11-01
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.
@@ -75,8 +75,7 @@ logman query -ets
 logman stop EtwDnstap -ets
 ```
 
-Use the `--session-name` you configured if it was not the default. Stop a
-leftover `etw-dnstap-<pid>` session the same way, after confirming its PID.
+Use the `--session-name` you configured if it was not the default.
 
 ## 6. Remove the executable and its directory
 

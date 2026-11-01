@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` after commit `6718863`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `e8560ac`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
 
 > **Validation status:** the LocalService restricted-SID profile was validated
 > on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
@@ -77,7 +77,8 @@ Points to know before you build:
   statically links the MSVC C runtime (`+crt-static`). The clean Server Core
   deployment does not need the Visual C++ Redistributable.
 - **Hardening flags** (CFG, EH continuation guard, ASLR, high-entropy VA, NX,
-  CET-compatible marker, `/DEBUG:NONE` for release) come from
+  CET-compatible marker, stack protection (`-Z stack-protector=all`), and
+  `/DEBUG:NONE` for release) come from
   `.cargo/config.toml`. The CET flag is a compatibility marker. It does not prove
   that the hardware enforces shadow stacks. Inspect the final PE after changing
   the toolchain or flags.
@@ -277,13 +278,14 @@ If the source already exists, `New-EventLog` fails. Check it first with
   then start the service.
 - **`EnableTraceEx2: access denied`:** this did not occur in the lab. The
   default descriptor already grants LocalService and Performance Log Users
-  `TRACELOG_GUID_ENABLE`. A denial means this host has a descriptor of its own
-  for the DNS provider GUID. Inspect
-  `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security\eb79061a-a566-4698-9119-3ed2807060e7`,
-  grant `TRACELOG_GUID_ENABLE` (0x80) on that GUID to `NT SERVICE\EtwDnstap`,
-  and restart the computer.
+  `TRACELOG_GUID_ENABLE`. A denial may mean this host has a descriptor of its
+  own for the DNS provider GUID, or differs from the lab in another way. Inspect
+  `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security\eb79061a-a566-4698-9119-3ed2807060e7`
+  and record what it holds. Do not add a grant on the provider GUID. The lab
+  needed none, and an earlier version of the grant script created a provider
+  descriptor by granting on it.
 
-Record the OS build and the grant that worked.
+Record the OS build and the descriptor that was found.
 
 ### 5. Configure SCM recovery
 
