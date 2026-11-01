@@ -33,8 +33,8 @@ Notes:
   `// SAFETY:` comment, which Clippy enforces (`undocumented_unsafe_blocks`).
 - The first build rebuilds the standard library (`build-std`). Expect it to take
   noticeably longer than an ordinary Rust build.
-- `cargo test --locked` reports 218 passed, 0 failed, and 7 ignored.
-  `cargo test --locked --features diag-timing` reports 223 passed and 7
+- `cargo test --locked` reports 226 passed, 0 failed, and 7 ignored.
+  `cargo test --locked --features diag-timing` reports 231 passed and 7
   ignored. Five ignored tests need an elevated session or the DNS Server role.
   The other two are manual benchmarks (`synthetic_pooled_intake_benchmark` and
   `parse_encode_benchmark`). The manual/scheduled `lab.yml` workflow runs all

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` (defaults from `CaptureArgs` in `src/pipeline.rs`) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change (defaults from `CaptureArgs` in `src/pipeline.rs`) · **Reviewed:** 2026-11-01
 
 Every option is set in the service binary path, not in `sc.exe start`. Install
 and provisioning steps are in [install.md](install.md). Symptoms are in
@@ -13,7 +13,9 @@ the range are rejected at startup.
 
 | Option | Default | Range or format | Meaning |
 | --- | --- | --- | --- |
-| `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Plaintext Frame Streams TCP receiver. Hostnames are rejected. The service starts even when the receiver is down and reconnects. See [Receiver connection](#receiver-connection). |
+| `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Frame Streams TCP receiver. The connection is TLS by default and plaintext with `--plaintext`. Hostnames are rejected. The service starts even when the receiver is down and reconnects. See [Receiver connection](#receiver-connection). |
+| `--plaintext` | off | Flag | Disables TLS. The connection is plaintext TCP with no peer authentication. Use it only on a trusted network. See [TLS](#tls). |
+| `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | The name that the receiver certificate must match. It is also sent as SNI. Without it, the certificate must carry the receiver IP as an `iPAddress` SAN. |
 | `--capacity N` | `8192` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value. See [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for records with a padded payload over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Without it, capture runs until SCM stops the service or a failure occurs. |
@@ -208,7 +210,10 @@ and is not counted in `received`.
 - **Deadlines:** connection establishment has a 2-second timeout. The whole
   handshake, each buffered write or flush, and STOP/FINISH each have a 2-second
   deadline shared across partial socket calls. A peer cannot extend a deadline
-  by trickling bytes.
+  by trickling bytes. The TLS handshake shares the 2-second connect and
+  handshake deadline with READY and ACCEPT. Time spent inside the
+  Windows certificate verifier, for example a slow revocation check, is not
+  socket time. That deadline does not bound it.
 - **Socket send buffer:** the connection asks the kernel for a 1 MiB send
   buffer (`SO_SNDBUF`), so a briefly slow receiver stalls the parser less. If
   the request fails, the connection proceeds with the default buffer.
@@ -267,6 +272,37 @@ are recoverable. Protocol failures at startup are not.
   the 2-second deadline. A missing or invalid FINISH is a shutdown failure: the
   service stops with an error.
 
+### TLS
+
+The Frame Streams session runs inside TLS unless `--plaintext` is given. With
+`--plaintext`, the connection is plaintext TCP with no peer authentication, as
+in earlier builds. A receiver that speaks plaintext while TLS is on fails the
+handshake. That is a protocol failure, as described below.
+
+- **Versions.** TLS 1.2 and TLS 1.3 only. No other version is offered.
+- **Library.** rustls with the `ring` crypto provider. Schannel is not used for
+  the TLS record layer.
+- **Verification.** The receiver certificate is verified by Windows CryptoAPI
+  through `rustls-platform-verifier`. It uses the machine store: Trusted Root
+  Certification Authorities and intermediates, roots pushed by Group Policy, and
+  revocation checking. The certificate must match `--tls-server-name`, or the
+  receiver IP as an `iPAddress` SAN when that flag is not set. The same name is
+  sent as SNI.
+- **Failure class.** A certificate that does not verify is a protocol failure,
+  not a network failure. At the first connection it is fatal: the service stops
+  with an error (Event ID 1). On a reconnect it is a counted failed attempt, and
+  the service keeps retrying. This is the same rule as the content-type failure
+  above.
+- **No client certificate.** The service does not authenticate itself to the
+  receiver.
+- **No close_notify.** FINISH ends the Frame Streams session. The TCP close
+  follows. No TLS close_notify alert is sent.
+
+The TLS handshake runs under the 2-second connect and handshake deadline. See
+[Deadlines](#message-and-transport-limits) for the verifier exception. The
+certificate requirements for the receiver are in
+[install.md](install.md#receiver-certificate).
+
 ## Startup and shutdown deadlines
 
 - **Startup.** The service-level startup deadline is 10 seconds plus 1 second
@@ -323,7 +359,8 @@ Every `--stats-interval-seconds`, the service writes two information events,
 loss counters. The shutdown always writes `capture stopped` and `output stopped`
 with the same fields, even when periodic snapshots are disabled.
 
-`capture started` records the session name, the session GUID (`session_guid`), receiver, channel capacity, ETW
+`capture started` records the session name, the session GUID (`session_guid`), receiver, `tls`
+(`true` unless `--plaintext` is given), `tls_server_name` when set, channel capacity, ETW
 buffer size, maximum buffers, flush seconds, `etw_flush_ms`, the keyword masks
 as `match_any_keyword` and `match_all_keyword` in hexadecimal, and
 `keyword_fallback`.

@@ -23,6 +23,14 @@ rustflags = [
     "-C", "link-arg=/NXCOMPAT",
     "-C", "link-arg=/GUARD:CF",
     "-C", "link-arg=/GUARD:EHCONT",
+    # Hardening exception, approved 2026-11-01. ring (the rustls crypto
+    # provider) ships its x86_64 assembly as prebuilt NASM objects without
+    # EH-continuation metadata, so /GUARD:EHCONT alone rejects them (LNK2047).
+    # This flag links anyway: the rest of the image keeps EHCONT metadata and
+    # those routines never unwind (release builds abort on panic). The linker
+    # still prints one LNK2047 line per object as a warning. Remove this flag
+    # when ring, or its replacement, carries the metadata.
+    "-C", "link-arg=/FORCE:GUARDEHCONT",
     "-C", "link-arg=/CETCOMPAT",
     "-C", "link-arg=/LARGEADDRESSAWARE",
 ]

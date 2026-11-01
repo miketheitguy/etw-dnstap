@@ -21,6 +21,10 @@ allow = [
     "MIT",
     "Apache-2.0",
     "Unicode-3.0",
+    # ring is Apache-2.0 AND ISC.
+    "ISC",
+    # subtle (a rustls dependency) is BSD-3-Clause.
+    "BSD-3-Clause",
 ]
 confidence-threshold = 0.93
 # libfuzzer-sys bundles LLVM's libFuzzer runtime, which its README licenses as

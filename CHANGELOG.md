@@ -47,6 +47,21 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- TLS to the dnstap receiver, on by default. The connection uses TLS 1.2 or 1.3
+  through rustls with the `ring` provider. The receiver certificate is verified
+  with the Windows machine certificate store, including revocation, through
+  `rustls-platform-verifier`. `--tls-server-name NAME` sets the name the
+  certificate must match and the SNI. The default is the receiver IP as an
+  `iPAddress` SAN. `--plaintext` disables TLS and cannot be combined with
+  `--tls-server-name`. A certificate that does not verify is a protocol failure:
+  fatal at the first connection, a counted failed attempt on a reconnect. No
+  client certificate. `capture started` gains `tls` and `tls_server_name`.
+  Build note: `ring` ships prebuilt assembly objects without EH-continuation
+  metadata, so `.cargo/config.toml` now links with `/FORCE:GUARDEHCONT`. The
+  rest of the image keeps its `/GUARD:EHCONT` metadata; the linker prints one
+  `LNK2047` warning per object. The reason and the removal condition are in the
+  config comment and in
+  [the plan](docs/plans/tls-receiver-plan.md).
 - The parser is woken once per delivered ETW buffer that enqueued events
   (`EVENT_TRACE_LOGFILEW.BufferCallback`), and after data it polls for up to
   200 µs before it parks (adaptive: off after an empty linger, on again after an
@@ -93,6 +108,12 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The receiver connection is TLS by default. An existing
+  deployment that points at a plaintext receiver must add `--plaintext` to the
+  service binary path. Without it, the TLS handshake against the plaintext
+  receiver is a protocol failure, and the service stops at startup with
+  Event ID 1. This changes the public contract under the local policy, so it
+  increases `y`.
 - The `EnableTraceEx2: access denied` message no longer tells the operator to
   grant `TRACELOG_GUID_ENABLE` on the DNS provider GUID to the service SID. The
   grant script removes such a grant on its next run, and the install guide says

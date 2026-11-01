@@ -195,3 +195,40 @@ fn jumbo_capacity_bound_comes_from_the_pool_and_validate_repeats_it() {
     config.jumbo_capacity = max + 1;
     assert!(config.validate().is_err());
 }
+
+#[test]
+fn tls_is_on_by_default_and_plaintext_turns_it_off() {
+    let args = parse(&[]).expect("valid");
+    assert!(!args.plaintext);
+    assert!(args.tls_server_name.is_none());
+    let config = PipelineConfig::try_from(args).expect("config");
+    assert!(config.tls && config.tls_server_name.is_none());
+
+    let args = parse(&["--plaintext"]).expect("valid");
+    assert!(args.plaintext);
+    let config = PipelineConfig::try_from(args).expect("config");
+    assert!(!config.tls);
+
+    let args = parse(&["--tls-server-name", "dns.example.net"]).expect("valid");
+    assert_eq!(args.tls_server_name.as_deref(), Some("dns.example.net"));
+
+    let error = parse(&["--plaintext", "--tls-server-name", "dns.example.net"])
+        .expect_err("a server name with --plaintext is rejected");
+    assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+
+    let mut config = PipelineConfig::try_from(parse(&[]).expect("valid")).expect("config");
+    config.tls_server_name = Some("dns.example.net".into());
+    assert!(config.validate().is_ok());
+    config.tls = false;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn invalid_tls_server_names_are_rejected() {
+    for name in ["", "bad name", "-bad.example", "a..b", "name:80"] {
+        // The `=` form keeps a leading `-` from being read as another option.
+        let argument = format!("--tls-server-name={name}");
+        let error = parse(&[argument.as_str()]).expect_err("an invalid name is rejected");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{name:?}");
+    }
+}

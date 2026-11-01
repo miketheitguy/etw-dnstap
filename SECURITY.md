@@ -117,10 +117,18 @@ and [README.md](README.md).
 - The service accepts no inbound network connections. It holds one outbound TCP
   connection to the receiver given by `--receiver`, and it reconnects after a
   failure.
-- **Transport is plaintext.** Frame Streams over TCP has no TLS and no peer
+- **Transport is TLS by default.** The connection uses TLS 1.2 or 1.3 (rustls,
+  `ring` provider). The receiver certificate is verified by Windows CryptoAPI
+  with the machine certificate store, including revocation checks. The
+  certificate must match the receiver IP, or the name given in
+  `--tls-server-name`. The service sends no client certificate, so the receiver
+  does not authenticate the service. A certificate that does not verify stops
+  the service at startup. See
+  [docs/guide/configuration.md](docs/guide/configuration.md#tls).
+- **`--plaintext` disables TLS.** Frame Streams over plaintext TCP has no peer
   authentication. Anyone on the path can read or alter DNS payloads and client
-  addresses. Use it only on a trusted network or behind an independently
-  protected transport such as IPsec.
+  addresses. Use `--plaintext` only on a trusted network or behind an
+  independently protected transport such as IPsec.
 - DNS payloads can contain private names and addresses. The service does not
   log payloads, and it writes no capture or metrics files. The collector is
   responsible for retention and access control.

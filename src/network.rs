@@ -1,5 +1,5 @@
-//! Bidirectional Frame Streams TCP sender with whole-operation I/O deadlines and
-//! automatic reconnection.
+//! Bidirectional Frame Streams TCP sender, optionally over TLS 1.2 or 1.3, with
+//! whole-operation I/O deadlines and automatic reconnection.
 //!
 //! [`Connection`] is one Frame Streams session. Any error on it is final for that
 //! session. [`NetworkSink`] owns the current session and, when it fails,
@@ -22,6 +22,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use rustls::{
+    ClientConfig, ClientConnection, StreamOwned,
+    pki_types::{IpAddr as TlsIpAddr, ServerName},
+};
+use rustls_platform_verifier::BuilderVerifierExt;
 
 use crate::{
     framestream::{CONTENT_TYPE, FrameStreamWriter},
@@ -44,21 +49,154 @@ const SEND_BUFFER_BYTES: u32 = 1024 * 1024;
 /// A socket write at least this long counts as blocked.
 const SLOW_WRITE: Duration = Duration::from_millis(5);
 
+/// TLS settings for one receiver: the client configuration and the name that
+/// the receiver certificate must match (also sent as SNI).
+#[derive(Clone)]
+pub(crate) struct TlsConfig {
+    client: Arc<ClientConfig>,
+    server_name: ServerName<'static>,
+}
+
+impl TlsConfig {
+    /// TLS 1.2 and 1.3 only, with the receiver certificate verified by the
+    /// Windows system store (including revocation) and no client certificate.
+    fn system(server_name: ServerName<'static>) -> io::Result<Self> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let client = ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+            .map_err(io::Error::other)?
+            .with_platform_verifier()
+            .map_err(io::Error::other)?
+            .with_no_client_auth();
+        Ok(Self {
+            client: Arc::new(client),
+            server_name,
+        })
+    }
+}
+
+/// Parses a `--tls-server-name` value: a DNS name or an IP address.
+pub(crate) fn parse_server_name(value: &str) -> Result<ServerName<'static>, String> {
+    ServerName::try_from(value.to_owned())
+        .map_err(|_| "TLS server name must be a valid DNS name or IP address".into())
+}
+
+/// Where and how to connect: the receiver address and optional TLS settings.
+#[derive(Clone)]
+pub(crate) struct ReceiverConfig {
+    address: SocketAddr,
+    tls: Option<TlsConfig>,
+}
+
+impl ReceiverConfig {
+    /// TLS with system-store verification. Without `server_name` the
+    /// certificate must name the receiver IP address.
+    ///
+    /// # Errors
+    /// Returns an error if the name is invalid or TLS cannot be set up.
+    pub(crate) fn system_tls(address: SocketAddr, server_name: Option<&str>) -> io::Result<Self> {
+        let name = match server_name {
+            Some(value) => parse_server_name(value)
+                .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?,
+            None => ServerName::IpAddress(TlsIpAddr::from(address.ip())),
+        };
+        Ok(Self {
+            address,
+            tls: Some(TlsConfig::system(name)?),
+        })
+    }
+}
+
+impl From<SocketAddr> for ReceiverConfig {
+    /// A plaintext receiver.
+    fn from(address: SocketAddr) -> Self {
+        Self { address, tls: None }
+    }
+}
+
+/// The byte stream of one session: plain TCP or TLS over it. `DeadlineTcp`
+/// stays the only owner of the I/O deadline and the write statistics.
+enum Transport {
+    Plain(DeadlineTcp),
+    Tls(Box<StreamOwned<ClientConnection, DeadlineTcp>>),
+}
+
+impl Transport {
+    fn deadline_mut(&mut self) -> &mut DeadlineTcp {
+        match self {
+            Self::Plain(tcp) => tcp,
+            Self::Tls(tls) => &mut tls.sock,
+        }
+    }
+}
+
+impl Read for Transport {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(tcp) => tcp.read(bytes),
+            Self::Tls(tls) => tls.read(bytes),
+        }
+    }
+}
+
+impl Write for Transport {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(tcp) => tcp.write(bytes),
+            Self::Tls(tls) => tls.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(tcp) => tcp.flush(),
+            Self::Tls(tls) => tls.flush(),
+        }
+    }
+}
+
+/// Runs the TLS handshake to completion under the shared connect deadline.
+/// rustls reports protocol and certificate failures as `InvalidData`; the kind
+/// of every other failure is kept.
+fn complete_tls_handshake(tls: &mut StreamOwned<ClientConnection, DeadlineTcp>) -> io::Result<()> {
+    while tls.conn.is_handshaking() {
+        tls.conn
+            .complete_io(&mut tls.sock)
+            .map_err(|error| io::Error::new(error.kind(), format!("TLS handshake: {error}")))?;
+    }
+    Ok(())
+}
+
 /// One Frame Streams session over TCP. Any error ends the session; the caller
 /// decides whether to reconnect.
 pub(crate) struct Connection {
-    writer: FrameStreamWriter<BufWriter<DeadlineTcp>>,
+    writer: FrameStreamWriter<BufWriter<Transport>>,
 }
 
 impl Connection {
-    pub(crate) fn connect(address: SocketAddr) -> io::Result<Self> {
-        let stream = TcpStream::connect_timeout(&address, IO_TIMEOUT)?;
+    pub(crate) fn connect(config: impl Into<ReceiverConfig>) -> io::Result<Self> {
+        let config = config.into();
+        let stream = TcpStream::connect_timeout(&config.address, IO_TIMEOUT)?;
         stream.set_nodelay(true)?;
         if let Err(error) = sockopt::set_send_buffer(&stream, SEND_BUFFER_BYTES) {
             // A smaller buffer only costs some slack; it is never a reason to refuse.
             tracing::debug!(%error, "could not raise SO_SNDBUF");
         }
-        let mut transport = DeadlineTcp::new(stream, IO_TIMEOUT);
+        let tcp = DeadlineTcp::new(stream, IO_TIMEOUT);
+        let mut transport = match config.tls {
+            None => Transport::Plain(tcp),
+            Some(tls) => {
+                let connection =
+                    ClientConnection::new(tls.client, tls.server_name).map_err(io::Error::other)?;
+                let mut stream = StreamOwned::new(connection, tcp);
+                complete_tls_handshake(&mut stream)?;
+                tracing::debug!(
+                    version = ?stream.conn.protocol_version(),
+                    "TLS handshake complete"
+                );
+                Transport::Tls(Box::new(stream))
+            }
+        };
         write_control(&mut transport, CONTROL_READY, true)?;
         read_control(&mut transport, CONTROL_ACCEPT, true)?;
         let mut writer =
@@ -71,13 +209,13 @@ impl Connection {
 
     /// Starts timing socket writes into `stats`.
     fn attach_stats(&mut self, stats: Arc<SinkStats>) {
-        self.writer.get_mut().get_mut().stats = Some(stats);
+        self.writer.get_mut().get_mut().deadline_mut().stats = Some(stats);
     }
 
     /// The next socket operation starts a new deadline window; the clock is read
     /// only if that operation actually reaches the socket.
     fn reset_deadline(&mut self) {
-        self.writer.get_mut().get_mut().rearm();
+        self.writer.get_mut().get_mut().deadline_mut().rearm();
     }
 }
 
@@ -181,15 +319,16 @@ enum State {
     },
 }
 
-/// Plaintext sender for an explicitly trusted receiver that survives receiver
-/// restarts. See the module comment for the loss and no-resend rules.
+/// Sender for an explicitly trusted receiver, plaintext or TLS, that survives
+/// receiver restarts. See the module comment for the loss and no-resend rules.
 ///
 /// Startup: the first connection is attempted synchronously. A network failure
 /// (refused, timed out, reset) does not stop the service; it starts
 /// disconnected and retries. A protocol failure (the receiver answers but does
-/// not accept the dnstap content type) is a configuration error and is fatal.
+/// not accept the dnstap content type, or the TLS handshake or certificate
+/// check fails) is a configuration error and is fatal.
 pub(crate) struct NetworkSink {
-    address: SocketAddr,
+    config: ReceiverConfig,
     stats: Arc<SinkStats>,
     state: State,
     backoff: Backoff,
@@ -210,17 +349,22 @@ impl NetworkSink {
     ///
     /// # Errors
     /// Returns the error of a protocol failure during the first handshake.
-    pub(crate) fn start(address: SocketAddr, stats: Arc<SinkStats>) -> io::Result<Self> {
-        Self::start_with(address, stats, BackoffPolicy::default())
+    pub(crate) fn start(
+        config: impl Into<ReceiverConfig>,
+        stats: Arc<SinkStats>,
+    ) -> io::Result<Self> {
+        Self::start_with(config, stats, BackoffPolicy::default())
     }
 
     pub(crate) fn start_with(
-        address: SocketAddr,
+        config: impl Into<ReceiverConfig>,
         stats: Arc<SinkStats>,
         policy: BackoffPolicy,
     ) -> io::Result<Self> {
+        let config = config.into();
+        let address = config.address;
         let mut backoff = Backoff::new(policy, clock_seed(address));
-        let initial = match Connection::connect(address) {
+        let initial = match Connection::connect(config.clone()) {
             Ok(mut connection) => {
                 connection.attach_stats(Arc::clone(&stats));
                 stats.connected.store(true, Ordering::Relaxed);
@@ -241,7 +385,7 @@ impl NetworkSink {
             }
         };
         Ok(Self {
-            address,
+            config,
             stats,
             state: initial,
             backoff,
@@ -264,7 +408,7 @@ impl NetworkSink {
         self.unflushed_frames = 0;
         let delay = self.backoff.next_delay();
         tracing::warn!(
-            receiver = %self.address,
+            receiver = %self.config.address,
             %error,
             retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
             "dnstap receiver connection lost; events are dropped and counted until it \
@@ -294,7 +438,7 @@ impl NetworkSink {
                     self.stats.reconnects.fetch_add(1, Ordering::Relaxed);
                     self.backoff.reset();
                     self.unflushed_frames = 0;
-                    tracing::info!(receiver = %self.address, "dnstap receiver reconnected");
+                    tracing::info!(receiver = %self.config.address, "dnstap receiver reconnected");
                     self.state = State::Connected(connection);
                 }
                 Ok(Err(error)) => {
@@ -304,7 +448,7 @@ impl NetworkSink {
                         .fetch_add(1, Ordering::Relaxed);
                     // Bounded diagnostics; every failure stays counted.
                     if failures < 4 || failures.is_multiple_of(60) {
-                        tracing::warn!(receiver = %self.address, %error, "dnstap reconnect failed");
+                        tracing::warn!(receiver = %self.config.address, %error, "dnstap reconnect failed");
                     }
                     *next_attempt = now + self.backoff.next_delay();
                     *attempt = None;
@@ -324,12 +468,12 @@ impl NetworkSink {
             return;
         }
         let (send, receive) = mpsc::channel();
-        let address = self.address;
+        let config = self.config.clone();
         let spawned = thread::Builder::new()
             .name("dnstap-reconnect".into())
             .spawn(move || {
                 // The sink may be gone by the time this finishes; ignore that.
-                let _ = send.send(Connection::connect(address));
+                let _ = send.send(Connection::connect(config));
             });
         if spawned.is_ok() {
             *attempt = Some(receive);
@@ -389,7 +533,7 @@ impl FrameSink for NetworkSink {
             // abandoned and its thread ends on its own within the I/O timeouts.
             State::Disconnected { .. } => {
                 tracing::warn!(
-                    receiver = %self.address,
+                    receiver = %self.config.address,
                     "shutting down while the dnstap receiver is disconnected; no STOP sent"
                 );
                 Ok(())
@@ -444,6 +588,10 @@ mod handshake_tests;
 #[cfg(test)]
 #[path = "network/backpressure_tests.rs"]
 mod backpressure_tests;
+
+#[cfg(test)]
+#[path = "network/tls_tests.rs"]
+mod tls_tests;
 
 struct DeadlineTcp {
     stream: TcpStream,

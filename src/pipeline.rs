@@ -22,7 +22,7 @@ use crate::{
     etw::{
         self, Capture, CaptureCounters, KeywordSelection, PoolManager, RawEtwEvent, SessionConfig,
     },
-    network::NetworkSink,
+    network::{NetworkSink, ReceiverConfig},
     sink::{FrameSink, SinkStats},
 };
 
@@ -35,9 +35,20 @@ const DEFAULT_SESSION_NAME: &str = "EtwDnstap";
     about = "Windows service for DNS Server ETW to a dnstap TCP receiver"
 )]
 pub(crate) struct CaptureArgs {
-    /// Plaintext Frame Streams TCP receiver as an IP:PORT (trusted networks only).
+    /// Frame Streams TCP receiver as an IP:PORT. Uses TLS 1.2 or 1.3 unless
+    /// `--plaintext` is set. The receiver certificate is verified with the
+    /// Windows system certificate store, including revocation.
     #[arg(long, value_parser = parse_receiver)]
     receiver: SocketAddr,
+
+    /// Send unencrypted Frame Streams (trusted networks only).
+    #[arg(long)]
+    plaintext: bool,
+
+    /// Name that the receiver certificate must match, also sent as the TLS SNI.
+    /// Default: the receiver IP address.
+    #[arg(long, conflicts_with = "plaintext", value_parser = parse_tls_server_name)]
+    tls_server_name: Option<String>,
 
     /// Event channel capacity, 1024–262144; full channels drop the newest event.
     #[arg(long, default_value = "8192", value_parser = parse_capacity)]
@@ -110,6 +121,10 @@ fn parse_receiver(value: &str) -> Result<SocketAddr, String> {
         .parse()
         .map_err(|_| "receiver must be a numeric IP:PORT")?;
     check_receiver(address)
+}
+
+fn parse_tls_server_name(value: &str) -> Result<String, String> {
+    crate::network::parse_server_name(value).map(|_| value.to_owned())
 }
 
 /// Shared by the command line and [`PipelineConfig::validate`].
@@ -282,6 +297,10 @@ pub(crate) struct DiagContext {
 #[derive(Clone, Debug)]
 pub(crate) struct PipelineConfig {
     pub(crate) receiver: SocketAddr,
+    /// True to connect with TLS.
+    pub(crate) tls: bool,
+    /// Certificate name override; not valid with plaintext.
+    pub(crate) tls_server_name: Option<String>,
     pub(crate) capacity: usize,
     pub(crate) jumbo_capacity: u16,
     pub(crate) duration: Option<Duration>,
@@ -303,6 +322,12 @@ impl PipelineConfig {
     /// Returns the first violated bound.
     pub(crate) fn validate(&self) -> Result<()> {
         check_receiver(self.receiver).map_err(anyhow::Error::msg)?;
+        if let Some(name) = &self.tls_server_name {
+            if !self.tls {
+                bail!("tls-server-name cannot be used with plaintext");
+            }
+            parse_tls_server_name(name).map_err(anyhow::Error::msg)?;
+        }
         check_capacity(self.capacity).map_err(anyhow::Error::msg)?;
         check_jumbo_capacity(self.jumbo_capacity).map_err(anyhow::Error::msg)?;
         check_session_name(&self.session_name).map_err(anyhow::Error::msg)?;
@@ -339,6 +364,8 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
     fn try_from(args: CaptureArgs) -> Result<Self> {
         let config = Self {
             receiver: args.receiver,
+            tls: !args.plaintext,
+            tls_server_name: args.tls_server_name,
             capacity: args.capacity,
             jumbo_capacity: args.jumbo_capacity,
             duration: args.duration.map(Duration::from_secs),
@@ -664,7 +691,7 @@ pub(crate) fn run_capture(
     let config = PipelineConfig::try_from(args)?;
     run_pipeline(
         &config,
-        NetworkSink::start,
+        |address, stats| NetworkSink::start(receiver_config(&config, address)?, stats),
         |start| {
             Capture::start(
                 start.session_name,
@@ -681,6 +708,15 @@ pub(crate) fn run_capture(
         on_running,
         on_stopping,
     )
+}
+
+/// The connection settings for `address` from the validated `config`.
+fn receiver_config(config: &PipelineConfig, address: SocketAddr) -> io::Result<ReceiverConfig> {
+    if config.tls {
+        ReceiverConfig::system_tls(address, config.tls_server_name.as_deref())
+    } else {
+        Ok(address.into())
+    }
 }
 
 /// Runs the pipeline against any sink and producer. `connect` opens the sink
@@ -942,6 +978,8 @@ fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
         session = config.session_name.as_str(),
         session_guid = crate::etw::session_guid_text(&config.session_name),
         receiver = %config.receiver,
+        tls = config.tls,
+        tls_server_name = config.tls_server_name.as_deref(),
         capacity = config.capacity,
         etw_buffer_kib = config.session.buffer_kib,
         etw_max_buffers = config.session.maximum_buffers,

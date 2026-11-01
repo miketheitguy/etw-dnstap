@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change · **Reviewed:** 2026-11-01
 >
 > **Validation status:** the LocalService profile with a restricted service SID
 > (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) was
@@ -22,10 +22,12 @@ It enables the `Microsoft-Windows-DNSServer` Event Tracing for Windows (ETW)
 provider in its own real-time session. It does not enable or change the DNS
 Server Analytical event log.
 
-**Security first.** The transport is **plaintext TCP with no peer
-authentication**. DNS payloads can contain private names and addresses. Use it
-only on a trusted network or behind an independently protected transport. Read
-[SECURITY.md](SECURITY.md) before deploying.
+**Security first.** The transport is **TLS 1.2 or 1.3 by default** (rustls).
+The service verifies the receiver certificate with the Windows machine
+certificate store. `--plaintext` turns TLS off. DNS payloads can contain private
+names and addresses, so use `--plaintext` only on a trusted network. Read
+[SECURITY.md](SECURITY.md) and the
+[TLS section](docs/guide/configuration.md#tls) before deploying.
 
 ## Quick start
 
