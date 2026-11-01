@@ -9,7 +9,6 @@ from pathlib import Path
 import pwd
 import re
 import shutil
-import socket
 import subprocess
 import time
 import sys
@@ -343,7 +342,8 @@ def finish(args):
         raise SystemExit('Require Windows STOP/FINISH drain confirmation')
     run_base = ARCHIVE_BASE / args.run_id
     ready = json.loads((run_base / 'ready.json').read_text())
-    start_marker = json.loads((run_base / 'start.json').read_text())
+    # The stage must have started; a missing or corrupt start marker stops finish.
+    json.loads((run_base / 'start.json').read_text())
     raw = Path(ready['raw_path'])
     if raw.is_symlink() or not raw.is_file():
         raise RuntimeError('Stage raw output file is missing or unsafe')
@@ -427,6 +427,7 @@ def monitor(args):
     safe_run_id(args.run_id)
     run_base = ARCHIVE_BASE / args.run_id
     ready = json.loads((run_base / 'ready.json').read_text())
+    start_marker = json.loads((run_base / 'start.json').read_text())
     raw = Path(ready['raw_path'])
     path = run_base / 'resources.jsonl'
     if path.exists():

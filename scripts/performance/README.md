@@ -21,7 +21,8 @@ Nothing here is meant to be run on a machine that is not the dedicated lab host.
 - Windows Performance Toolkit (`xperf.exe`, `wpaexporter.exe`) on the host for the `export-*` scripts.
 - `tools/dns-stress` built for `x86_64-pc-windows-msvc` (the client the host runs).
 - Python 3.11+ on the host (`pip install -r requirements.txt`). Guest-side Python uses the Ubuntu
-  system `python3`; install PyYAML there with `apt install python3-yaml`.
+  system `python3` and the standard library only. The archived `archive/ubuntu-service-stop-config.py`
+  also needs PyYAML on the guest (`apt install python3-yaml`).
 
 ### Guest administrator credential (`administrator.clixml`)
 
@@ -34,7 +35,7 @@ New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
 Get-Credential Administrator | Export-Clixml -LiteralPath $path
 ```
 
-`target/` is git-ignored. If the file is missing, `Get-LabCredential` stops with these same instructions.
+`target/` is git-ignored. If the file is missing, `Get-LabSession` stops with these same instructions.
 
 ### SSH to the Ubuntu VM
 
@@ -70,11 +71,17 @@ identity) are parameters, never baked in.
    `windows-parser-stage.ps1` per stage, then `windows-parser-campaign.ps1 -Action Restore`/`Fetch`,
    `windows-final-proof.ps1`, and the verify/reconcile/report scripts below.
 6. **Per-run helpers:** `windows-run-client.ps1` (load), `windows-capture.ps1` (counters/WPR/clock).
-7. **Analysis (host, offline):** `analyze-*`, `summarize-*`, `export-*`, `build-*`, `plot-*`, `aggregate-*`.
+7. **Analysis (host, offline):** `analyze-host.py`, `analyze-windows.py`, `summarize-pooled-broad.py`, `summarize-pooled-native.py`,
+   `summarize-pooled-stacks.py`, `summarize-pooled-stage.py`, `summarize-pooled-trace-gates.py`, `export-cpu-precise.ps1`,
+   `export-pooled-evidence.ps1`, `export-pooled-graph-data.py`, `build-parser-ramp-report.py`, `build-pooled-report.py`,
+   `plot-pooled-wpr.py`, `aggregate-cpu-precise.py`. The full list is under [Python](#python).
 
 Historical service-metrics harnesses (JSONL metrics were removed from the service) are in
-[`archive/`](archive/). Their `Backup/Prepare/Deploy/Start` actions are disabled; the cleanup/evidence
-actions still work.
+[`archive/`](archive/): `windows-1000qps-campaign.ps1`, `windows-service-campaign.ps1`, `windows-pooled-stage.ps1`,
+`windows-pooled-wpr.ps1` and `windows-control.ps1`. Their `Backup/Prepare/Deploy/Start` actions are disabled; the
+cleanup/evidence actions still work. Also archived (Python): the service-stop tools `ubuntu-service-stop-config.py` and
+`ubuntu-service-stop-pcap.py`, `count-parser-ramp-diagnostic.py`, and the JSONL-metrics analyzers `analyze-ring-fix-cpu.py`,
+`analyze-metrics-phases.py`, `analyze-send-window.py` and `summarize-receiver-results.py` (tests: `archive/test_archived_analyzers.py`).
 
 ## Destructive steps
 
@@ -105,13 +112,12 @@ refresh files that legitimately change (still hash-verified).
 
 | Script | Purpose | Inputs | Outputs |
 | --- | --- | --- | --- |
-| `LabCommon.psm1` | Shared module: config, VM/session, `Invoke-LabGuest`, hash-verified `Receive-LabFile`, `Initialize-LabDnsZones`, `Test-LabAnswer`, argument helpers | `lab.json` | n/a |
+| `LabCommon.psm1` | Shared module: config, VM/session, `Invoke-LabGuest`, hash-verified `Receive-LabFile`, `Initialize-LabDnsZones`, argument helpers (`Join-LabArguments`, `Get-LabServiceCommandLine`) | `lab.json` | n/a |
 | `Get-DnsWorkloadSource.ps1` | Download pinned SecLists names and run `New-DnsWorkload.ps1` | `-OutputDirectory` | `target/performance/workload/*` |
 | `New-DnsWorkload.ps1` | Build `auth-names.txt`, `rec-names.txt`, zone file, provenance | `source-names.txt`, `source-commit.json` | workload files (UTF-8, no BOM) |
 | `windows-inventory.ps1` | Read-only guest inventory | none | JSON on stdout |
 | `windows-smoke-queries.ps1` | Resolve smoke names, check TTLs and record count | `-ProofName`, `-EvidenceRoot` | `<ProofName>.json` |
 | `windows-final-proof.ps1` | Prove service/zones/answers are back to normal | `-EvidenceRoot` | `final-query-proof.json` |
-| `windows-control.ps1` | Early control harness (Stop/Fetch/Restore/Status usable) | `-Action`, `-RunId` | `target/performance/windows/*` |
 | `windows-capture.ps1` | Counter collector, bounded WPR, clock bounds | `-Action`, `-RunId`, `-EvidenceRoot` | `<EvidenceRoot>/<RunId>/*` |
 | `windows-run-client.ps1` | Run `dns-stress` and sample it | `-Mode`, `-RunId`, `-Qps`, `-Duration` | `invocation.json`, `host-process.csv`, `exit.json` |
 | `windows-parser-campaign.ps1` | Parser-ramp Backup/Deploy/Prepare/Start/Stop/Restore/Fetch | `-Action`, `-CampaignId`, `-ExpectedHash`, `-CandidatePath`, `-UpstreamAddress` | receipts + fetched files under `target/performance/<id>/windows` |
@@ -131,18 +137,23 @@ refresh files that legitimately change (still hash-verified).
 Guest-side (Ubuntu, root): `prepare-ubuntu-data-disk.py`, `unmount-ubuntu-data-disk.py`,
 `remove-verified-guest-archives.py`, `archive-ubuntu-run.py`, `ubuntu-storage-budget.py`,
 `tune-upstream-buffer.py`, `monitor-ubuntu-workload.py`, `receiver-evidence.py`,
-`summarize-ubuntu-workload.py`, `ubuntu-parser-ramp-control.py`, `ubuntu-parser-ramp-upstream.py`,
-`ubuntu-service-stop-config.py`, `ubuntu-service-stop-pcap.py`. Copy them together with `lab.json`,
+`summarize-ubuntu-workload.py`, `ubuntu-parser-ramp-control.py`, `ubuntu-parser-ramp-upstream.py`. Copy them together with `lab.json`,
 `lab_config.py`, `guest_common.py`, `parser_ramp_receipts.py` to one directory on the guest (convert
 line endings if your checkout uses CRLF; `.gitattributes` keeps `*.sh` as LF). When running as root, run
 them from a root-owned directory, not from the home directory.
 
-Host-side analysis: `analyze-*.py`, `aggregate-cpu-precise.py`, `audit-pooled-management.py`,
-`build-*.py`, `check-pooled-summary-gates.py`, `count-*.py`, `export-pooled-graph-data.py`,
-`measure-ubuntu-clock.py`, `plot-pooled-wpr.py`, `reconcile-parser-ramp.py`, `summarize-*.py`,
-`verify-*.py`. Each has argparse (`--help`) and a module docstring with its purpose. Shared code:
-`metrics_ledger.py` (service ledger validation), `perf_common.py` (JSON/hash/process-name/distribution
-helpers formerly copied between summarizers), `parser_ramp_receipts.py`, `lab_config.py`.
+Host-side analysis (each has argparse `--help` and a module docstring with its purpose):
+
+- Per-run analysis: `analyze-host.py`, `analyze-windows.py`, `aggregate-cpu-precise.py`, `measure-ubuntu-clock.py`.
+- Pooled-run summaries: `summarize-pooled-broad.py`, `summarize-pooled-native.py`, `summarize-pooled-stacks.py`,
+  `summarize-pooled-stage.py`, `summarize-pooled-trace-gates.py`, `check-pooled-summary-gates.py`,
+  `audit-pooled-management.py`, `build-pooled-report.py`, `export-pooled-graph-data.py`, `plot-pooled-wpr.py`.
+- Parser-ramp campaign: `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `verify-parser-ramp-archive.py`.
+- Receiver archive: `count-receiver-archive.py`, `verify-receiver-archive.py`.
+- Pooled intake benchmark: `pooled_intake_run.py` runs the private Rust callback benchmark. It, `plot-pooled-wpr.py` and
+  `export-pooled-graph-data.py` hash their own source into provenance records, so editing them changes the recorded hashes.
+- Shared code: `metrics_ledger.py` (service ledger validation), `perf_common.py` (JSON/hash/process-name/distribution
+  helpers formerly copied between summarizers), `parser_ramp_receipts.py`, `lab_config.py`, `guest_common.py`.
 
 ## Tests
 
@@ -156,9 +167,10 @@ Get-ChildItem scripts/performance -Recurse -Include *.ps1,*.psm1 | ForEach-Objec
 
 ```bash
 bash -n scripts/performance/setup-ubuntu-workload.sh scripts/performance/restore-ubuntu-workload.sh
-python -I -m py_compile scripts/performance/*.py
+python -I -m py_compile scripts/performance/*.py scripts/performance/archive/*.py
 python -I scripts/performance/test_metrics_ledger.py
 python -I scripts/performance/test_pooled_intake_run.py
+python -I scripts/performance/archive/test_archived_analyzers.py   # archived analyzers; not run by CI
 ```
 
 The unit tests need no lab. Do not execute the lab scripts to "test" them.
@@ -173,13 +185,18 @@ The unit tests need no lab. Do not execute the lab scripts to "test" them.
 | `windows-1000qps-campaign.ps1` | `archive/windows-1000qps-campaign.ps1` |
 | `windows-pooled-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant Pooled` |
 | `windows-ring-fix-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant RingFix` |
-| `windows-pooled-stage.ps1`, `-wpr`, `-diagnostics`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | same names under `archive/` |
+| `windows-pooled-stage.ps1`, `windows-pooled-wpr.ps1` | same names under `archive/` |
+| `windows-pooled-diagnostics.ps1`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | removed; see git history (commit 6e62b2e) |
+| `windows-control.ps1` | `archive/windows-control.ps1` |
+| `ubuntu-service-stop-config.py`, `ubuntu-service-stop-pcap.py` | same names under `archive/` |
+| `count-parser-ramp-diagnostic.py` | `archive/count-parser-ramp-diagnostic.py` |
+| `analyze-ring-fix-cpu.py`, `analyze-metrics-phases.py`, `analyze-send-window.py`, `summarize-receiver-results.py` | same names under `archive/` (their tests moved from `test_metrics_ledger.py` to `archive/test_archived_analyzers.py`) |
 
 Added: `lab.json`, `LabCommon.psm1`, `lab_config.py`, `perf_common.py`, `guest_common.py`, `requirements.txt`, this README.
 
 ## Known limits
 
-- The Ubuntu controllers (`ubuntu-parser-ramp-*.py`, `ubuntu-service-stop-*.py`) still default `--campaign-id`
+- The Ubuntu controllers (`ubuntu-parser-ramp-*.py` and the archived `ubuntu-service-stop-*.py`) still default `--campaign-id`
   to their dated campaigns and embed that campaign's filesystem UUIDs; pass the campaign explicitly.
 - Behaviour changes from the originals: `-ExpectedHash` is now mandatory where a hash used to be a
   default; the service command line quotes the metrics path only when needed; `windows-service-campaign.ps1` Fetch

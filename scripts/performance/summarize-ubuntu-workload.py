@@ -3,7 +3,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import sys
 import socket
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # lab_config lives next to this script
