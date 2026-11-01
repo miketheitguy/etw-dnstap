@@ -22,7 +22,8 @@ use windows_sys::{
         Security::{
             GetTokenInformation, LUID_AND_ATTRIBUTES, LookupAccountNameW, LookupPrivilegeValueW,
             SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
-            TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenGroups, TokenPrivileges, TokenUser,
+            TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenGroups, TokenPrivileges,
+            TokenRestrictedSids, TokenUser,
         },
         System::{
             EventLog::{
@@ -542,39 +543,119 @@ fn bounded_sid(buffer: &[u8], address: usize) -> Result<&[u8]> {
 /// `S-1-5-32-559`, the built-in Performance Log Users group.
 const PERFORMANCE_LOG_USERS: &[u8] = &[1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x2f, 0x02, 0, 0];
 
+/// `S-1-5-19`, `NT AUTHORITY\LocalService`.
+const LOCAL_SERVICE: &[u8] = &[1, 1, 0, 0, 0, 0, 0, 5, 19, 0, 0, 0];
+/// `S-1-5-33`, the Write Restricted code SID. The SCM adds it to the restricting
+/// SIDs of a service whose SID type is restricted, which makes the token
+/// write-restricted.
+const WRITE_RESTRICTED: &[u8] = &[1, 1, 0, 0, 0, 0, 0, 5, 33, 0, 0, 0];
+
 /// One token group: its SID bytes and attribute flags.
 struct GroupEntry<'a> {
     sid: &'a [u8],
     attributes: u32,
 }
 
-/// Checks the token profile this service supports: the process runs as the
-/// service virtual account (the token user is the service SID,
-/// `S-1-5-80-...`), and that account is an enabled, non-deny-only member of
-/// Performance Log Users so it may create and control ETW sessions.
+/// True for a group that is enabled and not restricted to deny-only use.
+fn group_enabled(group: &GroupEntry<'_>) -> bool {
+    let mask = (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY).cast_unsigned();
+    group.attributes & mask == SE_GROUP_ENABLED.cast_unsigned()
+}
+
+/// Checks the token profile this service supports. The process runs as
+/// `NT AUTHORITY\LocalService` (`S-1-5-19`) with a restricted service SID type:
+///
+/// - the token user is `LocalService`;
+/// - the service SID (`S-1-5-80-...`) is an enabled, non-deny-only group;
+/// - the token is restricted: its restricting SIDs include the service SID and
+///   the Write Restricted SID (`S-1-5-33`). The SCM also adds Everyone and the
+///   logon SID;
+/// - Performance Log Users (`S-1-5-32-559`) is an enabled group, which arrives
+///   through the service SID's membership and allows ETW session control.
 fn check_identity_profile(
     user_sid: &[u8],
-    expected_service_sid: &[u8],
+    service_sid: &[u8],
     groups: &[GroupEntry<'_>],
+    restricted_sids: &[&[u8]],
 ) -> Result<()> {
     ensure!(
-        user_sid == expected_service_sid,
-        "EtwDnstap must run as the virtual account NT SERVICE\\EtwDnstap (the token user is \
-         not the service SID); configure: sc.exe config EtwDnstap obj= \"NT SERVICE\\EtwDnstap\""
+        user_sid == LOCAL_SERVICE,
+        "EtwDnstap must run as NT AUTHORITY\\LocalService (S-1-5-19); the token user is a \
+         different account (a virtual account or LocalSystem is not accepted); configure: \
+         sc.exe config EtwDnstap obj= \"NT AUTHORITY\\LocalService\" password= \"\""
     );
-    // The group must be enabled and must not be restricted to deny-only use.
-    let restriction_mask = (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY).cast_unsigned();
-    let enabled_only = SE_GROUP_ENABLED.cast_unsigned();
-    let member = groups.iter().any(|group| {
-        group.sid == PERFORMANCE_LOG_USERS && group.attributes & restriction_mask == enabled_only
-    });
     ensure!(
-        member,
-        "NT SERVICE\\EtwDnstap must be an enabled member of Performance Log Users (S-1-5-32-559) \
-         to control ETW sessions; run: net localgroup \"Performance Log Users\" \
+        groups
+            .iter()
+            .any(|group| group.sid == service_sid && group_enabled(group)),
+        "the service SID NT SERVICE\\EtwDnstap is not an enabled group in the token (missing, \
+         disabled, or deny-only); the service SID type is probably none; run: \
+         sc.exe sidtype EtwDnstap restricted, then restart the service"
+    );
+    ensure!(
+        !restricted_sids.is_empty(),
+        "the process token is not restricted; run: sc.exe sidtype EtwDnstap restricted, \
+         then restart the service"
+    );
+    ensure!(
+        restricted_sids.contains(&service_sid),
+        "the token's restricting SIDs do not include the service SID NT SERVICE\\EtwDnstap; \
+         the service SID type is not restricted; run: sc.exe sidtype EtwDnstap restricted"
+    );
+    ensure!(
+        restricted_sids.contains(&WRITE_RESTRICTED),
+        "the token's restricting SIDs do not include the Write Restricted SID (S-1-5-33), \
+         so the token is not write-restricted; run: sc.exe sidtype EtwDnstap restricted"
+    );
+    ensure!(
+        groups
+            .iter()
+            .any(|group| group.sid == PERFORMANCE_LOG_USERS && group_enabled(group)),
+        "the token lacks an enabled Performance Log Users (S-1-5-32-559) group, which is \
+         needed to control ETW sessions; run: net localgroup \"Performance Log Users\" \
          \"NT SERVICE\\EtwDnstap\" /add, then restart the service"
     );
     Ok(())
+}
+
+/// Parses a `TOKEN_GROUPS` buffer, also the layout of `TokenRestrictedSids`.
+fn parse_groups(buffer: &TokenBuffer) -> Result<Vec<GroupEntry<'_>>> {
+    ensure!(
+        buffer.used >= size_of::<TOKEN_GROUPS>(),
+        "truncated token groups"
+    );
+    // SAFETY: read supplies native alignment and the complete fixed header.
+    let header = unsafe { &*buffer.storage.as_ptr().cast::<TOKEN_GROUPS>() };
+    let count = header.GroupCount as usize;
+    let offset = offset_of!(TOKEN_GROUPS, Groups);
+    let end = count
+        .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
+        .and_then(|n| offset.checked_add(n))
+        .context("token groups overflow")?;
+    ensure!(
+        count <= 1024 && end <= buffer.used,
+        "invalid token groups array"
+    );
+    // SAFETY: The native-aligned flexible array fits entirely in the initialized
+    // token buffer as validated above; embedded SID pointers are checked below.
+    let entries = unsafe {
+        std::slice::from_raw_parts(
+            buffer
+                .storage
+                .as_ptr()
+                .byte_add(offset)
+                .cast::<SID_AND_ATTRIBUTES>(),
+            count,
+        )
+    };
+    let mut parsed = Vec::with_capacity(count);
+    for entry in entries {
+        parsed.push(GroupEntry {
+            sid: buffer.sid(entry.Sid)?,
+            attributes: entry.Attributes,
+        });
+    }
+    Ok(parsed)
 }
 
 /// Verifies the process token before any capture initialization.
@@ -594,42 +675,11 @@ fn verify_identity() -> Result<()> {
     let user_sid = user.sid(user_header.User.Sid)?;
     let expected_sid = service_sid()?;
     let groups = TokenBuffer::read(&token, TokenGroups)?;
-    ensure!(
-        groups.used >= size_of::<TOKEN_GROUPS>(),
-        "truncated token groups"
-    );
-    // SAFETY: read supplies native alignment and the complete fixed header.
-    let header = unsafe { &*groups.storage.as_ptr().cast::<TOKEN_GROUPS>() };
-    let count = header.GroupCount as usize;
-    let offset = offset_of!(TOKEN_GROUPS, Groups);
-    let end = count
-        .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
-        .and_then(|n| offset.checked_add(n))
-        .context("token groups overflow")?;
-    ensure!(
-        count <= 1024 && end <= groups.used,
-        "invalid token groups array"
-    );
-    // SAFETY: The native-aligned flexible array fits entirely in the initialized
-    // token buffer as validated above; embedded SID pointers are checked below.
-    let entries = unsafe {
-        std::slice::from_raw_parts(
-            groups
-                .storage
-                .as_ptr()
-                .byte_add(offset)
-                .cast::<SID_AND_ATTRIBUTES>(),
-            count,
-        )
-    };
-    let mut parsed = Vec::with_capacity(count);
-    for entry in entries {
-        parsed.push(GroupEntry {
-            sid: groups.sid(entry.Sid)?,
-            attributes: entry.Attributes,
-        });
-    }
-    check_identity_profile(user_sid, expected_sid.as_slice(), &parsed)?;
+    let parsed = parse_groups(&groups)?;
+    let restricted = TokenBuffer::read(&token, TokenRestrictedSids)?;
+    let restricted_parsed = parse_groups(&restricted)?;
+    let restricted_sids: Vec<&[u8]> = restricted_parsed.iter().map(|entry| entry.sid).collect();
+    check_identity_profile(user_sid, expected_sid.as_slice(), &parsed, &restricted_sids)?;
     verify_privileges(&token)?;
     Ok(())
 }
@@ -641,8 +691,8 @@ struct PrivilegeEntry {
 }
 
 /// Strict allowlist: exactly one privilege, `allowed`, and it is enabled. A
-/// virtual account normally also holds `SeCreateGlobalPrivilege`,
-/// `SeImpersonatePrivilege` and `SeIncreaseWorkingSetPrivilege`; the SCM
+/// `LocalService` normally also holds `SeImpersonatePrivilege`,
+/// `SeCreateGlobalPrivilege`, `SeAuditPrivilege` and others; the SCM
 /// `RequiredPrivileges` setting removes them.
 fn check_privilege_profile(privileges: &[PrivilegeEntry], allowed: (u32, i32)) -> Result<()> {
     let [privilege] = privileges else {
@@ -796,7 +846,7 @@ mod tests {
     }
 
     /// A service SID such as `S-1-5-80-1-2-3-4-5` in wire layout.
-    fn virtual_account_sid(last: u8) -> Vec<u8> {
+    fn service_sid_bytes(last: u8) -> Vec<u8> {
         let mut sid = vec![1, 6, 0, 0, 0, 0, 0, 5];
         for subauthority in [80u32, 1, 2, 3, 4, u32::from(last)] {
             sid.extend_from_slice(&subauthority.to_le_bytes());
@@ -805,63 +855,141 @@ mod tests {
     }
 
     const ENABLED: u32 = SE_GROUP_ENABLED.cast_unsigned();
+    const DENY_ONLY: u32 = SE_GROUP_USE_FOR_DENY_ONLY.cast_unsigned();
+    /// `S-1-1-0`, Everyone.
+    const EVERYONE: &[u8] = &[1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
 
     fn local_system() -> Vec<u8> {
         vec![1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0]
     }
 
-    #[test]
-    fn identity_accepts_the_virtual_account_in_performance_log_users() {
-        let service = virtual_account_sid(5);
-        let groups = [GroupEntry {
-            sid: PERFORMANCE_LOG_USERS,
-            attributes: ENABLED,
-        }];
-        assert!(check_identity_profile(&service, &service, &groups).is_ok());
+    fn group(sid: &[u8], attributes: u32) -> GroupEntry<'_> {
+        GroupEntry { sid, attributes }
     }
 
     #[test]
-    fn identity_rejects_local_system_and_other_accounts() {
-        let service = virtual_account_sid(5);
-        let groups = [GroupEntry {
-            sid: PERFORMANCE_LOG_USERS,
-            attributes: ENABLED,
-        }];
-        let error = check_identity_profile(&local_system(), &service, &groups)
-            .expect_err("LocalSystem is no longer accepted")
+    fn identity_accepts_local_service_with_a_restricted_service_sid() {
+        let service = service_sid_bytes(5);
+        let groups = [
+            group(&service, ENABLED),
+            group(PERFORMANCE_LOG_USERS, ENABLED),
+        ];
+        let restricted: [&[u8]; 3] = [&service, EVERYONE, WRITE_RESTRICTED];
+        check_identity_profile(LOCAL_SERVICE, &service, &groups, &restricted)
+            .expect("accepted profile");
+    }
+
+    #[test]
+    fn identity_rejects_other_token_users() {
+        let service = service_sid_bytes(5);
+        let groups = [
+            group(&service, ENABLED),
+            group(PERFORMANCE_LOG_USERS, ENABLED),
+        ];
+        let restricted: [&[u8]; 2] = [&service, WRITE_RESTRICTED];
+        for user in [local_system(), service.clone(), service_sid_bytes(6)] {
+            let error = check_identity_profile(&user, &service, &groups, &restricted)
+                .expect_err("wrong token user")
+                .to_string();
+            assert!(error.contains("NT AUTHORITY\\LocalService"));
+            assert!(error.contains("sc.exe config"));
+        }
+    }
+
+    #[test]
+    fn identity_requires_an_enabled_service_sid_group() {
+        let service = service_sid_bytes(5);
+        let other = service_sid_bytes(6);
+        let restricted: [&[u8]; 2] = [&service, WRITE_RESTRICTED];
+        let cases: [Vec<GroupEntry<'_>>; 5] = [
+            vec![group(PERFORMANCE_LOG_USERS, ENABLED)],
+            vec![
+                group(&other, ENABLED),
+                group(PERFORMANCE_LOG_USERS, ENABLED),
+            ],
+            vec![group(&service, 0), group(PERFORMANCE_LOG_USERS, ENABLED)],
+            vec![
+                group(&service, DENY_ONLY),
+                group(PERFORMANCE_LOG_USERS, ENABLED),
+            ],
+            vec![
+                group(&service, ENABLED | DENY_ONLY),
+                group(PERFORMANCE_LOG_USERS, ENABLED),
+            ],
+        ];
+        for groups in &cases {
+            let error = check_identity_profile(LOCAL_SERVICE, &service, groups, &restricted)
+                .expect_err("service SID must be an enabled group")
+                .to_string();
+            assert!(error.contains("sc.exe sidtype EtwDnstap restricted"));
+        }
+    }
+
+    #[test]
+    fn identity_rejects_an_unrestricted_token() {
+        let service = service_sid_bytes(5);
+        let groups = [
+            group(&service, ENABLED),
+            group(PERFORMANCE_LOG_USERS, ENABLED),
+        ];
+        let error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &[])
+            .expect_err("unrestricted token")
             .to_string();
-        assert!(error.contains("NT SERVICE\\EtwDnstap"));
-        assert!(check_identity_profile(&virtual_account_sid(6), &service, &groups).is_err());
+        assert!(error.contains("not restricted"));
+        assert!(error.contains("sc.exe sidtype EtwDnstap restricted"));
+    }
+
+    #[test]
+    fn identity_rejects_restricting_sids_missing_required_entries() {
+        let service = service_sid_bytes(5);
+        let groups = [
+            group(&service, ENABLED),
+            group(PERFORMANCE_LOG_USERS, ENABLED),
+        ];
+        let no_write: [&[u8]; 2] = [&service, EVERYONE];
+        let error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &no_write)
+            .expect_err("missing write restricted")
+            .to_string();
+        assert!(error.contains("S-1-5-33"));
+        let no_service: [&[u8]; 2] = [EVERYONE, WRITE_RESTRICTED];
+        let error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &no_service)
+            .expect_err("missing service SID")
+            .to_string();
+        assert!(error.contains("restricting SIDs"));
     }
 
     #[test]
     fn identity_requires_enabled_performance_log_users_membership() {
-        let service = virtual_account_sid(5);
-        let none: [GroupEntry<'_>; 0] = [];
-        let error = check_identity_profile(&service, &service, &none)
+        let service = service_sid_bytes(5);
+        let restricted: [&[u8]; 2] = [&service, WRITE_RESTRICTED];
+        let none = [group(&service, ENABLED)];
+        let error = check_identity_profile(LOCAL_SERVICE, &service, &none, &restricted)
             .expect_err("membership is required")
             .to_string();
         assert!(error.contains("Performance Log Users"));
         assert!(error.contains("net localgroup"));
-        let other = [GroupEntry {
-            sid: &local_system(),
-            attributes: ENABLED,
-        }];
-        assert!(check_identity_profile(&service, &service, &other).is_err());
-        for attributes in [
-            0,
-            SE_GROUP_USE_FOR_DENY_ONLY.cast_unsigned(),
-            ENABLED | SE_GROUP_USE_FOR_DENY_ONLY.cast_unsigned(),
-        ] {
-            let groups = [GroupEntry {
-                sid: PERFORMANCE_LOG_USERS,
-                attributes,
-            }];
+        let system = local_system();
+        let other = [group(&service, ENABLED), group(&system, ENABLED)];
+        assert!(check_identity_profile(LOCAL_SERVICE, &service, &other, &restricted).is_err());
+        for attributes in [0, DENY_ONLY, ENABLED | DENY_ONLY] {
+            let groups = [
+                group(&service, ENABLED),
+                group(PERFORMANCE_LOG_USERS, attributes),
+            ];
             assert!(
-                check_identity_profile(&service, &service, &groups).is_err(),
+                check_identity_profile(LOCAL_SERVICE, &service, &groups, &restricted).is_err(),
                 "attributes {attributes:#x}"
             );
         }
+    }
+
+    #[test]
+    fn well_known_sid_constants_match_their_rids() {
+        assert_eq!(LOCAL_SERVICE[1], 1);
+        assert_eq!(LOCAL_SERVICE[8..], 19u32.to_le_bytes());
+        assert_eq!(WRITE_RESTRICTED[1], 1);
+        assert_eq!(WRITE_RESTRICTED[8..], 33u32.to_le_bytes());
+        assert_eq!(EVERYONE[8..], 0u32.to_le_bytes());
     }
 
     #[test]

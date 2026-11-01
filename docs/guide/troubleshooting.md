@@ -25,7 +25,7 @@ Get-WinEvent -FilterHashtable $eventFilter -MaxEvents 10 |
 
 If there are no events, check that the source is registered
 (`[System.Diagnostics.EventLog]::SourceExists('EtwDnstap')`). See
-[install.md](install.md#4-set-the-service-identity-privileges-and-event-source).
+[install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source).
 
 ## Event log messages
 
@@ -34,12 +34,18 @@ Search the Application log for the text, then go to the section named.
 | Message (starts with or contains) | Level | Meaning | Section |
 | --- | --- | --- | --- |
 | `invalid service arguments` | Event ID 1 | The binary path has an invalid option. | [RUNNING](#the-service-does-not-reach-running) |
-| `must run as the virtual account NT SERVICE\EtwDnstap` | Event ID 1 | The token user is not the service SID. | [RUNNING](#the-service-does-not-reach-running) |
-| `must be an enabled member of Performance Log Users` | Event ID 1 | The account is missing from the group, or the membership is deny-only. | [RUNNING](#the-service-does-not-reach-running) |
+| `must run as NT AUTHORITY\LocalService` | Event ID 1 | The token user is not S-1-5-19 (LocalSystem or a virtual account). | [RUNNING](#the-service-does-not-reach-running) |
+| `the service SID NT SERVICE\EtwDnstap is not an enabled group` | Event ID 1 | The service SID type is none, or the group is disabled or deny-only. | [RUNNING](#the-service-does-not-reach-running) |
+| `the process token is not restricted` | Event ID 1 | The service SID type is not restricted. | [RUNNING](#the-service-does-not-reach-running) |
+| `restricting SIDs do not include` | Event ID 1 | The token is restricted but lacks the service SID or `S-1-5-33`. | [RUNNING](#the-service-does-not-reach-running) |
+| `lacks an enabled Performance Log Users` | Event ID 1 | The service SID is not in the group, or the membership is deny-only. | [RUNNING](#the-service-does-not-reach-running) |
 | `configure SCM RequiredPrivileges` or `requires only an enabled SeChangeNotifyPrivilege` | Event ID 1 | The token holds more than one privilege, or the one privilege is missing or disabled. | [RUNNING](#the-service-does-not-reach-running) |
 | `connect/negotiation with dnstap receiver` | Event ID 1 | A protocol failure at startup, such as a wrong content type. Fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `service 'DNS' is not running` | Event ID 1 | The `DNS` service is stopped. | [RUNNING](#the-service-does-not-reach-running) |
-| `EnableTraceEx2: access denied` | Event ID 1 | The account lacks the provider enable right. | [install.md](install.md#if-the-dns-provider-enable-is-denied) |
+| `EnableTraceEx2: access denied` | Event ID 1 | The service SID lacks `TRACELOG_GUID_ENABLE` on the provider GUID. | [install.md](install.md#if-an-etw-access-check-is-denied) |
+| `StartTraceW: access denied` | Event ID 1 | The service SID lacks session rights on the default WMI security GUID. | [install.md](install.md#if-an-etw-access-check-is-denied) |
+| `CreateMutexW` with `access denied` | Event ID 1 | Another account owns the mutex, or the restricted token cannot open it. | [RUNNING](#the-service-does-not-reach-running) |
+| `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied` | Event ID 1 | The restricted token cannot query the `DNS` service. | [RUNNING](#the-service-does-not-reach-running) |
 | `already exists and does not match this program's session shape` | Event ID 1 | A session with the name exists and cannot be reclaimed. | [Stale session](#stale-etw-session-blocks-startup) |
 | `another EtwDnstap instance is already running` | Event ID 1 | The instance mutex is held. | [RUNNING](#the-service-does-not-reach-running) |
 | `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | Event ID 5 | A deadline expired, and the process aborted. | [Watchdog](#watchdog-aborts-or-stop-hangs) |
@@ -67,14 +73,19 @@ exit code. Work through these causes in order.
 | Cause | What you see | Fix |
 | --- | --- | --- |
 | Invalid option | Event ID 1 with `invalid service arguments`. | Correct the binary path. Options are in [configuration.md](configuration.md). Removed options fail here. |
-| Wrong identity | Event ID 1: `must run as the virtual account NT SERVICE\EtwDnstap`. The service is still LocalSystem or another account. | Run `sc.exe qc EtwDnstap`. Set `sc.exe config EtwDnstap obj= "NT SERVICE\EtwDnstap"`, then start again. |
-| Not in Performance Log Users | Event ID 1: `must be an enabled member of Performance Log Users`. | Run `net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add`. Restart the service. |
+| Wrong identity | Event ID 1: `must run as NT AUTHORITY\LocalService`. The service is still LocalSystem, a virtual account, or another account. | Run `sc.exe qc EtwDnstap`. Set `sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""`, then `sc.exe sidtype EtwDnstap restricted`, then start again. |
+| Service SID missing | Event ID 1: `the service SID NT SERVICE\EtwDnstap is not an enabled group`. | Run `sc.exe qsidtype EtwDnstap`. If it reports `NONE`, run `sc.exe sidtype EtwDnstap restricted`, then start again. |
+| Unrestricted token | Event ID 1: `the process token is not restricted`. | Run `sc.exe sidtype EtwDnstap restricted`, then start again. An unrestricted SID type does not meet the profile. |
+| Restricting SIDs incomplete | Event ID 1: `restricting SIDs do not include the service SID` or `the Write Restricted SID (S-1-5-33)`. | Run `sc.exe sidtype EtwDnstap restricted`, restart, and compare the token with the assumption in [SECURITY.md](../../SECURITY.md). If the SCM uses a different restricting set on this OS build, record it. |
+| Not in Performance Log Users | Event ID 1: `lacks an enabled Performance Log Users`. | Run `net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add`. Restart the service. |
 | Privileges | Event ID 1: `configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege` or `requires only an enabled SeChangeNotifyPrivilege`. | Run `sc.exe privs EtwDnstap SeChangeNotifyPrivilege`, then start again. Run `sc.exe qprivs EtwDnstap` to confirm. |
 | DNS Server not running | Event ID 1: `service 'DNS' is not running (process ID 0)`. | Start the DNS Server role service and confirm it is Running. |
 | Receiver protocol mismatch | Event ID 1: `connect/negotiation with dnstap receiver` with `did not accept dnstap content type`. | Configure the collector for content type `protobuf:dnstap.Dnstap`. Network failures do not stop startup; see [the receiver section](#the-receiver-is-down-or-unreachable). |
-| Provider enable denied | Event ID 1: `EnableTraceEx2: access denied`. | See [install.md](install.md#if-the-dns-provider-enable-is-denied). |
+| ETW access denied | Event ID 1: `StartTraceW: access denied` or `EnableTraceEx2: access denied`. | Run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`. See [install.md](install.md#if-an-etw-access-check-is-denied). |
+| SCM query of `DNS` denied | Event ID 1: `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied`. | The restricted token needs `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` for Everyone or the service SID. Inspect `sc.exe sdshow DNS`. Unverified on a live host. |
 | Leaked ETW session with the same name | Event ID 1: a session with the name exists and is not reclaimable. | See [Stale ETW session](#stale-etw-session-blocks-startup). |
 | Another instance | Event ID 1: `another EtwDnstap instance is already running for ETW session`. | Stop the other instance, or use a different `--session-name`. |
+| Mutex access denied | Event ID 1: `CreateMutexW ... access denied`. | A mutex of that name exists with a DACL the token cannot open. Stop any other EtwDnstap or use a different `--session-name`. |
 | Watchdog abort | No Event ID 1. Event ID 5 names the startup deadline. | See [Watchdog aborts](#watchdog-aborts-or-stop-hangs). |
 
 Repeat `sc.exe query EtwDnstap` while the state is `START_PENDING` or
@@ -288,9 +299,11 @@ capture.
 
 - A removed option (`--output`, `--max-output-bytes`, `--metrics`) fails command-line
   parsing. Remove it from the binary path.
-- A service still running as LocalSystem refuses to start. Move it to the virtual
-  account, add the Performance Log Users membership and the executable's read
-  and execute grant, and keep the recovery policy. See
+- A service still running as LocalSystem or the virtual account refuses to
+  start. Move it to LocalService with a restricted SID type, add the service
+  SID to Performance Log Users, run the ETW grant script, keep the
+  executable's read and execute grant for the service SID, and keep the
+  recovery policy. See
   [install.md](install.md#repair-or-upgrade).
 - Changing the identity, privileges, or ACLs is a separate step with its own
   verification. Record the result against the binary's commit.
@@ -304,7 +317,8 @@ names first.
 - The output of `sc.exe qc EtwDnstap`, `sc.exe qsidtype EtwDnstap`,
   `sc.exe qprivs EtwDnstap`, `sc.exe qfailure EtwDnstap`, and
   `sc.exe qfailureflag EtwDnstap`.
-- The members of `net localgroup "Performance Log Users"`.
+- The members of `net localgroup "Performance Log Users"`, and the SDDL
+  printed by `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`.
 - The `logman query -ets` list.
 - The commit SHA and whether it is a release or a diagnostic (`diag-timing`) build.
 

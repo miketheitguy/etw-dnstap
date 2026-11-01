@@ -421,12 +421,37 @@ fn check_enable_status(status: u32) -> Result<()> {
     if status == ERROR_ACCESS_DENIED {
         bail!(
             "EnableTraceEx2: access denied enabling the Microsoft-Windows-DNSServer provider \
-             {{eb79061a-a566-4698-9119-3ed2807060e7}}. The account running EtwDnstap needs \
-             TRACELOG_GUID_ENABLE (0x80) on that provider GUID in addition to membership in \
-             'Performance Log Users' (code {status})"
+             {{eb79061a-a566-4698-9119-3ed2807060e7}}. The service SID NT SERVICE\\EtwDnstap \
+             needs TRACELOG_GUID_ENABLE (0x80) granted directly on that provider GUID: the \
+             write-restricted token (restricted service SID) only matches restricting SIDs, so \
+             'Performance Log Users' alone may not satisfy it. Run \
+             scripts\\provision\\Grant-EtwDnstapEtwAccess.ps1 as an administrator, then restart \
+             the service (code {status})"
         );
     }
     check_status(status, "EnableTraceEx2")
+}
+
+/// Turns a `StartTraceW` status into an error that names the access rights the
+/// restricted service SID may be missing.
+fn check_start_status(status: u32) -> Result<()> {
+    if status == ERROR_ACCESS_DENIED {
+        bail!(
+            "StartTraceW: access denied creating the real-time session. The service SID \
+             NT SERVICE\\EtwDnstap needs WMIGUID_QUERY (0x1), TRACELOG_CREATE_REALTIME (0x20) \
+             and TRACELOG_ACCESS_REALTIME (0x400) on the default WMI security GUID \
+             {{0811c1af-7a07-4a06-82ed-869455cdf713}}, and the token must be in \
+             'Performance Log Users'. A write-restricted token only matches restricting SIDs, \
+             so the grant must name the service SID. Run \
+             scripts\\provision\\Grant-EtwDnstapEtwAccess.ps1 as an administrator and confirm \
+             'net localgroup \"Performance Log Users\"' lists NT SERVICE\\EtwDnstap, then \
+             restart the service (code {status})"
+        );
+    }
+    check_status(
+        status,
+        "StartTraceW (use an unused session name; the service SID needs ETW session rights, see scripts\\provision\\README.md)",
+    )
 }
 
 impl Capture {
@@ -470,10 +495,7 @@ impl Capture {
             reclaim_stale_session(&name, display_name, &counters, &config)?;
             (status, session) = start_session(&name, &config);
         }
-        check_status(
-            status,
-            "StartTraceW (run as an administrator or a member of 'Performance Log Users'; use an unused session name)",
-        )?;
+        check_start_status(status)?;
         let keywords = choice.selection();
         let mut capture = Self {
             session: Some(session),

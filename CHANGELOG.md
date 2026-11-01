@@ -32,10 +32,17 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
-- Service identity: the service runs as the virtual account
-  `NT SERVICE\EtwDnstap` instead of LocalSystem. It must be an enabled member of
-  Performance Log Users and hold only `SeChangeNotifyPrivilege`. Existing
-  installs must be reprovisioned. Commit `f0b51f4`.
+- Service identity: the service runs as `NT AUTHORITY\LocalService` with a
+  restricted service SID type (`sc.exe sidtype EtwDnstap restricted`, a
+  write-restricted token) instead of LocalSystem. This supersedes the earlier
+  virtual-account entry from commit `f0b51f4`. The token must be restricted with
+  the service SID and `S-1-5-33` as restricting SIDs, the service SID must be an
+  enabled group and a member of Performance Log Users, and only
+  `SeChangeNotifyPrivilege` may be held. `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`
+  grants the ETW rights to the service SID. Existing installs must be
+  reprovisioned. Not validated on a live DNS Server.
+- ETW and instance-lock access-denied errors name the missing right, the GUID, and
+  the provisioning script.
 - Connection loss no longer ends capture. A failed session is reconnected, and
   events are dropped and counted until it is. A receiver that is unreachable at
   startup no longer stops the service; only a protocol failure at startup is
@@ -65,8 +72,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - DNS process filter: an ETW `EVENT_FILTER_TYPE_PID` filter admits only the DNS
   Server process, and the callback checks the process ID again. Records from
   other processes count as `foreign_pid_rejected`. Commit `f0b51f4`.
-- The service no longer runs as LocalSystem. It runs as the virtual account with
-  only `SeChangeNotifyPrivilege`. Commit `f0b51f4`. This profile has not been
+- The service no longer runs as LocalSystem. It runs as LocalService with a
+  restricted service SID and only `SeChangeNotifyPrivilege`. This replaces the
+  virtual-account profile of commit `f0b51f4`. This profile has not been
   validated on a live DNS Server.
 
 ## [0.1.0] - not tagged

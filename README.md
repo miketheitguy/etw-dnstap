@@ -2,14 +2,16 @@
 
 > **Status:** Current · **Describes:** `main` at commit `54eafae` · **Reviewed:** 2026-11-01
 >
-> **Validation status:** the virtual-account profile (`NT SERVICE\EtwDnstap`) has
-> not been validated on a live DNS Server. The lab record covers the earlier
+> **Validation status:** the LocalService profile with a restricted service SID
+> (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) has not
+> been validated on a live DNS Server. The lab record covers the earlier
 > LocalSystem profile. See [install.md](docs/guide/install.md#provision-the-service).
 
 `etw-dnstap` is a Windows service that captures DNS Server client query and
 response events and sends them to a [dnstap](https://dnstap.info/) receiver over
 TCP using Frame Streams. It runs under the Service Control Manager (SCM) as
-`EtwDnstap`, under the virtual account `NT SERVICE\EtwDnstap`. The executable has
+`EtwDnstap`, as `NT AUTHORITY\LocalService` with a restricted service SID
+(a write-restricted token). The executable has
 no foreground capture mode. `--help` and `--version` print information and exit
 without starting capture.
 
@@ -30,7 +32,11 @@ only on a trusted network or behind an independently protected transport. Read
 2. Confirm that the DNS Server service is Running, because the service refuses to
    start without it. Provision the service with the validated receiver address.
    Starting the receiver's listener first is advisable but not required: the
-   service reconnects. See [Provision the service](docs/guide/install.md#provision-the-service).
+   service reconnects. Provisioning sets LocalService, `sc.exe sidtype EtwDnstap restricted`,
+   a single privilege, Performance Log Users membership for the service SID, and
+   `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`. See
+   [Provision the service](docs/guide/install.md#provision-the-service) and
+   [scripts/provision](scripts/provision/README.md).
 3. Start the service, generate DNS traffic, and stop it. Confirm the receiver
    got the expected records. See [step 7](docs/guide/install.md#7-start-capture-and-confirm-it-is-running).
 
@@ -86,8 +92,8 @@ Event 256 and 257 selection, the keyword masks, and the callback check are in
   [optional address-sanitizer builds](docs/guide/install.md#optional-address-sanitizer-builds).
 
 The local build commands, test counts, and CI status are in
-[CONTRIBUTING.md](CONTRIBUTING.md#build-and-check). There is no continuous
-integration yet.
+[CONTRIBUTING.md](CONTRIBUTING.md#build-and-check). Continuous integration runs
+on GitHub Actions (`.github/workflows/ci.yml`).
 
 ## Evidence and limits
 
@@ -97,7 +103,7 @@ performance under production traffic. The lab records are:
 
 - [Lab validation](docs/history/lab-validation.md): receiver readiness and initial live
   delivery, October 28, 2026. It validated the earlier LocalSystem profile, not
-  the virtual account.
+  the LocalService restricted-SID profile.
 - [Pooled VM performance review](docs/performance/pooled-vm-performance-review.md): native
   five-minute confirmations on a fixed two-vCPU lab VM, run under LocalSystem.
   These are observations, not a capacity claim for other hardware.
@@ -112,9 +118,11 @@ performance under production traffic. The lab records are:
 - **DNS Server restarts.** The service exits when the DNS Server process changes
   or stops. SCM then restarts it, and capture of the new process starts after
   that restart. Records from the gap are not captured.
-- **Identity.** The service runs as `NT SERVICE\EtwDnstap`. That profile has not
-  been validated on a live DNS Server. Follow the
-  [validation checklist](docs/guide/install.md#validation-checklist-for-the-virtual-account-profile).
+- **Identity.** The service runs as `NT AUTHORITY\LocalService` with a restricted
+  service SID. That profile has not been validated on a live DNS Server, and
+  whether ETW access checks pass for its write-restricted token is an
+  assumption. Follow the
+  [validation checklist](docs/guide/install.md#validation-checklist-for-the-localservice-restricted-profile).
 - **Recovery.** The policy in
   [install.md](docs/guide/install.md#5-configure-scm-recovery) restarts the
   service after failures, but data in flight at a failure is lost.

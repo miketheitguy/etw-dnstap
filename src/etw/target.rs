@@ -8,7 +8,7 @@ use std::{mem::size_of, ptr::null};
 
 use anyhow::{Result, bail};
 use windows_sys::Win32::{
-    Foundation::GetLastError,
+    Foundation::{ERROR_ACCESS_DENIED, GetLastError},
     System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
         SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_STATUS_PROCESS,
@@ -34,8 +34,16 @@ impl Drop for ScHandle {
 fn os_error(operation: &str) -> anyhow::Error {
     // SAFETY: Read immediately after the failing API call on this thread.
     let code = unsafe { GetLastError() };
+    let hint = if code == ERROR_ACCESS_DENIED {
+        // The restricted token passes a second access check against its
+        // restricting SIDs, which include Everyone and the service SID.
+        "; the restricted service token needs SC_MANAGER_CONNECT and \
+         SERVICE_QUERY_STATUS on the DNS service for Everyone or NT SERVICE\\EtwDnstap"
+    } else {
+        ""
+    };
     anyhow::anyhow!(
-        "{operation}: {} (code {code})",
+        "{operation}: {} (code {code}){hint}",
         std::io::Error::from_raw_os_error(code.cast_signed())
     )
 }

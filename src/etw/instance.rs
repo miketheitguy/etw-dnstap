@@ -39,8 +39,12 @@ impl InstanceLock {
         if handle.is_null() {
             if error == ERROR_ACCESS_DENIED {
                 bail!(
-                    "another process owns the instance lock for session '{session}' \
-                     (CreateMutexW access denied); is another EtwDnstap running?"
+                    "cannot create the instance lock for session '{session}' \
+                     (CreateMutexW on Global\\EtwDnstap-{session}, access denied): either another \
+                     process or account owns a mutex of that name, or the write-restricted \
+                     service token cannot open an existing one because its DACL does not grant \
+                     the service SID NT SERVICE\\EtwDnstap or Everyone; stop the other \
+                     EtwDnstap, or see scripts\\provision\\README.md"
                 );
             }
             bail!("CreateMutexW for the instance lock failed (code {error})");
