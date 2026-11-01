@@ -1,5 +1,7 @@
 # Pooled ETW intake
 
+> **Status:** Current · **Evidence dated:** not applicable (reference; live results are in the historical campaign records) · **Commit:** present by `2c62a9f` · **Reviewed:** 2026-11-01
+
 This reference helps maintainers review the ownership, memory budget, and loss
 accounting of the pooled Event Tracing for Windows (ETW) intake. It describes the
 local implementation and its checks. It does not establish production throughput
@@ -213,7 +215,7 @@ campaign is recorded in [Validation scope](#validation-scope).
 
 This section documents the preserved JSONL evidence from historical binaries.
 The TCP-only service has no JSONL metrics writer or durable metrics export;
-see the [instrumentation compatibility note](README.md). Its diagnostic intake
+see the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Its diagnostic intake
 counters retain the admission meanings listed here. The historical
 `output_limit_dropped` field has no counterpart in the TCP-only parser ledger.
 

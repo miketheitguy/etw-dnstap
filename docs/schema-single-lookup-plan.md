@@ -1,5 +1,7 @@
 # Remove the duplicate schema lookup
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 Implement recommendation 1 from the [parser/decoder review](parser-decoder-performance-review.md): use one schema lookup on a warm cache hit in `Parser::parse`. Preserve the existing working tree. Do not deploy, change VM state, run a workload, or perform file-hash checks.
 
 ## Stage 1: preserve the contract

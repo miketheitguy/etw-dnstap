@@ -1,5 +1,22 @@
 # Filtered DNS ramp plan
 
+> **Status: Proposed. Do not run this plan as written.**
+>
+> The capture contract below (level 4, `MatchAnyKeyword` `0x8000000000000000`), the
+> reviewed `src/etw.rs` and executable SHA-256 values, and the defaults named in
+> this plan **predate commits `e59425f` (single-pass decoding, `--etw-flush-ms`,
+> low-rate defaults) and `9172f2d` (low-rate warnings)**. The current subscription
+> resolves `QUERY_RECEIVED` and `RESPONSE_SUCCESS` by name, and the service has new
+> flush and buffer defaults. See [configuration.md](guide/configuration.md#subscription)
+> and [configuration.md](guide/configuration.md#low-rate-defaults).
+>
+> Regenerate the capture contract, the source and executable hashes, and the
+> defaults from the commit you will deploy, and record the commit in the plan,
+> before the next campaign. The `src/etw.rs` path is also outdated: the ETW code
+> is being split under `src/etw/`.
+>
+> **Status:** Proposed · **Evidence dated:** October 30, 2026 (the planning date for `target/performance/filtered-ramp-20261030/`) · **Commit:** not recorded (predates `e59425f` and `9172f2d`) · **Reviewed:** 2026-11-01
+
 This plan helps the Windows deployment operator and evidence reviewer deploy
 the reviewed client-event filter and run a bounded DNS ramp. The campaign
 compares client sends and matched responses with collector client-type counts.

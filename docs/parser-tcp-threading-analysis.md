@@ -1,5 +1,7 @@
 # Parser and TCP threading analysis
 
+> **Status:** Proposed (design analysis; no change is implemented from it) · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This design analysis helps maintainers choose whether and how to parallelize
 ETW parsing and dnstap TCP delivery. It compares ownership, ordering, resource
 bounds, and failure handling against the inspected working tree and recorded
@@ -60,8 +62,8 @@ The inspected implementation has one native `ProcessTrace` worker and one
 `dnstap-parser` worker. The latter parses, encodes, writes TCP frames, flushes,
 and performs the final STOP/FINISH exchange. The supervisor connects and
 negotiates the receiver before reporting readiness. See
-[`run_capture`](../src/pipeline.rs#L144) and
-[`parse_loop`](../src/pipeline.rs#L252).
+`run_capture` (`src/pipeline.rs`) and
+`parse_loop` (`src/pipeline.rs`).
 
 The callback copies an accepted event into a unique preallocated raw-event
 lease and attempts a nonblocking enqueue. A full queue drops the newest event;
@@ -72,9 +74,9 @@ workers; replacing the intake receive path with blocking receivers or selectors
 needs a separate callback-latency review. See
 [ring capacity and shutdown](ring-buffer.md).
 
-Each [`Parser`](../src/etw.rs#L527) owns its schema cache and scratch storage.
+Each `Parser` (`src/etw.rs`) owns its schema cache and scratch storage.
 The cache holds owned decode plans, clears at 32 entries, and loads TDH metadata
-on a miss. Each [`Encoder`](../src/dnstap.rs#L58) owns metadata and a reusable
+on a miss. Each `Encoder` (`src/dnstap.rs`) owns metadata and a reusable
 output vector with a 70 KiB logical ceiling. Construct one parser and encoder
 inside each worker. This avoids shared mutable cache locks and preserves
 thread-local reuse; it duplicates cold schema work and memory. Do not add an
@@ -87,7 +89,7 @@ parse operation.
 encoder. The raw lease returns before network I/O. The next encode reuses those
 bytes. This lifetime is the decisive constraint on a separate writer queue.
 
-One [`NetworkSink`](../src/network.rs#L22) owns the Frame Streams writer,
+One `NetworkSink` (`src/network.rs`) owns the Frame Streams writer,
 `BufWriter`, socket, and deadline state. `BufWriter` already combines small
 writes; the periodic one-second flush bounds idle-buffer delay approximately,
 subject to scheduling and blocked operations. Buffer acceptance is not collector
@@ -135,7 +137,7 @@ verified for the actual configured transforms; retaining timestamps, addresses,
 ports, type, and DNS payload does not establish a universal unique match key.
 
 Serialize every connection's frame bytes and protocol state through one owner.
-[`FrameStreamWriter::write_frame`](../src/framestream.rs#L42) writes the length
+`FrameStreamWriter::write_frame` (`src/framestream.rs`) writes the length
 and payload separately. Concurrent socket handles or separate `BufWriter`s can
 interleave frame bytes, buffering, and control frames. `TcpStream::try_clone`
 creates another handle to the same stream, not another connection; Microsoft
@@ -324,8 +326,7 @@ to this analysis. Use the following sequence for a separately authorized trial:
    DNS CPU budget justify it.
 
 The release profile disables Rust debug information, strips symbols, and passes
-`/DEBUG:NONE`; see [`Cargo.toml`](../Cargo.toml#L24) and
-[release linker configuration](../.cargo/config.toml#L4). WPR can still attribute
+`/DEBUG:NONE`; see the release linker configuration in `.cargo/config.toml` (`[profile.release]` `rustflags`). WPR can still attribute
 thread CPU and scheduling without promising resolved Rust function stacks.
 If symbol-level attribution needs an optimized profiling build, identify its
 separate binary and preserve hardening/optimization settings; do not present it
@@ -372,11 +373,11 @@ Use these code locations to review the ownership and lifecycle assumptions:
 
 | Concern | Source |
 | --- | --- |
-| Startup and all-worker supervision boundary | [`run_capture`](../src/pipeline.rs#L144) |
-| Combined parse, encode, write, and idle flush loop | [`parse_loop`](../src/pipeline.rs#L252) |
-| Completion publication and final receive recheck | [`drain_ring`](../src/pipeline.rs#L312) |
-| Raw lease counts and class-specific recycling | [`PoolManager`](../src/etw/pool.rs#L29) |
-| Parser cache, scratch, and borrowed output lifetime | [`Parser`](../src/etw.rs#L527) |
-| Reusable encoded-output ownership and size bound | [`Encoder`](../src/dnstap.rs#L58) |
-| Whole-operation deadlines and STOP/FINISH | [`NetworkSink`](../src/network.rs#L22) |
-| Frame-byte ownership and poisoned writes | [`FrameStreamWriter`](../src/framestream.rs#L19) |
+| Startup and all-worker supervision boundary | `run_capture` (`src/pipeline.rs`) |
+| Combined parse, encode, write, and idle flush loop | `parse_loop` (`src/pipeline.rs`) |
+| Completion publication and final receive recheck | `drain_ring` (`src/pipeline.rs`) |
+| Raw lease counts and class-specific recycling | `PoolManager` (`src/etw/pool.rs`) |
+| Parser cache, scratch, and borrowed output lifetime | `Parser` (`src/etw.rs`) |
+| Reusable encoded-output ownership and size bound | `Encoder` (`src/dnstap.rs`) |
+| Whole-operation deadlines and STOP/FINISH | `NetworkSink` (`src/network.rs`) |
+| Frame-byte ownership and poisoned writes | `FrameStreamWriter` (`src/framestream.rs`) |

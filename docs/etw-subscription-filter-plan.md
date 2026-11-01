@@ -1,5 +1,7 @@
 # ETW subscription and intake filter plan
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This plan guides the implementation and review of the DNS service's narrower
 ETW subscription. The accepted intake event IDs become 256 and 257 only.
 

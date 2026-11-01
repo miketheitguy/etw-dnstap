@@ -1,5 +1,7 @@
 # Measurement terms and result gates
 
+> **Status:** Current · **Evidence dated:** not applicable (reference) · **Commit:** `9172f2d` (reference text; JSONL schemas describe historical binaries) · **Reviewed:** 2026-11-01
+
 This reference helps maintainers and administrators interpret the service's
 performance reports without confusing DNS responses, captured records, trace
 fidelity, or shutdown status. It defines the units and result gates shared by
@@ -8,7 +10,7 @@ reports; each report retains its own binary, workload, and evidence cutoff.
 
 The JSONL schemas and final samples in this reference describe historical
 binaries. The TCP-only service retains diagnostic counters but has no durable
-metrics export. See the [instrumentation compatibility note](README.md) before
+metrics export. See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note) before
 using a campaign harness; stderr diagnostics cannot replace a historical final
 JSONL ledger.
 

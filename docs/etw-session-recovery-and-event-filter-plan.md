@@ -1,5 +1,7 @@
 # ETW session recovery and event-ID filter plan
 
+> **Status:** Historical · **Evidence dated:** October 30, 2026 (source review) · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This plan covers two findings from the October 30, 2026 `src` review:
 
 - **Session recovery (finding 2):** a real-time ETW session outlives the process

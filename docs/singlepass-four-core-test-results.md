@@ -1,5 +1,14 @@
 # Single-pass decoder: four-CPU test results
 
+> **Status:** Historical · **Evidence dated:** October 30, 2026 UTC · **Commit:** not recorded. The run predates the commit that added single-pass decoding (`e59425f`, committed October 31 PDT), so its binary is not necessarily any commit in this history. · **Reviewed:** 2026-11-01
+>
+> **Measurement gap.** Per-counter intake attribution (`ring_dropped`, `pool_exhausted`,
+> `receiver_disconnected`, `etw_lost`) and the service settings for this run
+> (`--capacity`, `--jumbo-capacity`, `--etw-flush-ms`, `--etw-flush-seconds`,
+> `--etw-buffer-kib`, `--etw-max-buffers`) were not recorded. The 0.43% deficit
+> below therefore cannot be attributed to ETW, queue, or transport loss, and this
+> run is not a flush-setting comparison.
+
 The client completed all 5,678,344 queries successfully, but collector receipt
 reconciliation did not pass: query records were short by 0.42935%, and response
 records were short by 0.42843%. Mean total guest CPU was 77.30% on Windows and

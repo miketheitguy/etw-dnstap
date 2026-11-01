@@ -1,5 +1,7 @@
 # DNS capture performance review — 2026-10-28
 
+> **Status:** Historical · **Evidence dated:** October 28, 2026 PDT · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This historical report helps maintainers interpret the original unpaced
 experiment on the 1,024-entry allocation-based ring. All binary identities,
 test counts, and installed-state descriptions apply at its recorded restoration
@@ -9,7 +11,7 @@ cutoff. For the later bounded pooled campaign, see the
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 The instrumented service remained small and completed all three 300-second

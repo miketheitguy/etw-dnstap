@@ -1,5 +1,7 @@
 # Schema-cache lookup WPR comparison
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 The parser shows **3.79% lower observed mean CPU usage** in the schema-cache
 single-lookup trial: **15.1423% of one logical CPU**, compared with **15.7392%**
 in the prior symbolized baseline. This report helps pipeline maintainers assess

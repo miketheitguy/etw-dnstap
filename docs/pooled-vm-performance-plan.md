@@ -1,5 +1,7 @@
 # Pooled intake VM performance plan
 
+> **Status:** Historical · **Evidence dated:** October 29, 2026 (campaign `pooled-vm-20261029-0942`) · **Commit:** `2c62a9f` documents these results; the campaign binaries are identified by hash, not commit · **Reviewed:** 2026-11-01
+
 This completed plan helps maintainers review or reproduce the method for the
 reviewed pooled candidate's Windows DNS capture checks and bounded throughput
 discovery. Native VM measurements,
@@ -8,7 +10,7 @@ Local allocator tests do not establish throughput or native loss behavior.
 
 This plan depends on the historical service JSONL metrics writer. It cannot
 measure the TCP-only service; new campaigns through its helpers are disabled.
-See the [instrumentation compatibility note](README.md). Recorded evidence and
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Recorded evidence and
 collector file destinations remain unchanged.
 
 ## Campaign status and use of this plan

@@ -1,5 +1,7 @@
 # DNS service to DNS-collector lab validation
 
+> **Status:** Historical · **Evidence dated:** October 28, 2026 PDT (evidence after midnight UTC is October 29) · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This historical record helps maintainers assess initial live validation of the
 Service Control Manager (SCM)-only Windows service against
 DNS-collector 3.2.3 in two Hyper-V guests. It separates verified guest readiness
@@ -8,7 +10,7 @@ America/Los_Angeles; evidence timestamps after midnight use October 29 UTC.
 
 The binary hashes, test counts, PIDs, and guest state in this record describe
 that session's cutoff. Later builds and performance work are recorded in the
-[documentation index](README.md#review-earlier-decisions-and-validation) and
+[documentation index](README.md#campaigns-and-reviews) and
 [completed pooled VM review](pooled-vm-performance-review.md). These small probes
 establish the listed payload and lifecycle observations, not load capacity.
 

@@ -1,5 +1,7 @@
 # Service shutdown validation plan
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This plan gives the Windows and Ubuntu operators a bounded comparison of
 DNS-collector connection-close policies using the reviewed shutdown diagnostics.
 The user authorized deployment and this comparison after reviewing the

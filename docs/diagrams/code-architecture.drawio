@@ -8,7 +8,7 @@
         <mxCell id="title" value="etw-dnstap | Historical intake architecture" style="text;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#18324b;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="30" y="20" width="1820" height="38" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="October 28 allocation-based intake • obsolete capture-file branch removed • see pooled-intake.md for the current channel and pool" style="text;align=left;verticalAlign=middle;fontSize=12;fontColor=#526779;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="Historical October 28 layout; queue box updated to the pooled crossbeam channel • obsolete capture-file branch removed • see docs/pooled-intake.md for the current design" style="text;align=left;verticalAlign=middle;fontSize=12;fontColor=#526779;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="30" y="58" width="1820" height="25" as="geometry" />
         </mxCell>
         <mxCell id="svc" value="Windows service host" style="swimlane;startSize=34;rounded=1;arcSize=12;fillColor=#eef5fb;swimlaneFillColor=#ffffff;strokeColor=#9aafc1;fontColor=#24415a;fontStyle=1;fontSize=14;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
@@ -32,10 +32,10 @@
         <mxCell id="p" value="&lt;b&gt;pipeline.rs controller&lt;/b&gt;&lt;br&gt;Start TCP sink, queue, ETW and parser&lt;br&gt;Coordinate stop, drain, flush and counters" style="rounded=1;arcSize=12;fillColor=#f1edfa;strokeColor=#8974b4;fontColor=#392d5b;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="390" y="275" width="180" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="e" value="&lt;b&gt;etw.rs — real-time ETW&lt;/b&gt;&lt;br&gt;DNS Server provider; ProcessTrace worker&lt;br&gt;Callback copies borrowed bytes into owned events" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+        <mxCell id="e" value="&lt;b&gt;etw.rs — real-time ETW&lt;/b&gt;&lt;br&gt;DNS Server provider; ProcessTrace worker&lt;br&gt;Callback copies borrowed bytes into a pooled lease" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="390" y="430" width="180" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="q" value="&lt;b&gt;Bounded ArrayQueue&lt;/b&gt;&lt;br&gt;Full ring: drop newest&lt;br&gt;Received, dropped and ETW loss counters" style="rounded=1;arcSize=12;fillColor=#fff3db;strokeColor=#c6902d;fontColor=#644516;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+        <mxCell id="q" value="&lt;b&gt;Bounded crossbeam channel + pool&lt;/b&gt;&lt;br&gt;Pooled slot leases; full channel: drop newest&lt;br&gt;Received, dropped and ETW loss counters" style="rounded=1;arcSize=12;fillColor=#fff3db;strokeColor=#c6902d;fontColor=#644516;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="585" y="430" width="180" height="120" as="geometry" />
         </mxCell>
         <mxCell id="t" value="&lt;b&gt;Parser worker&lt;/b&gt;&lt;br&gt;Validate provider schema&lt;br&gt;TDH reads PacketData + event metadata" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">

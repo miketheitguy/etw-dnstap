@@ -1,12 +1,14 @@
 # Windows DNS capture performance test plan
 
+> **Status:** Historical · **Evidence dated:** October 28, 2026 PDT · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This lab procedure measures service resource use and locates throughput limits for
 maintainers of `etw-dnstap`. The two measured workloads each run for 300 seconds.
 Record results separately from this plan; pilot data is not a measured result.
 
 This plan depends on the historical service JSONL metrics writer. It cannot
 measure the TCP-only service; new campaigns through its helpers are disabled.
-See the [instrumentation compatibility note](README.md). Recorded evidence and
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Recorded evidence and
 collector file destinations remain unchanged.
 
 ## Status and scope

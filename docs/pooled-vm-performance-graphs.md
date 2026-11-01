@@ -1,5 +1,7 @@
 # Pooled VM CPU and QPS graphs
 
+> **Status:** Historical · **Evidence dated:** October 29, 2026 (campaign `pooled-vm-20261029-0942`) · **Commit:** `2c62a9f` documents these graphs; the campaign binaries are identified by hash · **Reviewed:** 2026-11-01
+
 These graphs help maintainers compare Windows Performance Recorder (WPR) process
 CPU and achieved DNS query rate over time for the four primary five-minute runs. Each graph shows the
 management-clean low-rate baseline or a sustained high-rate confirmation on the
@@ -11,7 +13,7 @@ over a pre-pooling build.
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 The four graphs cover two baseline repeats and two high-rate confirmations;

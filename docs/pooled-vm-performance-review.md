@@ -1,12 +1,14 @@
 # Pooled intake VM performance review
 
+> **Status:** Current (the latest completed native performance record; the campaign binaries are historical) · **Evidence dated:** October 29, 2026 (campaign `pooled-vm-20261029-0942`) · **Commit:** `2c62a9f` documents these results · **Reviewed:** 2026-11-01
+
 This report helps maintainers assess pooled Event Tracing for Windows (ETW)
 capture under actual Windows DNS traffic.
 
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 **Bounded campaign complete.** Both five-minute high-rate confirmations pass

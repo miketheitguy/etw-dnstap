@@ -1,4 +1,6 @@
-# Performance repeat at global 1,000 QPS
+# Performance repeat at global 1,000 QPS, review
+
+> **Status:** Historical · **Evidence dated:** October 29, 2026 UTC · **Commit:** not recorded · **Reviewed:** 2026-11-01
 
 This historical review helps maintainers compare the original paced workloads
 on the unchanged 1,024-entry ring. The runs and restoration occurred on
@@ -9,7 +11,7 @@ and [pooled VM review](pooled-vm-performance-review.md).
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 Both 300-second runs achieved **999.69 QPS** with zero client errors. The

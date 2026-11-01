@@ -1,5 +1,7 @@
 # Pooled intake measurement review
 
+> **Status:** Historical · **Evidence dated:** October 2026 (undated in text) · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This review record helps maintainers assess the Python analysis of pooled Event Tracing
 for Windows (ETW) intake metrics. You can use its checks to distinguish complete
 loss accounting from a zero-loss result. It covers analysis helpers and their
@@ -9,7 +11,7 @@ virtual machines, or preserved campaign artifacts.
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 ## Status and evidence cutoff

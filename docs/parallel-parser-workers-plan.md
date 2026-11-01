@@ -1,5 +1,7 @@
 # Parallel parser workers plan
 
+> **Status:** Proposed (not executed) · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 **Status:** Stage P0 was completed on October 31, 2026. The P1 decision
 selects the new Stage P1a, a scheduling-priority experiment, and defers the
 worker implementation (P4). Stages P0, P1a, P2, and P6 change lab state and

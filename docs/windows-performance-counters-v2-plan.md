@@ -1,5 +1,7 @@
 # Minimal Windows V2 performance counter plan
 
+> **Status:** Proposed (future implementation tasks; none executed) · **Evidence dated:** not applicable · **Commit:** not applicable · **Reviewed:** 2026-11-01
+
 This proposed design helps maintainers expose essential DNS pipeline progress
 and errors through Windows Performance Counters V2, without adding per-event
 instrumentation. It replaces the broader counter design with nine

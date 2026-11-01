@@ -1,5 +1,7 @@
 # Direct PacketData encoding plan
 
+> **Status:** Superseded by [Single-pass ETW decoder](single-pass-decoder-plan.md). This is the historical transition from an intermediate packet vector to direct encoding. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This historical plan records the transition from an intermediate packet vector
 to direct filling of the final protobuf packet range. The
 [single-pass decoder plan](single-pass-decoder-plan.md) supersedes its parser

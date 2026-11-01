@@ -1,5 +1,7 @@
 # Service shutdown fix plan
 
+> **Status:** Superseded by [Diagnose and remediate receiver shutdown resets](service-stop-remediation.md). · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This plan gives maintainers the implementation boundaries and verification
 criteria for diagnosing incomplete Frame Streams shutdown and configuring a
 graceful DNS-collector close.

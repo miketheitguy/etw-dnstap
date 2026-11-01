@@ -1,5 +1,7 @@
 # Single-pass ETW decoder implementation plan
 
+> **Status:** Current (implementation reference for the single-pass decoder added in `e59425f`) · **Evidence dated:** not applicable (local validation scope is stated in the document) · **Commit:** `e59425f` · **Reviewed:** 2026-11-01
+
 This plan guides implementation and verification of a decoder that removes all
 ten per-event TDH property calls from the supported, cached-schema path. TDH
 still supplies schema metadata on a cache miss. The existing property-based

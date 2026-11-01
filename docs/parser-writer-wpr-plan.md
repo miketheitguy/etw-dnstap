@@ -1,5 +1,7 @@
 # Profile the combined parser and writer
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This plan gives the lab operators and reviewer a bounded WPR experiment to
 distinguish CPU execution, CPU scheduling delay, and blocking on the existing
 combined parser/writer thread. Run one 60-second authoritative workload with
@@ -27,7 +29,7 @@ to add symbols, deploy a candidate, add instrumentation, or add load trials.
 Store evidence under `target/performance/parser-writer-wpr-100000/` and retain
 all earlier campaigns. The deployed binary combines parsing, encoding, network
 writes, and idle flush on the thread named `dnstap-parser`; see
-[`parse_loop`](../src/pipeline.rs#L252). A high CPU total on that thread alone
+`parse_loop` (`src/pipeline.rs`). A high CPU total on that thread alone
 does not identify parsing as the expensive operation.
 
 ## Assign the work
@@ -133,8 +135,7 @@ explicitly; the busiest unnamed thread is only a candidate. Validate the
 consumer and other service threads independently.
 
 The release disables debug information, strips symbols, and links with
-`/DEBUG:NONE`; see [`Cargo.toml`](../Cargo.toml#L24) and
-[linker configuration](../.cargo/config.toml#L4). Keep the exact production
+`/DEBUG:NONE`; see `.cargo/config.toml` (`[profile.release]` `rustflags`). Keep the exact production
 artifact. Microsoft public symbols may resolve OS calls while Rust application
 frames remain module offsets. Distinguish captured but unresolved stacks from
 missing or truncated stacks. If function-level attribution fails, report module
