@@ -36,6 +36,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # rust-toolchain.toml pins the nightly and lists clippy, rustfmt, rust-src
       # and the target. Installing with no arguments reads that file.
@@ -74,6 +76,13 @@ jobs:
       - name: release build
         run: cargo build --locked --release
 
+      # Inspects the exe that ships, not the source: fails if a hardening flag
+      # is missing, a PDB is referenced, or an ASan or dynamic CRT import is
+      # present. Uses dumpbin, found through vswhere when not on PATH.
+      - name: verify release PE
+        shell: pwsh
+        run: ./scripts/ci/verify-pe.ps1 -Path target/x86_64-pc-windows-msvc/release/etw-dnstap.exe
+
       - name: dns-stress fmt, clippy, test
         working-directory: tools/dns-stress
         run: |
@@ -87,6 +96,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
@@ -102,6 +113,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
@@ -113,12 +126,53 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup toolchain install --profile minimal
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
           tool: cargo-deny
-      - run: cargo deny --locked check
+      - name: cargo-deny (root lockfile)
+        run: cargo deny --locked check
+      # fuzz/ and tools/dns-stress/ are separate workspaces with their own
+      # lockfiles. Run them from the root with --config so both use deny.toml.
+      - name: cargo-deny (fuzz lockfile)
+        run: cargo deny --locked --manifest-path fuzz/Cargo.toml --config deny.toml check
+      - name: cargo-deny (tools/dns-stress lockfile)
+        run: cargo deny --locked --manifest-path tools/dns-stress/Cargo.toml --config deny.toml check
+
+  sanitizers:
+    name: test-release and ASan (advisory)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    # Advisory until it has passed on hosted runners. The AddressSanitizer
+    # runtime comes from a Visual Studio component that the runner image may
+    # not include. A pass proves only that Rust-compiled code and the rebuilt
+    # standard library are instrumented, not the prebuilt CRT or system DLLs.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+      - name: Put the ASan runtime on PATH
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          $dll = Get-ChildItem -Path (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll') -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dll) { throw 'clang_rt.asan_dynamic-x86_64.dll was not found in the Visual Studio install.' }
+          Add-Content -Path $env:GITHUB_PATH -Value $dll.DirectoryName
+      - name: test-release
+        run: cargo test-release
+      - name: asan
+        run: cargo asan
 
   coverage:
     name: Coverage (report only)
@@ -130,6 +184,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install the pinned toolchain and LLVM tools
         run: |
           rustup toolchain install --profile minimal
@@ -168,6 +224,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -178,9 +236,10 @@ jobs:
           cache-on-failure: true
       - name: Install cargo-fuzz
         # Installed from a temporary directory so the repository's toolchain
-        # file and build-std settings do not apply to the tool itself.
+        # file and build-std settings do not apply to the tool itself. The
+        # version is pinned by hand: Dependabot does not update this string.
         working-directory: ${{ runner.temp }}
-        run: cargo +stable install cargo-fuzz --locked
+        run: cargo +stable install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz each target for 60 seconds
         run: |
           for target in decoder control_frame plan_compiler; do

@@ -1,0 +1,22 @@
+# Weekly update pull requests. The root, fuzz/ and tools/dns-stress/ are separate
+# Cargo workspaces with their own lockfiles, so each needs its own entry.
+# The workflows pin third-party actions to commit SHAs with a version comment;
+# the github-actions entry updates those pins.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /tools/dns-stress
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

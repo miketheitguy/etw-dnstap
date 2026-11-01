@@ -23,6 +23,12 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.93
+# libfuzzer-sys bundles LLVM's libFuzzer runtime, which its README licenses as
+# NCSA (permissive). It is a dev-only dependency of the separate fuzz/ workspace
+# and is never linked into the shipped binary. Scoped to this one crate.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
 
 [bans]
 # Duplicate versions are reported, not fatal: the Windows and proptest trees
