@@ -8,10 +8,12 @@ or replace validation of the installed service.
 ## Subscription and event selection
 
 The session enables the DNS provider at level 4 (informational), with
-`MatchAnyKeyword` set to the 64-bit mask `0x8000000000000000` and
-`MatchAllKeyword` set to zero. Level 4 includes more severe events; it is not an
-exact-level match. Keyword-zero events can pass ETW selection, so the callback
-also checks the provider and event ID.
+`MatchAnyKeyword` set to the resolved `QUERY_RECEIVED | RESPONSE_SUCCESS` bits
+(or `0x8000000000000000` when keyword lookup fails) and `MatchAllKeyword` set to
+zero. Level 4 includes more severe events; it is not an exact-level match.
+`EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0` keeps keyword-zero events out, and an
+ETW event-ID filter admits only 256 and 257, so the callback's provider and
+event-ID checks are defense in depth.
 
 Immediately after checking for a null record, the callback accepts only event
 256 (client query) and 257 (successful client response). It excludes event 258
@@ -39,7 +41,7 @@ record, validates lengths, leases storage, and calls `ptr::copy_nonoverlapping`
 before returning. It copies `UserData` and every nonempty extended-data payload.
 It preserves the event header, buffer context, descriptor metadata, and lengths.
 It clears native descriptor pointers and stores offsets instead. A native record
-with more than 64 extended items, more than 65,535 aggregate extended bytes, or a
+with more than 16 extended items, more than 65,535 aggregate extended bytes, or a
 nonzero length with a null pointer is rejected before payload copying. The native
 API must still supply readable memory; these checks cannot validate arbitrary
 non-null addresses.
@@ -77,12 +79,12 @@ after `ProcessTrace` returns.
 ## Memory budget and configuration
 
 The channel default stays at `--capacity 8192`, with the existing range of
-1 through 16,384. Storage has two independent classes:
+1,024 through 262,144 on the command line (the pool itself accepts 1 through 262,144). Storage has two independent classes:
 
 | Class | Payload storage per slot | Slots | Admission |
 | --- | ---: | ---: | --- |
 | Regular | 2,048 bytes | Channel capacity + 2 | Complete padded payload fits 2 KiB |
-| Jumbo | 131,584 bytes | `--jumbo-capacity`, default 64 | Complete padded payload exceeds 2 KiB |
+| Jumbo | 131,184 bytes | `--jumbo-capacity`, default 64 | Complete padded payload exceeds 2 KiB |
 
 `--jumbo-capacity` accepts 0 through 256. Zero disables jumbo capture. Regular
 records do not borrow jumbo slots, and jumbo records cannot use regular slots.
@@ -93,23 +95,37 @@ the 65th can be dropped even when the channel has space. Adjust this budget only
 with a measured workload and an explicit memory allowance.
 
 The jumbo size covers the previous accepted maximum of 65,535 user bytes plus
-65,535 aggregate extended bytes and up to 64 seven-byte alignment gaps. Slot
+65,535 aggregate extended bytes and up to 16 seven-byte alignment gaps. Slot
 selection includes alignment padding, rather than only DNS packet length.
 
-On the configured Windows x64 target, each slot also has a 1,560-byte allocation
-containing its payload pointer, 64 typed extended descriptors, 64 offsets, and
+On the configured Windows x64 target, each slot also has a 408-byte allocation
+containing its payload pointer, 16 typed extended descriptors, 16 offsets, and
 class metadata. `RawEtwEvent` occupies 104 bytes. With the locked queue versions,
 free-list elements occupy 16 bytes and channel elements occupy 112 bytes. The
 following table counts requested element and payload storage:
 
-| Allocation contents | Default 8,192 / 64 | Maximum 16,384 / 256 |
+| Allocation contents | Default 8,192 / 64 | Maximum 262,144 / 256 |
 | --- | ---: | ---: |
-| Regular payloads | 16,781,312 bytes | 33,558,528 bytes |
-| Jumbo payloads | 8,421,376 bytes | 33,685,504 bytes |
-| Slot metadata allocations | 12,882,480 bytes | 25,961,520 bytes |
-| Free-list elements | 132,128 bytes | 266,272 bytes |
-| Channel elements | 917,504 bytes | 1,835,008 bytes |
-| Total counted storage | 39,134,800 bytes (37.32 MiB) | 95,306,832 bytes (90.89 MiB) |
+| Regular payloads | 16,781,312 bytes | 536,875,008 bytes |
+| Jumbo payloads | 8,395,776 bytes | 33,583,104 bytes |
+| Slot metadata allocations | 3,369,264 bytes | 107,060,016 bytes |
+| Free-list elements | 132,128 bytes | 4,198,432 bytes |
+| Channel elements | 917,504 bytes | 29,360,128 bytes |
+| Total counted storage | 29,595,984 bytes (28.22 MiB) | 711,076,688 bytes (678.14 MiB) |
+
+The maximum column uses the same per-slot sizes as the default column, with
+262,144 channel slots and 256 jumbo slots:
+
+- Regular payloads: (262,144 + 2) x 2,048 = 536,875,008 bytes.
+- Jumbo payloads: 256 x 131,184 = 33,583,104 bytes.
+- Slot metadata: (262,146 + 256) x 408 = 262,402 x 408 = 107,060,016 bytes.
+- Free-list elements: 262,402 x 16 = 4,198,432 bytes.
+- Channel elements: 262,144 x 112 = 29,360,128 bytes.
+- Total: 536,875,008 + 33,583,104 + 107,060,016 + 4,198,432 + 29,360,128 = 711,076,688 bytes,
+  which is 711,076,688 / 1,048,576 = 678.14 MiB.
+
+The maximum capacity therefore costs about 649.9 MiB more than the default. The previous maximum of
+65,536 / 256 counted 203,041,616 bytes (193.64 MiB).
 
 These totals exclude allocator rounding, allocator metadata, the small queue and
 `Arc` headers, worker stacks, native ETW buffers, TDH caches, protobuf data, and
@@ -125,8 +141,8 @@ The callback leases with `ArrayQueue::pop` and submits with
 event, which immediately recycles its lease. There is no capacity wait, callback
 logging, vector growth, or fallback allocation.
 
-The event-channel receiver uses only `try_recv` and retains the previous 2 ms
-empty-channel park. It never registers a blocking receiver or selector.
+The event-channel receiver uses only `try_recv` and parks between empty polls,
+backing off from 2 ms to 20 ms and resetting after each event. It never registers a blocking receiver or selector.
 `crossbeam-channel` 0.5.15 checks an atomic empty-waiter flag before locking its
 notification mutex; the production event path keeps that waiter list empty.
 Adding `recv`, `recv_timeout`, iteration, or selection on this channel would
@@ -136,30 +152,52 @@ yielding, scheduling, and preemption still apply.
 
 The callback allocation guarantee covers admission and steady-state lease
 recycling while the pool remains owned. The parser and encoder also reuse
-bounded storage on the parser thread. Cold schema loads, packet/output growth,
+bounded storage on the parser thread. Cold schema loads, output growth,
 error construction, native TDH internals, and output remain outside their
 focused steady-state allocation tests. The callback
-also has bounded stack work for up to 64 descriptors and offsets, and the parser
+also has bounded stack work for up to 16 descriptors and offsets, and the parser
 uses a fixed descriptor array. This fixed work and reference-count traffic must
 be included when measuring any performance change.
 
-The five parser property reads use six fixed, nul-terminated UTF-16 property
-names, selecting either `Source` or `Destination` for the peer. Static names
-remove five per-event name-vector constructions. This does not change TDH
-extraction: a schema-cache hit still uses five `TdhGetPropertySize` calls and
-five `TdhGetProperty` calls. A 512-byte property scratch buffer serves integer
-and address reads; a 768-byte text scratch buffer serves Unicode conversion.
-ANSI addresses parse from borrowed UTF-8. PacketData fills a reusable vector
-with a maximum requested length of 65,535 bytes. The encoder retains identity,
-two address vectors, a Prost message, and at most 70 KiB of requested output
-storage. Allocators may round allocations beyond the requested size.
+The parser owns a cache of at most 8 schemas keyed by event ID and version.
+It compiles validated TDH metadata into plans with at most 256 fields and
+property names of at most 256 UTF-16 units. Each plan walks only the prefix
+through the last required property. Supported layouts include 8-, 16-, and
+32-bit integer scalars, Boolean scalars, terminated ANSI and UTF-16 strings,
+and binary fields with a fixed length or a preceding unsigned scalar length.
+Arrays, structures, custom schemas, and unknown layouts in that prefix use the
+TDH fallback. Binary fields with zero length and no explicit fixed-length flag
+also use fallback. Unsupported trailing layouts can remain as names-only
+sentinels; the decoder doesn't inspect their bytes. Duplicate required property
+names prevent plan compilation, including duplicates after the required prefix.
 
-The encoder transfers the packet vector into the active Prost field and returns
-it after encoding, including serialization failure. It adds no intermediate
-packet copy. Query/response fields and optional endpoint presence reset for each
-event. See the [parser and encoder optimization plan](parser-encoder-optimization-plan.md)
-for the interface contract and local validation record. Reuse alone does not
-establish higher throughput or zero allocation across the full pipeline.
+A supported schema-cache hit makes no TDH calls. A native cold load makes two
+`TdhGetEventInformation` calls to obtain metadata. The valid fallback cache-hit
+path retains five `TdhGetPropertySize` calls and five `TdhGetProperty` calls,
+using static UTF-16 property names. It reuses 512 bytes of property scratch and
+768 bytes of text scratch. Malformed payloads under a supported plan are
+rejected without retrying through TDH. Both paths preserve the shared metadata,
+endpoint, timestamp, packet-length, DNS direction, and output-size validation.
+
+`Parser::parse` consumes the pooled event. The supported path borrows
+`PacketData` from its payload and copies it once into the initialized, exact
+packet range in the final protobuf output through `Encoder::encode_with`.
+The fallback writes that range through `TdhGetProperty`. Only cold metadata
+loads and fallback reconstruct a native event view. Parsing releases the pool
+lease before the TCP write; the returned payload borrows only encoder output.
+
+The encoder retains identity, two address vectors, Prost metadata, and at most
+70 KiB of requested output storage. It accepts packet lengths from 12 through
+65,535 bytes. Allocators may round allocations beyond the requested size, and
+output storage can grow until warmed. Prost encodes metadata; manual
+nested-message and packet-field framing preserves wire output. Neither path
+uses an intermediate packet vector. The callback copy and initialized-output
+zeroing remain. Query/response fields and optional endpoint presence reset for
+each event, and errors clear the output. See the
+[single-pass decoder plan](single-pass-decoder-plan.md) for the maintained
+interface, supported grammar, and local validation scope. Focused warmed native
+fixture tests do not establish zero allocation across the full pipeline,
+higher throughput, or a live CPU improvement.
 
 The copy from native ETW callback storage into owned storage remains required.
 Pooling removes repeated storage allocation; it is not literal zero-copy.
@@ -192,6 +230,9 @@ loss categories:
 | `callback_errors` | Malformed native metadata or unavailable, wrong, or reentrant TLS |
 | `dequeued` | Records removed by the parser before parsing or output |
 | `queue_backlog` | Records remaining in the channel |
+| `etw_flushes` | Successful periodic ETW session flush requests |
+| `etw_flush_errors` | Failed flush requests; the first is logged with its Win32 status |
+| `etw_flush_max_us` | Longest wall-clock duration of one flush call in microseconds, including scheduling delay on the supervisor thread (lab maxima of 11-46 ms under load were near multiples of the 15.6 ms timer tick; idle maximum about 0.35 ms) |
 
 At quiescence, the accounting identities are:
 
@@ -226,7 +267,7 @@ reentrant TLS, cross-thread recycling, queued ownership after native-owner exit,
 and final queue drain. Concurrent pool workers check unique active addresses,
 independent sentinel data, and recovery of every slot.
 
-The parser's shared native-view helper is exercised with zero and 64 extended
+The parser's shared native-view helper is exercised with zero and 16 extended
 items after native source storage ends. Tests inspect copied bytes, header and
 buffer context, descriptor metadata, repaired pointer alignment and bounds,
 null context, lease exclusivity, and a dirty slot reused for an empty record.

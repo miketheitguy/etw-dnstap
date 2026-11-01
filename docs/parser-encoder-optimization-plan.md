@@ -1,5 +1,17 @@
 # Parser and encoder optimization plan
 
+This historical plan records the earlier reusable packet-vector implementation
+for parser and encoder maintainers. Its frozen APIs, baseline hashes, and
+validation results apply to that implementation. The
+[single-pass decoder plan](single-pass-decoder-plan.md) describes the maintained
+interface: production parsing consumes the pooled event and fills the final
+protobuf packet range synchronously through `Encoder::encode_with`, without a
+standalone packet vector. Supported schemas borrow packet bytes from the pooled
+payload; unsupported schemas retain TDH extraction. The historical
+[direct packet encoding plan](direct-packet-encoding-plan.md) records the earlier
+TDH direct-fill transition. The evidence retained here does not validate either
+later implementation or establish a live performance gain.
+
 Use this implementation plan if you maintain the DNS Server Event Tracing for
 Windows (ETW) parser and dnstap encoder. It defines the changes, ownership
 contract, and local evidence needed to reduce repeated allocation while

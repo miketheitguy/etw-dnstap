@@ -9,8 +9,18 @@ use windows_sys::Win32::System::Diagnostics::Etw::EVENT_HEADER_EXTENDED_DATA_ITE
 use super::MAX_EXTENDED_ITEMS;
 
 pub(super) const REGULAR_BYTES: usize = 2048;
-// Two u16-sized payload regions and at most 64 seven-byte alignment gaps.
-pub(super) const JUMBO_BYTES: usize = 131_584;
+// Two u16-sized payload regions plus one alignment gap of at most seven bytes per
+// extended item, rounded up to 8. copy_record admits at most 65_535 bytes of
+// user data and 65_535 bytes of extended data, so its largest layout is
+// 65_535 + 7 * MAX_EXTENDED_ITEMS + 65_535 <= JUMBO_BYTES.
+pub(super) const JUMBO_BYTES: usize = (2 * 65_535 + 7 * MAX_EXTENDED_ITEMS).next_multiple_of(8);
+const _: () = {
+    assert!(JUMBO_BYTES.is_multiple_of(8));
+    assert!(JUMBO_BYTES >= 2 * 65_535 + 7 * MAX_EXTENDED_ITEMS);
+};
+pub(crate) const MAX_CAPACITY: usize = 262_144;
+/// Smallest capacity accepted on the command line (`PoolManager::new` accepts 1).
+pub(crate) const MIN_CAPACITY: usize = 1_024;
 pub(crate) const MAX_JUMBO_CAPACITY: usize = 256;
 
 struct Slot {
@@ -28,7 +38,10 @@ pub(crate) struct PoolManager {
 
 impl PoolManager {
     pub(crate) fn new(capacity: usize, jumbo_capacity: usize) -> Result<Arc<Self>> {
-        ensure!((1..=16_384).contains(&capacity), "invalid channel capacity");
+        ensure!(
+            (1..=MAX_CAPACITY).contains(&capacity),
+            "invalid channel capacity"
+        );
         ensure!(
             jumbo_capacity <= MAX_JUMBO_CAPACITY,
             "invalid jumbo capacity"
@@ -215,7 +228,7 @@ mod tests {
 
     #[test]
     fn x64_storage_sizes_match_documented_budget() {
-        assert_eq!(std::mem::size_of::<Slot>(), 1560);
+        assert_eq!(std::mem::size_of::<Slot>(), 408);
         assert_eq!(std::mem::size_of::<super::super::RawEtwEvent>(), 104);
     }
 }

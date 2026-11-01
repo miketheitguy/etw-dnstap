@@ -32,9 +32,18 @@ The following pages describe the service and its measurement tools:
 | Task | Document |
 | --- | --- |
 | Build, provision, configure, and stop the service | [Project README](../README.md) |
+| Understand STOP/FINISH shutdown resets and configure graceful receiver close | [Service stop remediation](service-stop-remediation.md) |
+| Assess the bounded receiver-close comparison and its evidence limits | [Service shutdown validation results](service-stop-validation-results.md) |
 | Review the ETW subscription, accepted event IDs, and local validation | [ETW subscription filter plan](etw-subscription-filter-plan.md) |
+| Review ETW event-ID filtering and stale ETW session recovery | [ETW session recovery and event-ID filter plan](etw-session-recovery-and-event-filter-plan.md) |
+| Review service, ETW session, intake, parser polling, and network remediation | [Source review remediation plan](src-review-remediation-plan.md) |
+| Review ETW keyword narrowing, its provider-metadata checks, and live validation | [ETW keyword narrowing plan](etw-keyword-narrowing-plan.md) |
+| Review Event Log counters, receiver output bounds, and the live and heavy load checks | [Live load validation plan](live-load-validation-plan.md) |
+| Plan the bottleneck diagnosis and parallel parser workers sharing one ETW feed | [Parallel parser workers plan](parallel-parser-workers-plan.md) |
 | Review pool ownership, callback allocation scope, and loss counters | [Pooled ETW intake](pooled-intake.md) |
-| Review bounded parser and encoder reuse, interface ownership, and local validation | [Parser and encoder optimization plan](parser-encoder-optimization-plan.md) |
+| Review single-pass decoding, TDH fallback, pooled-event lifetime, and local validation | [Single-pass decoder plan](single-pass-decoder-plan.md) |
+| Review the historical transition to direct packet encoding | [Direct packet encoding plan](direct-packet-encoding-plan.md) |
+| Review the historical parser and encoder reuse implementation and its validation | [Parser and encoder optimization plan](parser-encoder-optimization-plan.md) |
 | Choose queue and pool capacity; review final-drain ownership | [Ring capacity and shutdown](ring-buffer.md) |
 | Review the proposed per-stage Windows V2 counter design and implementation tasks | [Windows V2 performance counter plan](windows-performance-counters-v2-plan.md) |
 | Interpret QPS, record counts, CPU units, and independent result gates | [Measurement terms and result gates](measurement-terms.md) |

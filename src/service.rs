@@ -1,15 +1,18 @@
 //! SCM-only host, with token validation before capture initialization.
 
 use std::{
+    io,
     mem::{offset_of, size_of},
     ptr::{null, null_mut},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
 use anyhow::{Context, Result, anyhow, ensure};
+use tracing::{Level, Metadata};
+use tracing_subscriber::fmt::MakeWriter;
 use windows_sys::{
     Win32::{
         Foundation::{
@@ -23,7 +26,8 @@ use windows_sys::{
         },
         System::{
             EventLog::{
-                DeregisterEventSource, EVENTLOG_ERROR_TYPE, RegisterEventSourceW, ReportEventW,
+                DeregisterEventSource, EVENTLOG_ERROR_TYPE, EVENTLOG_INFORMATION_TYPE,
+                EVENTLOG_WARNING_TYPE, RegisterEventSourceW, ReportEventW,
             },
             Services::{
                 RegisterServiceCtrlHandlerExW, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
@@ -32,6 +36,7 @@ use windows_sys::{
                 SERVICE_STOP_PENDING, SERVICE_STOPPED, SERVICE_TABLE_ENTRYW,
                 SERVICE_WIN32_OWN_PROCESS, SetServiceStatus, StartServiceCtrlDispatcherW,
             },
+            SystemServices::{SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY},
             Threading::{GetCurrentProcess, OpenProcessToken},
         },
     },
@@ -41,14 +46,19 @@ use windows_sys::{
 use crate::pipeline::{self, CaptureArgs};
 
 static DISPATCHED: AtomicBool = AtomicBool::new(false);
-static ARGS: Mutex<Option<CaptureArgs>> = Mutex::new(None);
+// Argument errors are carried as text so the SCM path and console path report
+// the same clap rendering without retaining parser state.
+static ARGS: Mutex<Option<Result<CaptureArgs, String>>> = Mutex::new(None);
 static RESULT: Mutex<Option<Result<()>>> = Mutex::new(None);
+// Process-lifetime SCM checkpoint for pending states. Only ServiceMain reports
+// status, so relaxed ordering keeps the counter monotonic per pending phase.
+static CHECKPOINT: AtomicU32 = AtomicU32::new(0);
 // A control callback may run until the dispatcher returns. Static storage avoids
 // releasing callback state when ServiceMain reports Stopped.
 static STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 /// Connects to SCM; executing the binary from a console never starts capture.
-pub(crate) fn run(args: CaptureArgs) -> Result<()> {
+pub(crate) fn run(args: Result<CaptureArgs, String>) -> Result<()> {
     ensure!(
         !DISPATCHED.swap(true, Ordering::AcqRel),
         "SCM dispatcher already invoked"
@@ -72,6 +82,16 @@ pub(crate) fn run(args: CaptureArgs) -> Result<()> {
     // blocking dispatcher call. Callback state has process lifetime.
     let success = unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) };
     if success == 0 {
+        // A console launch fails here before ServiceMain runs. Surface invalid
+        // arguments first so the console user sees the clap message.
+        let invalid = ARGS
+            .lock()
+            .map_err(|_| anyhow!("service arguments lock poisoned"))?
+            .as_ref()
+            .and_then(|args| args.as_ref().err().cloned());
+        if let Some(text) = invalid {
+            return Err(anyhow!("{text}"));
+        }
         return Err(last_error(
             "StartServiceCtrlDispatcherW (start EtwDnstap through SCM)",
         ));
@@ -119,12 +139,15 @@ fn run_registered(handle: SERVICE_STATUS_HANDLE) -> Result<()> {
     let mut startup_guard = Some(pipeline::ShutdownWatchdog::arm());
     let result = (|| {
         report_status(handle, SERVICE_START_PENDING, false)?;
+        // Identity is verified before argument validation, so an unprivileged
+        // or misconfigured host never reads its configuration.
         verify_identity()?;
         let args = ARGS
             .lock()
             .map_err(|_| anyhow!("service arguments lock poisoned"))?
             .take()
-            .context("missing service arguments")?;
+            .context("missing service arguments")?
+            .map_err(|text| anyhow!("invalid service arguments: {text}"))?;
         let stop = STOP.get().context("missing service stop state")?;
         pipeline::run_capture(
             args,
@@ -175,8 +198,22 @@ fn handle_control(control: u32, stop: &AtomicBool) -> u32 {
     }
 }
 
-fn status_record(state: u32, failed: bool) -> SERVICE_STATUS {
-    let pending = matches!(state, SERVICE_START_PENDING | SERVICE_STOP_PENDING);
+fn is_pending(state: u32) -> bool {
+    matches!(state, SERVICE_START_PENDING | SERVICE_STOP_PENDING)
+}
+
+/// Advances the checkpoint for pending states and resets it for all others.
+fn checkpoint_for(counter: &AtomicU32, state: u32) -> u32 {
+    if is_pending(state) {
+        counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+    } else {
+        counter.store(0, Ordering::Relaxed);
+        0
+    }
+}
+
+fn status_record(state: u32, failed: bool, checkpoint: u32) -> SERVICE_STATUS {
+    let pending = is_pending(state);
     SERVICE_STATUS {
         dwServiceType: SERVICE_WIN32_OWN_PROCESS,
         dwCurrentState: state,
@@ -191,13 +228,13 @@ fn status_record(state: u32, failed: bool) -> SERVICE_STATUS {
             ERROR_SUCCESS
         },
         dwServiceSpecificExitCode: u32::from(failed),
-        dwCheckPoint: u32::from(pending),
+        dwCheckPoint: checkpoint,
         dwWaitHint: if pending { 15_000 } else { 0 },
     }
 }
 
 fn report_status(handle: SERVICE_STATUS_HANDLE, state: u32, failed: bool) -> Result<()> {
-    let status = status_record(state, failed);
+    let status = status_record(state, failed, checkpoint_for(&CHECKPOINT, state));
     // SAFETY: This handle was returned by RegisterServiceCtrlHandlerExW for this
     // ServiceMain; it is borrowed (never CloseHandle'd). status is initialized.
     if unsafe { SetServiceStatus(handle, &raw const status) } == 0 {
@@ -218,39 +255,78 @@ fn last_error(operation: &str) -> anyhow::Error {
 /// Best-effort failure detail; callers keep this synchronous API under a deadline.
 fn report_failure(error: &anyhow::Error) {
     // Error chains contain operation/status metadata, never DNS message contents.
-    // Bound the native log entry and replace embedded NUL before termination.
-    let text: Vec<u16> = format!("EtwDnstap failed: {error:#}")
+    let text = event_text(&format!("EtwDnstap failed: {error:#}"));
+    if let Some(source) = EventSource::open() {
+        // Event ID 1 is reserved for fatal service failures.
+        source.report(EVENTLOG_ERROR_TYPE, 1, &text);
+    }
+}
+
+/// Maximum insertion-string length in UTF-16 units, excluding the terminator.
+const MAX_EVENT_UNITS: usize = 8192;
+/// Bounds per-event buffering; the sanitizer caps what is finally reported.
+const MAX_LINE_BYTES: usize = 16 * 1024;
+
+/// Trims trailing CR/LF, replaces NUL, caps length, and appends the terminator.
+fn event_text(message: &str) -> Vec<u16> {
+    message
+        .trim_end_matches(['\r', '\n'])
         .encode_utf16()
-        .take(8192)
+        .take(MAX_EVENT_UNITS)
         .map(|unit| if unit == 0 { 0xfffd } else { unit })
         .chain(Some(0))
-        .collect();
-    // SAFETY: null selects the local server and the source name is static UTF-16.
-    let source = unsafe { RegisterEventSourceW(null(), w!("EtwDnstap")) };
-    if source.is_null() {
-        return;
-    }
-    let source = EventSource(source);
-    let strings = [text.as_ptr()];
-    // SAFETY: source is owned and open; the one terminated UTF-16 insertion
-    // string and pointer array remain alive throughout this synchronous call.
-    // No SID, raw-data buffer, or remote server is supplied.
-    unsafe {
-        ReportEventW(
-            source.0,
-            EVENTLOG_ERROR_TYPE,
-            0,
-            1,
-            null_mut(),
-            1,
-            0,
-            strings.as_ptr(),
-            null(),
-        );
+        .collect()
+}
+
+/// Maps tracing severity to Event Log type and ID; ID 1 stays reserved.
+fn event_kind(level: Level) -> (u16, u32) {
+    if level == Level::ERROR {
+        (EVENTLOG_ERROR_TYPE, 4)
+    } else if level == Level::WARN {
+        (EVENTLOG_WARNING_TYPE, 3)
+    } else {
+        (EVENTLOG_INFORMATION_TYPE, 2)
     }
 }
 
 struct EventSource(HANDLE);
+
+// SAFETY: The source handle is process-lifetime state with no thread affinity.
+// Only ReportEventW uses it, and the wrapper holds no Rust-side mutable state.
+unsafe impl Send for EventSource {}
+// SAFETY: Shared access only calls ReportEventW, which takes the handle by value
+// and is safe to invoke concurrently from any thread on the same source.
+unsafe impl Sync for EventSource {}
+
+impl EventSource {
+    /// Registers the `EtwDnstap` source on the local server, or returns `None`.
+    fn open() -> Option<Self> {
+        // SAFETY: null selects the local server and the source name is static UTF-16.
+        let handle = unsafe { RegisterEventSourceW(null(), w!("EtwDnstap")) };
+        (!handle.is_null()).then_some(Self(handle))
+    }
+
+    /// Reports one event; `text` must be terminated, as produced by `event_text`.
+    fn report(&self, kind: u16, event_id: u32, text: &[u16]) {
+        let strings = [text.as_ptr()];
+        // SAFETY: self owns an open source; the one terminated UTF-16 insertion
+        // string and pointer array remain alive throughout this synchronous call.
+        // No SID, raw-data buffer, or remote server is supplied.
+        unsafe {
+            ReportEventW(
+                self.0,
+                kind,
+                0,
+                event_id,
+                null_mut(),
+                1,
+                0,
+                strings.as_ptr(),
+                null(),
+            );
+        }
+    }
+}
 
 impl Drop for EventSource {
     fn drop(&mut self) {
@@ -259,6 +335,78 @@ impl Drop for EventSource {
         unsafe {
             DeregisterEventSource(self.0);
         }
+    }
+}
+
+/// Registered lazily once per process; a failed registration is remembered and
+/// later messages are dropped silently, so logging never stops capture.
+static EVENT_SOURCE: OnceLock<Option<EventSource>> = OnceLock::new();
+
+fn event_source() -> Option<&'static EventSource> {
+    EVENT_SOURCE.get_or_init(EventSource::open).as_ref()
+}
+
+/// Buffers one formatted tracing event and reports it when dropped or flushed.
+pub(crate) struct EventLogLine {
+    kind: u16,
+    event_id: u32,
+    bytes: Vec<u8>,
+}
+
+impl EventLogLine {
+    fn for_level(level: Level) -> Self {
+        let (kind, event_id) = event_kind(level);
+        Self {
+            kind,
+            event_id,
+            bytes: Vec::new(),
+        }
+    }
+
+    fn report(&mut self) {
+        if self.bytes.is_empty() {
+            return;
+        }
+        let text = event_text(&String::from_utf8_lossy(&self.bytes));
+        self.bytes.clear();
+        if let Some(source) = event_source() {
+            source.report(self.kind, self.event_id, &text);
+        }
+    }
+}
+
+impl io::Write for EventLogLine {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let room = MAX_LINE_BYTES.saturating_sub(self.bytes.len());
+        self.bytes
+            .extend_from_slice(&buffer[..buffer.len().min(room)]);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.report();
+        Ok(())
+    }
+}
+
+impl Drop for EventLogLine {
+    fn drop(&mut self) {
+        self.report();
+    }
+}
+
+/// Sends tracing output to the Application Event Log under source `EtwDnstap`.
+pub(crate) struct EventLogWriter;
+
+impl<'a> MakeWriter<'a> for EventLogWriter {
+    type Writer = EventLogLine;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        EventLogLine::for_level(Level::INFO)
+    }
+
+    fn make_writer_for(&'a self, meta: &Metadata<'_>) -> Self::Writer {
+        EventLogLine::for_level(*meta.level())
     }
 }
 
@@ -398,11 +546,13 @@ fn verify_identity() -> Result<()> {
             count,
         )
     };
-    // TOKEN_GROUP attributes from winnt.h: enabled=0x4, use-for-deny-only=0x10.
+    // The SID must be enabled and must not be restricted to deny-only use.
+    let restriction_mask = (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY).cast_unsigned();
+    let enabled_only = SE_GROUP_ENABLED.cast_unsigned();
     let mut service_enabled = false;
     for entry in entries {
         let sid = groups.sid(entry.Sid)?;
-        if sid == expected_sid.as_slice() && entry.Attributes & 0x14 == 0x04 {
+        if sid == expected_sid.as_slice() && entry.Attributes & restriction_mask == enabled_only {
             service_enabled = true;
         }
     }
@@ -508,18 +658,31 @@ mod tests {
 
     #[test]
     fn pending_status_accepts_no_controls_and_failure_is_reported() {
-        let pending = status_record(SERVICE_START_PENDING, false);
+        let pending = status_record(SERVICE_START_PENDING, false, 1);
         assert_eq!(pending.dwControlsAccepted, 0);
         assert!(pending.dwWaitHint > 0);
-        let running = status_record(SERVICE_RUNNING, false);
+        assert_eq!(pending.dwCheckPoint, 1);
+        let running = status_record(SERVICE_RUNNING, false, 0);
         assert_eq!(
             running.dwControlsAccepted,
             SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
         );
-        let stopped = status_record(SERVICE_STOPPED, true);
+        let stopped = status_record(SERVICE_STOPPED, true, 0);
         assert_eq!(stopped.dwWin32ExitCode, ERROR_SERVICE_SPECIFIC_ERROR);
         assert_eq!(stopped.dwServiceSpecificExitCode, 1);
         assert_eq!(stopped.dwCheckPoint, 0);
+    }
+
+    #[test]
+    fn checkpoint_advances_across_pending_reports_and_resets_otherwise() {
+        let counter = AtomicU32::new(0);
+        assert_eq!(checkpoint_for(&counter, SERVICE_START_PENDING), 1);
+        assert_eq!(checkpoint_for(&counter, SERVICE_START_PENDING), 2);
+        assert_eq!(checkpoint_for(&counter, SERVICE_STOP_PENDING), 3);
+        assert_eq!(checkpoint_for(&counter, SERVICE_RUNNING), 0);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert_eq!(checkpoint_for(&counter, SERVICE_STOPPED), 0);
+        assert_eq!(checkpoint_for(&counter, SERVICE_START_PENDING), 1);
     }
 
     #[test]
@@ -533,5 +696,29 @@ mod tests {
         assert!(bounded_sid(bytes, address + 1).is_err());
         assert!(bounded_sid(bytes, address + bytes.len()).is_err());
         assert!(bounded_sid(bytes, address - 1).is_err());
+    }
+
+    #[test]
+    fn event_text_trims_terminators_replaces_nul_and_caps_units() {
+        assert_eq!(
+            event_text("a\0b\r\n"),
+            [u16::from(b'a'), 0xfffd, u16::from(b'b'), 0]
+        );
+        let units = event_text(&"x".repeat(MAX_EVENT_UNITS + 10));
+        assert_eq!(units.len(), MAX_EVENT_UNITS + 1);
+        assert_eq!(units.last(), Some(&0));
+        assert!(
+            units[..MAX_EVENT_UNITS]
+                .iter()
+                .all(|&unit| unit == u16::from(b'x'))
+        );
+    }
+
+    #[test]
+    fn levels_map_to_event_types_and_ids() {
+        assert_eq!(event_kind(Level::ERROR), (EVENTLOG_ERROR_TYPE, 4));
+        assert_eq!(event_kind(Level::WARN), (EVENTLOG_WARNING_TYPE, 3));
+        assert_eq!(event_kind(Level::INFO), (EVENTLOG_INFORMATION_TYPE, 2));
+        assert_eq!(event_kind(Level::DEBUG), (EVENTLOG_INFORMATION_TYPE, 2));
     }
 }

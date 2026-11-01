@@ -55,7 +55,7 @@ pub(crate) enum EncodeError {
     Protobuf(prost::EncodeError),
 }
 
-/// Reusable Prost storage for one parser thread.
+/// Reusable metadata and final wire storage for one parser thread.
 ///
 /// Incoming client events (256/257/258) map to client messages; recursive
 /// events (260/261) map to resolver messages. Unknown endpoints remain absent.
@@ -63,7 +63,7 @@ pub(crate) enum EncodeError {
 /// and 70 KiB of output. `reserve_exact` avoids geometric output growth; the
 /// allocator may internally round its allocation beyond the requested size.
 pub(crate) struct Encoder {
-    tap: Dnstap,
+    tap: EnvelopeMetadata,
     message: DnsMessage,
     query_address: Vec<u8>,
     response_address: Vec<u8>,
@@ -79,12 +79,10 @@ impl Encoder {
             return Err(EncodeError::IdentityTooLong);
         }
         Ok(Self {
-            tap: Dnstap {
+            tap: EnvelopeMetadata {
                 identity: (!identity.is_empty()).then(|| identity.to_vec()),
                 version: None,
                 extra: None,
-                message: None,
-                r#type: DnstapType::Message as i32,
             },
             message: DnsMessage::default(),
             query_address: Vec::with_capacity(16),
@@ -93,17 +91,37 @@ impl Encoder {
         })
     }
 
-    /// Encode an event without changing the caller packet's bytes or allocation.
+    /// Discard any previously encoded event before parsing a new one.
+    pub(crate) fn clear(&mut self) {
+        self.output.clear();
+    }
+
+    /// Fill the packet directly in its final, initialized protobuf location.
     ///
-    /// The returned slice borrows only this encoder. All validation precedes
-    /// ownership transfer; every fallible serialization result restores the
-    /// packet before returning. This validates the DNS envelope, not records.
-    pub(crate) fn encode(
+    /// The callback runs once after metadata and size validation. It must not
+    /// retain the destination pointer. All output space, including the outer
+    /// suffix, is reserved first, so no packet bytes move after filling.
+    /// Every error clears the output. This validates the DNS envelope, not records.
+    pub(crate) fn encode_with(
         &mut self,
         event: RawDnsEvent,
-        packet: &mut Vec<u8>,
-    ) -> Result<&[u8], EncodeError> {
+        packet_length: usize,
+        fill: impl FnOnce(&mut [u8]) -> anyhow::Result<()>,
+    ) -> anyhow::Result<&[u8]> {
         self.output.clear();
+        if let Err(error) = self.encode_into(event, packet_length, fill) {
+            self.output.clear();
+            return Err(error);
+        }
+        Ok(&self.output)
+    }
+
+    fn encode_into(
+        &mut self,
+        event: RawDnsEvent,
+        packet_length: usize,
+        fill: impl FnOnce(&mut [u8]) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         // Reclaim optional address storage before clearing the per-event fields.
         if let Some(address) = self.message.query_address.take() {
             self.query_address = address;
@@ -117,13 +135,10 @@ impl Encoder {
             257 | 258 => (MessageType::ClientResponse, true, true),
             260 => (MessageType::ResolverQuery, false, false),
             261 => (MessageType::ResolverResponse, true, false),
-            other => return Err(EncodeError::UnsupportedEvent(other)),
+            other => return Err(EncodeError::UnsupportedEvent(other).into()),
         };
-        if !(DNS_HEADER_LENGTH..=MAX_DNS_MESSAGE_LENGTH).contains(&packet.len()) {
-            return Err(EncodeError::InvalidPacketLength(packet.len()));
-        }
-        if (packet[2] & 0x80 != 0) != is_response {
-            return Err(EncodeError::IncorrectDirection(event.event_id));
+        if !(DNS_HEADER_LENGTH..=MAX_DNS_MESSAGE_LENGTH).contains(&packet_length) {
+            return Err(EncodeError::InvalidPacketLength(packet_length).into());
         }
         let timestamp = event
             .timestamp
@@ -132,7 +147,7 @@ impl Encoder {
         let socket_family = match (event.local_address, event.peer_address) {
             (Some(IpAddr::V4(_)), Some(IpAddr::V6(_)))
             | (Some(IpAddr::V6(_)), Some(IpAddr::V4(_))) => {
-                return Err(EncodeError::MixedAddressFamilies);
+                return Err(EncodeError::MixedAddressFamilies.into());
             }
             (Some(IpAddr::V4(_)), _) | (_, Some(IpAddr::V4(_))) => Some(SocketFamily::Inet as i32),
             (Some(IpAddr::V6(_)), _) | (_, Some(IpAddr::V6(_))) => Some(SocketFamily::Inet6 as i32),
@@ -163,49 +178,74 @@ impl Encoder {
         self.message.response_address = fill_address(response_address, &mut self.response_address);
         self.message.query_port = query_port.map(u32::from);
         self.message.response_port = response_port.map(u32::from);
-        let packet_field = if is_response {
+        if is_response {
             self.message.response_time_sec = Some(timestamp.as_secs());
             self.message.response_time_nsec = Some(timestamp.subsec_nanos());
-            &mut self.message.response_message
         } else {
             self.message.query_time_sec = Some(timestamp.as_secs());
             self.message.query_time_nsec = Some(timestamp.subsec_nanos());
-            &mut self.message.query_message
-        };
-        *packet_field = Some(std::mem::take(packet));
-        self.tap.message = Some(std::mem::take(&mut self.message));
-        // Do not propagate an error until ownership has returned to the caller.
-        let result = self.encode_message();
-        self.message = self.tap.message.take().unwrap_or_default();
-        let packet_field = if is_response {
-            &mut self.message.response_message
-        } else {
-            &mut self.message.query_message
-        };
-        *packet = packet_field.take().unwrap_or_default();
-        if let Err(error) = result {
-            self.output.clear();
-            return Err(error);
         }
-        Ok(&self.output)
+        self.fill_message(event.event_id, is_response, packet_length, fill)
     }
 
-    fn encode_message(&mut self) -> Result<(), EncodeError> {
-        let length = self.tap.encoded_len();
+    fn fill_message(
+        &mut self,
+        event_id: u16,
+        is_response: bool,
+        packet_length: usize,
+        fill: impl FnOnce(&mut [u8]) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        // Each manually emitted field has a one-byte tag. Metadata contains
+        // only fields before the packet tag (10 for queries, 14 for responses).
+        let packet_field_length = checked_length(&[
+            1,
+            prost::encoding::encoded_len_varint(packet_length as u64),
+            packet_length,
+        ])?;
+        let message_length = checked_length(&[self.message.encoded_len(), packet_field_length])?;
+        let length = checked_length(&[
+            self.tap.encoded_len(),
+            1,
+            prost::encoding::encoded_len_varint(message_length as u64),
+            message_length,
+            2, // required outer type: tag 15, value 1
+        ])?;
         if length > MAX_ENCODED_LENGTH {
-            return Err(EncodeError::OutputTooLong(length));
+            return Err(EncodeError::OutputTooLong(length).into());
         }
         if self.output.capacity() < length {
             self.output
                 .try_reserve_exact(length)
                 .map_err(|_| EncodeError::AllocationFailed)?;
         }
-        // Prost performs its own length check. Pre-reservation keeps Vec's
-        // BufMut implementation from growing geometrically while encoding.
+        // Preserve Prost field order: outer metadata, message, outer type.
         self.tap
             .encode(&mut self.output)
-            .map_err(EncodeError::Protobuf)
+            .map_err(EncodeError::Protobuf)?;
+        self.output.push(0x72);
+        prost::encoding::encode_varint(message_length as u64, &mut self.output);
+        self.message
+            .encode(&mut self.output)
+            .map_err(EncodeError::Protobuf)?;
+        self.output.push(if is_response { 0x72 } else { 0x52 });
+        prost::encoding::encode_varint(packet_length as u64, &mut self.output);
+        let packet_start = self.output.len();
+        let packet_end = checked_length(&[packet_start, packet_length])?;
+        self.output.resize(length, 0);
+        self.output[packet_end..].copy_from_slice(&[0x78, 1]);
+        fill(&mut self.output[packet_start..packet_end])?;
+        if (self.output[packet_start + 2] & 0x80 != 0) != is_response {
+            return Err(EncodeError::IncorrectDirection(event_id).into());
+        }
+        Ok(())
     }
+}
+
+fn checked_length(parts: &[usize]) -> Result<usize, EncodeError> {
+    parts.iter().try_fold(0_usize, |sum, part| {
+        sum.checked_add(*part)
+            .ok_or(EncodeError::OutputTooLong(usize::MAX))
+    })
 }
 
 fn fill_address(address: Option<IpAddr>, storage: &mut Vec<u8>) -> Option<Vec<u8>> {
@@ -221,6 +261,17 @@ fn fill_address(address: Option<IpAddr>, storage: &mut Vec<u8>) -> Option<Vec<u8
 // Handwritten, wire-compatible subset of the upstream proto2 schema. Optional
 // scalars retain presence. In particular, the nanosecond fields are fixed32.
 #[derive(Clone, PartialEq, prost::Message)]
+struct EnvelopeMetadata {
+    #[prost(bytes = "vec", optional, tag = "1")]
+    identity: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    version: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    extra: Option<Vec<u8>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, PartialEq, prost::Message)]
 struct Dnstap {
     #[prost(bytes = "vec", optional, tag = "1")]
     identity: Option<Vec<u8>>,
@@ -234,6 +285,7 @@ struct Dnstap {
     r#type: i32,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
 #[repr(i32)]
 enum DnstapType {
@@ -260,12 +312,14 @@ struct DnsMessage {
     query_time_sec: Option<u64>,
     #[prost(fixed32, optional, tag = "9")]
     query_time_nsec: Option<u32>,
+    #[cfg(test)]
     #[prost(bytes = "vec", optional, tag = "10")]
     query_message: Option<Vec<u8>>,
     #[prost(uint64, optional, tag = "12")]
     response_time_sec: Option<u64>,
     #[prost(fixed32, optional, tag = "13")]
     response_time_nsec: Option<u32>,
+    #[cfg(test)]
     #[prost(bytes = "vec", optional, tag = "14")]
     response_message: Option<Vec<u8>>,
 }
@@ -292,6 +346,10 @@ enum SocketProtocol {
     Udp = 1,
     Tcp = 2,
 }
+
+#[cfg(test)]
+#[path = "dnstap/direct_tests.rs"]
+mod direct_tests;
 
 #[cfg(test)]
 mod tests {
@@ -325,14 +383,14 @@ mod tests {
     }
 
     #[test]
-    fn mixed_reuse_matches_independent_baseline_and_restores_packet() {
+    fn mixed_reuse_matches_independent_baseline_and_preserves_source_packet() {
         for identity in [b"".as_slice(), b"dns-server".as_slice()] {
             let mut encoder = Encoder::new(identity).expect("valid identity");
             for (index, id) in [256, 257, 258, 260, 261, 256, 257, 260]
                 .into_iter()
                 .enumerate()
             {
-                let (mut fixture, mut packet) = event(id);
+                let (mut fixture, packet) = event(id);
                 if index % 3 == 1 {
                     fixture.transport = Transport::Tcp;
                     fixture.peer_address = Some("2001:db8::53".parse().expect("IPv6"));
@@ -358,7 +416,10 @@ mod tests {
                 let expected =
                     reference(&fixture, packet.clone(), identity).expect("baseline encodes");
                 let bytes = encoder
-                    .encode(fixture, &mut packet)
+                    .encode_with(fixture, packet.len(), |destination| {
+                        destination.copy_from_slice(&packet);
+                        Ok(())
+                    })
                     .expect("valid fixture encodes");
                 assert_eq!(bytes, expected);
                 let tap = Dnstap::decode(bytes).expect("protobuf decodes");
@@ -422,10 +483,13 @@ mod tests {
         fixture.peer_address = None;
         fixture.local_address = None;
         fixture.peer_port = None;
-        let mut packet = vec![0; 12];
+        let packet = vec![0; 12];
         let mut encoder = Encoder::new(b"").expect("empty identity");
         let bytes = encoder
-            .encode(fixture, &mut packet)
+            .encode_with(fixture, packet.len(), |destination| {
+                destination.copy_from_slice(&packet);
+                Ok(())
+            })
             .expect("valid fixture encodes");
         // Independent wire golden: tag 9 is fixed32, including present zero.
         let expected = [
@@ -448,15 +512,20 @@ mod tests {
         ));
         for length in [0, 1, 11, 12, 65_535, 65_536] {
             let (fixture, _) = event(256);
-            let mut packet = vec![0; length];
+            let packet = vec![0; length];
             let original = packet.clone();
             let pointer = packet.as_ptr();
             let capacity = packet.capacity();
-            let result = encoder.encode(fixture, &mut packet);
+            let result = encoder.encode_with(fixture, packet.len(), |destination| {
+                destination.copy_from_slice(&packet);
+                Ok(())
+            });
             if (12..=65_535).contains(&length) {
                 assert!(result.is_ok());
             } else {
-                assert!(matches!(result, Err(EncodeError::InvalidPacketLength(n)) if n == length));
+                assert!(
+                    matches!(result.expect_err("invalid length").downcast_ref::<EncodeError>(), Some(EncodeError::InvalidPacketLength(n)) if *n == length)
+                );
                 assert_eq!(encoder.output, [] as [u8; 0]);
             }
             assert_restored(&packet, pointer, capacity, &original);
@@ -474,49 +543,68 @@ mod tests {
             let pointer = packet.as_ptr();
             let capacity = packet.capacity();
             let error = encoder
-                .encode(fixture, &mut packet)
+                .encode_with(fixture, packet.len(), |destination| {
+                    destination.copy_from_slice(&packet);
+                    Ok(())
+                })
                 .expect_err("fixture rejected");
             assert!(matches!(
-                (failure, error),
-                (0, EncodeError::UnsupportedEvent(259))
-                    | (1, EncodeError::IncorrectDirection(256))
-                    | (2, EncodeError::InvalidTimestamp)
-                    | (3, EncodeError::MixedAddressFamilies)
+                (failure, error.downcast_ref::<EncodeError>()),
+                (0, Some(EncodeError::UnsupportedEvent(259)))
+                    | (1, Some(EncodeError::IncorrectDirection(256)))
+                    | (2, Some(EncodeError::InvalidTimestamp))
+                    | (3, Some(EncodeError::MixedAddressFamilies))
             ));
             assert_restored(&packet, pointer, capacity, &original);
             assert_eq!(encoder.output, [] as [u8; 0]);
-            let (valid, mut packet) = event(256);
+            let (valid, packet) = event(256);
             let expected =
                 reference(&valid, packet.clone(), &[1; 1_024]).expect("baseline encodes");
             assert_eq!(
-                encoder.encode(valid, &mut packet).expect("recovery"),
+                encoder
+                    .encode_with(valid, packet.len(), |destination| {
+                        destination.copy_from_slice(&packet);
+                        Ok(())
+                    })
+                    .expect("recovery"),
                 expected
             );
         }
     }
 
     #[test]
-    fn serialization_failure_restores_packet_and_allows_recovery() {
+    fn serialization_ceiling_rejects_before_filling_and_allows_recovery() {
         // This state cannot come from validated input; exercise the defensive
-        // serialization ceiling after the packet has moved into Prost storage.
+        // serialization ceiling before the packet destination is exposed.
         let mut encoder = Encoder::new(b"").expect("identity");
         encoder.tap.extra = Some(vec![0; MAX_ENCODED_LENGTH]);
-        let (fixture, mut packet) = event(257);
+        let (fixture, packet) = event(257);
         let original = packet.clone();
         let pointer = packet.as_ptr();
         let capacity = packet.capacity();
         assert!(matches!(
-            encoder.encode(fixture, &mut packet),
-            Err(EncodeError::OutputTooLong(_))
+            encoder
+                .encode_with(fixture, packet.len(), |destination| {
+                    destination.copy_from_slice(&packet);
+                    Ok(())
+                })
+                .expect_err("output ceiling")
+                .downcast_ref::<EncodeError>(),
+            Some(EncodeError::OutputTooLong(_))
         ));
         assert_restored(&packet, pointer, capacity, &original);
         assert_eq!(encoder.output, [] as [u8; 0]);
         assert_eq!(encoder.output.capacity(), 0);
         encoder.tap.extra = None;
-        let (fixture, mut packet) = event(256);
+        let (fixture, packet) = event(256);
         let expected = reference(&fixture, packet.clone(), b"").expect("baseline encodes");
         assert_eq!(
-            encoder.encode(fixture, &mut packet).expect("recovery"),
+            encoder
+                .encode_with(fixture, packet.len(), |destination| {
+                    destination.copy_from_slice(&packet);
+                    Ok(())
+                })
+                .expect("recovery"),
             expected
         );
     }
@@ -524,12 +612,22 @@ mod tests {
     #[test]
     fn warmed_encoder_reuses_storage_without_heap_operations() {
         let mut encoder = Encoder::new(b"dns-server").expect("identity");
-        let (fixture, mut packet) = event(256);
-        encoder.encode(fixture, &mut packet).expect("warmup");
+        let (fixture, packet) = event(256);
+        encoder
+            .encode_with(fixture, packet.len(), |destination| {
+                destination.copy_from_slice(&packet);
+                Ok(())
+            })
+            .expect("warmup");
         let (fixture, _) = event(256);
         let mut result = false;
         crate::etw::assert_no_allocations(|| {
-            result = encoder.encode(fixture, &mut packet).is_ok();
+            result = encoder
+                .encode_with(fixture, packet.len(), |destination| {
+                    destination.copy_from_slice(&packet);
+                    Ok(())
+                })
+                .is_ok();
         });
         assert!(result);
     }

@@ -6,6 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::{Context, Result};
+
 use crate::framestream::{CONTENT_TYPE, FrameStreamWriter};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -14,6 +16,8 @@ const CONTROL_READY: u32 = 4;
 const CONTROL_FINISH: u32 = 5;
 const CONTENT_TYPE_FIELD: u32 = 1;
 const MAX_CONTROL_LENGTH: usize = 512;
+// Holds many typical frames per send; larger frames bypass the buffer.
+const WRITE_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Plaintext sender for an explicitly trusted receiver. Connection loss is
 /// fatal; packets are never ambiguously resent or silently reconnected.
@@ -28,7 +32,8 @@ impl NetworkSink {
         let mut transport = DeadlineTcp::new(stream, IO_TIMEOUT);
         write_control(&mut transport, CONTROL_READY, true)?;
         read_control(&mut transport, CONTROL_ACCEPT, true)?;
-        let mut writer = FrameStreamWriter::new(BufWriter::new(transport))?;
+        let mut writer =
+            FrameStreamWriter::new(BufWriter::with_capacity(WRITE_BUFFER_BYTES, transport))?;
         // Publish START before the service reports readiness, using the same
         // total handshake deadline as READY and ACCEPT.
         writer.flush()?;
@@ -45,20 +50,46 @@ impl NetworkSink {
         self.writer.flush()
     }
 
-    pub(crate) fn finish(mut self) -> io::Result<()> {
+    pub(crate) fn finish(mut self) -> Result<()> {
         self.reset_deadline();
-        let buffered = self.writer.finish()?;
-        let mut transport = buffered
-            .into_inner()
-            .map_err(io::IntoInnerError::into_error)?;
-        // STOP, flush, and FINISH share one deadline; each read cannot extend it.
-        read_control(&mut transport, CONTROL_FINISH, false)
+        finish_stream(self.writer)
     }
 
     fn reset_deadline(&mut self) {
         self.writer.get_mut().get_mut().deadline = Instant::now() + IO_TIMEOUT;
     }
 }
+
+fn finish_stream<W: Read + Write>(mut writer: FrameStreamWriter<BufWriter<W>>) -> Result<()> {
+    // Flush the last data frame separately so a failure is not reported as a
+    // STOP or FINISH failure. NetworkSink resets the shared deadline once
+    // before entering this helper; these phases do not extend it.
+    writer.flush().context("final buffered data flush")?;
+    let buffered = writer.finish().context("STOP write/flush")?;
+    let mut transport = buffered
+        .into_inner()
+        .map_err(io::IntoInnerError::into_error)
+        .context("transport extraction")?;
+    read_finish(&mut transport)
+}
+
+fn read_finish(reader: &mut impl Read) -> Result<()> {
+    let mut storage = [0; MAX_CONTROL_LENGTH];
+    let frame = read_control_frame(reader, &mut storage).map_err(|(phase, error)| {
+        let context = match phase {
+            ControlPhase::HeaderRead => "FINISH header read",
+            ControlPhase::BodyRead => "FINISH body read",
+            ControlPhase::Validation => "FINISH validation",
+        };
+        anyhow::Error::new(error).context(context)
+    })?;
+    validate_control(frame, CONTROL_FINISH, false).context("FINISH validation")?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "network/shutdown_tests.rs"]
+mod shutdown_tests;
 
 struct DeadlineTcp {
     stream: TcpStream,
@@ -119,21 +150,52 @@ fn write_control(writer: &mut impl Write, kind: u32, content_type: bool) -> io::
     writer.flush()
 }
 
-fn read_control(reader: &mut impl Read, expected: u32, require_content: bool) -> io::Result<()> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlPhase {
+    HeaderRead,
+    BodyRead,
+    Validation,
+}
+
+/// Reads one bounded control frame into `storage` and returns its payload.
+/// Field validation is left to `validate_control`; this only checks framing.
+fn read_control_frame<'a>(
+    reader: &mut impl Read,
+    storage: &'a mut [u8; MAX_CONTROL_LENGTH],
+) -> Result<&'a [u8], (ControlPhase, io::Error)> {
     let mut header = [0; 8];
-    reader.read_exact(&mut header)?;
+    reader
+        .read_exact(&mut header)
+        .map_err(|error| (ControlPhase::HeaderRead, error))?;
     if header[..4] != [0; 4] {
-        return Err(invalid_control("expected a Frame Streams control frame"));
+        return Err((
+            ControlPhase::Validation,
+            invalid_control("expected a Frame Streams control frame"),
+        ));
     }
     let length = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
     if !(4..=512).contains(&length) {
-        return Err(invalid_control("control payload length outside 4..=512"));
+        return Err((
+            ControlPhase::Validation,
+            invalid_control("control payload length outside 4..=512"),
+        ));
     }
-    let length =
-        usize::try_from(length).map_err(|_| invalid_control("control length exceeds usize"))?;
+    let length = usize::try_from(length).map_err(|_| {
+        (
+            ControlPhase::Validation,
+            invalid_control("control length exceeds usize"),
+        )
+    })?;
+    reader
+        .read_exact(&mut storage[..length])
+        .map_err(|error| (ControlPhase::BodyRead, error))?;
+    Ok(&storage[..length])
+}
+
+fn read_control(reader: &mut impl Read, expected: u32, require_content: bool) -> io::Result<()> {
     let mut storage = [0; MAX_CONTROL_LENGTH];
-    reader.read_exact(&mut storage[..length])?;
-    validate_control(&storage[..length], expected, require_content)
+    let frame = read_control_frame(reader, &mut storage).map_err(|(_, error)| error)?;
+    validate_control(frame, expected, require_content)
 }
 
 fn take_u32(cursor: &mut &[u8]) -> io::Result<u32> {
@@ -202,6 +264,28 @@ mod tests {
         sender.write_frame(&[0x78, 1]).expect("payload writes");
         sender.finish().expect("STOP/FINISH succeeds");
         server.join().expect("server assertions pass");
+    }
+
+    #[test]
+    fn connect_uses_write_buffer_capacity() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let (release, receive) = mpsc::channel();
+        let receiver = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("sender connects");
+            let mut stream = DeadlineTcp::new(stream, Duration::from_secs(5));
+            read_control(&mut stream, CONTROL_READY, true).expect("READY arrives");
+            write_control(&mut stream, CONTROL_ACCEPT, true).expect("ACCEPT writes");
+            read_control(&mut stream, 2, true).expect("START arrives");
+            receive
+                .recv_timeout(Duration::from_secs(5))
+                .expect("sender releases receiver");
+        });
+        let mut sender = NetworkSink::connect(address).expect("handshake succeeds");
+        assert!(sender.writer.get_mut().capacity() >= WRITE_BUFFER_BYTES);
+        release.send(()).expect("release receiver");
+        drop(sender);
+        receiver.join().expect("receiver assertions pass");
     }
 
     #[test]

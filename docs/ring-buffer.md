@@ -7,24 +7,50 @@ traffic rate or event size.
 
 ## Capacity and memory
 
+**Warning: the defaults are tuned for low rates, about 1,000 queries/s or less.** With the periodic flush off (`--etw-flush-ms 0`), ETW delivers events in batches about 1 s apart, so delivery latency is about 1-2 s. The default 8,192 ring therefore starts dropping at roughly 2,000 queries/s (inferred), and lost 59-79% of events at 10k-20k queries/s in lab tests (P3w/P3x). For higher rates use `--etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64` (validated in P3x).
+
 The user-mode ETW callback leases preallocated storage, copies each accepted
 event, and calls `crossbeam_channel::Sender::try_send` on a bounded event channel.
 It does not wait for capacity or allocate callback storage. A full channel drops
 the newest event and increments `ring_dropped`. The default capacity is 8192
-events; `--capacity` accepts 1–16384. The parser uses only `try_recv` and polls an
-empty channel with a 2 ms timed park. The callback does not signal the parser
-after enqueue. The channel has no registered blocking receivers or selectors;
-atomic retries, spinning, yielding, and preemption still apply.
+events; `--capacity` accepts 1,024–262,144. The parser uses only `try_recv` and polls
+an empty channel with a timed park that backs off from 2 ms to 20 ms while idle.
+When `--etw-flush-ms` is set (opt-in; default 0, off), the supervisor thread also asks ETW to flush the session at that interval, because ETW otherwise delivers about once per `--etw-flush-seconds`, even with full buffers, and delivers them as one batch, which can overflow the
+channel. On the 6-vCPU lab VM, ETW delivered one batch per second at 10k and
+20k queries/s (about 20k and 39k events/s) and delivered promptly at 50k
+queries/s and above. The threshold is not known and may depend on the machine.
+At 10,000 queries/s with the flush disabled, about 59-61% of events were
+dropped there.
+
+Stage P3x validated the in-process flush on that VM (Windows Server 2025,
+authoritative workload, default 8,192 channel). With the flush there were 0
+ring drops at 10k and 20k queries/s, versus 59-79% loss without it. At 50k
+queries/s loss was 0.04-0.9% versus 0.3-1.7% without it; that residual loss
+tracks host disturbance, not the flush, and `etw_lost` was 0. The flush wrote
+about 5-16% more ETW buffers and cost under 0.1% of a core when idle. At 20k
+queries/s the largest batch was about 6,800 events with a 100 ms interval and
+about 3,500 with 50 ms, which is why 50 ms was the earlier default. Not tested: other
+machines and vCPU counts, 25-45k queries/s, recursive or mixed workloads, and
+the 50 ms default at 50k queries/s and above in a release build.
+
+Capacity guidance: each delivered batch holds roughly up to twice the flush
+interval's worth of events (2 events per query). At higher rates in the
+batching regime, lower `--etw-flush-ms` or raise `--capacity` so that
+2 x rate x interval stays well below the channel capacity.
+
+The callback does not signal the parser after enqueue. The channel has no
+registered blocking receivers or selectors; atomic retries, spinning, yielding,
+and preemption still apply.
 
 The regular pool has `capacity + 2` slots with 2048 payload bytes each. The jumbo
-pool has 131584-byte slots, with `--jumbo-capacity` accepting 0–256 and defaulting
+pool has 131,184-byte slots, with `--jumbo-capacity` accepting 0–256 and defaulting
 to 64. The classes have independent admission limits. Only 64 simultaneous jumbo
 leases fit at the defaults, even if the channel has spare entries. Slot return
 uses class-specific `ArrayQueue` free lists. No pool grows during capture.
 
 Counted payload, slot metadata, free-list, and channel element storage totals
-39,134,800 bytes (37.32 MiB) at the defaults and 95,306,832 bytes (90.89 MiB) at
-both maximum capacities. These calculations exclude allocator overhead, native
+29,595,984 bytes (28.22 MiB) at the defaults and 711,076,688 bytes (678.14 MiB) at
+the maximum (262,144 events, 256 jumbo slots). These calculations exclude allocator overhead, native
 ETW buffers, stacks, TDH caches, protobuf data, and output buffers. See
 [Pooled ETW intake](pooled-intake.md) for the detailed budget and ownership
 contract. Measure actual process memory and every intake loss category under
@@ -80,3 +106,5 @@ Unit tests cover the default and configured capacity bounds, full-ring loss,
 final enqueue followed by joined producer completion, empty completion after
 startup failure, and output errors. Synthetic tests do not establish live DNS
 throughput or an installed service's token configuration.
+
+P3z (6-vCPU lab VM, quiet host only, 1,000 queries/s, authoritative, `--etw-max-buffers 12`, only the 1 s ETW flush timer): 4 KiB ETW buffers (the minimum) lost nothing. Delivery stayed at about one batch per second regardless of buffer size: about 1 s of events normally (about 2,000 events) and up to just over 2 s (at least about 4,063 events, inferred from one 300 s run with a 3,840 ring that dropped 223). A 4,096 ring passed 2 x 300 s release runs (private memory about 21.7 MB) with under 1% headroom; 3,840 passed both 60 s runs but dropped in a 300 s run, 3,584 passed one of two 60 s runs, and 3,072 and below dropped. This is one lab, one rate; keep the default 8,192 for headroom (about 4 s of inflow at 1,000 queries/s). The P3z results are not in the repository.

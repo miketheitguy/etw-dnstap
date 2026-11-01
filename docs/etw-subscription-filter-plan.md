@@ -6,7 +6,9 @@ ETW subscription. The accepted intake event IDs become 256 and 257 only.
 ## Required behavior
 
 - Set `EnableTraceEx2` level to 4 (informational).
-- Set `MatchAnyKeyword` to `0x8000000000000000` as a 64-bit value.
+- Set `MatchAnyKeyword` to `0x8000000000000000` as a 64-bit value. (Superseded
+  by the keyword narrowing plan, which resolves `QUERY_RECEIVED` and
+  `RESPONSE_SUCCESS` by name and keeps this value as the fallback.)
 - Keep `MatchAllKeyword` at zero and retain the provider GUID, timeout,
   session ownership, and native callback ABI.
 - Return immediately for every event ID except 256 and 257, before callback
@@ -18,8 +20,13 @@ ETW subscription. The accepted intake event IDs become 256 and 257 only.
   Do not add per-event metrics or logging for the filter.
 
 The subscription level is a maximum severity level, rather than an exact-level
-match. Keyword-zero events can still pass ETW's keyword selection, so the
-callback event-ID check remains necessary. These semantics follow Microsoft's
+match. Keyword-zero events pass ETW's keyword selection by default. The
+[session recovery plan](etw-session-recovery-and-event-filter-plan.md) adds the
+ETW event-ID filter, and the
+[keyword narrowing plan](etw-keyword-narrowing-plan.md) sets
+`EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0`, so keyword-zero events should not
+reach the callback. The callback event-ID check stays as defense
+in depth. These semantics follow Microsoft's
 [EnableTraceEx2 documentation](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-enabletraceex2).
 
 ## Implementation sequence

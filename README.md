@@ -175,13 +175,43 @@ following flags are available:
 | Flag | Behavior |
 | --- | --- |
 | `--receiver IP:PORT` | Required plaintext bidirectional Frame Streams TCP receiver; accepts a numeric unicast IP and nonzero port. IPv6 uses `[IP]:PORT`. |
-| `--capacity N` | Event-channel capacity, 1–16384 events; default 8192. A full channel drops the newest event. |
+| `--capacity N` | Event-channel capacity, 1,024–262,144 events; default 8192. A full channel drops the newest event. |
 | `--jumbo-capacity N` | Pool slots for records whose padded payload exceeds 2 KiB, 0–256; default 64. Zero disables jumbo capture. |
 | `--duration SECONDS` | Stop the service after 1–604800 seconds; otherwise run until SCM STOP or a capture failure. |
-| `--session-name NAME` | Optional unused ETW session name, up to 200 UTF-16 units; default `etw-dnstap-PROCESS_ID`. |
+| `--session-name NAME` | ETW session name, up to 200 UTF-16 units; default `EtwDnstap`. A leaked session with this name and the program's shape is reclaimed at startup. |
 | `--identity TEXT` | Optional dnstap producer identity, up to 1024 UTF-8 bytes; default `etw-dnstap`. Empty text omits the field. |
+| `--etw-buffer-kib KIB` | ETW session buffer size, 4–128 KiB and a multiple of 4; default 16. See the low-rate warning below. |
+| `--etw-max-buffers N` | ETW requested maximum buffer count, 4–4096; default 12. ETW raises the minimum to at least 2 buffers per logical processor and the maximum to at least that, so 12 is the effective floor on a 6-CPU host and larger hosts get more. |
+| `--etw-flush-seconds SECONDS` | ETW's own real-time flush timer, 1–60 seconds; default 1. It bounds delivery latency with the default `--etw-flush-ms 0`. |
+| `--etw-flush-ms MS` | Interval at which the service asks ETW to flush its session buffers, 20–1000 ms, or 0 to disable (the default, so only the ETW timer, 1 s by default, flushes). Opt-in: while enabled, it bounds ETW delivery latency to about this interval. See the channel description below. |
 | `--help`, `-h` | Display configuration help without starting capture. |
 | `--version`, `-V` | Display the package version without starting capture. |
+
+On startup, a leaked ETW session with the same name and the program's shape
+(real-time only, no log file, and the configured buffer size) is stopped and
+replaced; any other session with that name is left alone and startup fails.
+Sessions named `etw-dnstap-<pid>` left by earlier builds are not reclaimed;
+clean them up once with `logman query -ets` and
+`logman stop etw-dnstap-<pid> -ets`.
+
+**Warning: the defaults are tuned for low rates, about 1,000 queries/s or less.** With the periodic flush off (`--etw-flush-ms 0`), ETW delivers events in batches about 1 s apart, so delivery latency is about 1-2 s. The default 8,192 ring therefore starts dropping at roughly 2,000 queries/s (inferred), and lost 59-79% of events at 10k-20k queries/s in lab tests (P3w/P3x). For higher rates use `--etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64` (validated in P3x).
+
+The ETW session defaults to 16 KiB buffers, up to 12 buffers, and a 1-second
+flush (no periodic explicit flush). `--etw-buffer-kib` must be a multiple of 4. ETW
+raises MinimumBuffers to at least two per logical processor and raises
+MaximumBuffers to at least that, so the requested 12 is the effective floor on a
+6-CPU host and is raised on larger hosts; peak buffer memory can then exceed the
+requested bound. The default requests at most 192 KiB (16 KiB x 12) of buffer memory. Raising `--etw-max-buffers` only permits more buffers on
+demand; it does not allocate them up front. With the opt-in `--etw-flush-ms`
+enabled, the service's explicit flush bounds ETW delivery latency
+to about that interval. Delivery otherwise happens about once per `--etw-flush-seconds`, even when buffers are full, regardless of buffer size. `--etw-flush-seconds` is ETW's own timer and is the
+bound with the default `--etw-flush-ms 0`; a longer value reduces CPU wakeups but then
+delays delivery of events to the collector by up to that many seconds.
+A leaked session is reclaimed only when its buffer size matches
+the current `--etw-buffer-kib`. Restarting with a different buffer size does not
+reclaim a session leaked under the old size; startup fails with the existing
+error, and the leaked session must be stopped manually with `logman stop NAME
+-ets`.
 
 ## Send to DNS-collector
 
@@ -226,6 +256,7 @@ pipelines:
     dnstap:
       listen-ip: RECEIVER_IP
       listen-port: 6000
+      reset-conn: false
     routing-policy:
       forward: [console]
   - name: console
@@ -248,16 +279,42 @@ for slot checkout and return. Callback admission does not allocate, grow
 storage, log, or wait for capacity. Atomic retries, spinning, yielding, and
 preemption still prevent a formal wait-free execution guarantee.
 
-The parser uses `try_recv` and a 2 ms timed park on an empty channel. The default
-channel holds 8192 events; regular storage has 8194 slots of 2 KiB, and the
-separate jumbo pool has 64 slots of 131584 bytes. Jumbo exhaustion can drop a
-record even when the channel has space. Counted payload, slot, free-list, and
-channel storage is 37.32 MiB at the defaults and 90.89 MiB at both maximum
-capacities, before allocator, native ETW, parser, and output overhead. These are
-storage calculations, not measured process-memory limits. See
-[Pooled ETW intake](docs/pooled-intake.md) for ownership and memory accounting and
-[Ring capacity and shutdown](docs/ring-buffer.md) for the historical capacity
-evidence.
+**Warning: the defaults are tuned for low rates, about 1,000 queries/s or less.** With the periodic flush off (`--etw-flush-ms 0`), ETW delivers events in batches about 1 s apart, so delivery latency is about 1-2 s. The default 8,192 ring therefore starts dropping at roughly 2,000 queries/s (inferred), and lost 59-79% of events at 10k-20k queries/s in lab tests (P3w/P3x). For higher rates use `--etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64` (validated in P3x).
+
+With the opt-in `--etw-flush-ms` (default 0, off; 50 ms was the earlier
+default), the service flushes the ETW session periodically,
+so moderate rates arrive in small batches instead of one batch per second,
+which can overflow the default channel. Lab results: on a 6-vCPU lab VM
+(Windows Server 2025, authoritative workload, default 8,192 channel), the
+in-process flush gave 0 ring drops at 10k and 20k queries/s, versus 59-79%
+loss without it. At 50k queries/s loss was 0.04-0.9% with the flush versus
+0.3-1.7% without it; that residual loss tracks host disturbance, not the
+flush, and `etw_lost` was 0. The flush wrote about 5-16% more ETW buffers and
+cost under 0.1% of a core when idle. At 20k queries/s the largest batch was
+about 6,800 events with a 100 ms interval and about 3,500 with 50 ms, which is
+why 50 ms was the earlier default. Not tested: other machines and vCPU counts, 25-45k
+queries/s, recursive or mixed workloads, and the 50 ms default at 50k
+queries/s and above in a release build. Each delivered batch holds up to about
+twice the flush interval's worth of events (2 events per query), so at higher
+rates lower `--etw-flush-ms` or raise `--capacity` to keep 2 x rate x interval
+well below the channel capacity. The "capture stopped" line reports
+`etw_flushes`, `etw_flush_errors`, and `etw_flush_max_us` (the longest
+wall-clock duration of one flush call, including scheduling delay on the
+supervisor thread; lab maxima of 11-46 ms under load were near multiples of the
+15.6 ms timer tick, and the idle maximum was about 0.35 ms).
+
+The parser uses `try_recv` and a timed park on an empty channel that backs off
+from 2 ms to 20 ms while idle. The default
+channel holds 8192 events; regular
+storage has 8194 slots of 2 KiB, and the separate jumbo pool has 64 slots of
+131,184 bytes. Jumbo exhaustion can drop a record even when the channel has
+space. Counted payload, slot, free-list, and channel storage is 28.22 MiB at the
+defaults and 678.14 MiB at the maximum
+(262,144 events and 256 jumbo slots), before allocator, native ETW,
+parser, and output overhead. These are storage calculations, not measured
+process-memory limits. See [Pooled ETW intake](docs/pooled-intake.md) for
+ownership and memory accounting and [Ring capacity and
+shutdown](docs/ring-buffer.md) for the historical capacity evidence.
 
 The separate [pooled VM performance review](docs/pooled-vm-performance-review.md)
 records native five-minute confirmations at 47,303.24 authoritative DNS QPS
@@ -268,31 +325,55 @@ overload failures, DNS/lifecycle qualifications, instrumentation differences,
 and restoration evidence; it does not establish universal capacity or a causal
 CPU improvement from pooling.
 
-The parser uses TDH property APIs and validated metadata to read `PacketData`,
-transport, addresses, ports, and timestamps. It caches up to 32 metadata/type
-schemas by event ID and version, while individual properties still use TDH
-lookups per event. Five property reads still make five TDH size calls and five
-TDH extraction calls; their names use static UTF-16 storage. One parser reuses
-bounded property and address scratch storage and a packet vector. One Prost
-encoder retains identity, address, message, and output storage; it returns the
-packet allocation after serialization without an intermediate packet copy.
-Cold schema loads, capacity growth, errors, native TDH internals, and output
-remain outside the focused allocation tests. See the
-[parser and encoder plan](docs/parser-encoder-optimization-plan.md) for the
-reuse contract and local validation scope. The parser does not use a manually fixed
-payload layout. Measure all intake loss categories and CPU use on the target
-DNS host before choosing pool or channel capacities. Pooling alone does not
-establish higher throughput or a smaller safe queue.
+The parser compiles validated TDH metadata into a bounded decoding plan and
+walks the pooled payload once through the last required property. It caches up
+to 8 schemas by event ID and version. A supported cache hit makes no TDH calls;
+a native cold load makes two `TdhGetEventInformation` calls. Unsupported schemas
+retain the TDH fallback, whose valid cache-hit path makes five size calls and
+five property extraction calls. Malformed payloads under a supported plan are
+rejected without a TDH retry. The layout comes from metadata, not fixed offsets.
 
-The encoder preserves `PacketData` bytes verbatim. It checks the 12–65535 byte
-DNS envelope and QR direction, but does not validate every DNS name or resource
-record. It does not strip or guess a TCP length prefix. Missing or malformed
+The parser borrows `PacketData` from the pooled event and copies it once into
+the initialized packet range in the final protobuf output through
+`Encoder::encode_with`. The fallback fills that range through `TdhGetProperty`.
+Both paths release the pooled event before the TCP write and avoid an
+intermediate packet vector. The encoder uses Prost for metadata and manually
+emits nested-message and packet-field framing while preserving wire output.
+The callback pool copy and initialized-output zeroing remain. Output storage can
+grow until warmed; cold schema loads, growth, errors, native TDH internals, and
+output remain outside the focused allocation tests. See the
+[single-pass decoder plan](docs/single-pass-decoder-plan.md) for supported
+layouts, ownership, and local validation scope. These tests do not establish
+allocation behavior across the full pipeline or a live CPU improvement. Measure
+all intake loss categories and CPU use on the target DNS host before choosing
+pool or channel capacities. Pooling alone does not establish higher throughput
+or a smaller safe queue.
+
+The encoder preserves `PacketData` bytes verbatim. It limits encoded output to
+70 KiB and checks the 12–65535 byte DNS envelope and QR direction, but does not
+validate every DNS name or resource record. It does not strip or guess a TCP
+length prefix. Missing or malformed
 packet data is rejected; it is never reconstructed from a query name.
 
-The ETW subscription uses level 4 (informational) and `MatchAnyKeyword`
-`0x8000000000000000`. The callback accepts only event IDs 256 and 257 before
-accessing callback context, counters, pooled storage, or parsing. These events
-produce the following client records:
+The ETW subscription uses level 4 (informational). At startup it resolves the
+provider's `QUERY_RECEIVED` and `RESPONSE_SUCCESS` keywords by name through TDH
+and sets `MatchAnyKeyword` to those two bits, so DNS Server skips generating
+failure, recursion, and transfer events unless another trace session, such as
+the enabled Analytical event log, subscribes to them. Each value must be a single bit within
+`0x0000FFFFFFFFFFFF`, and the two bits must differ. If the lookup fails or
+either keyword is missing or invalid, capture does not stop: it logs one
+warning and falls back to `MatchAnyKeyword` `0x8000000000000000` (the
+Analytical channel). `MatchAllKeyword` is zero either way. The "capture started"
+log shows the masks in use and whether the fallback applied. The subscription
+also sets `EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0`, so events with keyword 0 do
+not match. Events 284, 287, 597, and 598 share the narrowed keyword bits on
+Windows Server 2025 build 26100, so both event-ID layers remain. ETW applies an
+event-ID filter for events 256 and 257 before events reach session buffers,
+which reduces buffer use and callback dispatch; it does not reduce DNS Server's
+cost of generating events that pass the keyword mask. The callback check
+remains as defense in depth and accepts only event IDs 256 and 257 before
+accessing callback context, counters, pooled storage, or parsing.
+These events produce the following client records:
 
 | DNS Server event | dnstap message type |
 | --- | --- |
@@ -343,6 +424,12 @@ Get-WinEvent -FilterHashtable $eventFilter -MaxEvents 10 |
     Select-Object TimeCreated, Id,
         @{Name='Details'; Expression={$_.Properties[0].Value}}
 ```
+
+The "capture started" and "capture stopped" lines, including all counters, are
+also written to the Application log under source `EtwDnstap`. Informational
+messages use event ID 2, rejected-event warnings use ID 3, and errors use ID 4.
+Event ID 1 is reserved for a fatal service failure. Event Log write failures
+are dropped silently and never stop capture.
 
 Startup and shutdown have 10-second fail-stop watchdogs. On a deadline or an
 inability to start a watchdog, the process aborts without freeing resources

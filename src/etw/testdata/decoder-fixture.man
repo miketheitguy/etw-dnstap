@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<instrumentationManifest xmlns="http://schemas.microsoft.com/win/2004/08/events" xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <instrumentation><events>
+    <provider name="EtwDnstap.DecoderFixture" guid="{EB79061A-A566-4698-9119-3ED2807060E7}" symbol="DecoderFixture" resourceFileName="fixture.dll" messageFileName="fixture.dll">
+      <events>
+        <event value="256" version="250" template="Query" symbol="Query"/>
+        <event value="257" version="250" template="Response" symbol="Response"/>
+      </events>
+      <templates>
+<template tid="Query">
+  <data name="TCP" inType="win:UInt8" outType="xs:unsignedByte"/>
+  <data name="InterfaceIP" inType="win:AnsiString" outType="xs:string"/>
+  <data name="Source" inType="win:AnsiString" outType="xs:string"/>
+  <data name="RD" inType="win:UInt8" outType="xs:unsignedByte"/>
+  <data name="QNAME" inType="win:AnsiString" outType="xs:string"/>
+  <data name="QTYPE" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="XID" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Port" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Flags" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="BufferSize" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="PacketData" inType="win:Binary" outType="xs:hexBinary" length="BufferSize"/>
+  <data name="AdditionalInfo" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="GUID" inType="win:UnicodeString" outType="xs:string"/>
+</template>
+
+<template tid="Response">
+  <data name="TCP" inType="win:UInt8" outType="xs:unsignedByte"/>
+  <data name="InterfaceIP" inType="win:AnsiString" outType="xs:string"/>
+  <data name="Destination" inType="win:AnsiString" outType="xs:string"/>
+  <data name="AA" inType="win:UInt8" outType="xs:unsignedByte"/>
+  <data name="AD" inType="win:UInt8" outType="xs:unsignedByte"/>
+  <data name="QNAME" inType="win:AnsiString" outType="xs:string"/>
+  <data name="QTYPE" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="XID" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="DNSSEC" inType="win:UInt8" outType="xs:unsignedByte"/>
+  <data name="RCODE" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Port" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Flags" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Scope" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="Zone" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="PolicyName" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="BufferSize" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="PacketData" inType="win:Binary" outType="xs:hexBinary" length="BufferSize"/>
+  <data name="AdditionalInfo" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="ElapsedTime" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="GUID" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="StaleRecordsPresent" inType="win:UnicodeString" outType="xs:string"/>
+</template>
+
+      </templates>
+    </provider>
+  </events></instrumentation>
+</instrumentationManifest>
+
