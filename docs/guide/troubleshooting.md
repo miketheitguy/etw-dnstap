@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `main` at commit `54eafae` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `efb47af` · **Reviewed:** 2026-11-01
 
 Start with the Application event log and the SCM state. The service writes its
 diagnostics to two places:
@@ -49,7 +49,7 @@ Search the Application log for the text, then go to the section named.
 | `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | Event ID 5 | A deadline expired, and the process aborted. | [Watchdog](#watchdog-aborts-or-stop-hangs) |
 | `dnstap receiver unavailable at startup` | Event ID 3 | The service is running and reconnecting. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver connection lost` | Event ID 3 | An established session failed. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
-| `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. Logged for the first four failures and then every 60th. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. Logged for the first four failures, then for the 61st, 121st, and every 60 failures after that. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver reconnected` | Event ID 2 | A session was re-established. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `shutting down while the dnstap receiver is disconnected` | Event ID 3 | The service stopped without sending STOP. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
@@ -103,8 +103,8 @@ drops and counts the events it cannot deliver, and retries with backoff.
    is running, events are dropped and counted until it connects`. The service
    reaches `RUNNING`.
 2. **During a run:** Event ID 3, `dnstap receiver connection lost`. Then
-   `dnstap reconnect failed` appears for the first four failures and every 60th
-   after that. When a session is re-established, Event ID 2 logs
+   `dnstap reconnect failed` appears for the first four failures, then for the 61st,
+   121st, and every 60 failures after that. When a session is re-established, Event ID 2 logs
    `dnstap receiver reconnected`.
 3. **Counters:** `receiver_connected` is `false` while down.
    `receiver_disconnects`, `receiver_reconnect_failures`, and

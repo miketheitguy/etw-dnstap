@@ -133,7 +133,7 @@ medium effort fixes the findings.
 ## Stage K3: Live validation
 
 K3 runs in the same lab session as
-[live load Stage L5](../plans/live-load-validation-plan.md#stage-l5-heavy-load-and-buffer-ceiling-comparison),
+[live load Stage L5](live-load-validation-plan.md#stage-l5-heavy-load-and-buffer-ceiling-comparison),
 which defines the candidate and baseline binaries. The lab's recursive
 fixture was removed after the original campaign. K3 therefore uses an
 authoritative workload plus failure and recursion probes. It does not use a

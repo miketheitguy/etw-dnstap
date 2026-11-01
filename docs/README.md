@@ -15,9 +15,9 @@ decides its folder.
 | Folder | Contents | Statuses |
 | --- | --- | --- |
 | [`guide/`](guide/) | Operator guides: install, configuration, troubleshooting, shutdown remediation, uninstall | Current |
-| [`design/`](design/) | Architecture and reference: pooled intake, ring and queue, single-pass decoder, measurement terms, diagrams | Current (diagrams partly historical) |
+| [`design/`](design/) | Architecture and reference: pooled intake, ring and queue, single-pass decoder contract, measurement terms, diagrams | Current |
 | [`performance/`](performance/) | The latest completed native performance record and its graphs, trace analysis, and campaign plan | Current review; supporting records Historical |
-| [`plans/`](plans/) | Plans and analyses that are not yet executed or implemented | Proposed |
+| [`plans/`](plans/) | Plans and analyses that are not yet executed or implemented | Proposed; a plan with partial execution says so in its status block |
 | [`history/`](history/) | Finished campaigns, reviews, completed plans, and superseded documents | Historical, Superseded |
 | [`assets/performance/`](assets/performance/) | Graph SVGs, CSV copies, and their provenance manifests | Generated |
 
@@ -68,8 +68,8 @@ install, configuration, troubleshooting, and removal.
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
 | [Install and provision](guide/install.md) | Current; LocalService restricted-SID profile validated on one lab host (build 26100) | Nov 1, 2026 (lab validation) | `5f610f5` | Toolchain, build, LocalService restricted-SID identity, privileges, SCM recovery, receiver setup, validation checklist |
-| [Configuration reference](guide/configuration.md) | Current | not applicable | `54eafae` | Every option and default, the low-rate limits, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters |
-| [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `54eafae` | Event log messages, startup failures, receiver outages, DNS restarts, counters, watchdog aborts |
+| [Configuration reference](guide/configuration.md) | Current | not applicable | `efb47af` | Every option and default, the low-rate limits, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters |
+| [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `efb47af` | Event log messages, startup failures, receiver outages, DNS restarts, counters, watchdog aborts |
 | [Service shutdown remediation](guide/service-stop-remediation.md) | Current (operator guide) | not applicable | not recorded | Diagnosing receiver resets during STOP/FINISH and the close behavior |
 | [Uninstall](guide/uninstall.md) | Current | not applicable | `5f610f5` | Service, group membership, event source, ETW session, and directory removal |
 | [Security policy](../SECURITY.md) | Current | not applicable | `5f610f5` | Reporting, threat model summary, producer identity, LocalService restricted-SID profile |
@@ -83,10 +83,9 @@ These documents are in `design/`.
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
 | [Pooled ETW intake](design/pooled-intake.md) | Current | not applicable | present by `2c62a9f` (its results are documented there) | Ownership, memory budget, and loss accounting of the pooled intake |
-| [Ring capacity and shutdown](design/ring-buffer.md) | Current | Oct 28-29, 2026 (evidence) | not recorded | Channel bounds, shutdown ordering, and the historical capacity experiment. The low-rate limits link to the configuration reference. |
-| [Single-pass decoder](design/single-pass-decoder-plan.md) | Current | not applicable | `e59425f` | Implemented decoding plan, supported layouts, pooled-event lifetime |
+| [Ring capacity and shutdown](design/ring-buffer.md) | Current | not applicable (reference) | not recorded | Channel bounds and shutdown ordering. The low-rate limits link to the configuration reference. The historical capacity experiment is in [Ring capacity experiment](history/ring-capacity-experiment.md). |
+| [Single-pass decoder](design/single-pass-decoder.md) | Current | not applicable (reference; local tests only) | `efb47af` (decoder added in `e59425f`) | Current fast-path grammar, fallback rule, bounds, and validation scope |
 | [Measurement terms and result gates](design/measurement-terms.md) | Current | not applicable | `54eafae` | Units, counters, and gates for reading performance reports, and how the live counters relate to them |
-| [Packet-flow diagram](design/diagrams/packet-flow.drawio) | Historical | Oct 28, 2026 | not recorded | Editable draw.io diagram of the October 28 design |
 | [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Current (labels updated; box positions from Oct 28, 2026) | Oct 28, 2026 (positions) | `54eafae` (labels) | Editable draw.io diagram. Labels match the module split, DNS process filter, and reconnecting sink. See the [diagram note](#diagram-note). |
 
 The rejected wake-on-enqueue experiment, which explains why the ETW callback stays
@@ -125,15 +124,15 @@ The lab scripts have their own documentation at
 
 ## Plans
 
-These documents are in `plans/`. None of them has a recorded execution.
+These documents are in `plans/`. Each status block gives its execution state. The parallel parser workers plan is partly executed. The others have no recorded execution.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
 | [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed (must be regenerated before the next campaign) | Oct 30, 2026 | `3d401cc` and later | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` (service identity, DNS PID filter, reconnect). See the banner in the document. |
-| [Live load validation plan](plans/live-load-validation-plan.md) | Proposed (execution not recorded) | Oct 30, 2026 | not recorded | Load checks deferred from the October 30 review. Its premise that counters reach only stderr is out of date. |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading. Its fail-fast contract predates `f0b51f4`. |
-| [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed | not recorded | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. |
+| [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed; partly executed (P0 and diagnostic runs recorded Oct 31, 2026; P1a next; P4 deferred) | Oct 31, 2026 | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. |
 | [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Proposed | not applicable | not applicable | Future per-stage counters; no task has been executed. Its baseline predates periodic counter logging and `f0b51f4`. |
+| [Obsolete and legacy code cleanup plan](plans/cleanup-plan.md) | Proposed; in progress (waves run in order; the plan moves to history when it completes) | Nov 1, 2026 | `efb47af` (written at) | Removal of dead code, legacy names, duplicate scaffolding, and stale docs. Each wave is one commit with a gate. |
 
 ## History
 
@@ -145,6 +144,7 @@ commands as procedures.
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
 | [Lab validation](history/lab-validation.md) | Historical | Oct 28, 2026 PDT | not recorded | Initial live receiver and packet-delivery checks |
+| [Live load validation plan](history/live-load-validation-plan.md) | Historical (executed L1-L5; the pending L4 action was not done) | Oct 30-31, 2026 | not recorded | Load checks deferred from the October 30 review, with the Stage L5 comparison. Its premise that counters reach only stderr is out of date. |
 | [LocalService restricted-SID validation](history/localservice-restricted-validation.md) | Historical | Nov 1, 2026 | parent `6718863` | ETW rights the restricted token needs; the 0x20-only grant |
 | [Skills-driven evaluation plan](history/skills-evaluation-plan.md) | Historical (executed Nov 1, 2026) | Nov 1, 2026 | plan `e8560ac`; execution through `5f610f5` | Evaluation of code, build, CI and service hardening against the installed skills. Results: [lab record](history/skills-evaluation-lab-validation.md) and the commit log. |
 | [Skills evaluation lab validation](history/skills-evaluation-lab-validation.md) | Historical | Nov 1, 2026 | `77d7c47` (with one uncommitted script fix, now in `d721569`) | Lab run of the evaluation changes: mutex removal, reclaim, DNS handle (denied), pinned SDDL, delayed-auto start, backup and restore, SCM recovery with a DNS restart |
@@ -154,6 +154,7 @@ commands as procedures.
 | [Performance repeat at global 1,000 QPS, review](history/performance-1000qps-review.md) | Historical | Oct 29, 2026 UTC | not recorded | Results of the repeat |
 | [Ring-buffer capacity fix: plan](history/ring-buffer-fix-plan.md) | Historical | Oct 29, 2026 UTC | not recorded | Capacity-only 8,192 candidate; validation gates |
 | [Ring-buffer capacity fix: validation](history/ring-buffer-fix-validation.md) | Superseded by [pooled intake](design/pooled-intake.md) | Oct 29, 2026 UTC | not recorded | Results of the allocation-based `ArrayQueue` candidate |
+| [Ring capacity experiment](history/ring-capacity-experiment.md) | Historical | Oct 28-29, 2026 | not recorded | The allocation-based `ArrayQueue` capacity experiment that set the 8,192 default. Moved from the ring-capacity design page. |
 | [Rejected wake-on-enqueue experiment](history/ring-wakeup.md) | Historical | Oct 29, 2026 UTC | not recorded | Rejected `wake-1024-v1` candidate. It did not rule out a wake once per buffer. |
 | [Pooled ETW intake: validation plan](history/pooled-intake-plan.md) | Historical | Oct 2026 (undated in text) | not recorded | Original pooled validation design and ownership record |
 | [Pooled intake audit and remaining validation plan](history/pooled-intake-audit-plan.md) | Historical | Oct 2026 (undated in text) | not recorded | Audit of the pooled implementation |
@@ -175,8 +176,10 @@ commands as procedures.
 | [Remove the duplicate schema lookup](history/schema-single-lookup-plan.md) | Historical | not recorded | not recorded | Plan for a single schema lookup |
 | [Symbolized release-optimized WPR: plan](history/symbolized-release-wpr-plan.md) | Historical | not recorded | not recorded | Staged procedure for a symbolized release profile |
 | [Symbolized release-optimized WPR: results](history/symbolized-release-wpr-results.md) | Historical | not recorded | not recorded | Results of the symbolized release profile |
-| [Direct PacketData encoding plan](history/direct-packet-encoding-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder-plan.md) | not recorded | not recorded | Transition from an intermediate packet vector to direct encoding |
-| [Parser and encoder optimization plan](history/parser-encoder-optimization-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder-plan.md) | not recorded | not recorded | Earlier reusable packet-vector implementation |
+| [Direct PacketData encoding plan](history/direct-packet-encoding-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md) | not recorded | not recorded | Transition from an intermediate packet vector to direct encoding |
+| [Parser and encoder optimization plan](history/parser-encoder-optimization-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md) | not recorded | not recorded | Earlier reusable packet-vector implementation |
+| [Single-pass decoder: implementation plan](history/single-pass-decoder-plan.md) | Historical (completion record; the current contract is [Single-pass decoder](design/single-pass-decoder.md)) | Oct 30, 2026 | `e59425f` | Staged implementation plan, acceptance gates, and completion record for the fast path |
+| [Packet-flow diagram](history/diagrams/packet-flow.drawio) | Historical | Oct 28, 2026 | not recorded | Editable draw.io diagram of the October 28 design |
 
 ### Service behavior and source reviews
 

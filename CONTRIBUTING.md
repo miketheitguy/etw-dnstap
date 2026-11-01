@@ -97,6 +97,8 @@ Use the status values as follows.
 | Superseded | Replaced by a newer document or implementation. Link to the replacement. |
 | Proposed | A design or plan that is not implemented or not executed. |
 
+One exception applies. [docs/performance/pooled-vm-performance-review.md](docs/performance/pooled-vm-performance-review.md) stays Current while it is the latest completed native performance record. Its campaign binaries are historical, and its status line says so. When a later native campaign completes, mark that review Historical and update this exception.
+
 The status decides the folder under `docs/`:
 
 | Folder | Put here |

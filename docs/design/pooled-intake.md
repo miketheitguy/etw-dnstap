@@ -183,7 +183,7 @@ endpoint, timestamp, packet-length, DNS direction, and output-size validation.
 
 `Parser::parse` consumes the pooled event. The supported path borrows
 `PacketData` from its payload and copies it once into the initialized, exact
-packet range in the final protobuf output through `Encoder::encode_with`.
+packet range in the final protobuf output through `Encoder::encode_with` (private to `src/dnstap.rs`).
 The fallback writes that range through `TdhGetProperty`. Only cold metadata
 loads and fallback reconstruct a native event view. Parsing releases the pool
 lease before the TCP write; the returned payload borrows only encoder output.
@@ -196,7 +196,7 @@ nested-message and packet-field framing preserves wire output. Neither path
 uses an intermediate packet vector. The callback copy and initialized-output
 zeroing remain. Query/response fields and optional endpoint presence reset for
 each event, and errors clear the output. See the
-[single-pass decoder plan](single-pass-decoder-plan.md) for the maintained
+[single-pass decoder contract](single-pass-decoder.md) for the maintained
 interface, supported grammar, and local validation scope. Focused warmed native
 fixture tests do not establish zero allocation across the full pipeline,
 higher throughput, or a live CPU improvement.

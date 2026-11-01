@@ -11,6 +11,8 @@ trial's accounting method. Achieved work is not measured, so these observations
 do not establish per-query efficiency, throughput, or a causal improvement from
 the code change.
 
+The plan for this change is [Remove the duplicate schema lookup](schema-single-lookup-plan.md).
+
 ## Observed CPU usage change
 
 The following CPU seconds exclude deferred procedure calls and interrupt service

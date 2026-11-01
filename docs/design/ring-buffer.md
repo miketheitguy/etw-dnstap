@@ -60,37 +60,8 @@ the intended workload.
 
 ## Historical capacity experiment
 
-The following results apply to the allocation-based `ArrayQueue` transport in
-the installed capacity-only binary `CA3342…64347`. They do not validate the
-pooled implementation or its separate jumbo limit. In that earlier design,
-8192 queued records at the accepted maximum user and aggregate extended-data
-sizes could contain 1,073,725,440 copied bytes, almost 1 GiB, before record,
-vector, and extended-item overhead. That historical calculation does not
-describe the preallocated pool budget.
-
-Matched 30-second pilots at approximately 1000 queries per second produced ring
-drops with a capacity of 1024. With the original polling implementation and a
-capacity of 8192, the authoritative and recursive pilots both reported zero ring
-drops. Their observed high-water counts were 3022 and 4972 events, respectively,
-which exceed the old default. These observations motivated selecting 8192 as the default.
-
-An enqueue-wakeup candidate with capacity 1024 still dropped events and was
-rejected; see [Rejected wake-on-enqueue experiment](../history/ring-wakeup.md). The capacity
-candidate retained the original polling behavior. The subsequent full 300-second authoritative and recursive-request runs at
-approximately global 1000 QPS had zero ring drops, with high water 3618/4984
-and exact receiver delivery. The recursive run had one RA-check failure, so
-the separate full DNS-validity gate did not pass. See the
-[validation report](../history/ring-buffer-fix-validation.md) for counts, CPU, memory,
-WPA evidence and limitations. Measure loss,
-queue high water, and memory on the intended DNS host before selecting capacity
-for another workload.
-
-The later [pooled VM campaign](../performance/pooled-vm-performance-review.md) measures a
-historical pooled binary with a JSONL metrics writer. The TCP-only service has
-no durable metrics export. It logs its counters to the event log and samples the
-deepest queue depth as a lower bound (`queue_depth_max`); see the
-[instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Keep its results separate from this historical
-allocation-based capacity experiment, especially when comparing CPU or memory.
+The results of the earlier allocation-based `ArrayQueue` capacity experiment, which explain the 8192 default, are in [Ring capacity experiment (historical)](../history/ring-capacity-experiment.md).
+They do not validate the pooled implementation or its jumbo limit.
 
 ## Completion and resource ownership
 
@@ -112,4 +83,4 @@ final enqueue followed by joined producer completion, empty completion after
 startup failure, and output errors. Synthetic tests do not establish live DNS
 throughput or an installed service's token configuration.
 
-P3z (6-vCPU lab VM, quiet host only, 1,000 queries/s, authoritative, `--etw-max-buffers 12`, only the 1 s ETW flush timer): 4 KiB ETW buffers (the minimum) lost nothing. Delivery stayed at about one batch per second regardless of buffer size: about 1 s of events normally (about 2,000 events) and up to just over 2 s (at least about 4,063 events, inferred from one 300 s run with a 3,840 ring that dropped 223). A 4,096 ring passed 2 x 300 s release runs (private memory about 21.7 MB) with under 1% headroom; 3,840 passed both 60 s runs but dropped in a 300 s run, 3,584 passed one of two 60 s runs, and 3,072 and below dropped. This is one lab, one rate; keep the default 8,192 for headroom (about 4 s of inflow at 1,000 queries/s). The P3z results are not in the repository.
+Unverified lab notes (P3z; results not in the repository, so they are not evidence here): on a quiet host with one 6-vCPU lab VM, at 1,000 queries/s, with `--etw-max-buffers 12` and only the 1 s ETW flush timer, the smallest ETW buffer size lost no events, and smaller rings dropped events in some runs. Delivery stayed at about one batch per second for every buffer size tested. This is one lab and one rate. Keep the default 8,192 for headroom (about 4 s of inflow at 1,000 queries/s).

@@ -1,6 +1,8 @@
 # etw-dnstap evaluation plan (skills-driven)
 
-Status: Executed (Nov 1, 2026). Written at `e8560ac`. Execution ran through `5f610f5`. Every line number below was read from the file at plan time.
+> **Status:** Historical (executed) · **Evidence dated:** November 1, 2026 · **Commit:** plan written at `e8560ac`; execution through `5f610f5` · **Reviewed:** 2026-11-01
+
+Every line number below was read from the file at plan time.
 
 > **Correction:** `asd-ste100` is installed. `~/.claude/skills/asd-ste100` is a symlink to `~/.agents/skills/asd-ste100`, which the planning agent's file search did not follow. It applies to documentation and error-message wording. D-3 is resolved.
 

@@ -1,11 +1,11 @@
 # Parser and encoder optimization plan
 
-> **Status:** Superseded by [Single-pass ETW decoder](../design/single-pass-decoder-plan.md). This records the earlier reusable packet-vector implementation. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+> **Status:** Superseded by [Single-pass ETW decoder](../design/single-pass-decoder.md). This records the earlier reusable packet-vector implementation. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
 
 This historical plan records the earlier reusable packet-vector implementation
 for parser and encoder maintainers. Its frozen APIs, baseline hashes, and
 validation results apply to that implementation. The
-[single-pass decoder plan](../design/single-pass-decoder-plan.md) describes the maintained
+[single-pass decoder contract](../design/single-pass-decoder.md) describes the maintained
 interface: production parsing consumes the pooled event and fills the final
 protobuf packet range synchronously through `Encoder::encode_with`, without a
 standalone packet vector. Supported schemas borrow packet bytes from the pooled

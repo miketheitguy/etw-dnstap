@@ -1,10 +1,10 @@
 # Direct PacketData encoding plan
 
-> **Status:** Superseded by [Single-pass ETW decoder](../design/single-pass-decoder-plan.md). This is the historical transition from an intermediate packet vector to direct encoding. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+> **Status:** Superseded by [Single-pass ETW decoder](../design/single-pass-decoder.md). This is the historical transition from an intermediate packet vector to direct encoding. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
 
 This historical plan records the transition from an intermediate packet vector
 to direct filling of the final protobuf packet range. The
-[single-pass decoder plan](../design/single-pass-decoder-plan.md) supersedes its parser
+[single-pass decoder contract](../design/single-pass-decoder.md) supersedes its parser
 extraction path: supported schemas borrow packet bytes from the pooled payload
 and copy them into that range; unsupported schemas retain TDH extraction.
 Its test counts and results remain evidence for the earlier implementation,
