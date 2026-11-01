@@ -61,6 +61,8 @@ Notes:
   live in the separate `fuzz/` workspace. They build with the `fuzzing` feature,
   which exposes internal entry points. That feature is never enabled in a
   shipped build. Install the runner with `cargo install cargo-fuzz --version 0.13.2 --locked`.
+  CI pins cargo-fuzz 0.13.2, cargo-deny 0.20.2 and cargo-llvm-cov 0.9.1 by hand in
+  `.github/workflows/ci.yml`; Dependabot does not update these pins.
 - `cargo test-release` and `cargo asan` are alias commands in `.cargo/config.toml`.
   `cargo asan` writes its build output to `target\asan`. The ASan run needs the
   Visual Studio AddressSanitizer runtime; see the

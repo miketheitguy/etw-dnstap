@@ -4,3 +4,6 @@
 __pycache__/
 *.exe
 *.log
+# Written by the CI coverage job when run locally.
+lcov.info
+coverage-summary.txt

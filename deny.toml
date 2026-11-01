@@ -31,8 +31,9 @@ crate = "libfuzzer-sys"
 allow = ["NCSA"]
 
 [bans]
-# Duplicate versions are reported, not fatal: the Windows and proptest trees
-# pull some crates twice and a new duplicate is worth noticing, not blocking.
+# Duplicate versions are reported, not fatal. Today only syn is duplicated
+# (syn 2 for prost-derive and tracing-attributes, syn 3 for clap_derive and
+# thiserror-impl). A new duplicate is worth noticing, not blocking.
 multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
