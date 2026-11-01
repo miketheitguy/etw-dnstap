@@ -454,9 +454,10 @@ fn check_enable_status(status: u32) -> Result<()> {
              {{eb79061a-a566-4698-9119-3ed2807060e7}}. The default ETW security grants \
              LocalService and 'Performance Log Users' TRACELOG_GUID_ENABLE (0x80), so this \
              host probably has a security descriptor of its own for that provider GUID \
-             (HKLM\\SYSTEM\\CurrentControlSet\\Control\\WMI\\Security) that does not. Grant \
-             TRACELOG_GUID_ENABLE on that GUID to NT SERVICE\\EtwDnstap, restart the computer \
-             (ETW applies these descriptors at boot), then start the service (code {status})"
+             (HKLM\\SYSTEM\\CurrentControlSet\\Control\\WMI\\Security) that does not. Inspect \
+             that descriptor and record what it holds; see 'If an ETW access check is denied' \
+             in docs/guide/install.md. Do not grant on that GUID to NT SERVICE\\EtwDnstap: \
+             Grant-EtwDnstapEtwAccess.ps1 removes such a grant on its next run (code {status})"
         );
     }
     check_status(status, "EnableTraceEx2")

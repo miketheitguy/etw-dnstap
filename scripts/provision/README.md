@@ -1,24 +1,27 @@
 # Provisioning scripts
 
-> **Status:** Validated on Windows Server 2025, build 26100, on 2026-11-01. See [the validation record](../../docs/history/localservice-restricted-validation.md).
+> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-01
+>
+> See [the validation record](../../docs/history/localservice-restricted-validation.md).
 
 ## Grant-EtwDnstapEtwAccess.ps1
 
-EtwDnstap only reads ETW events; it never logs events into ETW. It does create
+EtwDnstap only reads ETW events. It never logs events into ETW. It does create
 and control its own real-time trace session. It runs as
 `NT AUTHORITY\LocalService` with a restricted service SID
 (`sc.exe sidtype EtwDnstap restricted`). Windows calls such a token
-*write-restricted*. Any access that Windows classes as a write (a change of
-state, not event data) must also pass a second check, and that check considers
-only the restricting SIDs: the service SID, Everyone, the logon SID, and
-`S-1-5-33`. LocalService and Performance Log Users do not count for it.
+*write-restricted*. Windows classes some accesses as a write. A write here is
+a change of state, not event data. Each such access must also pass a second
+check. That check considers only the restricting SIDs: the service SID,
+Everyone, the logon SID, and `S-1-5-33`. LocalService and Performance Log Users
+do not count for it.
 
 Creating the session is such a change. ETW checks it against the descriptor of
-the session's GUID, and falls back to the shared default descriptor
-`{0811c1af-7a07-4a06-82ed-869455cdf713}` when the GUID has none. EtwDnstap starts
-its session with a stable GUID derived from the session name, so the script
-grants the one right on that GUID only, to the service SID
-`NT SERVICE\EtwDnstap`, with `advapi32!EventAccessControl`:
+the session's GUID. When the GUID has no descriptor, ETW uses the shared default
+descriptor `{0811c1af-7a07-4a06-82ed-869455cdf713}`. EtwDnstap starts its
+session with a stable GUID derived from the session name. The script therefore
+grants the one right on that GUID only. It grants the right to the service SID
+`NT SERVICE\EtwDnstap` with `advapi32!EventAccessControl`:
 
 | GUID | Right | Why |
 | --- | --- | --- |
@@ -38,16 +41,18 @@ descriptor of its own. In the lab it also spread: other components create
 descriptors by copying the default, and those copies kept the grant.
 
 The new descriptor of the session GUID is seeded from the default descriptor.
-Therefore the principals that the default descriptor lets create sessions
-(Administrators, LocalService, NetworkService, and Performance Log Users) can
-also create a session with that GUID. This is harmless. They already hold the
-same right on every GUID that has no descriptor of its own, and the grant adds
-no right to any of them.
+The default descriptor lets Administrators, LocalService, NetworkService, and
+Performance Log Users create sessions. These principals can therefore also
+create a session with that GUID. This is harmless. They already hold the same
+right on every GUID that has no descriptor of its own. The grant adds no right
+to any of them.
 
 Nothing else is granted. In the lab, these calls passed with the default
-descriptor and no grant: `EnableTraceEx2` on the DNS provider, `OpenTrace` and
-`ProcessTrace`, and the `ControlTrace` query and stop, including the reclaim of
-a stale session.
+descriptor and no grant:
+
+- `EnableTraceEx2` on the DNS provider.
+- `OpenTrace` and `ProcessTrace`.
+- The `ControlTrace` query and stop, including the reclaim of a stale session.
 
 **Restart the computer after running the script**, and after `-Remove`. ETW
 applies these descriptors at boot. In the lab, a grant made without a restart
@@ -68,9 +73,14 @@ Pass every `--session-name` used on the host to `-SessionName`. A grant on a
 session GUID that is not listed is removed.
 
 Every run also strips ACEs for the service SID from every other descriptor
-under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. That removes grants
-made by earlier versions of the script, on the default GUID and on the DNS
-provider GUID, and copies of them that other components made. A non-default
+under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. This removes two
+kinds of grant:
+
+- Grants that earlier versions of the script made on the default GUID and on
+  the DNS provider GUID.
+- Copies of those grants that other components made.
+
+A non-default
 descriptor that equals the default once those ACEs are gone is deleted, so ETW
 falls back to the default exactly as before. Nothing else is changed. `-Remove`
 does the same for every descriptor, the session GUIDs included.
@@ -102,16 +112,21 @@ below `$env:ProgramData\EtwDnstap\backup`. The script prints the path.
 A standard user can create folders in ProgramData, so the script does not trust
 what it finds there. It creates `EtwDnstap`, `backup` and the run's folder with
 owner Administrators, no inherited ACEs, and full control for SYSTEM and
-Administrators only. It stops with an error, before any change, if one of those
-levels exists and is a reparse point, has another owner, or lets another
-principal write to it. It does not take ownership of a folder that someone else
+Administrators only. It stops with an error before any change if one of those
+levels exists and has one of these problems:
+
+- It is a reparse point.
+- It has another owner.
+- It lets another principal write to it.
+
+It does not take ownership of a folder that someone else
 made. Inspect such a folder, and remove it only when you know where it came
 from. The script never reuses an existing backup folder.
 
 | File | Content |
 | --- | --- |
 | `wmi-security.reg` | `reg.exe export` of the whole `WMI\Security` key, made before any change. For reference and manual recovery. |
-| `changes.json` | The original bytes (Base64) of each value that the run changed or deleted, the names of the values that the run created, and for each value the SHA-256 of the bytes that the run left in it. |
+| `changes.json` | The original bytes (Base64) of each value that the run changed or deleted. The names of the values that the run created. For each value, the SHA-256 of the bytes that the run left in it. |
 
 `-WhatIf` changes nothing, and that includes the backup. A run that has nothing
 to change makes no backup. If the script cannot make the backup, it stops
@@ -124,10 +139,15 @@ To undo a run, preview and then run:
 .\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>"
 ```
 
-`-Restore` first checks the owner, the reparse status and the ACL of
-`changes.json` and of every folder above it. Then it checks that each name is a
-GUID, that each saved value parses as a security descriptor, and that the file
-came from this computer. It applies nothing until every entry passes. It writes
+`-Restore` does these checks before it applies anything:
+
+1. It checks the owner, the reparse status, and the ACL of `changes.json` and
+   of every folder above it.
+2. It checks that each name is a GUID.
+3. It checks that each saved value parses as a security descriptor.
+4. It checks that the file came from this computer.
+
+It applies nothing until every entry passes. It writes
 the original bytes back, deletes the values that the run created, and prints a
 summary of the values restored, deleted and skipped. A value that holds other
 bytes than the run wrote was changed after the run. `-Restore` skips it with a

@@ -1,6 +1,6 @@
 # Single-pass decoder: current contract
 
-> **Status:** Current · **Describes:** `main` at commit `efb47af` (decoder added in `e59425f`) · **Evidence dated:** not applicable (reference; local tests only) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` (decoder added in `e59425f`, TDH fallback removed in `69db97d`) · **Evidence dated:** not applicable (reference, local tests only) · **Reviewed:** 2026-11-01
 
 This page states the rules that the code enforces today. It covers the fast path
 in `src/etw/decode.rs`, the schema compiler in `src/etw/schema.rs`,
@@ -21,8 +21,9 @@ is historical.
 ## Supported schemas
 
 Every captured event is decoded by a compiled plan. There is no per-event TDH
-reader. TDH is used only once per schema key, to read the manifest metadata that
-the plan is compiled from. The decision is made when the schema is first loaded.
+reader. TDH is used only when a schema key is not in the cache. Then two
+`TdhGetEventInformation` calls read the manifest metadata that the plan is
+compiled from. The decision is made when the schema is loaded.
 
 A schema is unsupported when its plan does not compile. This happens when any of
 these is true:
@@ -41,10 +42,16 @@ these is true:
 Events are rejected in these cases:
 
 - **Unsupported schema or metadata load failure.** The event is rejected and
-  counted in `schema_rejected`. The cause can be a schema that does not compile,
-  a provider or event schema that does not match, or an invalid size. One
-  warning is logged for each key. The parser remembers the key, for up to 8 keys.
-  Later events with that key are rejected without a TDH call.
+  counted in `schema_rejected` and in `rejected`. The cause can be one of these:
+  - A schema that does not compile.
+  - A schema that is not from a manifest.
+  - A provider or event schema that does not match.
+  - A TDH call that fails.
+  - An invalid size.
+
+  One warning is logged for each key. The parser remembers up to 8 keys. When
+  that list is full, the parser clears it. Later events with a remembered key
+  are rejected without a TDH call.
 - **Malformed payload under a plan.** A payload that does not decode under a
   compiled plan is rejected. There is no TDH retry.
 
@@ -139,6 +146,10 @@ The local tests check:
 - A process-local manifest: a plan compiled from real TDH metadata produces the
   same output as the plan compiled from the fixture template. It does not
   capture live DNS Server traffic.
+- The parser's failed-key list stays bounded and does not reallocate.
+
+The ignored `parse_encode_benchmark` test is an optional manual timing of the
+warmed parse and encode path. It also prints the size of `Parser`.
 
 These tests do not measure live throughput or CPU use. They do not resolve the
 capture deficit in the

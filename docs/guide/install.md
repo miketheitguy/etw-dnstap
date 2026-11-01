@@ -1,24 +1,34 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `40a6b65`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188`, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
 
 > **Validation status:** the LocalService restricted-SID profile was validated
 > on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
 > [localservice-restricted-validation.md](../history/localservice-restricted-validation.md).
 > Load and other Windows builds were not covered. A later lab run tested the
-> SCM recovery policy and a DNS Server restart; see
+> SCM recovery policy and a DNS Server restart. See
 > [the lab record](../history/skills-evaluation-lab-validation.md). On
 > other builds, run the
 > [validation checklist](#validation-checklist-for-the-localservice-restricted-profile)
 > on a disposable host first.
 
-This guide covers the toolchain, the build, the service identity, and the SCM
-registration for a new installation. Options are in
-[configuration.md](configuration.md). Problems are in
+Use this guide to set up a new host. It covers the toolchain, the build, the
+service identity, and the SCM registration.
+
+| Task | Section |
+| --- | --- |
+| Prepare the host | [Prerequisites](#prerequisites) |
+| Build the executable | [Install the Rust toolchain](#install-the-rust-toolchain), [Build the executable](#build-the-executable) |
+| Install a new service | [Provision the service](#provision-the-service), steps 1 to 8 |
+| Test the profile on a new Windows build | [Validation checklist](#validation-checklist-for-the-localservice-restricted-profile) |
+| Set up the dnstap receiver | [Receiver configuration](#receiver-configuration) |
+| Change an existing installation | [Repair or upgrade](#repair-or-upgrade) |
+
+The options are in [configuration.md](configuration.md). Diagnostics are in
 [troubleshooting.md](troubleshooting.md). Removal is in [uninstall.md](uninstall.md).
 
-Steps 3, 4 and 7 were run on the lab host recorded above. The other steps were
-written from the source and the reviewed lab procedure.
+Steps 3, 4 and 7 were run on the lab host recorded above. The other steps come
+from the source and the reviewed lab procedure.
 
 ## Prerequisites
 
@@ -40,17 +50,20 @@ The repository pins its toolchain in [rust-toolchain.toml](../../rust-toolchain.
 It is a dated nightly, so a stable toolchain is not enough.
 
 1. Install rustup from <https://rustup.rs> (the `rustup-init.exe` for Windows x64).
-2. From the repository root, run `rustup show`. rustup reads
-   `rust-toolchain.toml` and installs the pinned nightly with `clippy`,
-   `rustfmt`, `rust-src`, and the `x86_64-pc-windows-msvc` target.
-3. Confirm with `rustup show active-toolchain`, which should name the pinned
+2. From the repository root, run `rustup toolchain install` with no toolchain
+   name. rustup reads `rust-toolchain.toml` and installs the pinned nightly with
+   `clippy`, `rustfmt`, `rust-src`, and the `x86_64-pc-windows-msvc` target. CI
+   uses the same command. Current rustup versions do not install a toolchain
+   from `rustup show`.
+3. Run `rustup show active-toolchain`. Check that the output names the pinned
    channel.
 
 **Updating the toolchain.** A pinned channel does not follow `rustup update`.
-Change `channel` in `rust-toolchain.toml` in a reviewed commit, then run
-`rustup show` again. Record the change in the [CHANGELOG](../../CHANGELOG.md),
-because the build output and the measured behavior depend on it. Remove an old
-toolchain with `rustup toolchain uninstall <name>` only after the new one builds.
+Change `channel` in `rust-toolchain.toml` in a reviewed commit, then run `rustup
+toolchain install` again. Record the change in the
+[CHANGELOG](../../CHANGELOG.md), because the build output and the measured
+behavior depend on it. Remove an old toolchain with `rustup toolchain uninstall
+<name>` only after the new one builds.
 
 ## Build the executable
 
@@ -73,11 +86,13 @@ Points to know before you build:
 - **The first build is slow.** `.cargo/config.toml` enables `build-std`, so
   Cargo rebuilds the standard library and `panic_unwind` with the target
   hardening flags. Later builds reuse that output.
-- **Warnings fail the build.** `Cargo.toml` sets `[lints.rust] warnings = "deny"`.
-  Any compiler warning is an error, including in a release build.
-- **The release profile** enables overflow checks and `panic = "abort"`, and
-  statically links the MSVC C runtime (`+crt-static`). The clean Server Core
-  deployment does not need the Visual C++ Redistributable.
+- **Warnings fail the build.** Under `[lints.rust]`, `Cargo.toml` sets
+  `warnings` to `deny`. Any compiler warning is an error, including in a
+  release build.
+- **The release profile** enables overflow checks and `panic = "abort"`.
+  `.cargo/config.toml` statically links the MSVC C runtime (`+crt-static`) for
+  every build of the target. The clean Server Core deployment does not need the
+  Visual C++ Redistributable.
 - **Hardening flags** (CFG, EH continuation guard, ASLR, high-entropy VA, NX,
   CET-compatible marker, stack protection (`-Z stack-protector=all`), and
   `/DEBUG:NONE` for release) come from
@@ -89,9 +104,14 @@ Points to know before you build:
   scripts\ci\verify-pe.ps1 -Path target\x86_64-pc-windows-msvc\release\etw-dnstap.exe
   ```
 
-  The script fails if a hardening flag is missing, if the image has a PDB entry,
-  or if it imports an ASan runtime or the dynamic C or Universal CRT. CI runs the
-  same check on the release build.
+  The script fails in each of these conditions:
+
+  - A hardening flag is missing.
+  - The image has a PDB entry.
+  - The image imports an ASan runtime, or the dynamic C or Universal CRT.
+  - The image contains an absolute `C:\Users\` path.
+
+  CI runs the same check on the release build.
 - **Check the binary.** `etw-dnstap.exe --version` prints the package version.
   `--help` prints the options without starting capture.
 
@@ -119,7 +139,7 @@ This needs more than the Rust nightly. On MSVC it needs the AddressSanitizer
 runtime from Visual Studio:
 
 1. In the Visual Studio Installer, add the individual component for C++
-   AddressSanitizer (the MSVC x64 ASan runtime). Confirm its exact name in your
+   AddressSanitizer (the MSVC x64 ASan runtime). Check its exact name in your
    installer version.
 2. Put the directory that contains `clang_rt.asan_dynamic-x86_64.dll` on `PATH`.
    The DLL is not installed in `System32`, so instrumented test binaries cannot
@@ -141,14 +161,14 @@ The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with a
 the service only reads events. At
 startup it requires all of the following, and refuses to start otherwise:
 
-- the token user is `S-1-5-19`;
-- the service SID `NT SERVICE\EtwDnstap` (`S-1-5-80-...`) is an enabled group;
-- the token is restricted, and its restricting SIDs include the service SID and
-  the Write Restricted SID `S-1-5-33` (the SCM also adds Everyone and the logon
-  SID);
-- Performance Log Users (`S-1-5-32-559`) is an enabled group, which arrives
-  because the service SID is a member of that group;
-- the only privilege is an enabled `SeChangeNotifyPrivilege`.
+- The token user is `S-1-5-19`.
+- The service SID `NT SERVICE\EtwDnstap` (`S-1-5-80-...`) is an enabled group.
+- The token is restricted. Its restricting SIDs include the service SID and
+  the Write Restricted SID `S-1-5-33`. The SCM also adds Everyone and the logon
+  SID.
+- Performance Log Users (`S-1-5-32-559`) is an enabled group. The token gets
+  this group because the service SID is a member of it.
+- The only privilege is an enabled `SeChangeNotifyPrivilege`.
 
 For any access that Windows classes as a write (a change of state), a
 write-restricted token must also pass a second check. That check considers only
@@ -170,7 +190,7 @@ required. If the receiver is unreachable at startup, the service runs
 disconnected and reconnects with backoff. A receiver that answers but does not
 accept the dnstap content type stops the service at startup.
 
-### 1. Validate the receiver address
+### 1. Check the receiver address
 
 Set the collector's numeric IP address and port. Hostnames are rejected, as they
 are by the executable's `--receiver` parser.
@@ -222,7 +242,7 @@ icacls.exe $installDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(RX)'
 ```
 
 Arguments go in the binary path. Arguments passed to `sc.exe start` are not used
-as configuration. The `--capacity 8192` shown here is the default; it is written
+as configuration. The `--capacity 8192` shown here is the default. It is written
 out so the value is visible. Add other options from
 [configuration.md](configuration.md) to the same string.
 
@@ -320,19 +340,19 @@ Restart-Computer
 - `sc.exe sdshow` saves the service security descriptor that the SCM gave to
   `New-Service`. `sc.exe sdset` replaces it. The new descriptor gives SYSTEM
   query, start, stop and control rights. It gives Administrators full control.
-  It gives interactive and service logons only the rights to query the
-  configuration and the status, to enumerate dependents, and to read the
-  descriptor. They cannot start, stop, pause, or reconfigure the service.
-  Network and batch logons get no right, so a remote user cannot read the binary
-  path, which holds the collector address. The SACL audits failed access
-  by any principal. Run `sdset` through `cmd.exe` for the same reason as `obj=`:
-  it keeps the quotes and the parentheses of the string intact. The default
-  descriptor also gives interactive and service logons the user-defined control
-  right. The service does not use it, so the new descriptor omits it. The lab
-  confirmed on build 26100 that `sc.exe sdshow EtwDnstap` prints exactly the
-  string in step 6 after `sdset`. A standard user got "Access is denied" (error
-  5) from `sc.exe stop`, `start`, `config`, and `control EtwDnstap 200`, and
-  could query the service.
+  Interactive and service logons get only these rights: query the configuration,
+  query the status, enumerate dependents, interrogate the service, and read the
+  descriptor. They cannot start, stop, pause, or
+  reconfigure the service. Network and batch logons get no right, so a remote
+  user cannot read the binary path, which holds the collector address. The SACL
+  audits failed access by any principal. Run `sdset` through `cmd.exe` for the
+  same reason as `obj=`: it keeps the quotes and the parentheses of the string
+  intact. The default descriptor also gives interactive and service logons the
+  user-defined control right. The service does not use it, so the new descriptor
+  omits it. The lab confirmed on build 26100 that `sc.exe sdshow EtwDnstap`
+  prints exactly the string in step 6 after `sdset`. A standard user got "Access
+  is denied" (error 5) from `sc.exe stop`, `start`, `config`, and `control
+  EtwDnstap 200`, and could query the service.
 - `net localgroup` adds the **service SID**, not all LocalService processes, to
   Performance Log Users. That lets the service create and control ETW sessions.
   The membership must be enabled in the token, not deny-only. Restart the
@@ -341,10 +361,12 @@ Restart-Computer
   `EventAccessControl`: `TRACELOG_CREATE_REALTIME` (0x20) on the session GUID
   for each `-SessionName`. The GUID for the default name `EtwDnstap` is
   `{05e1db3c-1322-58c7-8235-0463fccba32b}`. Pass every `--session-name` this host uses, spelled
-  exactly as in the binary path; the name is hashed without case folding. The
+  exactly as in the binary path. The name is hashed without case folding. The
   script grants no right to log events. It also removes any other ACE for the
   service SID from every ETW descriptor, including grants from earlier versions
-  of the script. Run it with `-WhatIf` first. It prints the resulting SDDL.
+  of the script. Run it with `-WhatIf` first. That run lists each change and
+  changes nothing. Both runs print the SDDL of each session GUID and of the
+  default descriptor. After a `-WhatIf` run, that SDDL is unchanged.
   Before the first change, it exports the `WMI\Security` registry key and saves
   the original bytes of each value it changes into `-BackupPath`. A run with
   `-WhatIf` writes no backup. To undo the run, use `-Restore` as described in
@@ -416,7 +438,7 @@ sc.exe qfailureflag EtwDnstap
 `New-Service` in step 3 sets the start type to Manual. Manual keeps the service
 stopped until provisioning is complete. After the reboot in step 4, a Manual
 service stays stopped, so capture is off until someone starts it. When
-[step 7](#7-start-capture-and-confirm-it-is-running) shows `RUNNING`, set the
+[step 7](#7-start-capture-and-check-that-it-is-running) shows `RUNNING`, set the
 start type to delayed automatic start:
 
 ```powershell
@@ -430,9 +452,9 @@ sc.exe qc EtwDnstap
   confirmed this. `Get-Service` shows `Automatic`.
 - With `depend= DNS`, the SCM stops `EtwDnstap` whenever it stops `DNS` on
   request. `Restart-Service DNS` fails because `DNS` has a dependent service.
-  Use `Restart-Service DNS -Force`. The lab showed that this stops `EtwDnstap`
-  with exit code 0, restarts `DNS`, restarts `EtwDnstap`, and starts a new
-  capture of the new DNS Server process in less than 2 seconds. After
+  Use `Restart-Service DNS -Force`. In the lab, this command stopped `EtwDnstap`
+  with exit code 0 and restarted `DNS` and `EtwDnstap`. Capture of the new DNS
+  Server process started in less than 2 seconds. After
   `Stop-Service DNS -Force` and `Start-Service DNS`, `EtwDnstap` stays stopped.
   Start it with `Start-Service EtwDnstap`.
 - If the DNS Server process crashes, the `DNS` dependency does not stop
@@ -458,16 +480,22 @@ if ($actualSd -ceq $expectedSd) { 'Service descriptor: as expected.' }
 else { Write-Warning "Service descriptor differs. Found: $actualSd" }
 ```
 
-Confirm that each command succeeds, that `sc.exe qc` shows `SERVICE_START_NAME`
-as `NT AUTHORITY\LocalService`, that `sc.exe qsidtype` reports `RESTRICTED`,
-that `sc.exe qprivs` lists only `SeChangeNotifyPrivilege`, that Performance Log
-Users lists `NT SERVICE\EtwDnstap`, and that only SYSTEM and Administrators can
-change the configuration or start and stop the service. The `sdshow` output
-must equal the string from step 4 exactly. A difference means that someone
+Check each of these results:
+
+- Each command succeeds.
+- `sc.exe qc` shows `SERVICE_START_NAME` as `NT AUTHORITY\LocalService`.
+- `sc.exe qsidtype` reports `RESTRICTED`.
+- `sc.exe qprivs` lists only `SeChangeNotifyPrivilege`.
+- Performance Log Users lists `NT SERVICE\EtwDnstap`.
+- Only SYSTEM and Administrators can change the configuration or start and stop
+  the service.
+- The `sdshow` output equals the string from step 4 exactly.
+
+A difference means that someone
 changed the descriptor, or that this OS build prints it in another form. Record
 the found string, and do not start the service until you know which.
 
-### 7. Start capture and confirm it is running
+### 7. Start capture and check that it is running
 
 ```powershell
 sc.exe start EtwDnstap
@@ -487,7 +515,7 @@ sc.exe stop EtwDnstap
 sc.exe query EtwDnstap
 ```
 
-The service should reach `STOPPED` with exit code 0. Confirm that the collector
+The service should reach `STOPPED` with exit code 0. Check that the collector
 received the expected records. The service writes no capture, metrics, or log
 files. Retention is the collector's job.
 
@@ -515,8 +543,8 @@ marked *lab* passed on build 26100. See
   name, its real-time shape, and its session GUID all match.
 - *lab:* A DNS Server restart or crash produces a gap and an automatic
   EtwDnstap restart under the recovery policy. In the lab, the service stopped
-  4 to 5 seconds after the restart, and capture resumed with the new process ID
-  5 seconds later (9 to 10 seconds in total).
+  4 to 5 seconds after the restart. Capture resumed with the new process ID
+  5 seconds later, 9 to 10 seconds in total.
 - While the service runs, a second `sc.exe start EtwDnstap` fails with error
   1056. Only one instance runs because the SCM starts one process for the
   service and the identity check refuses any other process. The service has no
@@ -531,7 +559,7 @@ marked *lab* passed on build 26100. See
 The service keeps one outbound TCP connection to `--receiver`. It negotiates
 content type `protobuf:dnstap.Dnstap` with READY, ACCEPT, and START, then sends
 data frames. On shutdown it sends STOP and waits for FINISH. After a failure it
-reconnects and negotiates again; frames lost in the gap are counted, not resent.
+reconnects and negotiates again. Frames lost in the gap are counted, not resent.
 There is no TLS and no peer authentication.
 
 An example receiver for DNS-collector 3.2.3 listens for dnstap and writes text to
@@ -594,9 +622,14 @@ Get-FileHash "$installDirectory\etw-dnstap.exe" -Algorithm SHA256 |
 Copy-Item "$installDirectory\etw-dnstap.exe" $backup
 ```
 
-The folder holds the account, the SID type, the privileges, the recovery
-policy, the service descriptor, the directory ACLs, the group membership, and a
-copy of the executable. Only SYSTEM and Administrators can read it. The `.reg`
+The folder holds these items:
+
+- The account, the SID type, and the privileges.
+- The recovery policy and the service descriptor.
+- The directory ACLs and the group membership.
+- A copy of the executable.
+
+Only SYSTEM and Administrators can read it. The `.reg`
 files are for reference. Do not restore the service from them (see below).
 When you run the grant script in a repair, add `-BackupPath "$backup\etw"` so
 that its backup is in the same folder.

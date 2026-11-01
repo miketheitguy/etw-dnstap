@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `40a6b65` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-01
 >
 > **Validation status:** the LocalService profile with a restricted service SID
 > (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) was
@@ -14,9 +14,8 @@
 response events and sends them to a [dnstap](https://dnstap.info/) receiver over
 TCP using Frame Streams. It runs under the Service Control Manager (SCM) as
 `EtwDnstap`, as `NT AUTHORITY\LocalService` with a restricted service SID. The
-service only reads ETW events; the one ETW right it is granted lets it create its
-own trace session. The executable has
-no foreground capture mode. `--help` and `--version` print information and exit
+service only reads ETW events. Its one ETW grant lets it create its own trace
+session. The executable has no foreground capture mode. `--help` and `--version` print information and exit
 without starting capture.
 
 It enables the `Microsoft-Windows-DNSServer` Event Tracing for Windows (ETW)
@@ -33,16 +32,21 @@ only on a trusted network or behind an independently protected transport. Read
 1. Install the pinned Rust toolchain, then build the release executable. See
    [Install the Rust toolchain](docs/guide/install.md#install-the-rust-toolchain) and
    [Build the executable](docs/guide/install.md#build-the-executable).
-2. Confirm that the DNS Server service is Running, because the service refuses to
-   start without it. Provision the service with the validated receiver address.
-   Starting the receiver's listener first is advisable but not required: the
-   service reconnects. Provisioning sets LocalService, `sc.exe sidtype EtwDnstap restricted`,
-   a single privilege, Performance Log Users membership for the service SID, and
-   `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`, followed by a restart. See
+2. Check that the DNS Server service is Running. The service refuses to start
+   without it.
+3. Provision the service with the checked receiver address. Provisioning does
+   these things:
+   - It sets the account to LocalService and runs `sc.exe sidtype EtwDnstap restricted`.
+   - It limits the privileges to `SeChangeNotifyPrivilege`.
+   - It adds the service SID to Performance Log Users.
+   - It runs `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`, then restarts the computer.
+
+   You can start the receiver's listener first, but it is not necessary. The
+   service reconnects. See
    [Provision the service](docs/guide/install.md#provision-the-service) and
    [scripts/provision](scripts/provision/README.md).
-3. Start the service, generate DNS traffic, and stop it. Confirm the receiver
-   got the expected records. See [step 7](docs/guide/install.md#7-start-capture-and-confirm-it-is-running).
+4. Start the service, generate DNS traffic, and stop it. Check that the receiver
+   got the expected records. See [step 7](docs/guide/install.md#7-start-capture-and-check-that-it-is-running).
 
 The release executable is `target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`.
 Run `--help` for the options. Their defaults and ranges are in the
@@ -53,7 +57,7 @@ Run `--help` for the options. Their defaults and ranges are in the
 | Task | Document |
 | --- | --- |
 | Install the toolchain, build, provision, and register the service | [Install and provision](docs/guide/install.md) |
-| Every option, default, and range; the low-rate limits | [Configuration reference](docs/guide/configuration.md) |
+| Every option, default, and range, and the low-rate limits | [Configuration reference](docs/guide/configuration.md) |
 | Diagnose a failed start, restarts, drops, or missing records | [Troubleshooting](docs/guide/troubleshooting.md) |
 | Read the periodic log counters and what each one means | [Log events and counters](docs/guide/configuration.md#log-events-and-counters) |
 | Remove the service, the event source, and leftover ETW sessions | [Uninstall](docs/guide/uninstall.md) |
