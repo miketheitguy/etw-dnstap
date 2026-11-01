@@ -1,5 +1,7 @@
 # Service shutdown validation results
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This report helps maintainers assess the bounded receiver-close comparison in
 campaign `service-stop-20261030-0633`. Both arms stop cleanly. The baseline
 capture shows receiver resets after FINISH; the graceful arm shows a FIN close

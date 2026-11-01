@@ -1,15 +1,17 @@
-# Performance repeat at global 1,000 QPS
+# Performance repeat at global 1,000 QPS, plan
+
+> **Status:** Historical · **Evidence dated:** October 29, 2026 UTC · **Commit:** not recorded · **Reviewed:** 2026-11-01
 
 This historical plan helps maintainers reproduce the method and review the
 acceptance gates for the original paced comparison. The two runs are complete;
 their [review](performance-1000qps-review.md) records ring loss in both modes.
 The fixed binary hashes and campaign paths belong to that experiment, before
 the capacity-only and pooled changes. See the
-[documentation index](README.md#review-earlier-decisions-and-validation) for the sequence.
+[documentation index](README.md#campaigns-and-reviews) for the sequence.
 
 This plan depends on the historical service JSONL metrics writer. It cannot
 measure the TCP-only service; new campaigns through its helpers are disabled.
-See the [instrumentation compatibility note](README.md). Recorded evidence and
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Recorded evidence and
 collector file destinations remain unchanged.
 
 Run authoritative and recursive-request workloads for 300 seconds each at a

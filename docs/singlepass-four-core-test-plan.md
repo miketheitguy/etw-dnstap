@@ -1,5 +1,7 @@
 # Test the single-pass decoder with four CPUs
 
+> **Status:** Historical · **Evidence dated:** October 30, 2026 UTC · **Commit:** not recorded (predates `e59425f`) · **Reviewed:** 2026-11-01
+
 This plan is for the lab operators running one authoritative DNS test with
 100,000 requested queries per second (QPS). It defines the deployment, readiness
 gates, measurement window, receipt reconciliation, and final VM state. It does

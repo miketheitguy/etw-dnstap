@@ -1,5 +1,7 @@
 # Pooled intake audit and remaining validation plan
 
+> **Status:** Historical · **Evidence dated:** October 2026 (undated in text) · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This audit record helps maintainers assess the pooled Event Tracing for Windows (ETW)
 candidate after source review. It separates confirmed defects, local validation,
 and remaining evidence needed for deployment or performance claims. It does not
@@ -9,7 +11,7 @@ service.
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 ## Status and evidence cutoff

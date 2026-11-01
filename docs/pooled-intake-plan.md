@@ -1,5 +1,7 @@
 # Pooled ETW intake: validation plan
 
+> **Status:** Historical · **Evidence dated:** October 2026 (undated in text) · **Commit:** not recorded · **Reviewed:** 2026-11-01 · The current design is in [pooled-intake.md](pooled-intake.md).
+
 This historical plan is for maintainers reviewing the original bounded callback
 storage and channel-validation design. It defines the local synthetic checks
 proposed before the separately authorized VM campaign. Its installed baseline
@@ -9,7 +11,7 @@ is the capacity-only service `CA3342…64347`; later evidence is linked in
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 ## Execution status

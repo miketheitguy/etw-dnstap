@@ -1,5 +1,7 @@
 # Pooled VM trace analysis
 
+> **Status:** Historical · **Evidence dated:** October 29, 2026 (campaign `pooled-vm-20261029-0942`) · **Commit:** `2c62a9f` documents these results · **Reviewed:** 2026-11-01
+
 Use this note to review native Windows Performance Recorder (WPR) evidence for
 the completed campaign at
 `target/performance/pooled-vm-20261029-0942`. The campaign plan and final review
@@ -10,7 +12,7 @@ export procedure, and limits on scheduling and stack attribution.
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 All 22 completed load ETLs pass the final native trace gate: zero lost events

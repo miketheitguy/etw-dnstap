@@ -1,5 +1,7 @@
 # Ring capacity and shutdown
 
+> **Status:** Current (the queue and shutdown reference; its capacity experiment is historical) · **Evidence dated:** October 28-29, 2026 for the experiment · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This note explains the queue bounds and shutdown contract for maintainers and
 administrators choosing a capture capacity. It describes implementation limits
 and the capacity experiment; it does not guarantee loss-free capture at every
@@ -7,7 +9,10 @@ traffic rate or event size.
 
 ## Capacity and memory
 
-**Warning: the defaults are tuned for low rates, about 1,000 queries/s or less.** With the periodic flush off (`--etw-flush-ms 0`), ETW delivers events in batches about 1 s apart, so delivery latency is up to about 2 s (normally under 1 s). The default 8,192 ring therefore starts dropping at roughly 2,000 queries/s (inferred), and, with 64 KiB x 256 buffers and the flush off, lost 59-79% of events at 10k-20k queries/s in lab tests (P3w/P3x); the 16 KiB x 12 defaults have not been tested above 1,000 queries/s. For higher rates use `--etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64` (in the P3x lab the periodic flush gave 0 drops at 10k-20k queries/s; 50 ms was tested at 20k, 100 ms at 10k and 50k, and at 50k with 100 ms it still lost 0.04-0.91%).
+The defaults, their low-rate limits, and the recommended high-rate settings are
+stated once, in the [configuration reference](guide/configuration.md#low-rate-defaults).
+Read that section before you choose `--capacity`, `--etw-flush-ms`, or the ETW
+buffer options.
 
 The user-mode ETW callback leases preallocated storage, copies each accepted
 event, and calls `crossbeam_channel::Sender::try_send` on a bounded event channel.
@@ -22,21 +27,16 @@ queries/s and above. The threshold is not known and may depend on the machine.
 At 10,000 queries/s with the flush disabled, about 59-61% of events were
 dropped there.
 
-Stage P3x validated the in-process flush on that VM (Windows Server 2025,
-authoritative workload, default 8,192 channel). With the flush there were 0
-ring drops at 10k and 20k queries/s, versus 59-79% loss without it. At 50k
-queries/s loss was 0.04-0.9% versus 0.3-1.7% without it; that residual loss
-tracks host disturbance, not the flush, and `etw_lost` was 0. The flush wrote
-about 5-16% more ETW buffers and cost under 0.1% of a core when idle. At 20k
-queries/s the largest batch was about 6,800 events with a 100 ms interval and
-about 3,500 with 50 ms, which is why 50 ms is the recommended high-rate setting. Not tested: other
-machines and vCPU counts, 25-45k queries/s, recursive or mixed workloads, and
-50 ms at 50k queries/s and above in a release build.
+The lab results for the in-process flush (0 ring drops at 10k and 20k queries/s
+with the flush, against 59-79% loss without it; the 50k comparison and the
+settings it used; the batch sizes; and the untested cases) are in the
+[configuration reference](guide/configuration.md#low-rate-defaults). They are
+not repeated here.
 
 Capacity guidance: each delivered batch holds roughly up to twice the flush
-interval's worth of events (2 events per query). At higher rates in the
-batching regime, lower `--etw-flush-ms` or raise `--capacity` so that
-2 x rate x interval stays well below the channel capacity.
+interval's worth of events (2 events per query). In the batching regime, lower
+`--etw-flush-ms` or raise `--capacity` so that 2 x rate x interval stays well
+below the channel capacity.
 
 The callback does not signal the parser after enqueue. The channel has no
 registered blocking receivers or selectors; atomic retries, spinning, yielding,
@@ -86,7 +86,7 @@ for another workload.
 The later [pooled VM campaign](pooled-vm-performance-review.md) measures a
 historical pooled binary with a JSONL metrics writer. The TCP-only service has
 no durable metrics export or queue high-water tracking; see the
-[instrumentation compatibility note](README.md). Keep its results separate from this historical
+[instrumentation compatibility note](README.md#instrumentation-compatibility-note). Keep its results separate from this historical
 allocation-based capacity experiment, especially when comparing CPU or memory.
 
 ## Completion and resource ownership

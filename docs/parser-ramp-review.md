@@ -1,5 +1,7 @@
 # Parser optimization DNS ramp review
 
+> **Status:** Superseded (partial record of the aborted parser ramp; do not resume). · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This aborted-campaign review is for maintainers evaluating the parser and encoder optimization. It includes strict stages with a successful client-process exit, completed run receipt, clean Service Control Manager (SCM) stop, and a final receiver ledger, plus diagnostic-only stages with verified client counts and raw-archive hash bindings when the service lifecycle fails. Diagnostic-only stages remain visibly qualified and never count as strict passes. See the [parser ramp plan](parser-ramp-plan.md) for the historical workload and stop rules.
 
 **Aborted by user; do not resume this campaign.** The latest client stage,

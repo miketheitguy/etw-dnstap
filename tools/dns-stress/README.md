@@ -10,7 +10,7 @@ cost outside the DNS VM.
 Prepare the following before sending load:
 
 - Use a Windows x64 host with the toolchain and Build Tools required by the
-  [project build instructions](../../README.md#build-and-check).
+  [project build instructions](../../docs/guide/install.md#build-the-executable).
 - Generate the names files with the
   [pinned workload procedure](../../datasets/performance/README.md#generate-the-workload).
 - Verify the selected lab DNS server, authoritative zone, and recursive upstream

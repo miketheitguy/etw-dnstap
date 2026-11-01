@@ -1,5 +1,7 @@
 # Ring-buffer capacity fix: validation
 
+> **Status:** Superseded by [Pooled ETW intake](pooled-intake.md). This report validates the allocation-based `ArrayQueue` candidate, which is no longer the transport. · **Evidence dated:** October 29, 2026 UTC · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This historical report helps maintainers assess the allocation-based
 capacity-only candidate measured on October 29, 2026 UTC. Its binary, test
 counts, and installed-state descriptions apply at the recorded restoration
@@ -10,7 +12,7 @@ pool or jumbo admission limits.
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 **Capture target passed:** both 300-second runs at approximately global 1,000

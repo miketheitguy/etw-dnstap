@@ -1,5 +1,7 @@
 # Ring-buffer capacity fix: plan and validation gates
 
+> **Status:** Historical · **Evidence dated:** October 29, 2026 UTC · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This historical plan helps maintainers review the October 29, 2026 UTC
 capacity experiment and its acceptance decisions. The experiment is complete;
 the [validation report](ring-buffer-fix-validation.md) preserves its outcome.
@@ -10,7 +12,7 @@ campaign. The later pooled implementation and VM validation are documented in
 
 This plan depends on the historical service JSONL metrics writer. It cannot
 measure the TCP-only service; new campaigns through its helpers are disabled.
-See the [instrumentation compatibility note](README.md). Recorded evidence and
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Recorded evidence and
 collector file destinations remain unchanged.
 
 Target: zero observed ring drops during separate 300-second authoritative and

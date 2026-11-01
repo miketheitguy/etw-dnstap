@@ -1,5 +1,7 @@
 # Symbolized release-optimized WPR results
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This report helps the pipeline maintainer choose the next performance changes
 from one 60-second workload configured for 100,000 QPS. The loaded trace resolves
 the parser's address wait to **timeout-based input polling**, shows substantial
@@ -175,9 +177,9 @@ scheduled context does not mean DNS code explicitly wakes the parser.
 The 3,596 fully interior wait episodes have mean **7.451 ms**, median
 **6.877 ms**, p95 **15.738 ms**, p99 **16.925 ms**, and maximum **17.748 ms**.
 These are blocked durations, excluding subsequent Ready time. The
-[`drain_ring` source](../src/pipeline.rs#L314) requests a 2 ms park after a
+`drain_ring` source (`src/pipeline.rs`) requests a 2 ms park after a
 failed `try_recv`; the regular
-[`native_etw_callback`](../src/etw.rs#L333) enqueue path does not unpark it.
+`native_etw_callback` (`src/etw.rs`) enqueue path does not unpark it.
 The resolved caller and timer readying establish timeout polling, rather than
 a Rust mutex-contention diagnosis. The trace does not establish the precise
 reason the requested timeout is exceeded.
@@ -219,9 +221,9 @@ includes descendants and overlaps other rows; the rows must not be added:
 | `ws2_32!send` and descendants | 0.003983 s | 0.759199 s |
 | `ws2_32!setsockopt` and descendants | 0.033818 s | 0.282159 s |
 
-The source connects [`Parser::parse`](../src/etw.rs#L551) to the cached schema,
-[`DecodePlan::decode`](../src/etw/decode.rs#L116), endpoint parsing, and
-[`Encoder::encode_with`](../src/dnstap.rs#L105). The encoder's resolved generic
+The source connects `Parser::parse` (`src/etw.rs`) to the cached schema,
+`DecodePlan::decode` (`src/etw/decode.rs`), endpoint parsing, and
+`Encoder::encode_with` (`src/dnstap.rs`). The encoder's resolved generic
 instantiation identifies the `parse_fast` closure; this is not a separately
 measured `parse_fast` call frame. Inlining and identical-code folding prevent
 a clean source-operation partition of every leaf sample. `Parser::parse`
@@ -233,8 +235,8 @@ Other observed parser leaf costs include address conversion
 `Instant::now`/`RtlQueryPerformanceCounter` execution. These identify work to
 inspect, not independently additive elapsed-time bottlenecks.
 
-The [`FrameStreamWriter`](../src/framestream.rs#L41) already writes through a
-`BufWriter`. [`DeadlineTcp::write`](../src/network.rs#L134) updates the socket
+The `FrameStreamWriter` (`src/framestream.rs`) already writes through a
+`BufWriter`. `DeadlineTcp::write` (`src/network.rs`) updates the socket
 write timeout before each underlying write, explaining the resolved
 `set_write_timeout → setsockopt` path. These are CPU costs, not evidence that
 the timeout expires or the socket blocks. The observed setsockopt path is only

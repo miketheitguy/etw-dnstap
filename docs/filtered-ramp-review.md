@@ -1,5 +1,7 @@
 # Filtered DNS ramp review
 
+> **Status:** Historical (an in-progress snapshot of the October 30, 2026 filtered campaign; no final result is recorded here) · **Evidence dated:** October 30, 2026 · **Commit:** `3d401cc` (the pushed commit the deployment receipt cites) · **Reviewed:** 2026-11-01
+
 This in-progress review is for maintainers evaluating the client-event filter. It reports only verified evidence from the filtered campaign and keeps client results separate from receiver reconciliation. See the [filtered ramp plan](filtered-ramp-plan.md) for the matrix, capture contract, and stop rules.
 
 ## Candidate and capture scope

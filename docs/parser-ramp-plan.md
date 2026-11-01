@@ -1,5 +1,7 @@
 # Parser optimization DNS ramp plan
 
+> **Status:** Superseded (the parser ramp was aborted by the user and must not be resumed). Its capture contract predates the current defaults. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01 · See [filtered DNS ramp plan](filtered-ramp-plan.md) for the current ramp design.
+
 This plan is for the deployment operator and evidence reviewer. It defines a bounded DNS load ramp to compare client sends and responses with collector observations after deploying the parser and encoder optimization. It does not plan service durable metrics, a Windows Performance Recorder (WPR) or CPU campaign, production Rust changes, historical guard changes, or a commit or push.
 
 **Aborted by user; do not resume this campaign.** The user stopped testing

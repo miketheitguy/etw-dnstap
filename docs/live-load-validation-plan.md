@@ -1,5 +1,7 @@
 # Live load validation plan
 
+> **Status:** Proposed (execution is not recorded in this index; confirm before relying on it) · **Evidence dated:** October 30, 2026 (deferred checks) · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This plan unblocks and runs the load checks deferred by the October 30, 2026
 live validation in the [source review remediation plan](src-review-remediation-plan.md).
 Stages L1–L3 used a low-cost model at low effort. Stages L4 and L5 use the

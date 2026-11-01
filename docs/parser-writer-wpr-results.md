@@ -1,5 +1,7 @@
 # Combined parser and writer WPR results
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This report helps the pipeline maintainer assess CPU work and blocking on the
 production combined parser/writer thread during one 60-second authoritative
 workload configured for 100,000 QPS. The trace does **not** support socket-write

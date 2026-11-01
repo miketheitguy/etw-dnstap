@@ -1,5 +1,7 @@
 # ETW keyword narrowing plan
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 **Status:** Stage K0 is recorded for Windows Server 2025 build 26100 (October
 30, 2026). Stages K1–K3 were completed on October 31, 2026. Narrowing passed
 live validation on that build. Record K0 for every other target build before

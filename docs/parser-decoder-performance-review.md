@@ -1,5 +1,7 @@
 # Parser and decoder performance review
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This review helps the Rust pipeline maintainer choose concrete changes to the
 Event Tracing for Windows (ETW) parser and decoder. Start with a single
 schema lookup on cache hits, then reduce the compiled decoder's dependency
@@ -71,9 +73,9 @@ rather than proposing them as improvements:
 | Malformed supported payload | Fast decode or semantic validation returns an error without retrying TDH | Never turn malformed data into an expensive fallback retry |
 | Output ownership | Packet bytes remain borrowed from the pooled event until copied into the encoder's final range | The returned output borrows the encoder, and the event lease ends before return |
 
-See [`Parser::parse` and `parse_fast`](../src/etw.rs#L551),
-[`DecodePlan`](../src/etw/decode.rs#L67), and
-[`Encoder::encode_with`](../src/dnstap.rs#L105). The parser's text and property
+See `Parser::parse` and `parse_fast` (`src/etw.rs`),
+`DecodePlan` (`src/etw/decode.rs`), and
+`Encoder::encode_with` (`src/dnstap.rs`). The parser's text and property
 scratch arrays are initialized at construction and reused. There is no
 per-event text allocation to remove. The encoder also retains address and
 output capacity after warmup.
@@ -86,7 +88,7 @@ speedup.
 
 ### 1. Use one schema lookup on a warm hit
 
-At [`src/etw.rs:568`](../src/etw.rs#L568), `contains_key(&key)` is followed by
+In `src/etw.rs`, `contains_key(&key)` is followed by
 `get(&key)`. Replace that hit path with one `get` and dispatch using the
 borrowed `Schema`. Put metadata loading, capacity handling, insertion, and the
 post-insertion lookup on a separate miss path. A small helper that accepts
@@ -108,10 +110,10 @@ source level; it does not imply that hashing CPU is halved.
 
 ### 2. Compile only actual length dependencies
 
-At [`src/etw/decode.rs:114`](../src/etw/decode.rs#L114), the walk initializes
+In `src/etw/decode.rs`, the walk initializes
 `[0u32; 256]`, then decodes and stores **every unsigned field**, regardless of
 whether a later binary field uses it. For the
-[saved query/response fixtures](../src/etw/decode_tests.rs#L71), the required
+saved query/response fixtures (`src/etw/decode_tests.rs`), the required
 prefix contains 11/17 steps and performs 7/10 such stores. Only `BufferSize`
 supplies a binary length in those fixtures. These counts describe fixtures,
 not the observed runtime schema distribution.
@@ -193,7 +195,7 @@ locality data establishes that it beats the direct index or the simpler map.
 
 ### 5. Specialize address conversion conservatively
 
-[`address`](../src/etw.rs#L1087) already handles schema-declared four-byte IPv4
+`address` (`src/etw.rs`) already handles schema-declared four-byte IPv4
 and sixteen-byte IPv6 values directly. Keep these representations and exact
 length checks. Do not reinterpret text as binary based only on its length.
 ANSI text already borrows payload bytes and uses the standard IP parser.
@@ -226,7 +228,7 @@ The following candidates have weaker isolated evidence or a wider change surface
 
 | Candidate | Concrete possible change | Why it follows the parser work |
 | --- | --- | --- |
-| Timestamp representation | Carry validated Unix seconds/nanoseconds from `timestamp` to the encoder instead of constructing `SystemTime` and immediately recovering a duration | The round trip is visible at `etw.rs:1124` and `dnstap.rs:143`, but no isolated timestamp cost is established; constant divisions and remainders may already be combined or strength-reduced |
+| Timestamp representation | Carry validated Unix seconds/nanoseconds from `timestamp` to the encoder instead of constructing `SystemTime` and immediately recovering a duration | The round trip is visible in the timestamp conversion in `src/etw.rs` and in `src/dnstap.rs`, but no isolated timestamp cost is established; constant divisions and remainders may already be combined or strength-reduced |
 | Fast-path packet copy | Add a borrowed-slice encoding entry point that reserves the bounded final output, appends packet bytes safely, and appends the suffix | `fill_message` resizes with zeros before the fast closure overwrites the packet; whether the zeroing survives optimization and matters is unmeasured |
 | Metadata field encoding | Reduce repeated length/field dispatch only if encoder benchmarks identify it | Prost inclusive weight is smaller and overlaps the broader encoder bucket; the existing handwritten envelope already places packet bytes directly in the final output |
 | Function layout or inlining | Inspect optimized assembly and experiment only on a demonstrated call/layout issue | Inlined frames and folded symbols can change attribution without changing total work; Rust's [inline attributes are hints](https://doc.rust-lang.org/reference/attributes/codegen.html) |
@@ -301,11 +303,11 @@ correctness references.
    without correctness or allocation regressions before retaining each change.
 
 The existing coverage includes
-[`cached_supported_parser_has_zero_tdh_calls_and_no_allocations`](../src/etw.rs#L2339),
-[`supported_malformed_rejects_without_tdh_but_unsupported_schema_uses_fallback`](../src/etw.rs#L2377),
-[`process_local_manifest_tdh_matches_borrowed_fields_and_parser_output`](../src/etw.rs#L2467),
+`cached_supported_parser_has_zero_tdh_calls_and_no_allocations` (`src/etw.rs`),
+`supported_malformed_rejects_without_tdh_but_unsupported_schema_uses_fallback` (`src/etw.rs`),
+`process_local_manifest_tdh_matches_borrowed_fields_and_parser_output` (`src/etw.rs`),
 the [decoder fixtures](../src/etw/decode_tests.rs), and the
-[encoder's independent reference and reuse tests](../src/dnstap.rs#L386).
+encoder's independent reference and reuse tests (`src/dnstap.rs`).
 These are inspected coverage, not newly reported test passes. Extend them to
 verify behavior at the changed boundaries, rather than asserting only that
 the proposed internal operation list has a particular shape.

@@ -1,5 +1,7 @@
 # Diagnose and remediate receiver shutdown resets
 
+> **Status:** Current (operator guide) · **Evidence dated:** the recorded failure is undated in text · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This operator guide explains the intermittent Windows service-stop failure
 seen during the Frame Streams STOP/FINISH exchange and how to validate a
 receiver-side mitigation. It is for maintainers of the documented DNS-collector

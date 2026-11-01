@@ -1,5 +1,7 @@
 # Parser and encoder optimization plan
 
+> **Status:** Superseded by [Single-pass ETW decoder](single-pass-decoder-plan.md). This records the earlier reusable packet-vector implementation. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This historical plan records the earlier reusable packet-vector implementation
 for parser and encoder maintainers. Its frozen APIs, baseline hashes, and
 validation results apply to that implementation. The

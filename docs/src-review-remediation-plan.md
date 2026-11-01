@@ -1,5 +1,7 @@
 # Source review remediation plan
 
+> **Status:** Historical · **Evidence dated:** October 30, 2026 (source review) · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This plan fixes selected findings from the October 30, 2026 `src` review. It
 follows the [ETW session recovery and event-ID filter plan](etw-session-recovery-and-event-filter-plan.md),
 and also fixes three findings from that plan's Stage 3 review (Stage R6).
@@ -228,7 +230,7 @@ version each.
    clearing when full before inserting, at the new bound. Cache hits must
    still borrow without allocating or cloning.
 2. Remove the `HashMap` import if unused. Update the test that inserts into
-   `parser.schemas` (near `src/etw.rs:2650`) to push a tuple.
+   `parser.schemas` (in the schema-cache code in `src/etw.rs`) to push a tuple.
 3. The existing allocation-free parser tests must keep passing. Add a test
    that inserting `MAX_CACHED_SCHEMAS + 1` distinct keys never exceeds the
    bound.

@@ -1,5 +1,7 @@
 # Profile a release-optimized build with application symbols
 
+> **Status:** Historical · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
 This staged plan gives the lab operator and reviewer a procedure for building
 an optimized executable with full application symbols, deploying it to the
 existing lab VM, and analyzing one 60-second workload configured for 100,000

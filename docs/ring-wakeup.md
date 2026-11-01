@@ -1,5 +1,10 @@
 # Rejected wake-on-enqueue experiment
 
+> **Status:** Historical · **Evidence dated:** October 29, 2026 UTC · **Commit:** not recorded · **Reviewed:** 2026-11-01
+
+> **Scope note:** This experiment rejected a wake on each enqueue. It does not
+> rule out a wake once per ETW buffer, which was not tested.
+
 This historical note records the rejected `wake-1024-v1` candidate for
 maintainers reviewing the ring-drop investigation. The active implementation
 uses timed polling; see [Ring capacity and shutdown](ring-buffer.md).
@@ -7,7 +12,7 @@ uses timed polling; see [Ring capacity and shutdown](ring-buffer.md).
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](README.md). Preserved counters,
+See the [instrumentation compatibility note](README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 The experiment retained the 1024-event ring and 2 ms idle timeout. It added an
