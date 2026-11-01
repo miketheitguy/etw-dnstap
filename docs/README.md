@@ -67,14 +67,14 @@ install, configuration, troubleshooting, and removal.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Install and provision](guide/install.md) | Current; LocalService restricted-SID profile not validated live | not applicable | `54eafae` | Toolchain, build, LocalService restricted-SID identity, privileges, SCM recovery, receiver setup, validation checklist |
+| [Install and provision](guide/install.md) | Current; LocalService restricted-SID profile validated on one lab host (build 26100) | Nov 1, 2026 (lab validation) | `e8560ac` | Toolchain, build, LocalService restricted-SID identity, privileges, SCM recovery, receiver setup, validation checklist |
 | [Configuration reference](guide/configuration.md) | Current | not applicable | `54eafae` | Every option and default, the low-rate limits, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters |
 | [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `54eafae` | Event log messages, startup failures, receiver outages, DNS restarts, counters, watchdog aborts |
 | [Service shutdown remediation](guide/service-stop-remediation.md) | Current (operator guide) | not applicable | not recorded | Diagnosing receiver resets during STOP/FINISH and the close behavior |
 | [Uninstall](guide/uninstall.md) | Current | not applicable | `54eafae` | Service, group membership, event source, ETW session, and directory removal |
 | [Security policy](../SECURITY.md) | Current | not applicable | `54eafae` | Reporting, threat model summary, producer identity, LocalService restricted-SID profile |
 | [Contributing](../CONTRIBUTING.md) | Current | not applicable | `9172f2d` | Build, test, lint, documentation status and layout, commit style |
-| [Changelog](../CHANGELOG.md) | Current | not applicable | `54eafae` | Keep a Changelog format; `0.1.0` reconstructed from `git log` |
+| [Changelog](../CHANGELOG.md) | Current | not applicable | `54eafae` | Keep a Changelog format; versioning policy at the top; no tag yet; commit log through `9172f2d` |
 
 ## Design and reference
 

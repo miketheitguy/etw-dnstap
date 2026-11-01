@@ -1,11 +1,43 @@
 # Changelog
 
 All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it is tagged.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the policy below.
 
-Dates are commit dates in America/Los_Angeles, reconstructed from `git log`. The
-repository has no tags yet, so `0.1.0` lists the commits on `main` in order.
+## Versioning policy
+
+The version is the `version` field in [Cargo.toml](Cargo.toml). The binary
+prints it with `--version`. The repository has no Git tag and no release yet.
+Every change stays under `[Unreleased]` until a tag is made.
+
+**SemVer rule.** A major version of `0` means initial development. Under
+[SemVer 2.0.0](https://semver.org/spec/v2.0.0.html), anything may change at any
+time, and the public API should not be treated as stable.
+
+**Local policy while the version is `0.y.z`.** This policy states what the
+project promises. It is not a SemVer rule. The public contract has these parts:
+
+- The command-line options, their defaults and ranges, and the `--help` and
+  `--version` output.
+- The Application event log messages and counters, and the dnstap output sent
+  to the receiver.
+- The ETW session name, and the session GUID derived from it.
+- The provisioning steps in [install.md](docs/guide/install.md): identity,
+  privileges, ETW grant, and event source.
+
+Under this policy:
+
+- A change that breaks the contract, or that makes an operator change the
+  configuration or reprovision the service, increases the minor number `y`. It
+  sets the patch number `z` to `0`. Its entry starts with **Breaking.**
+- Any other change increases the patch number `z`. This includes fixes,
+  documentation, new options that keep the old behavior, and new counters or
+  log events.
+- A published version is never replaced. A faulty release gets a new version.
+- The project moves to `1.0.0` when the maintainer decides that the contract is
+  stable and that lab validation covers the Windows builds operators use.
+
+Dates are commit dates in America/Los_Angeles, reconstructed from `git log`.
 Each entry is summarized from its commit subject. See the commit for details.
 
 ## [Unreleased]
@@ -28,19 +60,28 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - Single-instance guard: a named mutex, `Global\EtwDnstap-<session>`.
 - Negative schema cache: an event whose schema fails to load is rejected without
   repeated TDH calls, and counted in `schema_rejected`.
-- Tests, fuzzing and CI: _pending_
+- Tests, fuzzing, and CI. Commit `12cce7a` added them. Property tests
+  (`proptest`) check Frame Streams framing, event decoding, and the dnstap
+  encoder. Golden byte vectors compare the encoder with the upstream
+  `dnstap.proto`. Three libFuzzer targets (`decoder`, `control_frame`, and
+  `plan_compiler`) are in the separate `fuzz/` workspace. The CI workflow runs
+  formatting, Clippy, tests, a release build, `cargo deny`, the Python tests,
+  and a link check. The 60-second fuzz smoke run and coverage are report-only.
+  The `lab.yml` workflow runs the ignored tests that need live ETW, on a
+  self-hosted runner.
 
 ### Changed
 
 - Service identity: the service runs as `NT AUTHORITY\LocalService` with a
   restricted service SID type (`sc.exe sidtype EtwDnstap restricted`, a
-  write-restricted token) instead of LocalSystem. This supersedes the earlier
-  virtual-account entry from commit `f0b51f4`. The token must be restricted with
+  write-restricted token) instead of LocalSystem. The token must be restricted with
   the service SID and `S-1-5-33` as restricting SIDs, the service SID must be an
   enabled group and a member of Performance Log Users, and only
   `SeChangeNotifyPrivilege` may be held. `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`
   grants the ETW right to the service SID. Existing installs must be
-  reprovisioned. Validated on build 26100; see below.
+  reprovisioned. Validated on one lab DNS Server (Windows Server 2025, build
+  26100) on 2026-11-01. See the
+  [validation record](docs/history/localservice-restricted-validation.md).
 - ETW and instance-lock access-denied errors name the missing right, the GUID, and
   the provisioning script.
 - The ETW session now has a stable GUID derived from `--session-name`
@@ -74,6 +115,15 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   `docs/performance/`, `docs/plans/`, and `docs/history/` by status. Commit
   `54eafae`. See the [documentation index](docs/README.md#layout).
 
+### Removed
+
+- The `--output`/`-o`, `--max-output-bytes`, and `--metrics` options and the
+  service JSONL metrics writer. Arguments that use them now fail command-line
+  parsing. Remove them from the binary path before you start this build. See
+  [install.md](docs/guide/install.md#repair-or-upgrade). The removing commit is
+  not identified in this file. See the
+  [instrumentation compatibility note](docs/README.md#instrumentation-compatibility-note).
+
 ### Fixed
 
 - The identity check reported `truncated token groups` for an unrestricted
@@ -89,14 +139,17 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   Server process, and the callback checks the process ID again. Records from
   other processes count as `foreign_pid_rejected`. Commit `f0b51f4`.
 - The service no longer runs as LocalSystem. It runs as LocalService with a
-  restricted service SID and only `SeChangeNotifyPrivilege`. This replaces the
-  virtual-account profile of commit `f0b51f4`. This profile has not been
-  validated on a live DNS Server.
+  restricted service SID and only `SeChangeNotifyPrivilege`. The profile was
+  validated on one lab DNS Server (Windows Server 2025, build 26100) on
+  2026-11-01. A DNS Server restart, SCM recovery, load, and other Windows builds
+  were not tested.
 
-## [0.1.0] - not tagged
+## Commit log through `9172f2d`
 
-Commits on `main`, oldest first. Entries reflect commit subjects. Per-commit
-contents were not reviewed for this file.
+This is not a release. It lists every commit on `main` from the first commit
+through `9172f2d`, from `git log`, grouped by category. Each entry is summarized
+from its commit subject. Per-commit contents were not reviewed for this file.
+The removal of the CLI options is recorded under `[Unreleased]`.
 
 ### Added
 
@@ -116,9 +169,3 @@ contents were not reviewed for this file.
 - `5fa2152` (2026-10-29), Preserve capture filter metadata in receiver end
   markers.
 
-### Removed
-
-- The `--output`/`-o`, `--max-output-bytes`, and `--metrics` options and the
-  service JSONL metrics writer. The removing commit is not identified in this
-  file. Removed arguments now fail command-line parsing. See the
-  [instrumentation compatibility note](docs/README.md#instrumentation-compatibility-note).
