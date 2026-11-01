@@ -37,6 +37,13 @@ the default would let the service SID create any session that has no
 descriptor of its own. In the lab it also spread: other components create
 descriptors by copying the default, and those copies kept the grant.
 
+The new descriptor of the session GUID is seeded from the default descriptor.
+Therefore the principals that the default descriptor lets create sessions
+(Administrators, LocalService, NetworkService, and Performance Log Users) can
+also create a session with that GUID. This is harmless. They already hold the
+same right on every GUID that has no descriptor of its own, and the grant adds
+no right to any of them.
+
 Nothing else is granted. In the lab, these calls passed with the default
 descriptor and no grant: `EnableTraceEx2` on the DNS provider, `OpenTrace` and
 `ProcessTrace`, and the `ControlTrace` query and stop, including the reclaim of
@@ -54,6 +61,7 @@ Run from an elevated Windows PowerShell 5.1 session:
 .\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap -WhatIf    # preview
 .\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap            # grant; then restart
 .\Grant-EtwDnstapEtwAccess.ps1 -Remove                           # uninstall; then restart
+.\Grant-EtwDnstapEtwAccess.ps1 -Restore <backup folder>         # undo a run; then restart
 ```
 
 Pass every `--session-name` used on the host to `-SessionName`. A grant on a
@@ -83,6 +91,36 @@ descriptor, including system defaults. It reads each descriptor from the
 registry value, removes the ACEs for the service SID, and writes the result
 back. It does not use `EventAccessQuery` for this, because that call returns
 the default descriptor for a GUID that has none of its own.
+
+### Backup and restore
+
+The script edits values under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`.
+Before its first change, it makes a backup in `-BackupPath`. The default is
+`$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>`. The script creates the
+folder with an ACL for SYSTEM and Administrators only, and it prints the path.
+
+| File | Content |
+| --- | --- |
+| `wmi-security.reg` | `reg.exe export` of the whole `WMI\Security` key, made before any change. For reference and manual recovery. |
+| `changes.json` | The original bytes (Base64) of each value that the run changed or deleted, and the names of the values that the run created. |
+
+`-WhatIf` changes nothing, and that includes the backup. A run that has nothing
+to change makes no backup. If the script cannot make the backup, it stops
+before it changes anything.
+
+To undo a run, preview and then run:
+
+```powershell
+.\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>" -WhatIf
+.\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>"
+```
+
+`-Restore` writes the original bytes back, deletes the values that the run
+created, and reminds you to restart the computer. ETW applies the descriptors
+at boot. `-Restore` does not change group membership.
+
+The script skips a descriptor that it cannot parse and writes a warning:
+`Descriptor {<guid>} is unparseable; left unchanged`.
 
 **Upgrading from the first version** (commit `6718863`), which granted `0x423`
 on the default GUID and `0x80` on the DNS provider GUID: run the current script

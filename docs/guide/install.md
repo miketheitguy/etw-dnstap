@@ -225,12 +225,17 @@ service SID is enough. The lab confirmed it.
 ### 4. Set the service identity, privileges, ETW access, and event source
 
 ```powershell
+$backup = Join-Path $env:ProgramData "EtwDnstap\backup\$(Get-Date -Format yyyyMMddHHmmss)"
+New-Item -ItemType Directory -Path $backup -ErrorAction Stop | Out-Null
+icacls.exe $backup /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+sc.exe sdshow EtwDnstap | Set-Content -Path "$backup\service-sd.txt" -Encoding ascii
 cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'
 sc.exe sidtype EtwDnstap restricted
 sc.exe privs EtwDnstap SeChangeNotifyPrivilege
+cmd.exe /c 'sc.exe sdset EtwDnstap "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;AU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"'
 net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add
 .\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap -WhatIf
-.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap
+.\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap -BackupPath "$backup\etw"
 New-EventLog -LogName Application -Source EtwDnstap
 Restart-Computer
 ```
@@ -246,6 +251,18 @@ Restart-Computer
 - `privs` leaves only `SeChangeNotifyPrivilege` out of LocalService's default
   privileges. The service refuses to run if the token holds any other
   privilege, or if that privilege is disabled.
+- `sc.exe sdshow` saves the service security descriptor that the SCM gave to
+  `New-Service`. `sc.exe sdset` replaces it. The new descriptor gives SYSTEM
+  query, start, stop and control rights. It gives Administrators full control.
+  It gives authenticated users only the rights to query the configuration and
+  the status, to enumerate dependents, and to read the descriptor. They cannot
+  start, stop, pause, or reconfigure the service. The SACL audits failed access
+  by any principal. Run `sdset` through `cmd.exe` for the same reason as `obj=`:
+  it keeps the quotes and the parentheses of the string intact. The default
+  descriptor also gives interactive and service logons the user-defined control
+  right. The service does not use it, so the new descriptor omits it. Lab
+  check pending: confirm that `sc.exe sdshow EtwDnstap` prints this exact string
+  after `sdset`.
 - `net localgroup` adds the **service SID**, not all LocalService processes, to
   Performance Log Users. That lets the service create and control ETW sessions.
   The membership must be enabled in the token, not deny-only. Restart the
@@ -258,7 +275,10 @@ Restart-Computer
   script grants no right to log events. It also removes any other ACE for the
   service SID from every ETW descriptor, including grants from earlier versions
   of the script. Run it with `-WhatIf` first. It prints the resulting SDDL.
-  Details are in [scripts/provision/README.md](../../scripts/provision/README.md).
+  Before the first change, it exports the `WMI\Security` registry key and saves
+  the original bytes of each value it changes into `-BackupPath`. A run with
+  `-WhatIf` writes no backup. To undo the run, use `-Restore` as described in
+  [scripts/provision/README.md](../../scripts/provision/README.md#backup-and-restore).
 - `New-EventLog` registers the `EtwDnstap` source. Without it, service failures
   and the capture start and stop lines are not written to the Application log.
   The lab confirmed that the restricted token can write these events.
@@ -319,6 +339,25 @@ sc.exe qfailure EtwDnstap
 sc.exe qfailureflag EtwDnstap
 ```
 
+#### Start type
+
+`New-Service` in step 3 sets the start type to Manual. Manual keeps the service
+stopped until provisioning is complete. After the reboot in step 4, a Manual
+service stays stopped, so capture is off until someone starts it. When
+[step 7](#7-start-capture-and-confirm-it-is-running) shows `RUNNING`, set the
+start type to delayed automatic start:
+
+```powershell
+cmd.exe /c 'sc.exe config EtwDnstap start= delayed-auto depend= DNS'
+sc.exe qc EtwDnstap
+```
+
+- `depend= DNS` keeps the dependency on the `DNS` service. Include it so that
+  the dependency does not change.
+- `sc.exe qc` should show `START_TYPE` as `AUTO_START (DELAYED)`.
+- Do not set this before step 7 succeeds. A service that fails at startup would
+  then fail again at each boot.
+
 ### 6. Inspect the registered identity and access controls
 
 ```powershell
@@ -328,13 +367,20 @@ sc.exe qprivs EtwDnstap
 net localgroup "Performance Log Users"
 sc.exe sdshow EtwDnstap
 icacls.exe $installDirectory
+$expectedSd = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;AU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)'
+$actualSd = (sc.exe sdshow EtwDnstap | Where-Object { $_.Trim() }) -join ''
+if ($actualSd -ceq $expectedSd) { 'Service descriptor: as expected.' }
+else { Write-Warning "Service descriptor differs. Found: $actualSd" }
 ```
 
 Confirm that each command succeeds, that `sc.exe qc` shows `SERVICE_START_NAME`
 as `NT AUTHORITY\LocalService`, that `sc.exe qsidtype` reports `RESTRICTED`,
 that `sc.exe qprivs` lists only `SeChangeNotifyPrivilege`, that Performance Log
 Users lists `NT SERVICE\EtwDnstap`, and that only SYSTEM and Administrators can
-change the configuration or start and stop the service.
+change the configuration or start and stop the service. The `sdshow` output
+must equal the string from step 4 exactly. A difference means that someone
+changed the descriptor, or that this OS build prints it in another form. Record
+the found string, and do not start the service until you know which.
 
 ### 7. Start capture and confirm it is running
 
@@ -346,7 +392,8 @@ sc.exe query EtwDnstap
 Repeat `sc.exe query EtwDnstap` while the state is `START_PENDING`. It should
 reach `RUNNING`. If it does not, see
 [troubleshooting.md](troubleshooting.md#the-service-does-not-reach-running).
-Look for a `capture started` line (Event ID 2) in the Application log.
+Look for a `capture started` line (Event ID 2) in the Application log. Then set
+the start type as described in [step 5](#start-type).
 
 ### 8. Stop the service after the traffic you want
 
@@ -379,11 +426,14 @@ marked *lab* passed on build 26100. See
 - *lab:* After `sc.exe stop`, the service reaches `STOPPED` with exit code 0,
   and the final `output stopped` line reports `output_errors` 0.
 - *lab:* After the process is killed, the next start reclaims the stale session
-  (`stale_sessions_reclaimed=1`).
+  (`stale_sessions_reclaimed=1`). The service reclaims a session only if its
+  name, its real-time shape, and its session GUID all match.
 - A DNS Server restart produces a gap and an automatic EtwDnstap restart under
   the recovery policy.
-- *lab:* The `Global\EtwDnstap-<session>` instance mutex is created under the
-  restricted privilege list.
+- While the service runs, a second `sc.exe start EtwDnstap` fails with error
+  1056. Only one instance runs because the SCM starts one process for the
+  service and the identity check refuses any other process. The service has no
+  instance mutex.
 - *lab:* The SCM query of the `DNS` service (`OpenSCManagerW`, `OpenServiceW`,
   `QueryServiceStatusEx`) succeeds under the restricted token.
 - *lab:* `sc.exe sidtype EtwDnstap unrestricted` (a negative test) makes the
@@ -433,17 +483,93 @@ Windows DNS guest. Do not expose the listener to an untrusted network. See
 ## Repair or upgrade
 
 For an existing installation, keep the service identity, privileges, executable
-ACLs, and recovery policy as they are. Change only what you need.
+ACLs, and recovery policy as they are. Change only what you need. Take the
+snapshot first. Do not reset a value to a guessed default. Restore the value
+that the snapshot holds.
+
+### Snapshot before a change
+
+```powershell
+$installDirectory = 'C:\Program Files\EtwDnstap'
+$backup = Join-Path $env:ProgramData "EtwDnstap\backup\$(Get-Date -Format yyyyMMddHHmmss)"
+New-Item -ItemType Directory -Path $backup -ErrorAction Stop | Out-Null
+icacls.exe $backup /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+foreach ($query in 'qc', 'qsidtype', 'qprivs', 'qfailure', 'qfailureflag', 'sdshow') {
+    sc.exe $query EtwDnstap | Set-Content -Path "$backup\$query.txt" -Encoding ascii
+}
+reg.exe export HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap "$backup\service.reg" /y
+reg.exe export HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security "$backup\wmi-security.reg" /y
+icacls.exe $installDirectory /save "$backup\install.acl" /t
+net localgroup "Performance Log Users" | Set-Content -Path "$backup\plu.txt" -Encoding ascii
+Get-FileHash "$installDirectory\etw-dnstap.exe" -Algorithm SHA256 |
+    Format-List | Out-String | Set-Content -Path "$backup\exe-hash.txt" -Encoding ascii
+Copy-Item "$installDirectory\etw-dnstap.exe" $backup
+```
+
+The folder holds the account, the SID type, the privileges, the recovery
+policy, the service descriptor, the directory ACLs, the group membership, and a
+copy of the executable. Only SYSTEM and Administrators can read it. The `.reg`
+files are for reference. Do not restore the service from them (see below).
+When you run the grant script in a repair, add `-BackupPath "$backup\etw"` so
+that its backup is in the same folder.
+
+### Restore from the snapshot
+
+Do not use `reg import` for the service key. The SCM keeps the service
+configuration in memory, and a registry import can leave the SCM and the
+registry in disagreement. Use `sc.exe` instead. Read the values from the
+`.txt` files in the snapshot folder. Replace each `<...>` with the value in the
+file.
+
+```powershell
+sc.exe stop EtwDnstap
+cmd.exe /c 'sc.exe config EtwDnstap binPath= "<BINARY_PATH_NAME from qc.txt>" start= <demand|auto|delayed-auto> obj= "<SERVICE_START_NAME from qc.txt>" password= ""'
+sc.exe sidtype EtwDnstap <none|unrestricted|restricted>      # from qsidtype.txt
+sc.exe privs EtwDnstap <privileges from qprivs.txt, separated by />
+sc.exe failure EtwDnstap reset= <seconds> actions= <actions from qfailure.txt>
+sc.exe failureflag EtwDnstap <0|1>                           # from qfailureflag.txt
+$sd = (Get-Content "$backup\sdshow.txt" | Where-Object { $_.Trim() }) -join ''
+cmd.exe /c ('sc.exe sdset EtwDnstap "{0}"' -f $sd)
+icacls.exe 'C:\Program Files' /restore "$backup\install.acl"
+```
+
+Then restore the other parts of the snapshot:
+
+1. Run `net localgroup "Performance Log Users"` and compare it with
+   `plu.txt`. Add or remove `NT SERVICE\EtwDnstap` so that they match.
+2. If a repair ran the grant script, run it with `-Restore "$backup\etw"`.
+3. If you replaced the executable, put the saved copy back (see below).
+4. Run `Restart-Computer` if the grant script restored any descriptor. ETW
+   applies descriptors at boot.
+5. Run the checks in [step 6](#6-inspect-the-registered-identity-and-access-controls)
+   and compare the result with the saved `.txt` files.
+
+`icacls /restore` runs on the parent folder, because `/save` stores paths
+relative to the parent.
+
+### Repair cases
 
 - **Upgrading from LocalSystem or the virtual account.** A service still
   registered as LocalSystem or `NT SERVICE\EtwDnstap` refuses to run with this
-  build. Set the identity from
-  [step 4](#4-set-the-service-identity-privileges-etw-access-and-event-source),
-  keep the service SID's read and execute grant from [step 3](#3-copy-the-executable-register-the-service-and-grant-read-and-execute),
-  keep the recovery policy from [step 5](#5-configure-scm-recovery), and then
-  start the service. Confirm the account with `sc.exe qc EtwDnstap`. Changing
-  `obj=` can clear the SID type, so rerun `sc.exe sidtype EtwDnstap restricted`
-  and check it with `sc.exe qsidtype EtwDnstap`.
+  build. Do all of these, in this order:
+  1. Take the snapshot.
+  2. Set the identity, the SID type, and the privileges with the `sc.exe`
+     lines from
+     [step 4](#4-set-the-service-identity-privileges-etw-access-and-event-source).
+  3. Add `NT SERVICE\EtwDnstap` to Performance Log Users with `net localgroup`.
+     If it is already a member, the command reports an error. That is fine.
+  4. Run `Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` for every session
+     name, with `-WhatIf` first. Then run `Restart-Computer`. Without the
+     grant and the restart, the start fails with `StartTraceW: access denied`.
+  5. Keep the service SID's read and execute grant from
+     [step 3](#3-copy-the-executable-register-the-service-and-grant-read-and-execute).
+     Keep the recovery policy from [step 5](#5-configure-scm-recovery).
+  6. Start the service. Confirm the account with `sc.exe qc EtwDnstap`.
+
+  Changing `obj=` may clear the SID type. **To be verified in the lab.** Do not
+  rely on either result. After any `obj=` change, run
+  `sc.exe sidtype EtwDnstap restricted` and check it with
+  `sc.exe qsidtype EtwDnstap`.
 - **Upgrading from the first version of the grant script** (commit `6718863`).
   That version granted `0x423` on the default GUID and `0x80` on the DNS
   provider GUID, and created a descriptor of its own for the provider. Replace
@@ -458,11 +584,46 @@ ACLs, and recovery policy as they are. Change only what you need.
   Remove those arguments from the binary path before starting the new
   executable. They now fail command-line parsing. Add `--receiver` with the
   collector's numeric IP and port.
-- **Replacing the executable.** Stop the service, copy the new executable over
-  the old one, then start the service. Do not change the ACLs. The service
-  SID's read and execute grant must remain.
 - **Changing the binary path.** Use `sc.exe config EtwDnstap binPath= "..."`,
   keeping the space after `binPath=`.
+
+### Replace the executable
+
+Take the snapshot first. Then:
+
+```powershell
+sc.exe stop EtwDnstap
+sc.exe query EtwDnstap          # wait for STOPPED
+$exe = "$installDirectory\etw-dnstap.exe"
+Get-FileHash $exe -Algorithm SHA256
+Rename-Item $exe 'etw-dnstap.exe.bak'
+Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
+Get-FileHash $exe -Algorithm SHA256
+icacls.exe $exe
+sc.exe start EtwDnstap
+sc.exe query EtwDnstap
+```
+
+- The first hash is the old executable. Compare it with `exe-hash.txt`. The
+  second hash is the new executable. Compare it with the hash of the file you
+  built.
+- `icacls` must show `NT SERVICE\EtwDnstap:(I)(RX)` for the new file. If it does
+  not, the service cannot start. Do not change the other ACLs. Fix only the
+  service SID's read and execute grant from step 3.
+- The service must reach `RUNNING`, and a `capture started` line must appear.
+
+To roll back, stop the service, delete the new file, rename the backup back,
+and start the service:
+
+```powershell
+sc.exe stop EtwDnstap
+Remove-Item $exe
+Rename-Item "$exe.bak" 'etw-dnstap.exe'
+sc.exe start EtwDnstap
+```
+
+When the new executable works, delete `etw-dnstap.exe.bak`. The copy in the
+snapshot folder stays until you remove the folder.
 
 ## Related
 

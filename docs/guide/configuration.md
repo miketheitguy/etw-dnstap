@@ -17,7 +17,7 @@ the range are rejected at startup.
 | `--capacity N` | `8192` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value; see [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for records with a padded payload over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Without it, capture runs until SCM stops the service or a failure occurs. |
-| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name and shape is reclaimed at startup. The name also keys the single-instance mutex; see [Session reclaim](#session-reclaim). It also determines the session GUID that the ETW grant names, so a new name needs the grant script run with it and a restart; see [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
+| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name, shape, and session GUID is reclaimed at startup; see [Session reclaim](#session-reclaim). The name also determines the session GUID that the ETW grant names, so a new name needs the grant script run with it and a restart; see [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
 | `--etw-max-buffers N` | `12` | 4 to 4,096 | Requested maximum ETW buffer count. See [ETW buffer minimums](#etw-buffer-minimums). |
@@ -271,18 +271,18 @@ are recoverable. Protocol failures at startup are not.
 
 ## Session reclaim
 
-Startup takes a single-instance guard first. It creates the named mutex
-`Global\EtwDnstap-<session>`, with each backslash in the session name replaced
-by an underscore. A second process that finds the mutex already held exits with
-an error and does not touch the session.
+The service has no instance mutex. Only one instance runs because the SCM
+starts one process for the service, and the identity check refuses a process
+that does not run as this service.
 
-On startup, a leaked session with the same name and this program's shape is
-stopped and replaced. The shape is real-time only, with no file, circular,
+On startup, a leaked session with the same name, the same session GUID, and
+this program's shape is stopped and replaced. The session GUID is the one that
+the service derives from the session name. The shape is real-time only, with no file, circular,
 append, new-file, system, buffering, or private logger mode, and no log file.
 Buffer size, buffer counts, flush timer, and clock type are not part of the
 shape. A different `--etw-buffer-kib` does not block reclaim. The service logs
 `stale ETW session used a different buffer size; reclaiming anyway` and
-continues. Any other session with that name is left alone, and startup fails.
+continues. Any other session with that name, including one with a different GUID, is left alone, and startup fails.
 
 Sessions named `etw-dnstap-<pid>` from earlier builds are not reclaimed.
 Clean them up once with `logman query -ets`, then `logman stop etw-dnstap-<pid> -ets`.

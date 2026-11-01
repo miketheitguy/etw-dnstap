@@ -48,6 +48,12 @@ covers the grants of earlier versions of the script. Restart the computer
 afterwards: ETW applies these descriptors at boot. Run `net localgroup "Performance Log Users"` to confirm that the
 entry is gone.
 
+Before its first change, the script exports the `WMI\Security` key and saves
+the original bytes of each value it changes. The folder is
+`$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>`, and the script prints
+its path. To undo the removal, run the script with `-Restore <folder>` and
+restart the computer. With `-WhatIf`, the script writes no backup.
+
 The script derives the service SID from the service name, so `-Remove` works
 after `sc.exe delete` as well. It strips only the ACEs for that SID and prints
 the resulting SDDL. It edits the descriptors under
@@ -108,6 +114,10 @@ show `EtwDnstap`.
 
 - Dnstap records already sent to the collector. The collector's retention applies.
 - Entries in the Application event log.
+- The folders under `$env:ProgramData\EtwDnstap\backup`. They hold snapshots of
+  the service configuration, the ETW descriptors, and a copy of the executable.
+  Only SYSTEM and Administrators can read them. Delete them when you no longer
+  need to roll back.
 - The provider permission, if you granted one, until you reverse it in step 3.
 - The build output under `target\` in your repository clone. Remove it with the
   repository if you no longer need it.
