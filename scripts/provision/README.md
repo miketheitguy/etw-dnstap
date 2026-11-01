@@ -96,13 +96,22 @@ the default descriptor for a GUID that has none of its own.
 
 The script edits values under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`.
 Before its first change, it makes a backup in `-BackupPath`. The default is
-`$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>`. The script creates the
-folder with an ACL for SYSTEM and Administrators only, and it prints the path.
+`$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>`, and a custom path must lie
+below `$env:ProgramData\EtwDnstap\backup`. The script prints the path.
+
+A standard user can create folders in ProgramData, so the script does not trust
+what it finds there. It creates `EtwDnstap`, `backup` and the run's folder with
+owner Administrators, no inherited ACEs, and full control for SYSTEM and
+Administrators only. It stops with an error, before any change, if one of those
+levels exists and is a reparse point, has another owner, or lets another
+principal write to it. It does not take ownership of a folder that someone else
+made. Inspect such a folder, and remove it only when you know where it came
+from. The script never reuses an existing backup folder.
 
 | File | Content |
 | --- | --- |
 | `wmi-security.reg` | `reg.exe export` of the whole `WMI\Security` key, made before any change. For reference and manual recovery. |
-| `changes.json` | The original bytes (Base64) of each value that the run changed or deleted, and the names of the values that the run created. |
+| `changes.json` | The original bytes (Base64) of each value that the run changed or deleted, the names of the values that the run created, and for each value the SHA-256 of the bytes that the run left in it. |
 
 `-WhatIf` changes nothing, and that includes the backup. A run that has nothing
 to change makes no backup. If the script cannot make the backup, it stops
@@ -111,16 +120,25 @@ before it changes anything.
 To undo a run, preview and then run:
 
 ```powershell
-.\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>" -WhatIf
-.\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>"
+.\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>" -WhatIf
+.\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>"
 ```
 
-`-Restore` writes the original bytes back, deletes the values that the run
-created, and reminds you to restart the computer. ETW applies the descriptors
-at boot. `-Restore` does not change group membership.
+`-Restore` first checks the owner, the reparse status and the ACL of
+`changes.json` and of every folder above it. Then it checks that each name is a
+GUID, that each saved value parses as a security descriptor, and that the file
+came from this computer. It applies nothing until every entry passes. It writes
+the original bytes back, deletes the values that the run created, and prints a
+summary of the values restored, deleted and skipped. A value that holds other
+bytes than the run wrote was changed after the run. `-Restore` skips it with a
+warning. `-Restore -Force` overwrites or deletes it. `-Restore` reminds you to
+restart the computer, because ETW applies the descriptors at boot. It does not
+change group membership.
 
 The script skips a descriptor that it cannot parse and writes a warning:
-`Descriptor {<guid>} is unparseable; left unchanged`.
+`Descriptor {<guid>} is unparseable; left unchanged`. If the descriptor of the
+session GUID itself exists and cannot be parsed, the script stops with an error
+and does not grant on it.
 
 **Upgrading from the first version** (commit `6718863`), which granted `0x423`
 on the default GUID and `0x80` on the DNS provider GUID: run the current script

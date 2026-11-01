@@ -45,10 +45,12 @@ made by earlier versions of this script (on the default GUID and on the DNS
 provider GUID) and copies of them that other components made. A non-default
 descriptor that, without those ACEs, equals the default descriptor is deleted,
 so ETW falls back to the default exactly as before. Nothing else is changed.
-A descriptor that cannot be parsed is left unchanged, with a warning.
+A descriptor that cannot be parsed is left unchanged, with a warning. If the
+descriptor of a session GUID exists and cannot be parsed, the script stops with
+an error and does not grant on it.
 
 Before the first change, the script saves the state it is about to change in
--BackupPath (default $env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>, with an
+-BackupPath (default $env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>, with an
 ACL for SYSTEM and Administrators only):
 
   wmi-security.reg  reg.exe export of HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security
@@ -58,6 +60,22 @@ ACL for SYSTEM and Administrators only):
 -WhatIf changes nothing, and that includes the backup. A run that changes
 nothing creates no backup. -Restore <path> writes the original bytes back and
 deletes the values that the run created.
+
+The backup location is not trusted by default, because a standard user can
+create folders in ProgramData. The script creates ProgramData\EtwDnstap,
+\backup and the run's folder with owner Administrators, no inherited ACEs, and
+full control for SYSTEM and Administrators only. It stops with an error if one
+of those levels already exists and is a reparse point, is owned by anyone else,
+or lets another principal write to it. It does not take ownership of such a
+folder. It never reuses an existing backup folder. -BackupPath must lie below
+ProgramData\EtwDnstap\backup. -Restore applies the same checks to changes.json
+and to every folder above it, and it validates every entry before it applies
+any.
+
+changes.json also holds a SHA-256 of the bytes that the run wrote. -Restore
+skips a value that holds other bytes now, with a warning, because something
+changed it after the run. -Force overwrites it. A restore prints a summary of
+the values restored, deleted and skipped.
 
 ETW applies these descriptors at boot. RESTART THE COMPUTER after running this
 script, after -Remove, and after -Restore.
@@ -81,14 +99,20 @@ Service whose service SID receives the grant. Default: EtwDnstap.
 Remove every ACE for the service SID from every ETW descriptor (uninstall).
 
 .PARAMETER BackupPath
-Directory for the registry export and changes.json. The script creates it, with
+Directory for the registry export and changes.json. It must lie below
+$env:ProgramData\EtwDnstap\backup and must not exist. The script creates it, with
 an ACL for SYSTEM and Administrators only, immediately before its first change.
-Default: $env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>.
+Default: $env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>.
 
 .PARAMETER Restore
 Path of a backup directory (or of its changes.json) from an earlier run. Writes
 the original bytes back, deletes the values that run created, and reminds the
-operator to restart the computer. Cannot be combined with the other parameters.
+operator to restart the computer. Cannot be combined with the other parameters
+except -Force.
+
+.PARAMETER Force
+With -Restore: also overwrite or delete a value that holds other bytes than the
+run wrote.
 
 .EXAMPLE
 .\Grant-EtwDnstapEtwAccess.ps1 -WhatIf
@@ -125,11 +149,14 @@ param(
 
     [Parameter(ParameterSetName = 'Grant')]
     [ValidateNotNullOrEmpty()]
-    [string]$BackupPath = (Join-Path $env:ProgramData ('EtwDnstap\backup\' + (Get-Date -Format 'yyyyMMddHHmmss'))),
+    [string]$BackupPath = (Join-Path $env:ProgramData ('EtwDnstap\backup\' + (Get-Date -Format 'yyyyMMddHHmmssfff'))),
 
     [Parameter(Mandatory = $true, ParameterSetName = 'Restore')]
     [ValidateNotNullOrEmpty()]
-    [string]$Restore
+    [string]$Restore,
+
+    [Parameter(ParameterSetName = 'Restore')]
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -148,7 +175,7 @@ $Sections = [Security.AccessControl.AccessControlSections]'Owner, Group, Access'
 # -WhatIf never creates a backup.
 $script:BackupStarted = $false
 $script:ChangedValues = New-Object System.Collections.Generic.List[object]
-$script:CreatedValues = New-Object System.Collections.Generic.List[string]
+$script:CreatedValues = New-Object System.Collections.Generic.List[object]
 
 if (-not ('EtwDnstap.EtwSecurity' -as [type])) {
     Add-Type -Namespace EtwDnstap -Name EtwSecurity -MemberDefinition @'
@@ -210,9 +237,103 @@ function Read-Descriptor {
     }
 }
 
+$TrustedOwners = @('S-1-5-18', 'S-1-5-32-544')
+$BackupRoot = Join-Path $env:ProgramData 'EtwDnstap\backup'
+# FileSystemRights bits that let a principal change a folder or a file in it:
+# write data, append, write EA, delete child, write attributes, delete, change
+# permissions, take ownership, plus the generic all, write and execute-free bits.
+$WriteMask = [int64](0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000)
+
+function Get-FullPathNoSlash {
+    param([string]$Path)
+    return [IO.Path]::GetFullPath($Path).TrimEnd('\')
+}
+
+# Throws unless Path is a real folder (or file) that only SYSTEM and
+# Administrators own, that is not a reparse point, and, with -CheckAcl, that no
+# other principal can write to, delete or re-permission. The script never takes
+# ownership of an object that someone else made. The operator must inspect it.
+function Assert-TrustedObject {
+    param([string]$Path, [switch]$CheckAcl)
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "'$Path' is a reparse point (junction or link). Do not use it. Inspect it, and remove it by hand if it is not yours."
+    }
+    $acl = Get-Acl -LiteralPath $Path
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
+    if ($TrustedOwners -notcontains $owner.Value) {
+        throw "'$Path' is owned by $owner, not by SYSTEM or Administrators. A standard user may have created it. Inspect it before you delete it or run this script again."
+    }
+    if ($CheckAcl) {
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
+            if ($TrustedOwners -contains $rule.IdentityReference.Value) { continue }
+            if (([int64][uint32]$rule.FileSystemRights -band $WriteMask) -ne 0) {
+                throw "'$Path' lets $($rule.IdentityReference) change it (rights $($rule.FileSystemRights)). Inspect the ACL before you use it."
+            }
+        }
+    }
+}
+
+# Every level of Path below ProgramData\EtwDnstap\backup, from the top down.
+function Get-BackupLevel {
+    param([string]$Path)
+    $full = Get-FullPathNoSlash $Path
+    $root = Get-FullPathNoSlash $BackupRoot
+    if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "'$Path' is not below '$root'. The script uses no other location."
+    }
+    $levels = New-Object System.Collections.Generic.List[string]
+    $levels.Add((Split-Path -Parent (Split-Path -Parent $root)))
+    $levels.Add((Split-Path -Parent $root))
+    $levels.Add($root)
+    $current = $root
+    foreach ($part in $full.Substring($root.Length + 1).Split('\')) {
+        $current = Join-Path $current $part
+        $levels.Add($current)
+    }
+    return , $levels.ToArray()
+}
+
+# Read-only. Runs at the start of a grant or removal, with -WhatIf too. Existing
+# levels must be trusted, and the new backup folder must not exist.
+function Assert-BackupLocation {
+    $levels = Get-BackupLevel -Path $BackupPath
+    $programData = Get-FullPathNoSlash $env:ProgramData
+    foreach ($level in $levels) {
+        if (-not (Test-Path -LiteralPath $level)) { continue }
+        if ((Get-FullPathNoSlash $level) -eq $programData) {
+            Assert-TrustedObject -Path $level
+        }
+        else {
+            Assert-TrustedObject -Path $level -CheckAcl
+        }
+    }
+    if (Test-Path -LiteralPath $BackupPath) {
+        throw "Backup folder '$BackupPath' already exists. The script never reuses one. Choose another -BackupPath, or inspect and remove that folder."
+    }
+}
+
+# Makes a folder that only SYSTEM and Administrators can use: owner Administrators,
+# no inherited ACEs, full control for those two.
+function Lock-Folder {
+    param([string]$Path)
+    & icacls.exe $Path /setowner '*S-1-5-32-544' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls /setowner failed on '$Path' (exit code $LASTEXITCODE)." }
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$Path' (exit code $LASTEXITCODE)." }
+}
+
+function Get-Sha256Hex {
+    param([byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '') }
+    finally { $sha.Dispose() }
+}
+
 function Write-ChangeLog {
     $log = [pscustomobject]@{
-        Version  = 1
+        Version  = 2
         Written  = (Get-Date).ToString('o')
         Computer = $env:COMPUTERNAME
         Key      = $WmiSecurityKeyNative
@@ -223,16 +344,32 @@ function Write-ChangeLog {
     Set-Content -LiteralPath (Join-Path $BackupPath 'changes.json') -Value $json -Encoding UTF8
 }
 
-# Creates the backup directory (SYSTEM and Administrators only) and exports the
-# whole WMI\Security key. Runs once, before the first change. It throws if the
-# backup cannot be made, so that no change happens without one.
+# Creates the backup folders and exports the whole WMI\Security key. Runs once,
+# before the first change. Every level below ProgramData is created with an
+# owner and ACL of SYSTEM and Administrators only. An existing level must already
+# be trusted. The backup folder itself must not exist. It throws if the backup
+# cannot be made, so that no change happens without one.
 function Initialize-Backup {
     if ($script:BackupStarted) { return }
-    if (-not (Test-Path -LiteralPath $BackupPath)) {
-        [void](New-Item -ItemType Directory -Path $BackupPath -Force)
+    $levels = Get-BackupLevel -Path $BackupPath
+    $programData = Get-FullPathNoSlash $env:ProgramData
+    foreach ($level in $levels) {
+        if ((Get-FullPathNoSlash $level) -eq $programData) {
+            Assert-TrustedObject -Path $level
+            continue
+        }
+        if (Test-Path -LiteralPath $level) {
+            if ($level -eq $BackupPath) { throw "Backup folder '$BackupPath' already exists." }
+            Assert-TrustedObject -Path $level -CheckAcl
+            continue
+        }
+        [void](New-Item -ItemType Directory -Path $level)
+        Lock-Folder -Path $level
+        if (@(Get-ChildItem -LiteralPath $level -Force).Count -ne 0) {
+            throw "'$level' was not empty right after it was created. Inspect it."
+        }
+        Assert-TrustedObject -Path $level -CheckAcl
     }
-    & icacls.exe $BackupPath /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$BackupPath' (exit code $LASTEXITCODE)." }
     $regFile = Join-Path $BackupPath 'wmi-security.reg'
     & reg.exe export $WmiSecurityKeyNative $regFile /y | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "reg.exe export failed (exit code $LASTEXITCODE)." }
@@ -243,55 +380,145 @@ function Initialize-Backup {
 
 # Records the value's state before the first change to it. A value that exists
 # is saved byte for byte. A value that does not exist is recorded as created by
-# this run. Only the first call for a name has an effect.
+# this run. Only the first call for a name has an effect. Complete-Backup adds
+# the hash of the bytes the run wrote.
 function Save-Original {
     param([string]$Name)
     Initialize-Backup
-    if ($script:CreatedValues.Contains($Name)) { return }
+    foreach ($entry in $script:CreatedValues) { if ($entry.Name -eq $Name) { return } }
     foreach ($entry in $script:ChangedValues) { if ($entry.Name -eq $Name) { return } }
     $value = (Get-Item -LiteralPath $WmiSecurityKey).GetValue($Name)
     if ($null -eq $value) {
-        $script:CreatedValues.Add($Name)
+        $script:CreatedValues.Add([pscustomobject]@{ Name = $Name; WrittenSha256 = '' })
     }
     else {
         $script:ChangedValues.Add([pscustomobject]@{
                 Name          = $Name
                 OriginalBytes = [Convert]::ToBase64String([byte[]]$value)
+                WrittenSha256 = ''
             })
     }
     Write-ChangeLog
 }
 
-# Writes the saved bytes back and deletes the values that the run created.
-function Restore-Backup {
-    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+# Runs when the script ends, even after an error. Records the SHA-256 of what
+# each touched value holds now (empty text for a value that is gone), so that
+# -Restore can tell whether anything changed the value after this run.
+function Complete-Backup {
+    if (-not $script:BackupStarted) { return }
+    foreach ($entry in @($script:ChangedValues) + @($script:CreatedValues)) {
+        $value = (Get-Item -LiteralPath $WmiSecurityKey).GetValue($entry.Name)
+        $entry.WrittenSha256 = if ($null -eq $value) { '' } else { Get-Sha256Hex -Bytes ([byte[]]$value) }
+    }
+    Write-ChangeLog
+}
+
+# Reads and checks changes.json, and checks the folders above it. Returns the
+# validated entries. Nothing is changed here.
+function Read-ValidatedChangeLog {
     param([string]$Path)
-    $file = if (Test-Path -LiteralPath $Path -PathType Container) { Join-Path $Path 'changes.json' } else { $Path }
+    $full = Get-FullPathNoSlash $Path
+    $file = if (Test-Path -LiteralPath $full -PathType Container) { Join-Path $full 'changes.json' } else { $full }
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "No changes.json at '$file'." }
+    $folder = Split-Path -Parent $file
+    foreach ($level in (Get-BackupLevel -Path $folder)) {
+        if ((Get-FullPathNoSlash $level) -eq (Get-FullPathNoSlash $env:ProgramData)) {
+            Assert-TrustedObject -Path $level
+        }
+        else {
+            Assert-TrustedObject -Path $level -CheckAcl
+        }
+    }
+    Assert-TrustedObject -Path $file -CheckAcl
+
     $log = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
-    if ($log.Version -ne 1 -or $log.Key -ne $WmiSecurityKeyNative) {
+    if ($log.Version -ne 2 -or $log.Key -ne $WmiSecurityKeyNative) {
         throw "'$file' is not a changes.json that this script wrote."
     }
-    foreach ($entry in @($log.Changed)) {
-        if ($null -eq $entry) { continue }
-        if ($PSCmdlet.ShouldProcess("{$($entry.Name)}", 'Write the original descriptor bytes back')) {
-            $bytes = [Convert]::FromBase64String($entry.OriginalBytes)
-            Set-ItemProperty -LiteralPath $WmiSecurityKey -Name $entry.Name -Value $bytes -Type Binary
-            Write-Output "Restored {$($entry.Name)}."
-        }
+    if ($log.Computer -ne $env:COMPUTERNAME) {
+        throw "'$file' was written on $($log.Computer), not on $env:COMPUTERNAME."
     }
-    foreach ($name in @($log.Created)) {
-        if ([string]::IsNullOrEmpty($name)) { continue }
-        if ($PSCmdlet.ShouldProcess("{$name}", 'Delete the descriptor that the run created')) {
-            if ($null -ne (Get-Item -LiteralPath $WmiSecurityKey).GetValue($name)) {
-                Remove-ItemProperty -LiteralPath $WmiSecurityKey -Name $name
-                Write-Output "Deleted {$name}."
+    $seen = @{}
+    $changed = New-Object System.Collections.Generic.List[object]
+    $created = New-Object System.Collections.Generic.List[object]
+    foreach ($kind in 'Changed', 'Created') {
+        foreach ($entry in @($log.$kind)) {
+            if ($null -eq $entry) { continue }
+            $parsed = [Guid]::Empty
+            if (-not [Guid]::TryParse([string]$entry.Name, [ref]$parsed) -or $parsed.ToString() -ne [string]$entry.Name) {
+                throw "Entry name '$($entry.Name)' is not a GUID in the form 00000000-0000-0000-0000-000000000000 (lower case)."
+            }
+            if ($seen.ContainsKey($entry.Name)) { throw "Entry {$($entry.Name)} appears twice." }
+            $seen[$entry.Name] = $true
+            $hash = [string]$entry.WrittenSha256
+            if ($hash -ne '' -and $hash -notmatch '^[0-9A-F]{64}$') { throw "Entry {$($entry.Name)} has an invalid hash." }
+            if ($kind -eq 'Changed') {
+                try {
+                    $bytes = [Convert]::FromBase64String([string]$entry.OriginalBytes)
+                    [void](New-Object Security.AccessControl.RawSecurityDescriptor($bytes, 0))
+                }
+                catch { throw "Entry {$($entry.Name)} does not hold a valid security descriptor. $($_.Exception.Message)" }
+                $changed.Add([pscustomobject]@{ Name = [string]$entry.Name; Bytes = $bytes; WrittenSha256 = $hash })
             }
             else {
-                Write-Output "{$name} is already absent."
+                $created.Add([pscustomobject]@{ Name = [string]$entry.Name; WrittenSha256 = $hash })
             }
         }
     }
+    return [pscustomobject]@{ Changed = $changed.ToArray(); Created = $created.ToArray() }
+}
+
+# Writes the saved bytes back and deletes the values that the run created. A
+# value that something changed after the run is skipped unless -Force is given.
+# Everything is validated before anything is applied.
+function Restore-Backup {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+    param([string]$Path, [switch]$Force)
+    $plan = Read-ValidatedChangeLog -Path $Path
+    $restored = @(); $deleted = @(); $skipped = @()
+    function Get-CurrentHash {
+        param([string]$Name)
+        $value = (Get-Item -LiteralPath $WmiSecurityKey).GetValue($Name)
+        if ($null -eq $value) { return '' }
+        return (Get-Sha256Hex -Bytes ([byte[]]$value))
+    }
+    $actions = New-Object System.Collections.Generic.List[object]
+    foreach ($entry in $plan.Changed) {
+        $now = Get-CurrentHash -Name $entry.Name
+        if ($now -ne $entry.WrittenSha256 -and -not $Force) {
+            Write-Warning "Skipped {$($entry.Name)}: its value changed after the run that saved it. Use -Force to overwrite it."
+            $skipped += $entry.Name
+            continue
+        }
+        $actions.Add([pscustomobject]@{ Kind = 'Restore'; Entry = $entry })
+    }
+    foreach ($entry in $plan.Created) {
+        $now = Get-CurrentHash -Name $entry.Name
+        if ($now -eq '') { Write-Output "{$($entry.Name)} is already absent."; continue }
+        if ($now -ne $entry.WrittenSha256 -and -not $Force) {
+            Write-Warning "Skipped {$($entry.Name)}: its value changed after the run that created it. Use -Force to delete it."
+            $skipped += $entry.Name
+            continue
+        }
+        $actions.Add([pscustomobject]@{ Kind = 'Delete'; Entry = $entry })
+    }
+    foreach ($action in $actions) {
+        $name = $action.Entry.Name
+        if ($action.Kind -eq 'Restore') {
+            if ($PSCmdlet.ShouldProcess("{$name}", 'Write the original descriptor bytes back')) {
+                Set-ItemProperty -LiteralPath $WmiSecurityKey -Name $name -Value $action.Entry.Bytes -Type Binary
+                $restored += $name
+            }
+        }
+        elseif ($PSCmdlet.ShouldProcess("{$name}", 'Delete the descriptor that the run created')) {
+            Remove-ItemProperty -LiteralPath $WmiSecurityKey -Name $name
+            $deleted += $name
+        }
+    }
+    Write-Output "Restore summary: $($restored.Count) restored, $($deleted.Count) deleted, $($skipped.Count) skipped."
+    foreach ($n in $restored) { Write-Output "  restored {$n}" }
+    foreach ($n in $deleted) { Write-Output "  deleted  {$n}" }
+    foreach ($n in $skipped) { Write-Output "  skipped  {$n}" }
     Write-Output 'Restart the computer: ETW applies these descriptors at boot.'
 }
 
@@ -350,6 +577,9 @@ function Grant-SessionRight {
     param([Guid]$Guid, [Security.Principal.SecurityIdentifier]$Sid, [string]$Name)
     $key = $Guid.ToString()
     $descriptor = Read-Descriptor -Name $key
+    if ($null -eq $descriptor -and $null -ne (Get-Item -LiteralPath $WmiSecurityKey).GetValue($key)) {
+        throw "The descriptor {$key} exists but cannot be parsed. The script does not change it. Inspect it, and delete it by hand if it is damaged."
+    }
     if ($null -ne $descriptor) {
         $aces = @($descriptor.DiscretionaryAcl | Where-Object {
                 $_ -is [Security.AccessControl.KnownAce] -and $_.SecurityIdentifier -eq $Sid })
@@ -396,46 +626,54 @@ if (-not (Test-Administrator)) {
 }
 
 if ($PSCmdlet.ParameterSetName -eq 'Restore') {
-    Restore-Backup -Path $Restore
+    Restore-Backup -Path $Restore -Force:$Force
     return
 }
 
-$sid = Get-ServiceSidFromName -Name $ServiceName
-Write-Output "Service SID for NT SERVICE\$ServiceName : $sid"
+# Fails now, before any change, if the backup location is not trustworthy.
+Assert-BackupLocation
+
 try {
-    $translated = (New-Object Security.Principal.NTAccount("NT SERVICE\$ServiceName")).Translate(
-        [Security.Principal.SecurityIdentifier])
-    if ($translated -ne $sid) {
-        throw "Derived SID $sid differs from the system-resolved SID $translated."
+    $sid = Get-ServiceSidFromName -Name $ServiceName
+    Write-Output "Service SID for NT SERVICE\$ServiceName : $sid"
+    try {
+        $translated = (New-Object Security.Principal.NTAccount("NT SERVICE\$ServiceName")).Translate(
+            [Security.Principal.SecurityIdentifier])
+        if ($translated -ne $sid) {
+            throw "Derived SID $sid differs from the system-resolved SID $translated."
+        }
     }
-}
-catch [Security.Principal.IdentityNotMappedException] {
-    Write-Verbose "NT SERVICE\$ServiceName does not resolve (service not registered); using the derived SID."
-}
+    catch [Security.Principal.IdentityNotMappedException] {
+        Write-Verbose "NT SERVICE\$ServiceName does not resolve (service not registered); using the derived SID."
+    }
 
-$sessions = @(foreach ($name in $SessionName) {
-        if ($name.Length -eq 0 -or $name.Contains([char]0)) { throw "Invalid session name '$name'." }
-        [pscustomobject]@{ Name = $name; Guid = Get-SessionGuid -Name $name }
-    })
+    $sessions = @(foreach ($name in $SessionName) {
+            if ($name.Length -eq 0 -or $name.Contains([char]0)) { throw "Invalid session name '$name'." }
+            [pscustomobject]@{ Name = $name; Guid = Get-SessionGuid -Name $name }
+        })
 
-if ($Remove) {
-    Clear-ServiceSidAce -Sid $sid
-}
-else {
-    foreach ($session in $sessions) {
-        Write-Output "Session '$($session.Name)' GUID: {$($session.Guid)}"
+    if ($Remove) {
+        Clear-ServiceSidAce -Sid $sid
     }
-    $keep = @($sessions | ForEach-Object { $_.Guid.ToString() })
-    Clear-ServiceSidAce -Sid $sid -Keep $keep
-    foreach ($session in $sessions) {
-        Grant-SessionRight -Guid $session.Guid -Sid $sid -Name $session.Name
+    else {
+        foreach ($session in $sessions) {
+            Write-Output "Session '$($session.Name)' GUID: {$($session.Guid)}"
+        }
+        $keep = @($sessions | ForEach-Object { $_.Guid.ToString() })
+        Clear-ServiceSidAce -Sid $sid -Keep $keep
+        foreach ($session in $sessions) {
+            Grant-SessionRight -Guid $session.Guid -Sid $sid -Name $session.Name
+        }
+        foreach ($session in $sessions) {
+            Show-Descriptor -Name $session.Guid.ToString() -Label "Session '$($session.Name)'"
+        }
     }
-    foreach ($session in $sessions) {
-        Show-Descriptor -Name $session.Guid.ToString() -Label "Session '$($session.Name)'"
+    Show-Descriptor -Name $DefaultGuid -Label 'Default'
+    if ($script:BackupStarted) {
+        Write-Output "To undo this run: .\Grant-EtwDnstapEtwAccess.ps1 -Restore '$BackupPath'"
     }
+    Write-Output 'Restart the computer before starting the service: ETW applies these descriptors at boot.'
 }
-Show-Descriptor -Name $DefaultGuid -Label 'Default'
-if ($script:BackupStarted) {
-    Write-Output "To undo this run: .\Grant-EtwDnstapEtwAccess.ps1 -Restore '$BackupPath'"
+finally {
+    Complete-Backup
 }
-Write-Output 'Restart the computer before starting the service: ETW applies these descriptors at boot.'

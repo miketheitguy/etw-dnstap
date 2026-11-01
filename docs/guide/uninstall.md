@@ -50,7 +50,7 @@ entry is gone.
 
 Before its first change, the script exports the `WMI\Security` key and saves
 the original bytes of each value it changes. The folder is
-`$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmss>`, and the script prints
+`$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>`, and the script prints
 its path. To undo the removal, run the script with `-Restore <folder>` and
 restart the computer. With `-WhatIf`, the script writes no backup.
 

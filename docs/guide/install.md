@@ -232,17 +232,73 @@ this grant, the copied executable is not readable by the service, and the
 service cannot start. Read and execute is not a write, so this grant to the
 service SID is enough. The lab confirmed it.
 
+### Create a protected snapshot folder
+
+A standard user can create folders in `C:\ProgramData`. A folder that a user made
+before you, or a link that a user planted in it, would make a later restore
+unsafe. This step creates `C:\ProgramData\EtwDnstap`, `\backup`, and a folder for
+each snapshot with Administrators as owner, no inherited ACEs, and full control
+for SYSTEM and Administrators only. It stops if a folder already exists with
+another owner, with an extra ACE, or as a reparse point. Do not take ownership
+of such a folder. Inspect it, and remove it only when you know where it came
+from.
+
+```powershell
+$trustedSids = 'S-1-5-18', 'S-1-5-32-544'
+
+function Test-ProtectedFolder {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "'$Path' is a reparse point. Inspect it. Do not use it."
+    }
+    $acl = Get-Acl -LiteralPath $Path
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trustedSids -notcontains $owner) {
+        throw "'$Path' is owned by $owner. Inspect it. Do not use it."
+    }
+    $extra = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+            Where-Object { $trustedSids -notcontains $_.IdentityReference.Value })
+    if ($extra.Count -gt 0) {
+        throw "'$Path' has an ACE for $($extra[0].IdentityReference). Inspect it. Do not use it."
+    }
+}
+
+function New-ProtectedFolder {
+    param([string]$Path)
+    New-Item -ItemType Directory -Path $Path -ErrorAction Stop | Out-Null
+    icacls.exe $Path /setowner '*S-1-5-32-544' | Out-Null
+    icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if (@(Get-ChildItem -LiteralPath $Path -Force).Count -ne 0) { throw "'$Path' is not empty. Inspect it." }
+    Test-ProtectedFolder $Path
+}
+
+function New-ProtectedBackupFolder {
+    $root = Join-Path $env:ProgramData 'EtwDnstap\backup'
+    foreach ($dir in (Split-Path -Parent $root), $root) {
+        if (-not (Test-Path -LiteralPath $dir)) { New-ProtectedFolder $dir }
+        Test-ProtectedFolder $dir
+    }
+    $leaf = Join-Path $root (Get-Date -Format yyyyMMddHHmmss)
+    New-ProtectedFolder $leaf    # fails if the folder exists
+    $leaf
+}
+```
+
+Run this block in the same PowerShell session as the commands that follow. Then
+`$backup = New-ProtectedBackupFolder` creates a snapshot folder and returns its
+path. The grant script applies the same checks to its own backup folders, and it
+never reuses a folder that exists.
+
 ### 4. Set the service identity, privileges, ETW access, and event source
 
 ```powershell
-$backup = Join-Path $env:ProgramData "EtwDnstap\backup\$(Get-Date -Format yyyyMMddHHmmss)"
-New-Item -ItemType Directory -Path $backup -ErrorAction Stop | Out-Null
-icacls.exe $backup /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+$backup = New-ProtectedBackupFolder
 sc.exe sdshow EtwDnstap | Set-Content -Path "$backup\service-sd.txt" -Encoding ascii
 cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'
 sc.exe sidtype EtwDnstap restricted
 sc.exe privs EtwDnstap SeChangeNotifyPrivilege
-cmd.exe /c 'sc.exe sdset EtwDnstap "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;AU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"'
+cmd.exe /c 'sc.exe sdset EtwDnstap "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;IU)(A;;CCLCSWLORC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"'
 net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add
 .\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap -WhatIf
 .\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName EtwDnstap -BackupPath "$backup\etw"
@@ -264,9 +320,11 @@ Restart-Computer
 - `sc.exe sdshow` saves the service security descriptor that the SCM gave to
   `New-Service`. `sc.exe sdset` replaces it. The new descriptor gives SYSTEM
   query, start, stop and control rights. It gives Administrators full control.
-  It gives authenticated users only the rights to query the configuration and
-  the status, to enumerate dependents, and to read the descriptor. They cannot
-  start, stop, pause, or reconfigure the service. The SACL audits failed access
+  It gives interactive and service logons only the rights to query the
+  configuration and the status, to enumerate dependents, and to read the
+  descriptor. They cannot start, stop, pause, or reconfigure the service.
+  Network and batch logons get no right, so a remote user cannot read the binary
+  path, which holds the collector address. The SACL audits failed access
   by any principal. Run `sdset` through `cmd.exe` for the same reason as `obj=`:
   it keeps the quotes and the parentheses of the string intact. The default
   descriptor also gives interactive and service logons the user-defined control
@@ -394,7 +452,7 @@ sc.exe qprivs EtwDnstap
 net localgroup "Performance Log Users"
 sc.exe sdshow EtwDnstap
 icacls.exe $installDirectory
-$expectedSd = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;AU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)'
+$expectedSd = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;IU)(A;;CCLCSWLORC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)'
 $actualSd = (sc.exe sdshow EtwDnstap | Where-Object { $_.Trim() }) -join ''
 if ($actualSd -ceq $expectedSd) { 'Service descriptor: as expected.' }
 else { Write-Warning "Service descriptor differs. Found: $actualSd" }
@@ -518,11 +576,12 @@ that the snapshot holds.
 
 ### Snapshot before a change
 
+First run the functions from
+[Create a protected snapshot folder](#create-a-protected-snapshot-folder).
+
 ```powershell
 $installDirectory = 'C:\Program Files\EtwDnstap'
-$backup = Join-Path $env:ProgramData "EtwDnstap\backup\$(Get-Date -Format yyyyMMddHHmmss)"
-New-Item -ItemType Directory -Path $backup -ErrorAction Stop | Out-Null
-icacls.exe $backup /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+$backup = New-ProtectedBackupFolder
 foreach ($query in 'qc', 'qsidtype', 'qprivs', 'qfailure', 'qfailureflag', 'sdshow') {
     sc.exe $query EtwDnstap | Set-Content -Path "$backup\$query.txt" -Encoding ascii
 }
@@ -543,6 +602,24 @@ When you run the grant script in a repair, add `-BackupPath "$backup\etw"` so
 that its backup is in the same folder.
 
 ### Restore from the snapshot
+
+First check the snapshot folder again. Someone may have changed it since you
+made it. Run the functions from
+[Create a protected snapshot folder](#create-a-protected-snapshot-folder), set
+`$backup` to the snapshot folder, and run this check. Stop if it throws, and do
+not use any file from the folder.
+
+```powershell
+$backup = '<snapshot folder>'
+$backupRoot = Join-Path $env:ProgramData 'EtwDnstap\backup'
+if (-not $backup.StartsWith($backupRoot + '\', 'OrdinalIgnoreCase')) { throw 'Not a snapshot folder.' }
+foreach ($dir in (Split-Path -Parent $backupRoot), $backupRoot, $backup) { Test-ProtectedFolder $dir }
+foreach ($file in Get-ChildItem -LiteralPath $backup -Recurse -Force) {
+    if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse point: $($file.FullName)" }
+    $owner = (Get-Acl -LiteralPath $file.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trustedSids -notcontains $owner) { throw "Unexpected owner $owner on $($file.FullName)" }
+}
+```
 
 Do not use `reg import` for the service key. The SCM keeps the service
 configuration in memory, and a registry import can leave the SCM and the
@@ -567,6 +644,9 @@ Then restore the other parts of the snapshot:
 1. Run `net localgroup "Performance Log Users"` and compare it with
    `plu.txt`. Add or remove `NT SERVICE\EtwDnstap` so that they match.
 2. If a repair ran the grant script, run it with `-Restore "$backup\etw"`.
+   The script checks the folders and `changes.json`, validates every entry
+   before it applies any, and skips a value that changed after the run that saved
+   it. Use `-Force` only after you have looked at the skipped values.
 3. If you replaced the executable, put the saved copy back (see below).
 4. Run `Restart-Computer` if the grant script restored any descriptor. ETW
    applies descriptors at boot.

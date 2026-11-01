@@ -111,3 +111,68 @@ start, and a dependency on `DNS`. The `0x20` grant is on
 and the old executable. The test user, its scheduled task, the temporary
 batch-logon right and `C:\Lab` are removed. The VM is Running. Both checkpoints
 are kept.
+
+## Post-review re-run (2026-11-01, after the final code review)
+
+The final review found a local privilege escalation in the backup and restore
+feature (H1), an unconditional restore (M1), a pinned descriptor that was wider
+than the default (L1), and a grant on an unparseable descriptor (L3). This re-run
+tests the fixes. It does not change the observed results above. Those used the
+earlier script and the earlier pinned descriptor (`AU` instead of `IU` and `SU`).
+The standard user in rows 5 and 7 was a batch logon, which `AU` covers and
+`IU` and `SU` do not.
+
+| Item | Value |
+| --- | --- |
+| Commit | `78d1ca0` plus uncommitted edits to `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`, `scripts/provision/README.md`, `docs/guide/install.md` and `docs/guide/uninstall.md` |
+| Checkpoint | `eval-post-review-2026-11-01` (taken first; the two earlier checkpoints are kept) |
+| Release exe | SHA-256 `8FAD752D69B17A9CC35AFCBABDAFD181D5A612770D4F7DA868C3ADD675609A18`. `verify-pe.ps1`: 21 checks, 0 failed. |
+| Unit-test exe | SHA-256 `14FF8CC8121E2F17759A41B73B63F5A76E77480200D252AF4908CF329900F528` |
+| Script checks | Windows PowerShell 5.1 and PowerShell 7 parse with 0 errors. ScriptAnalyzer reports one warning (`PSUseShouldProcessForStateChangingFunctions` on the existing `Remove-SidAce`). |
+
+| # | Check | Command | Expected | Observed |
+| --- | --- | --- | --- | --- |
+| R1 | Ignored tests, including M2 | `unit.exe --ignored --test-threads=1` | 6 pass | 6 passed, 0 failed. `reclaim_refuses_session_that_writes_log_file` and `reclaim_refuses_sequential_log_file_session` start their sessions with the GUID that `session_guid` returns, assert that a QUERY reports that GUID, and then assert the refusal. They now reach the log-file check. |
+| R2 | Replace the executable | install.md procedure | `(I)(RX)` for the service SID | as expected |
+| R3 | Pinned descriptor with `IU` and `SU` | `sc.exe sdset`, then `sdshow` | prints the exact string | exact match, also after the reboot |
+| R4 | L1 batch logon | `sc.exe query`, `qc`, `sdshow`, `stop` as a standard user in a scheduled task | error 5 | error 5 for each, including `query` and `qc` |
+| R5 | L1 administrator | `sc.exe qc EtwDnstap` | works | worked (Administrators hold full control) |
+| R6 | H1: untrusted existing folder | script `-WhatIf` on the `EtwDnstap` folder that an earlier administrator run had made (inherited ACE for CREATOR OWNER and Users) | refuse | refused: `lets S-1-3-0 change it`. The doc function `New-ProtectedBackupFolder` refused too. After the operator locked the folders by hand, both worked. |
+| R7 | H1: standard user pre-creates `C:\ProgramData\EtwDnstap` and `backup` | script `-WhatIf`, script `-Remove`, doc function, `-Restore` of a planted folder with a planted `changes.json` | refuse, change nothing | all four refused: `owned by S-1-5-21-...-1001, not by SYSTEM or Administrators`. Clean-up restored the original folder. |
+| R8 | H1: junction as the `backup` level | `mklink`-style junction, script `-WhatIf` | refuse | refused: `is a reparse point` |
+| R9 | H1: junction as the backup folder | `-BackupPath <junction>` | refuse | refused: `is a reparse point` |
+| R10 | H1: never reuse a folder | `-BackupPath` of an existing folder | refuse | refused: `already exists. The script never reuses one` |
+| R11 | H1: path outside the root | `-BackupPath C:\Lab\out` | refuse | refused: `is not below ...\EtwDnstap\backup` |
+| R12 | `-WhatIf` leaves no folder | count folders before and after | equal | 4 and 4 |
+| R13 | M1: value changed after the run | `-Remove`, write other bytes to the value, `-Restore` | skip with a warning | skipped with a warning, summary `0 restored, 0 deleted, 1 skipped` |
+| R14 | M1: `-Restore -Force` | same folder | restore | `1 restored`, bytes equal the original |
+| R15 | M1: created value changed | grant, change the value, `-Restore`, then `-Restore -Force` | skip, then delete | skipped, then `1 deleted` |
+| R16 | Validate before apply | `changes.json` edited to a bad name, then to bad descriptor bytes | refuse, change nothing | both refused with a clear message. The registry value did not change. |
+| R17 | L3 | session descriptor set to 5 invalid bytes, then the grant | stop with an error, no `AddDACL` | warning, then `exists but cannot be parsed. The script does not change it.` The value kept its 5 bytes. |
+| R18 | Round trip and final grant | `-Remove`, `-Restore`, grant | registry export equals the start | 0 differing lines |
+| R19 | Stale-session reclaim, live | `Stop-Process -Id <service pid> -Force` | recovery restart, reclaim | service left RUNNING at 0.3 s and was RUNNING again at 5.2 s. The log shows `reclaimed stale ETW session`, then `capture started`. This closes the earlier "not covered" item. |
+| R20 | Reboot | `Restart-Computer` | delayed start | DNS running at 03:37:28, `EtwDnstap` running at 03:39:28; `sdshow` as expected; RESTRICTED; `SeChangeNotifyPrivilege` only |
+| R21 | Capture | 100 queries after the reboot | events captured | `received=200 encoded=200 ring_dropped=0 foreign_pid_rejected=0` in the next stats line |
+
+Problems seen in this re-run:
+
+- **Same-second backup folder names collided** in my test sequence. The default
+  folder name had a one-second resolution, so two runs in one second made the
+  second one fail with "already exists". That is the intended refusal, but it is
+  a nuisance. The default name now has milliseconds (`yyyyMMddHHmmssfff`).
+- **A test script hung** on a `Remove-Item` confirmation prompt for a junction
+  (my test, not the product). I removed the junction with `rmdir`.
+- A standard user in the Users group on the interactive console (an `IU` logon)
+  was not tested. No interactive session is available through PowerShell
+  Direct. An `IU` logon is expected to keep query rights, by the descriptor.
+
+Not covered by the re-run: a root-owned-by-SYSTEM `EtwDnstap` folder (the
+owner check accepts SYSTEM, but I only created Administrator-owned ones),
+domain-joined hosts, and any build other than 26100.
+
+Guest state at the end: the `78d1ca0` build (hash above), running, delayed
+automatic start, dependency on `DNS`, the `IU` and `SU` descriptor, the `0x20`
+grant only on `{43b7b2fc-777a-5214-b6ed-665c1ff9e972}`. Snapshot folders
+`20261101025017` and `20261101033112` remain under
+`C:\ProgramData\EtwDnstap\backup`. The test user, task, batch-logon right and
+`C:\Lab` are removed. The VM is Running.
