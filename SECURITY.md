@@ -57,6 +57,13 @@ and [README.md](README.md).
 - The process ID is read at startup and checked every 5 seconds. A DNS Server
   restart makes the service exit for SCM restart. Records from the new process
   are not captured during that gap.
+- Any user can register the DNS provider GUID and write events, so the process
+  ID filter is the only check on the source. If the DNS Server exits and Windows
+  gives its process ID to another process before the next 5-second check, that
+  process can inject records. Holding the DNS Server process open would close
+  the window, but the restricted LocalService token is denied `OpenProcess` on
+  it (lab, build 26100). See
+  [the lab record](docs/history/skills-evaluation-lab-validation.md).
 
 **Service identity**
 

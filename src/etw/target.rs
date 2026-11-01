@@ -8,17 +8,10 @@ use std::{mem::size_of, ptr::null};
 
 use anyhow::{Result, bail};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE, WAIT_OBJECT_0},
-    System::{
-        Services::{
-            CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
-            SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS,
-            SERVICE_STATUS_PROCESS,
-        },
-        Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-            WaitForSingleObject,
-        },
+    Foundation::{ERROR_ACCESS_DENIED, GetLastError},
+    System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
+        SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_STATUS_PROCESS,
     },
 };
 
@@ -34,55 +27,6 @@ impl Drop for ScHandle {
         // OpenServiceW and closes it exactly once, after its last use.
         unsafe {
             CloseServiceHandle(self.0);
-        }
-    }
-}
-
-/// An open handle to the DNS Server process. While it is open the kernel cannot
-/// reuse the process ID, so the PID filter stays bound to the process it was
-/// built for even between supervisor polls.
-pub(super) struct ProcessHandle(HANDLE);
-
-// SAFETY: The handle is an owned kernel object handle with no thread affinity;
-// waiting on it with a zero timeout is thread-safe, and it is closed only in Drop.
-unsafe impl Send for ProcessHandle {}
-// SAFETY: Only `WaitForSingleObject` is called through a shared reference, and
-// the kernel serializes access to the process object.
-unsafe impl Sync for ProcessHandle {}
-
-impl ProcessHandle {
-    /// Opens `pid` with the minimum rights to wait on it and query its state.
-    ///
-    /// # Errors
-    /// Fails if the process cannot be opened (for example access denied or gone).
-    pub(super) fn open(pid: u32) -> Result<Self> {
-        // SAFETY: No pointers are passed; the returned handle, if any, is owned here.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                pid,
-            )
-        };
-        if handle.is_null() {
-            return Err(os_error(&format!("OpenProcess({pid})")));
-        }
-        Ok(Self(handle))
-    }
-
-    /// True once the process has terminated. A failed wait is inconclusive.
-    pub(super) fn has_exited(&self) -> bool {
-        // SAFETY: `self.0` is an open process handle with SYNCHRONIZE access; a
-        // zero timeout polls without blocking.
-        unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        // SAFETY: OpenProcess transferred this handle; it is closed exactly once.
-        unsafe {
-            CloseHandle(self.0);
         }
     }
 }
@@ -172,20 +116,6 @@ mod tests {
     fn a_stopped_service_has_no_usable_pid() {
         assert!(running_pid("DNS", 0).is_err());
         assert_eq!(running_pid("DNS", 4242).expect("running"), 4242);
-    }
-
-    #[test]
-    fn process_handle_observes_exit_of_a_child() {
-        let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping -n 60 127.0.0.1 >nul"])
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn child");
-        let handle = ProcessHandle::open(child.id()).expect("open child");
-        assert!(!handle.has_exited());
-        child.kill().expect("kill child");
-        child.wait().expect("reap child");
-        assert!(handle.has_exited());
     }
 
     #[test]

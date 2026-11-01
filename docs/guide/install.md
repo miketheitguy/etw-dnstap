@@ -449,10 +449,6 @@ marked *lab* passed on build 26100. See
   EtwDnstap restart under the recovery policy. In the lab, the service stopped
   4 to 5 seconds after the restart, and capture resumed with the new process ID
   5 seconds later (9 to 10 seconds in total).
-- *lab:* On build 26100, the service cannot open the DNS Server process
-  (`OpenProcess` returns access denied for the restricted LocalService token).
-  Every start logs the warning `cannot hold the DNS Server process open`.
-  Capture continues, and the SCM polling detects a changed process.
 - While the service runs, a second `sc.exe start EtwDnstap` fails with error
   1056. Only one instance runs because the SCM starts one process for the
   service and the identity check refuses any other process. The service has no
