@@ -6,6 +6,12 @@
 > (`--stats-interval-seconds`) and commit `f0b51f4`. The service now has periodic
 > ETW queries and a sampled queue-depth maximum (`queue_depth_max`). Re-check the
 > statements that say these are not restored before any implementation.
+>
+> **Note (2026-11-01):** commit `69db97d` removed per-event TDH parsing. The
+> parser decodes each event with a plan compiled from the manifest schema, and it
+> uses TDH only to load that schema. Commit `dde7188` added the counters
+> `etw_buffers_delivered` and `parser_wake_requests`. Statements here about TDH
+> parsing describe the earlier design.
 
 This proposed design helps maintainers expose essential DNS pipeline progress
 and errors through Windows Performance Counters V2, without adding per-event

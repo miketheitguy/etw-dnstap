@@ -644,6 +644,9 @@ fn access_denied_enable_names_the_missing_right() {
         .to_string();
     assert!(message.contains("TRACELOG_GUID_ENABLE"));
     assert!(message.contains("eb79061a-a566-4698-9119-3ed2807060e7"));
+    // The grant script removes service-SID ACEs from the provider descriptor,
+    // so the message must not tell the operator to add one there.
+    assert!(message.contains("Do not grant on that GUID"));
     assert!(check_enable_status(ERROR_SUCCESS).is_ok());
 }
 

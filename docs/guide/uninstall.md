@@ -1,6 +1,6 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** `main` at commit `40a6b65` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-01
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.
@@ -42,11 +42,11 @@ net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /delete
 Provisioning added the service SID to Performance Log Users and granted it
 `TRACELOG_CREATE_REALTIME` on each session GUID. Removing the service removes
 neither. Remove them here, so no SID keeps ETW rights after the service is gone.
-`-Remove` strips every ACE for the service SID from every ETW descriptor, and
-deletes a session descriptor once it matches the default again. That also
-covers the grants of earlier versions of the script. Restart the computer
-afterwards: ETW applies these descriptors at boot. Run `net localgroup "Performance Log Users"` to confirm that the
-entry is gone.
+`-Remove` strips every ACE for the service SID from every ETW descriptor. It
+deletes any descriptor other than the default that then matches the default.
+That also covers the grants of earlier versions of the script. Restart the
+computer afterwards: ETW applies these descriptors at boot. Run `net localgroup
+"Performance Log Users"` to confirm that the entry is gone.
 
 Before its first change, the script exports the `WMI\Security` key and saves
 the original bytes of each value it changes. The folder is
@@ -55,8 +55,9 @@ its path. To undo the removal, run the script with `-Restore <folder>` and
 restart the computer. With `-WhatIf`, the script writes no backup.
 
 The script derives the service SID from the service name, so `-Remove` works
-after `sc.exe delete` as well. It strips only the ACEs for that SID and prints
-the resulting SDDL. It edits the descriptors under
+after `sc.exe delete` as well. It strips only the ACEs for that SID. It prints
+one line for each descriptor that it changes or deletes, and the SDDL of the
+default descriptor. It edits the descriptors under
 `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. The lab tested removal on
 build 26100. See
 [scripts/provision/README.md](../../scripts/provision/README.md).

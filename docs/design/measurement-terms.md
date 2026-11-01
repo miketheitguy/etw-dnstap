@@ -1,17 +1,19 @@
 # Measurement terms and result gates
 
-> **Status:** Current · **Evidence dated:** not applicable (reference) · **Commit:** `54eafae` (reference text; JSONL schemas describe historical binaries) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` (live counter names. The JSONL schemas describe historical binaries.) · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-01
 
-This reference helps maintainers and administrators interpret the service's
-performance reports without confusing DNS responses, captured records, trace
-fidelity, or shutdown status. It defines the units and result gates shared by
-the [completed pooled VM review](../performance/pooled-vm-performance-review.md) and earlier
-reports; each report retains its own binary, workload, and evidence cutoff.
+This reference helps maintainers and administrators read the service's
+performance reports. It keeps four things separate: DNS responses, captured
+records, trace fidelity, and shutdown status. It defines the units and result
+gates that the
+[completed pooled VM review](../performance/pooled-vm-performance-review.md)
+and earlier reports share. Each report keeps its own binary, workload, and
+evidence cutoff.
 
 The JSONL schemas and final samples in this reference describe historical
 binaries. The TCP-only service retains diagnostic counters but has no durable
 metrics export. See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note) before
-using a campaign harness; stderr diagnostics cannot replace a historical final
+using a campaign harness. Stderr diagnostics cannot replace a historical final
 JSONL ledger.
 
 ## DNS work and capture records
@@ -52,10 +54,18 @@ dropped capture record does not prove that the DNS exchange failed.
 
 The current service writes live counters to the Application event log under the
 names listed in [Log events and counters](../guide/configuration.md#log-events-and-counters).
-Several names match this section, but the live fields are not the schema 2 JSONL
-ledger, and not every schema 2 field exists in the live log. The identities below
+Several names match this section. The live fields are not the schema 2 JSONL
+ledger, however, and some schema 2 fields do not exist in the live log. The identities below
 apply to the historical JSONL binaries. The live identities are in
 [Counter relationships](../guide/configuration.md#counter-relationships).
+
+The live log differs from schema 2 in these names. It reports ETW loss as
+`etw_lost` and `etw_buffers_lost`, not `etw_events_lost` and
+`etw_realtime_buffers_lost`. It splits pool exhaustion into
+`pool_exhausted_regular` and `pool_exhausted_jumbo`, with no `pool_exhausted`
+field. It has no `queue_backlog` or `output_limit_dropped` field. It adds
+`foreign_pid_rejected`, `schema_rejected`, `disconnected_dropped`, and the ETW
+flush and buffer-delivery counters.
 
 The service distinguishes these loss units:
 
@@ -82,7 +92,7 @@ dequeued = encoded + ignored + rejected + output_limit_dropped + output_failed_e
 ```
 
 Schema 1 predates the pools and has ring-only intake accounting. Live samples
-read separate relaxed atomics and can briefly fail to reconcile; a final sample
+read separate relaxed atomics and can briefly fail to reconcile. A final sample
 must close. Final ETW statistics must be valid. Transient statistics-query errors
 remain separate from cumulative event or buffer loss. See
 [Pooled ETW intake](pooled-intake.md#metrics-schema-2) for ownership and analysis
@@ -105,7 +115,7 @@ The pooled campaign records these outcomes separately:
 A zero-loss WPR trace can describe a stage that drops application capture
 records. Exact receiver delivery can describe a correctly reconciled lossy
 capture stage. A final-only STOP/FINISH reset can fail lifecycle even when every
-encoded record reached the receiver. Preserve each outcome; a continuation
+encoded record reached the receiver. Preserve each outcome. A continuation
 exception does not convert a strict failure into a pass.
 
 ## CPU, memory, and time units
@@ -115,10 +125,10 @@ Report units and time windows with every comparison:
 | Measurement | Interpretation |
 | --- | --- |
 | One-core CPU percent | 100% is one logical CPU. A process can exceed 100% on a VM with multiple vCPUs. |
-| VM-capacity CPU percent | One-core process percent divided by the VM's vCPU count; divide by two for this campaign. |
+| VM-capacity CPU percent | One-core process percent divided by the VM's vCPU count. Divide by two for this campaign. |
 | PDH CPU | Performance Data Helper counter rates over PID-validated sampling intervals. Coverage can be shorter than the sending duration. |
 | Native WPR CPU | Scheduled CPU derived from context switches. The primary graphs and broad tables exclude observed deferred procedure calls and interrupt service routines (DPC/ISR). |
-| Sampled CPU weight | Statistical profile weight with different attribution; it need not equal PDH or context-switch CPU. |
+| Sampled CPU weight | Statistical profile weight with different attribution. It need not equal PDH or context-switch CPU. |
 | Private bytes / working set | Process memory measures distinct from counted pool storage. Neither establishes a total capture-memory bound. |
 | MiB / GiB | Binary units: 1,048,576 and 1,073,741,824 bytes. MB and GB are decimal when explicitly used. |
 | DNS latency | Client application send-to-matching-response time, including client scheduling. It excludes timeouts and capture/receiver delay. |
@@ -127,7 +137,7 @@ Report units and time windows with every comparison:
 Keep the configured sending interval, later client drain, enclosing service
 session, PDH-valid intervals, and selected trace views separate. Do not divide a
 partial-window CPU integral by whole-run records and call it an exact CPU cost.
-Nominal UTC alignment inherits clock uncertainty; it cannot establish subsecond
+Nominal UTC alignment inherits clock uncertainty. It cannot establish subsecond
 causality. See the [graph methods](../performance/pooled-vm-performance-graphs.md#read-the-graphs)
 and [trace interpretation](../performance/pooled-vm-trace-analysis.md#interpret-scheduling-and-symbols)
 for their specific limits.

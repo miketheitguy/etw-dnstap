@@ -56,7 +56,8 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   and 10,000 QPS loss from 60.7% to 0.3%-1.1%. The per-event callback stays
   wake-free.
   New counters `etw_buffers_delivered` and `parser_wake_requests`. See
-  [the validation record](docs/history/buffer-wake-validation.md).
+  [the validation record](docs/history/buffer-wake-validation.md). Commit
+  `dde7188`.
 - Receiver reconnect with jittered backoff (250 ms to 30 s). Each new session
   repeats the Frame Streams handshake. Frames are never resent. Commit `f0b51f4`.
 - Periodic counter logs, `capture stats` and `output stats`, every
@@ -92,6 +93,11 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- The `EnableTraceEx2: access denied` message no longer tells the operator to
+  grant `TRACELOG_GUID_ENABLE` on the DNS provider GUID to the service SID. The
+  grant script removes such a grant on its next run, and the install guide says
+  not to add one. The message now says to inspect that descriptor and points to
+  the install guide.
 - Service identity: the service runs as `NT AUTHORITY\LocalService` with a
   restricted service SID type (`sc.exe sidtype EtwDnstap restricted`, a
   write-restricted token) instead of LocalSystem. The token must be restricted with
@@ -127,8 +133,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   socket send buffer is requested at 1 MiB. An idle parser flushes after 100 ms.
   The parser wakes after each successful periodic ETW flush.
 - ETW code is split into `src/etw/` (`session`, `keywords`, `intake`, `schema`,
-  `target`, `instance`, `diag`), with `src/event.rs` and `src/sink.rs` as seams
-  for the output sink. Commit `dc9d7e0`.
+  `diag`), with `src/event.rs` and `src/sink.rs` as seams for the output sink.
+  Commit `dc9d7e0`. Commit `f0b51f4` added `target` and `instance`; commit
+  `9fce762` removed `instance` with the mutex.
 - Lab performance scripts are hardened and consolidated under `scripts/`. Commit
   `6e62b2e`. This commit does not change runtime behavior.
 - Documentation is reorganized into `docs/guide/`, `docs/design/`,
@@ -161,6 +168,12 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   packet-flow diagram and the ArrayQueue capacity experiment moved to
   `docs/history/`. A current decoder contract is in
   [single-pass-decoder.md](docs/design/single-pass-decoder.md). Commit `40a6b65`.
+- CI also runs the archived analyzer tests,
+  `scripts/performance/archive/test_archived_analyzers.py`. Commit `21e31c0`.
+- Documentation: the cleanup validation record is in
+  [cleanup-validation.md](docs/history/cleanup-validation.md), and the cleanup
+  plan moved to `docs/history/`. The decoder contract now states the `Port`
+  byte order, cache, and epoch rules correctly. Commit `21e31c0`.
 
 ### Removed
 
@@ -172,7 +185,8 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   unsupported and its events are rejected`. The supported Windows Server 2025
   schema compiles, so its output does not change. Each parser also drops a
   64 KiB packet buffer and a 512-byte property buffer. See
-  [the removal plan](docs/history/tdh-fallback-removal-plan.md).
+  [the removal plan](docs/history/tdh-fallback-removal-plan.md). Commit
+  `69db97d`.
 - **Breaking.** The single-instance guard, a named mutex
   `Global\EtwDnstap-<session>`. It is removed, and no mutex is created. Only
   the SCM starts one process for the service, and the identity check refuses a
@@ -189,7 +203,8 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - Five unreferenced archived lab scripts, `Test-LabAnswer`,
   `lab_config.receiver_endpoint()`, the unread `lab.json` key
   `windows_vm.install_dir`, and the PyYAML requirement (only an archived tool
-  used it). Commits `63dd477` and `015d385`.
+  used it). Commits `63dd477` and `015d385`. Commit `21e31c0` deleted the
+  unused `Assert-LabId` function.
 
 ### Fixed
 
@@ -237,10 +252,10 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   default, which accepted any process, could not be reached from the service,
   and it is removed. Commit `0865e19`.
 
-## Commit log through `40a6b65`
+## Commit log through `dde7188`
 
 This is not a release. It lists every commit on `main` from the first commit
-through `40a6b65`, from `git log`, grouped by category. Commits after `9172f2d`
+through `dde7188`, from `git log`, grouped by category. Commits after `9172f2d`
 are in the last subsection. Each entry is summarized
 from its commit subject. Per-commit contents were not reviewed for this file.
 The removal of the CLI options is recorded under `[Unreleased]`.
@@ -273,6 +288,7 @@ Added:
 - `9ab6dad`, Add skills-driven evaluation plan.
 - `14d6e6a`, Add a property test for copy_record admission and copying.
 - `8c79f69`, Add the obsolete and legacy code cleanup plan.
+- `dde7188`, Wake the parser once per delivered ETW buffer.
 
 Changed:
 
@@ -290,6 +306,12 @@ Changed:
 - `015d385`, Archive finished-campaign Python tools; fix parser-ramp monitor.
 - `0865e19`, Rename ring-era names, share test scaffolding, require the DNS PID.
 - `40a6b65`, Move executed plans and retired designs to history; fix doc status.
+- `21e31c0`, Record the cleanup validation; fix review findings; move the plan
+  to history.
+
+Removed:
+
+- `69db97d`, Remove the per-event TDH fallback reader.
 
 Fixed:
 

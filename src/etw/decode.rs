@@ -198,7 +198,8 @@ fn is_unsigned(input: i32) -> bool {
 }
 
 fn compile_layout(field: &FieldSpec, index: usize, fields: &[FieldSpec]) -> Option<Layout> {
-    // All arrays, structures, custom schemas and unrecognized flags fall back.
+    // Arrays, structures, custom schemas and unrecognized flags do not compile;
+    // the schema is then rejected and its events are counted in `schema_rejected`.
     let allowed = u32::try_from(PropertyParamLength | PropertyParamFixedLength).ok()?;
     if field.flags & !allowed != 0 || field.count != 1 {
         return None;

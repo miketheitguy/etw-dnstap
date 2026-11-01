@@ -12,17 +12,17 @@ Do not open a public issue for a suspected vulnerability. Use GitHub's private
 vulnerability reporting for `miketheitguy/etw-dnstap`
 (the repository's **Security** tab, then **Report a vulnerability**). Include:
 
-- the commit SHA and the exact command line (redact the receiver address if it
-  is private);
-- the Windows build and DNS Server role configuration;
-- steps to reproduce, and the observed and expected behavior.
+- The commit SHA and the exact command line. Redact the receiver address if it
+  is private.
+- The Windows build and the DNS Server role configuration.
+- The steps to reproduce, and the observed and expected behavior.
 
 Do not include real DNS payloads, client addresses, or query names from a
 production system. Synthetic reproductions are preferred.
 
 Private reporting is the only documented channel. If it is not enabled on the
 repository, open a public issue that says only that you need a private security
-contact, and do not include details.
+contact. Do not include details.
 
 ## Threat model summary
 
@@ -69,11 +69,17 @@ and [README.md](README.md).
 
 - The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with a restricted
   service SID type (`sc.exe sidtype EtwDnstap restricted`), not as LocalSystem. It
-  refuses to start unless its token user is S-1-5-19, the service SID is an
-  enabled group, the token is restricted with restricting SIDs that include the
-  service SID and the Write Restricted SID `S-1-5-33`, Performance Log Users is an
-  enabled group (through the service SID's membership), and the token holds only
-  `SeChangeNotifyPrivilege`, enabled.
+  refuses to start unless all of these are true:
+  - The token user is S-1-5-19.
+  - The service SID is an enabled group.
+  - The token is restricted. Its restricting SIDs include the service SID and
+    the Write Restricted SID `S-1-5-33`.
+  - Performance Log Users is an enabled group, through the service SID's
+    membership.
+  - The token holds only `SeChangeNotifyPrivilege`, and it is enabled.
+
+  The [install guide](docs/guide/install.md#provision-the-service) has the same
+  list with the provisioning commands.
 - LocalService has no network-credential identity: on the network it presents as
   anonymous, not as the computer account, and its default local rights are low.
   The restricted SID type adds a write-restricted token. For write-type access

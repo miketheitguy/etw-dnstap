@@ -1,6 +1,15 @@
 # Parser and TCP threading analysis
 
 > **Status:** Proposed (design analysis; no change is implemented from it) · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+>
+> **Note (2026-11-01):** this analysis predates `69db97d` and `dde7188`. Commit
+> `69db97d` removed the per-event TDH fallback reader: an event whose schema
+> does not compile into a decode plan is rejected, so there is no fallback
+> decoding to keep. Commit `dde7188` wakes the parser once per delivered ETW
+> buffer that enqueued events, and the parser polls for up to 200 µs after data
+> before it parks. The per-event callback stays wake-free. The statements here
+> about the timed park and "supported/fallback decoding" describe the earlier
+> design.
 
 This design analysis helps maintainers choose whether and how to parallelize
 ETW parsing and dnstap TCP delivery. It compares ownership, ordering, resource

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `main` at commit `efb47af` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-01
 
 Start with the Application event log and the SCM state. The service writes its
 diagnostics to two places:
@@ -59,7 +59,7 @@ Search the Application log for the text, then go to the section named.
 | `ETW consumer did not return within 5 s of STOP` | Event ID 3 | The trace handle was closed to force the worker out. | [ETW warnings](#etw-flush-and-consumer-warnings) |
 | `received rate is above what the default low-rate ETW settings` | Event ID 3 | The defaults are too small for the load. | [Low-rate warning](#low-rate-warning) |
 | `rejected ETW event` | Event ID 3 | A parser rejection. The first four are logged. | [Rejected events](#rejected-events) |
-| `DNS event schema failed to load` | Event ID 3 | A schema is cached as rejected. | [Rejected events](#rejected-events) |
+| `DNS event schema is unsupported and its events are rejected` | Event ID 3 | A schema did not load or did not compile. Its events are rejected. | [Rejected events](#rejected-events) |
 | `stale ETW session used a different buffer size` | Event ID 3 | A leaked session was reclaimed despite a buffer mismatch. | [Stale session](#stale-etw-session-blocks-startup) |
 | `ETW keyword narrowing unavailable` | Event ID 3 | The subscription uses the fallback keyword mask. | [Counters](#counters-show-drops) |
 
@@ -68,18 +68,18 @@ Search the Application log for the text, then go to the section named.
 `sc.exe query EtwDnstap` shows `START_PENDING`, then `STOPPED` with a nonzero
 exit code. Work through these causes in order.
 
-| Cause | What you see | Fix |
+| Cause | What you see | Action |
 | --- | --- | --- |
 | Invalid option | Event ID 1 with `invalid service arguments`. | Correct the binary path. Options are in [configuration.md](configuration.md). Removed options fail here. |
-| Wrong identity | Event ID 1: `must run as NT AUTHORITY\LocalService`. The service is still LocalSystem, a virtual account, or another account. | Run `sc.exe qc EtwDnstap`. Set `cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'` (through `cmd.exe`, because Windows PowerShell 5.1 drops the empty password), then `sc.exe sidtype EtwDnstap restricted`, then start again. |
+| Wrong identity | Event ID 1: `must run as NT AUTHORITY\LocalService`. The service is still LocalSystem, a virtual account, or another account. | Run `sc.exe qc EtwDnstap`. Run `cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'`. Use `cmd.exe` because Windows PowerShell 5.1 drops the empty password. Then run `sc.exe sidtype EtwDnstap restricted` and start again. |
 | Service SID missing | Event ID 1: `the service SID NT SERVICE\EtwDnstap is not an enabled group`. | Run `sc.exe qsidtype EtwDnstap`. If it reports `NONE`, run `sc.exe sidtype EtwDnstap restricted`, then start again. |
 | Unrestricted token | Event ID 1: `the process token is not restricted`. | Run `sc.exe sidtype EtwDnstap restricted`, then start again. An unrestricted SID type does not meet the profile. |
 | Restricting SIDs incomplete | Event ID 1: `restricting SIDs do not include the service SID` or `the Write Restricted SID (S-1-5-33)`. | Run `sc.exe sidtype EtwDnstap restricted`, restart, and compare the token with the assumption in [SECURITY.md](../../SECURITY.md). If the SCM uses a different restricting set on this OS build, record it. |
 | Not in Performance Log Users | Event ID 1: `lacks an enabled Performance Log Users`. | Run `net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add`. Restart the service. |
-| Privileges | Event ID 1: `configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege` or `requires only an enabled SeChangeNotifyPrivilege`. | Run `sc.exe privs EtwDnstap SeChangeNotifyPrivilege`, then start again. Run `sc.exe qprivs EtwDnstap` to confirm. |
-| DNS Server not running | Event ID 1: `service 'DNS' is not running (process ID 0)`. | Start the DNS Server role service and confirm it is Running. |
-| Receiver protocol mismatch | Event ID 1: `connect/negotiation with dnstap receiver` with `did not accept dnstap content type`. | Configure the collector for content type `protobuf:dnstap.Dnstap`. Network failures do not stop startup; see [the receiver section](#the-receiver-is-down-or-unreachable). |
-| ETW access denied | Event ID 1: `StartTraceW: access denied` or `EnableTraceEx2: access denied`. | Run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` with the session name from the message, then restart the computer. See [install.md](install.md#if-an-etw-access-check-is-denied). |
+| Privileges | Event ID 1: `configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege` or `requires only an enabled SeChangeNotifyPrivilege`. | Run `sc.exe privs EtwDnstap SeChangeNotifyPrivilege`, then start again. Run `sc.exe qprivs EtwDnstap` to check the result. |
+| DNS Server not running | Event ID 1: `service 'DNS' is not running (process ID 0)`. | Start the DNS Server role service. Check that it is Running. |
+| Receiver protocol mismatch | Event ID 1: `connect/negotiation with dnstap receiver` with `did not accept dnstap content type`. | Configure the collector for content type `protobuf:dnstap.Dnstap`. Network failures do not stop startup. See [the receiver section](#the-receiver-is-down-or-unreachable). |
+| ETW access denied | Event ID 1: `StartTraceW: access denied` or `EnableTraceEx2: access denied`. | For `StartTraceW`, run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` with the session name from the message, then restart the computer. For `EnableTraceEx2`, inspect the DNS provider descriptor and do not add a grant on it. See [install.md](install.md#if-an-etw-access-check-is-denied). |
 | SCM query of `DNS` denied | Event ID 1: `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied`. | The restricted token needs `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` for Everyone or the service SID. Inspect `sc.exe sdshow DNS`. The query succeeded in the lab on build 26100. |
 | Leaked ETW session with the same name | Event ID 1: a session with the name exists and is not reclaimable (different shape or different GUID). | See [Stale ETW session](#stale-etw-session-blocks-startup). |
 | Watchdog abort | No Event ID 1. Event ID 5 names the startup deadline. | See [Watchdog aborts](#watchdog-aborts-or-stop-hangs). |
@@ -151,7 +151,7 @@ seconds. The failure count resets after 86,400 seconds without a failure.
 - If the `DNS` service is not running when EtwDnstap starts, startup fails with
   `service 'DNS' is not running`. Start the `DNS` service.
 - Check the failures in the Application log, Event ID 1.
-- Inspect the policy with `sc.exe qfailure EtwDnstap`. Confirm
+- Inspect the policy with `sc.exe qfailure EtwDnstap`. Check that
   `sc.exe qfailureflag EtwDnstap` reports the non-crash flag as set.
 
 ## Capture stops during a run
@@ -162,10 +162,10 @@ the shutdown exchange fails.
 
 1. Find the failure text in the Application log (Event ID 1). A shutdown failure
    names `finish dnstap STOP/FINISH exchange`.
-2. For a DNS restart, confirm `foreign_pid_rejected` rose during the gap. Those
+2. For a DNS restart, check that `foreign_pid_rejected` rose during the gap. Those
    records were not from the process the service was filtering.
 3. Check the collector's log for the reset or restart at the same time.
-4. Confirm the recovery policy is in place. Without it, the service stays down
+4. Check that the recovery policy is in place. Without it, the service stays down
    until someone starts it.
 
 ## Counters show drops
@@ -177,19 +177,19 @@ shutdown. A restart resets every counter. The loss categories are:
 | Counter | Meaning | Action |
 | --- | --- | --- |
 | `ring_dropped` | The event channel was full. The newest event was dropped. | Raise `--capacity`, or use the periodic flush for moderate or high rates. See [Low-rate defaults](configuration.md#low-rate-defaults). |
-| `pool_exhausted` (and its `_jumbo` share) | The pool had no free slot for a record. | Raise `--jumbo-capacity` if the jumbo class is exhausted. |
-| `receiver_disconnected` | The channel's parser end was gone. This is the event channel, not TCP. | Check whether the parser stopped; see [restarts](#the-service-keeps-restarting). |
+| `pool_exhausted_regular`, `pool_exhausted_jumbo` | The pool had no free slot of the record's class. | Raise `--jumbo-capacity` if `pool_exhausted_jumbo` rises. With `--jumbo-capacity 0`, every jumbo record is counted here. |
+| `receiver_disconnected` | The channel's parser end was gone. This is the event channel, not TCP. | Check whether the parser stopped. See [restarts](#the-service-keeps-restarting). |
 | `disconnected_dropped` | Frames lost to a TCP outage. | Fix the receiver path. See [the receiver section](#the-receiver-is-down-or-unreachable). |
 | `foreign_pid_rejected` | Records from a process other than the DNS Server. | Normally 0. A nonzero value during a DNS restart is expected. Otherwise investigate. |
 | `callback_errors` | Records the callback could not hand off. | Investigate with the Event Log. Not in `intake_dropped`. |
 
-`intake_dropped` is the sum of `ring_dropped`, `pool_exhausted`, and
-`receiver_disconnected`. Do not add it to them. `ring_dropped` and the pool
-fields are parts of `intake_dropped`, not additional losses. The `etw_lost`
-counter reports events lost inside ETW. It uses a different unit from buffer
-loss (`etw_buffers_lost`), and the two are not added together. `rejected` counts
-events the parser rejected. Excluded event IDs (258, 260, 261) are never
-counted. The full list and the identities are in
+`intake_dropped` is the sum of `ring_dropped`, `pool_exhausted_regular`,
+`pool_exhausted_jumbo`, and `receiver_disconnected`. Do not add it to them.
+`ring_dropped` and the pool fields are parts of `intake_dropped`, not additional
+losses. The `etw_lost` counter reports events lost inside ETW. It uses a
+different unit from buffer loss (`etw_buffers_lost`), and the two are not added
+together. `rejected` counts events the parser rejected. Excluded event IDs (258,
+260, 261) are never counted. The full list and the identities are in
 [Counter relationships](configuration.md#counter-relationships).
 
 Compare your collector's record count with the client's count, and treat any
@@ -209,8 +209,9 @@ Restart with the high-rate settings from
 --etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64
 ```
 
-Then confirm `ring_dropped` stops rising. The defaults are tested only to about
-1,000 queries per second.
+Then check that `ring_dropped` stops rising. The defaults are tuned for about
+1,000 queries per second. Lab results at higher rates are in
+[Low-rate defaults](configuration.md#low-rate-defaults).
 
 ## ETW flush and consumer warnings
 
@@ -233,10 +234,11 @@ Then confirm `ring_dropped` stops rising. The defaults are tested only to about
 - **`DNS event schema is unsupported and its events are rejected`.** Logged
   once for each (event ID, version) key, with the reason. The schema could not
   be loaded, or it does not match the single-pass decoder grammar. There is no
-  slower decoding path: every event for that key is rejected without a TDH call
-  and counted in `schema_rejected` and `rejected`. The cache holds eight keys and
+  slower decoding path. Every event for that key is rejected and counted in
+  `schema_rejected` and `rejected`. Events after the first are rejected without
+  a TDH call. The cache holds eight keys and
   is cleared when full. A new Windows build or DNS Server manifest can cause
-  this. Report the warning text; capture of those events needs a decoder change.
+  this. Report the warning text. Capture of those events needs a decoder change.
 
 ## No records arrive at the collector
 
@@ -245,8 +247,8 @@ Check the layers in order.
 1. **Is the service running and connected?** Look for a `capture started` line
    (Event ID 2). The lack of one means the service did not reach capture. In
    the latest `output stats` line, `receiver_connected` should be `true`.
-2. **Does the DNS Server write the events?** Confirm the events are being
-   generated: event IDs 256 and 257 come from `Microsoft-Windows-DNSServer`.
+2. **Does the DNS Server write the events?** Check that the events are
+   generated. Event IDs 256 and 257 come from `Microsoft-Windows-DNSServer`.
    Recursive traffic does not produce client records.
 3. **Is the DNS process still the one being filtered?** A DNS restart leaves a
    gap until EtwDnstap restarts. A rising `foreign_pid_rejected` shows records
@@ -296,13 +298,14 @@ Shutdown has a 10-second deadline. Inside shutdown, ETW waits up to 5 seconds fo
 If a deadline passes, the service writes Event ID 5 to the Application log and
 the process aborts. The message names the phase, for example
 `the startup deadline of 11 s expired`. The abort does not free resources that
-native calls still use, so the result can be an incomplete capture and a
-real-time ETW session that needs an administrator to inspect and stop, or a
-reboot.
+native calls still use. The result can be an incomplete capture. It can also
+leave a real-time ETW session. An administrator must then inspect and stop that
+session, or restart the computer.
 
 A timeout does not prove that the native operation never completed. Check
-`logman query -ets` after an abort. The startup budget covers the identity
-checks, the receiver connection, the pool allocation, and the ETW start. Large
+`logman query -ets` after an abort. The startup budget covers these steps:
+the identity checks, the receiver connection, the pool allocation, and the ETW
+start. Large
 `--capacity` values allocate more pool memory, so they can take longer to reach
 capture.
 
@@ -311,11 +314,13 @@ capture.
 - A removed option (`--output`, `--max-output-bytes`, `--metrics`) fails command-line
   parsing. Remove it from the binary path.
 - A service still running as LocalSystem or the virtual account refuses to
-  start. Move it to LocalService with a restricted SID type, add the service
-  SID to Performance Log Users, run the ETW grant script, keep the
-  executable's read and execute grant for the service SID, and keep the
-  recovery policy. See
-  [install.md](install.md#repair-or-upgrade).
+  start. Follow the upgrade steps in
+  [install.md](install.md#repair-cases). In summary:
+  1. Move it to LocalService with a restricted SID type.
+  2. Add the service SID to Performance Log Users.
+  3. Run the ETW grant script, then restart the computer.
+  4. Keep the executable's read and execute grant for the service SID.
+  5. Keep the recovery policy.
 - Changing the identity, privileges, or ACLs is a separate step with its own
   verification. Record the result against the binary's commit.
 

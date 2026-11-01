@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `efb47af` (defaults from `CaptureArgs` in `src/pipeline.rs`; identity, DNS process filter, and reconnect behavior from `f0b51f4`) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` (defaults from `CaptureArgs` in `src/pipeline.rs`) · **Reviewed:** 2026-11-01
 
 Every option is set in the service binary path, not in `sc.exe start`. Install
 and provisioning steps are in [install.md](install.md). Symptoms are in
@@ -13,11 +13,11 @@ the range are rejected at startup.
 
 | Option | Default | Range or format | Meaning |
 | --- | --- | --- | --- |
-| `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Plaintext Frame Streams TCP receiver. Hostnames are rejected. The service starts even when the receiver is down and reconnects; see [Receiver connection](#receiver-connection). |
-| `--capacity N` | `8192` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value; see [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
+| `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Plaintext Frame Streams TCP receiver. Hostnames are rejected. The service starts even when the receiver is down and reconnects. See [Receiver connection](#receiver-connection). |
+| `--capacity N` | `8192` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value. See [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for records with a padded payload over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Without it, capture runs until SCM stops the service or a failure occurs. |
-| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name, shape, and session GUID is reclaimed at startup; see [Session reclaim](#session-reclaim). The name also determines the session GUID that the ETW grant names, so a new name needs the grant script run with it and a restart; see [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
+| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name, shape, and session GUID is reclaimed at startup. See [Session reclaim](#session-reclaim). The name also sets the session GUID that the ETW grant names. A new name therefore needs a run of the grant script with that name, and a restart. See [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
 | `--etw-max-buffers N` | `12` | 4 to 4,096 | Requested maximum ETW buffer count. See [ETW buffer minimums](#etw-buffer-minimums). |
@@ -60,26 +60,32 @@ not allocate them up front.
 
 This is the canonical statement of the default limits. Other documents link here.
 
-**The defaults are tuned for about 1,000 queries per second or less.** They have
-not been tested above 1,000 queries per second with the 16 KiB by 12 buffer
-settings.
+**The defaults are tuned for about 1,000 queries per second or less.** The
+low-rate warning below uses its own threshold of 1,500 events per second. Lab
+results at higher rates with the defaults follow.
 
 With the periodic flush off (`--etw-flush-ms 0`), ETW delivers real-time events
 in batches about `--etw-flush-seconds` (1 second by default) apart. Delivery
 latency is therefore up to about 2 seconds, and usually under 1 second. A batch
 that holds more events than the channel can take drops the excess unless the
 parser drains it while it arrives. The ETW buffer callback wakes the parser for
-each delivered buffer, so it does. On the 6-vCPU lab VM with all defaults, the
-authoritative loss was 0 at 1,000 and 5,000 queries per second and 1.1% at
-10,000 queries per second (50 s runs; see
-[ETW buffer wake validation](../history/buffer-wake-validation.md)). Before this
-wake, the same 5,000 queries-per-second load lost about 19%.
+each delivered buffer, so it does. The lab results on the 6-vCPU VM with all
+defaults and the committed build were:
 
-Lab evidence (6-vCPU VM, Windows Server 2025, authoritative workload, default
-8,192-event channel) for the flush-off configuration with 64 KiB buffers and 256
-maximum buffers:
+- Authoritative loss was 0 at 1,000 and at 5,000 queries per second.
+- Authoritative loss was 0.32% at 10,000 queries per second. An earlier variant
+  with an always-on linger lost 1.08%.
+- Before this wake, the same 5,000 queries-per-second load lost about 19%.
 
-- 59 to 79% of events were dropped at 10,000 to 20,000 queries per second.
+These figures count channel drops only, in 50-second runs. See
+[ETW buffer wake validation](../history/buffer-wake-validation.md).
+
+One lab result predates the buffer wake. The lab used a 6-vCPU VM, Windows
+Server 2025, an authoritative workload, and the default 8,192-event channel. The
+configuration had the flush off, 64 KiB buffers, and 256 maximum buffers. With
+it, 59 to 79% of events were dropped at 10,000 to 20,000 queries per second.
+
+This flush-off configuration has not been measured again with the buffer wake.
 
 For higher rates, use the periodic flush with larger buffers:
 
@@ -94,7 +100,7 @@ queries per second. Tested intervals:
 | --- | --- | --- |
 | 20,000 | 50 ms | 0 ring drops |
 | 10,000 | 100 ms | 0 ring drops |
-| 50,000 | 100 ms | 0.04 to 0.91% loss; `etw_lost` was 0 |
+| 50,000 | 100 ms | 0.04 to 0.91% loss. `etw_lost` was 0. |
 
 The 50,000 queries-per-second row needs care. The same source describes loss of
 0.3 to 1.7% at 50,000 queries per second **without** the periodic flush. The
@@ -102,9 +108,12 @@ flush setting for that comparison run is not recorded in the same document, so
 treat the two figures as separate observations. The residual loss tracks host
 disturbance according to that source.
 
-Not tested: other machines and vCPU counts, 25,000 to 45,000 queries per
-second, recursive or mixed workloads, and a 50 ms interval at 50,000 queries per
-second and above in a release build.
+These cases were not tested:
+
+- Other machines and vCPU counts.
+- 25,000 to 45,000 queries per second.
+- Recursive or mixed workloads.
+- A 50 ms interval at 50,000 queries per second and above in a release build.
 
 Each delivered batch holds up to about twice the flush interval's worth of
 events (2 events per query). At higher rates, lower `--etw-flush-ms` or raise
@@ -117,9 +126,9 @@ The evidence is in [ring-buffer.md](../design/ring-buffer.md) and
 The per-stage lab labels from the source reports are not defined elsewhere and
 are not used here.
 
-**Warning.** When the default ETW settings are in use, the service logs a
-warning (Event ID 3) at the end of each measurement window whose received rate
-exceeds about 1,500 events per second. The window is `--stats-interval-seconds`,
+**Warning.** The service can log a warning (Event ID 3) when the default ETW
+settings are in use. It logs the warning at the end of each measurement window
+in which the received rate is more than about 1,500 events per second. The window is `--stats-interval-seconds`,
 or 60 seconds when snapshots are disabled. The warning repeats while the rate
 stays high, and it names the high-rate settings above.
 
@@ -132,9 +141,9 @@ including scheduling delay on the supervisor). Lab maxima under load were 11 to
 46 ms, near multiples of the 15.6 ms timer tick. The idle maximum was about
 0.35 ms.
 
-A failed flush logs one warning and is counted. Capture continues. After each
-successful periodic flush, the supervisor wakes the parser so the new batch is
-processed without waiting for its idle park.
+A failed flush logs one warning and is counted. Capture continues. The ETW
+buffer callback wakes the parser when the flushed buffers arrive. After each
+successful periodic flush, the supervisor also wakes the parser as a backstop.
 
 ## Storage
 
@@ -163,11 +172,12 @@ Two more facts from the subscription code:
 
 - The subscription sets `EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0`, so an event
   with keyword 0 does not match.
-- Event IDs 256 and 257 are also filtered by ETW before events reach session
-  buffers, which reduces buffer use and callback dispatch. This does not reduce
-  the DNS Server's cost of generating events that pass the keyword mask. Events
-  284, 287, 597, and 598 share the narrowed keyword bits on Windows Server 2025
-  build 26100, so the event-ID check stays in the callback as defense in depth.
+- ETW also filters event IDs 256 and 257 before events reach the session
+  buffers. This reduces buffer use and callback dispatch. It does not reduce
+  the DNS Server's cost to generate events that pass the keyword mask.
+- Events 284, 287, 597, and 598 share the narrowed keyword bits on Windows
+  Server 2025 build 26100. The event-ID check therefore stays in the callback
+  as defense in depth.
 
 ### DNS process filter
 
@@ -207,7 +217,7 @@ and is not counted in `received`.
   second. The clock is read every 64 events, so the busy bound is approximate.
 - **Failure:** a failed session is abandoned, and its buffered frames are
   discarded. No STOP is sent after a partial frame. Capture continues and the
-  sink reconnects; see [Receiver connection](#receiver-connection).
+  sink reconnects. See [Receiver connection](#receiver-connection).
 - **Encoded size:** each encoded message is limited to 70 KiB.
 - **DNS envelope:** the DNS message must be 12 to 65,535 bytes, and the QR bit must
   match the event's direction. The encoder preserves packet bytes verbatim. It
@@ -237,9 +247,9 @@ are recoverable. Protocol failures at startup are not.
   startup is fatal. A receiver that answers but does not accept the
   `protobuf:dnstap.Dnstap` content type, or that sends a malformed control
   frame, stops the service with an error.
-- **Loss.** When an established session fails (a write, a flush, or a
-  deadline), the sink discards its write buffer and the frame in hand, logs a
-  warning, and starts reconnecting. Capture continues.
+- **Loss.** An established session can fail on a write, a flush, or a
+  deadline. The sink then discards its write buffer and the frame in hand. It
+  logs a warning and starts to reconnect. Capture continues.
 - **Retry.** Each reconnect attempt runs on a helper thread, so a blackholed
   receiver never blocks the parser. Each wait is uniform between half of a base
   delay and the base. The base starts at 250 ms and doubles up to a 30-second
@@ -275,9 +285,9 @@ are recoverable. Protocol failures at startup are not.
 
 ## Session reclaim
 
-The service has no instance mutex. Only one instance runs because the SCM
-starts one process for the service, and the identity check refuses a process
-that does not run as this service.
+The service has no instance mutex. Only one instance runs, for two reasons.
+The SCM starts one process for the service. The identity check refuses a
+process that does not run as this service.
 
 On startup, a leaked session with the same name, the same session GUID, and
 this program's shape is stopped and replaced. The session GUID is the one that
@@ -330,16 +340,15 @@ These fields appear on `capture stats` and `capture stopped`.
 | `ignored` | Dequeued records the parser did not capture because they are not a supported DNS event. |
 | `rejected` | Dequeued records the parser rejected, such as a malformed packet, an invalid field, or a schema failure. Includes `schema_rejected`. |
 | `ring_dropped` | Records dropped because the channel was full. Part of `intake_dropped`. |
-| `intake_dropped` | Every record lost at admission: `ring_dropped`, `pool_exhausted`, and `receiver_disconnected`. |
-| `pool_exhausted` | Records dropped because no pool slot of their class was free. Part of `intake_dropped`. |
-| `pool_exhausted_regular` | The regular-class share of `pool_exhausted`. |
-| `pool_exhausted_jumbo` | The jumbo-class share of `pool_exhausted`. |
-| `foreign_pid_rejected` | Records from a process other than the DNS Server. Not counted in `received`. Normally zero; see [DNS process filter](#dns-process-filter). |
+| `intake_dropped` | Every record lost at admission: `ring_dropped`, `pool_exhausted_regular`, `pool_exhausted_jumbo`, and `receiver_disconnected`. |
+| `pool_exhausted_regular` | Regular-class records dropped because no regular pool slot was free. Part of `intake_dropped`. |
+| `pool_exhausted_jumbo` | Jumbo-class records (padded payload over 2 KiB) dropped because no jumbo pool slot was free, or because `--jumbo-capacity` is `0`. Part of `intake_dropped`. |
+| `foreign_pid_rejected` | Records from a process other than the DNS Server. Not counted in `received`. Normally zero. See [DNS process filter](#dns-process-filter). |
 | `receiver_disconnected` | Records dropped because the channel's parser end was gone. This is the event channel, not the TCP receiver. TCP state is in the output counters. |
 | `etw_lost` | Events ETW reports as lost in the session, from its last successful query or stop. |
 | `etw_buffers_lost` | ETW buffers lost. This is a buffer count, not an event count. Never add it to event counts. |
-| `callback_errors` | Records the callback could not copy or hand off, such as malformed native data or missing or re-entered thread-local state. Not part of `intake_dropped`. |
-| `schema_rejected` | Records whose event schema failed to load: the first failure for each key and each cached repeat. Part of `rejected`. |
+| `callback_errors` | Records the callback could not copy or hand off, for example malformed native data, or thread-local state that is missing or re-entered. Not part of `intake_dropped`. |
+| `schema_rejected` | Records whose event schema failed to load or did not compile into a single-pass decode plan. This includes the first failure for each (event ID, version) key and each later record with that key. Part of `rejected`. |
 | `etw_stats_valid` | `true` when the last ETW query or stop succeeded. A flag, not a count. |
 | `etw_stats_errors` | Failed ETW statistics queries. |
 | `stale_sessions_reclaimed` | Leaked sessions stopped at startup. |
@@ -347,7 +356,7 @@ These fields appear on `capture stats` and `capture stopped`.
 | `etw_flush_errors` | Failed flush requests. Only the first is logged. |
 | `etw_flush_max_us` | Longest flush call in microseconds, including supervisor scheduling delay. |
 | `etw_buffers_delivered` | ETW buffers whose delivery finished (calls of the buffer callback). |
-| `parser_wake_requests` | Delivered buffers that enqueued at least one event. Each sends one wake request to the parser; the request costs nothing when the parser is already running, so this is not a count of parser wakeups. |
+| `parser_wake_requests` | Delivered buffers that enqueued at least one event. Each sends one wake request to the parser. The request costs nothing when the parser is already running. This is therefore not a count of parser wakeups. |
 
 ### Output counters
 
@@ -355,7 +364,7 @@ These fields appear on `output stats` and `output stopped`.
 
 | Counter | Meaning |
 | --- | --- |
-| `output_failed_events` | Dequeued records whose frame write returned an error. The current network sink does not return write errors; it counts failures in the fields below. This stays 0. |
+| `output_failed_events` | Dequeued records whose frame write returned an error. The current network sink does not return write errors. It counts failures in the fields below. This stays 0. |
 | `output_errors` | Parser output failures. The current sink does not fail a flush, so this increments only when the STOP/FINISH exchange at shutdown fails. |
 | `receiver_connected` | `true` while a Frame Streams session is established. A flag, not a count. |
 | `receiver_disconnects` | Established sessions that were lost. |
@@ -369,14 +378,15 @@ These fields appear on `output stats` and `output stopped`.
 ### Counter relationships
 
 ```text
-intake_dropped = ring_dropped + pool_exhausted + receiver_disconnected
-pool_exhausted = pool_exhausted_regular + pool_exhausted_jumbo
+intake_dropped = ring_dropped + pool_exhausted_regular + pool_exhausted_jumbo
+                 + receiver_disconnected
 received       = intake_dropped + callback_errors + dequeued + queue backlog
 dequeued       = encoded + ignored + rejected + output_failed_events
 ```
 
-- `ring_dropped` and the `pool_exhausted` fields are parts of `intake_dropped`.
-  Never add them to it.
+- `ring_dropped` and the two `pool_exhausted_*` fields are parts of
+  `intake_dropped`. Never add them to it. There is no logged `pool_exhausted`
+  field. Its total is the sum of the two class fields.
 - `schema_rejected` is part of `rejected`.
 - `disconnected_dropped` is not part of `intake_dropped` or of the identities
   above. Its frames were already counted in `encoded`. Approximately,

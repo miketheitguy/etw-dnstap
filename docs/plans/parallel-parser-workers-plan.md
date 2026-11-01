@@ -4,6 +4,14 @@
 >
 > **Note (2026-11-01):** commit `f0b51f4` added reconnect with backoff, with no
 > resend. Rows in this plan that say "no reconnect" describe the earlier design.
+>
+> **Note (2026-11-01):** commit `dde7188` changed the idle park that this plan
+> measures. The parser is now woken once per delivered ETW buffer that enqueued
+> events, and after data it polls for up to 200 µs before it parks. The 2-20 ms
+> backoff is kept for idle periods. The per-event callback stays wake-free. Stage
+> P3 and the park-latency hypotheses describe the earlier design. Commit
+> `0865e19` renamed `drain_ring` to `drain_queue`. See
+> [the buffer wake validation](../history/buffer-wake-validation.md).
 
 **Status:** Stage P0 was completed on October 31, 2026. The P1 decision
 selects the new Stage P1a, a scheduling-priority experiment, and defers the

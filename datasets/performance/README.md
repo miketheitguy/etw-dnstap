@@ -56,7 +56,7 @@ For measured runs, the collector's existing JSON stdout pipeline writes to a
 durable file instead of the interactive console and journal. Receiver evidence
 uses byte-offset boundaries, per-operation JSON counts, and collector telemetry.
 The interactive console and journal configuration is restored after testing.
-Collector telemetry refreshes once per second. Keep the FrameStreams session
-open for at least three seconds after client drain before taking the end marker,
-because a stopped per-connection worker does not synchronously flush its last
+Collector telemetry refreshes once per second. After the client drain, keep
+the FrameStreams session open for at least three seconds before you take the end
+marker. A stopped per-connection worker does not synchronously flush its last
 telemetry increment.
