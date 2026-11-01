@@ -1,6 +1,9 @@
 # Parallel parser workers plan
 
 > **Status:** Proposed (not executed) · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
+>
+> **Note (2026-11-01):** commit `f0b51f4` added reconnect with backoff, with no
+> resend. Rows in this plan that say "no reconnect" describe the earlier design.
 
 **Status:** Stage P0 was completed on October 31, 2026. The P1 decision
 selects the new Stage P1a, a scheduling-priority experiment, and defers the

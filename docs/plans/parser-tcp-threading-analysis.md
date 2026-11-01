@@ -253,8 +253,10 @@ guarantee, and partial progress requires correct handling. See
 
 ## Failure and shutdown contract
 
-Preserve fail-fast connection loss and the absence of automatic retry, reconnect,
-or replay. A successful local write does not prove collector processing or
+Commit `f0b51f4` superseded the fail-fast rule in this paragraph. The sink now
+reconnects with backoff, performs a fresh handshake, and never replays frames.
+Frames lost while disconnected are counted. Keep the no-replay rule. A successful
+local write does not prove collector processing or
 durable output. Frame Streams FINISH acknowledges the stream-close exchange,
 not each record's durable storage. After a partial write, retry can duplicate
 records or corrupt framing without an acknowledgement/deduplication protocol.

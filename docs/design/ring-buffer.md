@@ -40,7 +40,9 @@ below the channel capacity.
 
 The callback does not signal the parser after enqueue. The channel has no
 registered blocking receivers or selectors; atomic retries, spinning, yielding,
-and preemption still apply.
+and preemption still apply. The supervisor thread, not the callback, unparks the
+parser after each successful periodic ETW flush, so a flushed batch does not wait
+for the parser's idle park.
 
 The regular pool has `capacity + 2` slots with 2048 payload bytes each. The jumbo
 pool has 131,184-byte slots, with `--jumbo-capacity` accepting 0–256 and defaulting
@@ -85,7 +87,8 @@ for another workload.
 
 The later [pooled VM campaign](../performance/pooled-vm-performance-review.md) measures a
 historical pooled binary with a JSONL metrics writer. The TCP-only service has
-no durable metrics export or queue high-water tracking; see the
+no durable metrics export. It logs its counters to the event log and samples the
+deepest queue depth as a lower bound (`queue_depth_max`); see the
 [instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Keep its results separate from this historical
 allocation-based capacity experiment, especially when comparing CPU or memory.
 
@@ -100,7 +103,9 @@ After an empty pop, the parser reads completion with acquire ordering. If it
 observes completion, it pops again until empty. This final drain retains a push
 between the earlier empty pop and completion observation. The existing
 10-second fail-stop watchdog covers native shutdown and parser completion;
-callback state remains owned until the native worker ends.
+callback state remains owned until the native worker ends. Within that window,
+native shutdown waits up to 5 seconds for `ProcessTrace` to return after STOP
+before `CloseTrace` forces it.
 
 Unit tests cover the default and configured capacity bounds, full-ring loss,
 final enqueue followed by joined producer completion, empty completion after

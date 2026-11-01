@@ -11,6 +11,11 @@ instrumentation and performance have not been measured by this campaign.
 See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
+**Identity note (2026-11-01).** The campaign ran the service as LocalSystem, with
+a service SID and only `SeChangeNotifyPrivilege`. The current service runs as the
+virtual account `NT SERVICE\EtwDnstap`, which these campaigns did not measure. Do
+not compare these results with a virtual-account run without a new campaign.
+
 **Bounded campaign complete.** Both five-minute high-rate confirmations pass
 all gates. The 22 measured stages retain **12 strict passes and
 10 strict failures**, including overload and DNS/lifecycle qualifications.
