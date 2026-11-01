@@ -17,7 +17,7 @@ the range are rejected at startup.
 | `--capacity N` | `8192` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value; see [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for records with a padded payload over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Without it, capture runs until SCM stops the service or a failure occurs. |
-| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name and shape is reclaimed at startup. The name also keys the single-instance mutex; see [Session reclaim](#session-reclaim). |
+| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name and shape is reclaimed at startup. The name also keys the single-instance mutex; see [Session reclaim](#session-reclaim). It also determines the session GUID that the ETW grant names, so a new name needs the grant script run with it and a restart; see [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
 | `--etw-max-buffers N` | `12` | 4 to 4,096 | Requested maximum ETW buffer count. See [ETW buffer minimums](#etw-buffer-minimums). |
@@ -309,7 +309,7 @@ Every `--stats-interval-seconds`, the service writes two information events,
 loss counters. The shutdown always writes `capture stopped` and `output stopped`
 with the same fields, even when periodic snapshots are disabled.
 
-`capture started` records the session name, receiver, channel capacity, ETW
+`capture started` records the session name, the session GUID (`session_guid`), receiver, channel capacity, ETW
 buffer size, maximum buffers, flush seconds, `etw_flush_ms`, the keyword masks
 as `match_any_keyword` and `match_all_keyword` in hexadecimal, and
 `keyword_fallback`.

@@ -923,6 +923,7 @@ fn supervise(
 fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
     tracing::info!(
         session = config.session_name.as_str(),
+        session_guid = crate::etw::session_guid_text(&config.session_name),
         receiver = %config.receiver,
         capacity = config.capacity,
         etw_buffer_kib = config.session.buffer_kib,

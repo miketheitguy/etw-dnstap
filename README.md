@@ -3,15 +3,17 @@
 > **Status:** Current · **Describes:** `main` at commit `54eafae` · **Reviewed:** 2026-11-01
 >
 > **Validation status:** the LocalService profile with a restricted service SID
-> (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) has not
-> been validated on a live DNS Server. The lab record covers the earlier
-> LocalSystem profile. See [install.md](docs/guide/install.md#provision-the-service).
+> (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) was
+> validated on one lab DNS Server (Windows Server 2025, build 26100) on
+> 2026-11-01. See [localservice-restricted-validation.md](docs/history/localservice-restricted-validation.md).
+> Recovery after a DNS Server restart and load were not covered.
 
 `etw-dnstap` is a Windows service that captures DNS Server client query and
 response events and sends them to a [dnstap](https://dnstap.info/) receiver over
 TCP using Frame Streams. It runs under the Service Control Manager (SCM) as
-`EtwDnstap`, as `NT AUTHORITY\LocalService` with a restricted service SID
-(a write-restricted token). The executable has
+`EtwDnstap`, as `NT AUTHORITY\LocalService` with a restricted service SID. The
+service only reads ETW events; the one ETW right it is granted lets it create its
+own trace session. The executable has
 no foreground capture mode. `--help` and `--version` print information and exit
 without starting capture.
 
@@ -34,7 +36,7 @@ only on a trusted network or behind an independently protected transport. Read
    Starting the receiver's listener first is advisable but not required: the
    service reconnects. Provisioning sets LocalService, `sc.exe sidtype EtwDnstap restricted`,
    a single privilege, Performance Log Users membership for the service SID, and
-   `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`. See
+   `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`, followed by a restart. See
    [Provision the service](docs/guide/install.md#provision-the-service) and
    [scripts/provision](scripts/provision/README.md).
 3. Start the service, generate DNS traffic, and stop it. Confirm the receiver
@@ -119,9 +121,8 @@ performance under production traffic. The lab records are:
   or stops. SCM then restarts it, and capture of the new process starts after
   that restart. Records from the gap are not captured.
 - **Identity.** The service runs as `NT AUTHORITY\LocalService` with a restricted
-  service SID. That profile has not been validated on a live DNS Server, and
-  whether ETW access checks pass for its write-restricted token is an
-  assumption. Follow the
+  service SID. The profile was validated on build 26100 only. On another build,
+  follow the
   [validation checklist](docs/guide/install.md#validation-checklist-for-the-localservice-restricted-profile).
 - **Recovery.** The policy in
   [install.md](docs/guide/install.md#5-configure-scm-recovery) restarts the

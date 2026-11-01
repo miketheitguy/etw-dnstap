@@ -145,6 +145,7 @@ commands as procedures.
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
 | [Lab validation](history/lab-validation.md) | Historical | Oct 28, 2026 PDT | not recorded | Initial live receiver and packet-delivery checks |
+| [LocalService restricted-SID validation](history/localservice-restricted-validation.md) | Historical | Nov 1, 2026 | parent `6718863` | ETW rights the restricted token needs; the 0x20-only grant |
 | [DNS capture performance review, 2026-10-28](history/performance-review-2026-10-28.md) | Historical | Oct 28, 2026 | not recorded | Original unpaced three-run experiment |
 | [Windows DNS capture performance test plan](history/performance-test-plan.md) | Historical | Oct 28, 2026 | not recorded | Method for the unpaced experiment |
 | [Performance repeat at global 1,000 QPS, plan](history/performance-1000qps-plan.md) | Historical | Oct 29, 2026 UTC | not recorded | Method for the repeat with the original 1,024-entry ring. Results are in [the review](history/performance-1000qps-review.md). |
