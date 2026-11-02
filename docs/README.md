@@ -17,7 +17,7 @@ decides its folder.
 | [`guide/`](guide/) | Operator guides: install, configuration, troubleshooting, shutdown remediation, uninstall | Current |
 | [`design/`](design/) | Architecture and reference: pooled intake, ring and queue, single-pass decoder contract, measurement terms, diagrams | Current |
 | [`performance/`](performance/) | The latest completed native performance record and its graphs, trace analysis, and campaign plan | Current review. Supporting records Historical |
-| [`plans/`](plans/) | Plans and analyses that are not yet executed or implemented | Proposed. A plan with partial execution says so in its status block |
+| [`plans/`](plans/) | Plans and analyses that are not yet executed or implemented | Proposed or Approved. A plan with partial execution says so in its status block |
 | [`history/`](history/) | Finished campaigns, reviews, completed plans, and superseded documents | Historical, Superseded |
 | [`assets/performance/`](assets/performance/) | Graph SVGs, CSV copies, and their provenance manifests | Generated |
 | [`assets/loss-solutioning/`](assets/loss-solutioning/) | Animated GIFs of the event-loss causes and fixes shown in the loss-solutioning diagram | Historical |
@@ -76,11 +76,11 @@ install, configuration, troubleshooting, and removal.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
-| [Install and provision](guide/install.md) | Current. LocalService restricted-SID profile validated on one lab host (build 26100) | Nov 1, 2026 (lab validation) | `dde7188` | Toolchain, build, LocalService restricted-SID identity, privileges, SCM recovery, receiver setup, validation checklist |
-| [Configuration reference](guide/configuration.md) | Current | Nov 1, 2026 (buffer-wake and flush-removal lab results) | `dde7188` | Every option and default, the low-rate defaults and the high-rate settings with their lab results, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters |
+| [Install and provision](guide/install.md) | Current. LocalService restricted-SID profile validated on one lab host (build 26100). Performance counters validated on one lab host on 2026-11-01 | Nov 1, 2026 (lab validation) | `dde7188` | Toolchain, build, LocalService restricted-SID identity, privileges, performance counter registration, SCM recovery, receiver setup, validation checklist |
+| [Configuration reference](guide/configuration.md) | Current. Performance counters validated on one lab host on 2026-11-01. The defaults `--etw-max-buffers 64` and `--capacity 24576` are not lab-tested as a set | Nov 1, 2026 (buffer-wake and flush-removal lab results, measured with the previous defaults) | `dde7188` | Every option and default, the low-rate defaults and the high-rate settings with their lab results, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters, Windows performance counters with the catalog and suggested alerts |
 | [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `dde7188` | Event log messages, startup failures, receiver outages, DNS restarts, counters, schema rejection with no fallback decoder, watchdog aborts |
 | [Service shutdown remediation](guide/service-stop-remediation.md) | Current (operator guide) | not applicable | not recorded (code claims re-checked at `dde7188`) | Diagnosing receiver resets during STOP/FINISH and the close behavior |
-| [Uninstall](guide/uninstall.md) | Current | not applicable | `dde7188` | Service, group membership, ETW grant removal, event source, ETW session, and directory removal |
+| [Uninstall](guide/uninstall.md) | Current | not applicable | `dde7188` | Service, group membership, ETW grant removal, event source, ETW session, performance counter unregistration, and directory removal |
 | [Security policy](../SECURITY.md) | Current | not applicable | `dde7188` | Reporting, threat model summary, producer identity, LocalService restricted-SID profile |
 | [Contributing](../CONTRIBUTING.md) | Current | not applicable | `dde7188` | Build, test, lint, documentation status and layout, commit style |
 | [Changelog](../CHANGELOG.md) | Current | not applicable | `dde7188` | Keep a Changelog format. Versioning policy at the top. No tag yet. Commit log through `dde7188` |
@@ -142,14 +142,15 @@ The lab scripts have their own documentation at
 
 ## Plans
 
-These documents are in `plans/`. Each status block gives its execution state. The parallel parser workers plan is partly executed. The others have no recorded execution.
+These documents are in `plans/`. Each status block gives its execution state. The parallel parser workers plan is partly executed. The performance counter plan is implemented and lab-validated. The ETW minimum buffers plan is implemented and lab-validated. The others have no recorded execution.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
 | [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed (must be regenerated before the next campaign) | Oct 30, 2026 | `3d401cc` and later | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` (service identity, DNS PID filter, reconnect). See the banner in the document. |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading. Its fail-fast contract predates `f0b51f4`. Its timed park and fallback decoding predate `69db97d` and `dde7188`. |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed (P0 and diagnostic runs recorded Oct 31, 2026, P1a next, P4 deferred) | Oct 31, 2026 | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. Its idle-park stages predate the per-buffer wake in `dde7188`. |
-| [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Proposed | not applicable | not applicable | Future per-stage counters. No task has been executed. Its baseline predates periodic counter logging, `f0b51f4`, and the TDH fallback removal in `69db97d`. |
+| [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | Windows Performance Counters V2 provider for the `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. It replaces the earlier nine-counter proposal. |
+| [ETW minimum buffers plan](plans/etw-min-buffers-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | The `--etw-min-buffers` option for the ETW session's `MinimumBuffers`. The default `0` lets ETW choose. It also logs the buffer counts that ETW applied. |
 
 ## History
 
@@ -177,7 +178,7 @@ commands as procedures.
 | [Performance repeat at global 1,000 QPS, review](history/performance-1000qps-review.md) | Historical | Oct 29, 2026 UTC | not recorded | Results of the repeat |
 | [Ring-buffer capacity fix: plan](history/ring-buffer-fix-plan.md) | Historical | Oct 29, 2026 UTC | not recorded | Capacity-only 8,192 candidate. Validation gates |
 | [Ring-buffer capacity fix: validation](history/ring-buffer-fix-validation.md) | Superseded by [pooled intake](design/pooled-intake.md) | Oct 29, 2026 UTC | not recorded | Results of the allocation-based `ArrayQueue` candidate |
-| [Ring capacity experiment](history/ring-capacity-experiment.md) | Historical | Oct 28-29, 2026 | not recorded | The allocation-based `ArrayQueue` capacity experiment that set the 8,192 default. Moved from the ring-capacity design page. |
+| [Ring capacity experiment](history/ring-capacity-experiment.md) | Historical | Oct 28-29, 2026 | not recorded | The allocation-based `ArrayQueue` capacity experiment that set the former 8,192 default (now 24,576). Moved from the ring-capacity design page. |
 | [Rejected wake-on-enqueue experiment](history/ring-wakeup.md) | Historical | Oct 29, 2026 UTC | not recorded | Rejected `wake-1024-v1` candidate. It did not rule out a wake once per buffer. |
 | [Pooled ETW intake: validation plan](history/pooled-intake-plan.md) | Historical | Oct 2026 (undated in text) | not recorded | Original pooled validation design and ownership record |
 | [Pooled intake audit and remaining validation plan](history/pooled-intake-audit-plan.md) | Historical | Oct 2026 (undated in text) | not recorded | Audit of the pooled implementation |
@@ -251,7 +252,8 @@ cleanup actions remain available.
 
 The current service writes its diagnostic counters to the Application event log
 every `--stats-interval-seconds` and at shutdown. It has no durable metrics
-export. It samples the deepest queue depth as a lower bound (`queue_depth_max`). Its performance has not been measured by
+export. Its live values are also published as Windows performance counters. See
+[Performance counters](guide/configuration.md#performance-counters). It samples the deepest queue depth as a lower bound (`queue_depth_max`). Its performance has not been measured by
 the historical campaigns. Measuring it needs a separately designed telemetry
 method. Collector output, WPR traces, and host tool artifacts are separate from
 the service.

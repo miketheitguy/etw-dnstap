@@ -139,22 +139,28 @@ fn query_outcome_classifies_statuses() {
 
 #[test]
 fn session_properties_write_configured_values() {
-    let config = SessionConfig::new(128, 512, 5).expect("valid configuration");
+    let config = SessionConfig::new(128, 8, 512, 5).expect("valid configuration");
     let properties = SessionProperties::new(&config, GUID::default());
     assert_eq!(properties.properties.BufferSize, 128);
     assert_eq!(properties.properties.MaximumBuffers, 512);
     assert_eq!(properties.properties.FlushTimer, 5);
-    assert_eq!(properties.properties.MinimumBuffers, 4);
+    assert_eq!(properties.properties.MinimumBuffers, 8);
 
     let defaults = SessionProperties::new(&SessionConfig::default(), GUID::default());
     assert_eq!(defaults.properties.BufferSize, 16);
-    assert_eq!(defaults.properties.MaximumBuffers, 12);
+    assert_eq!(defaults.properties.MaximumBuffers, 64);
     assert_eq!(defaults.properties.FlushTimer, 1);
+    assert_eq!(defaults.properties.MinimumBuffers, 0);
+
+    let reserved = SessionConfig::new(16, 32, 64, 1).expect("valid configuration");
+    let properties = SessionProperties::new(&reserved, GUID::default());
+    assert_eq!(properties.properties.MinimumBuffers, 32);
+    assert_eq!(properties.properties.MaximumBuffers, 64);
 }
 
 #[test]
 fn fingerprint_ignores_buffer_size_so_a_changed_flag_does_not_block_restart() {
-    let config = SessionConfig::new(128, 512, 5).expect("valid configuration");
+    let config = SessionConfig::new(128, 4, 512, 5).expect("valid configuration");
     assert!(reclaimable(&own_query(&config), &TEST_GUID));
     assert!(reclaimable(
         &own_query(&SessionConfig::default()),
@@ -342,7 +348,7 @@ fn reclaim_replaces_leaked_real_time_session() {
     const NAME: &str = "EtwDnstap-ReclaimTest-Replace";
     let name = utf16_nul(NAME);
     // A non-default size exercises exact BufferSize matching beyond 64 KiB.
-    let config = SessionConfig::new(128, 256, 1).expect("valid configuration");
+    let config = SessionConfig::new(128, 4, 256, 1).expect("valid configuration");
     let _cleanup = StopSessionOnDrop {
         name: name.clone(),
         log_file: None,
@@ -483,25 +489,73 @@ fn reclaim_decision_stop_failure_errors_without_count() {
 
 #[test]
 fn session_config_enforces_ranges_and_accepts_max_buffer_product() {
-    assert!(SessionConfig::new(4, 4, 1).is_ok());
-    assert!(SessionConfig::new(128, 4096, 1).is_ok(), "512 MiB peak");
-    assert!(SessionConfig::new(128, 256, 1).is_ok());
+    assert!(SessionConfig::new(4, 4, 4, 1).is_ok());
+    assert!(SessionConfig::new(128, 4, 4096, 1).is_ok(), "512 MiB peak");
+    assert!(SessionConfig::new(128, 4, 256, 1).is_ok());
     for rejected in [3, 132, 256, 1024] {
-        assert!(SessionConfig::new(rejected, 256, 1).is_err(), "{rejected}");
+        assert!(
+            SessionConfig::new(rejected, 4, 256, 1).is_err(),
+            "{rejected}"
+        );
     }
-    assert!(SessionConfig::new(64, 3, 1).is_err());
-    assert!(SessionConfig::new(64, 4097, 1).is_err());
-    assert!(SessionConfig::new(64, 256, 0).is_err());
-    assert!(SessionConfig::new(64, 256, 61).is_err());
+    assert!(SessionConfig::new(64, 4, 3, 1).is_err());
+    assert!(SessionConfig::new(64, 4, 4097, 1).is_err());
+    assert!(SessionConfig::new(64, 4, 256, 0).is_err());
+    assert!(SessionConfig::new(64, 4, 256, 61).is_err());
     assert!(
-        SessionConfig::new(65, 256, 1).is_err(),
+        SessionConfig::new(65, 4, 256, 1).is_err(),
         "not a multiple of 4"
     );
     assert!(
-        SessionConfig::new(66, 256, 1).is_err(),
+        SessionConfig::new(66, 4, 256, 1).is_err(),
         "not a multiple of 4"
     );
-    assert!(SessionConfig::new(68, 256, 1).is_ok());
+    assert!(SessionConfig::new(68, 4, 256, 1).is_ok());
+}
+
+#[test]
+fn session_config_checks_the_minimum_buffer_count() {
+    assert_eq!(SessionConfig::default().minimum_buffers, 0);
+    let accepted = SessionConfig::new(16, 0, 64, 1).expect("zero lets ETW choose");
+    assert_eq!(accepted.minimum_buffers, 0);
+    let accepted = SessionConfig::new(16, 64, 64, 1).expect("minimum equal to maximum");
+    assert_eq!(accepted.minimum_buffers, 64);
+    let accepted = SessionConfig::new(16, 4096, 4096, 1).expect("highest minimum and maximum");
+    assert_eq!(accepted.minimum_buffers, 4096);
+
+    let error = SessionConfig::new(16, 4097, 4096, 1).expect_err("above the range");
+    assert_eq!(
+        error.to_string(),
+        "ETW minimum buffers must be 0..=4096, got 4097"
+    );
+    let error = SessionConfig::new(16, 65, 64, 1).expect_err("minimum above maximum");
+    assert_eq!(
+        error.to_string(),
+        "ETW minimum buffers (65) must not exceed ETW maximum buffers (64)"
+    );
+}
+
+#[test]
+fn store_statistics_stores_the_queried_buffer_counts_only_on_success() {
+    let counters = CaptureCounters::default();
+    let mut query = own_query(&SessionConfig::default());
+    query.properties.MinimumBuffers = 12;
+    query.properties.MaximumBuffers = 40;
+    query.properties.NumberOfBuffers = 14;
+    query.properties.FreeBuffers = 9;
+    store_statistics(&counters, ERROR_SUCCESS, &query.properties);
+    assert!(counters.stats_valid.load(Ordering::Relaxed));
+    assert_eq!(counters.etw_buffers_minimum.load(Ordering::Relaxed), 12);
+    assert_eq!(counters.etw_buffers_maximum.load(Ordering::Relaxed), 40);
+    assert_eq!(counters.etw_buffers_allocated.load(Ordering::Relaxed), 14);
+    assert_eq!(counters.etw_buffers_free.load(Ordering::Relaxed), 9);
+
+    // A failed query leaves the last values in place and counts the error.
+    query.properties.MinimumBuffers = 99;
+    store_statistics(&counters, ERROR_CANCELLED, &query.properties);
+    assert!(!counters.stats_valid.load(Ordering::Relaxed));
+    assert_eq!(counters.etw_buffers_minimum.load(Ordering::Relaxed), 12);
+    assert_eq!(counters.stats_errors.load(Ordering::Relaxed), 1);
 }
 
 #[test]

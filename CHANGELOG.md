@@ -47,6 +47,25 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- `--etw-min-buffers N` sets the requested minimum ETW buffer count, 0 to 4,096
+  and at most `--etw-max-buffers`. ETW reserves the minimum when the session
+  starts, so a known peak does not need on-demand buffer allocation. `0` lets
+  ETW choose. A minimum above the maximum is a startup error.
+  `capture started` gains `etw_min_buffers`.
+  A new information event, `ETW buffers applied`, records the minimum, maximum,
+  and allocated counts that ETW reported after the session started. See
+  [the plan](docs/plans/etw-min-buffers-plan.md) and
+  [configuration.md](docs/guide/configuration.md#etw-buffer-minimums).
+- A Windows performance counter set, `EtwDnstap`, through a Performance
+  Counters V2 provider. One instance per service, named after the ETW session.
+  It shows throughput rates, loss totals, the channel fill level, and ETW buffer
+  use. Rates and totals are read by reference from the existing counters. The
+  other gauges are published once a second. Installation copies
+  `packaging/perfcounters/etw-dnstap.man` next to the executable and registers
+  it with `lodctr /m:`. Uninstall unregisters it with `unlodctr /m:`. Without a
+  registration, the service captures normally but the counter set is not
+  visible to consumers. See
+  [configuration.md](docs/guide/configuration.md#performance-counters).
 - TLS to the dnstap receiver, on by default. The connection uses TLS 1.2 or 1.3
   through rustls with the `ring` provider. The receiver certificate is verified
   with the Windows machine certificate store, including revocation, through
@@ -108,6 +127,36 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The default ETW minimum buffer request changes from a fixed 4 to
+  0, the default of the new `--etw-min-buffers`. ETW raises the request to at
+  least 2 buffers per logical processor. On a host with 1 logical processor, ETW
+  now reserves 2 buffers instead of 4. On hosts with 2 or more logical
+  processors, the session does not change. Pass `--etw-min-buffers 4` for the
+  old request.
+- The rate warning (Event ID 3) uses the rate that the new defaults were
+  validated for. It fires above 22,000 events/s instead of 1,500, only when the
+  default ETW settings and the default `--capacity` are both in use, and at most
+  once per run instead of once per measurement window. Its text no longer says
+  that events may be dropped. It points to `ring_dropped` and `etw_lost` and
+  gives the high-rate settings as an example. Lab basis: one 60-second run at
+  10,000 queries per second with the new defaults on 2026-11-01 had 0 ring drops
+  and 0 `etw_lost`.
+- **Breaking.** Two command-line defaults change, and the command-line
+  defaults are part of the public contract under the local policy, so this
+  increases `y`. `--etw-max-buffers` goes from 12 to 64, and `--capacity` goes
+  from 8,192 to 24,576 (3 times). Ranges, validation, and behavior are
+  unchanged. A service that sets neither option now uses more memory:
+  - Counted storage at the defaults rises from 28.22 MiB (29,595,984 bytes) to
+    68.60 MiB (71,932,240 bytes).
+  - The startup deadline rises from 11 s to 12 s, because it is 10 s plus 1 s
+    per 16,384 channel slots, rounded up.
+  - ETW allocates the extra buffers only on demand, so the higher maximum
+    costs at most 64 x 16 KiB = 1 MiB.
+
+  The lab has not tested the new defaults as a set. The low-rate lab results in
+  [configuration.md](docs/guide/configuration.md#low-rate-defaults) were
+  measured with the previous defaults. A service that wants the old values must
+  pass `--etw-max-buffers 12 --capacity 8192`.
 - **Breaking.** The receiver connection is TLS by default. An existing
   deployment that points at a plaintext receiver must add `--plaintext` to the
   service binary path. Without it, the TLS handshake against the plaintext

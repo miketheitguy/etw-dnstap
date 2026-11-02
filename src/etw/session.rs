@@ -61,6 +61,13 @@ mod tests;
 pub(crate) struct SessionConfig {
     /// Buffer size in KiB (4..=128, a multiple of 4; see [`SessionConfig::new`]).
     pub(crate) buffer_kib: u32,
+    /// Requested minimum buffer count (0..=4096, at most `maximum_buffers`). Zero
+    /// lets ETW choose. ETW allocates the adjusted minimum when the session starts
+    /// and holds it for the session's life, so a request reserves
+    /// `minimum_buffers * buffer_kib` KiB up front. ETW raises the minimum to at
+    /// least two buffers per logical processor and may reduce one that exceeds its
+    /// own limit.
+    pub(crate) minimum_buffers: u32,
     /// Maximum buffer count (4..=4096). A defensive 1 GiB guard bounds the
     /// requested `buffer_kib * maximum_buffers` only. The ranges cap that product
     /// at 512 MiB, so the guard cannot trip today. ETW reserves at least two
@@ -75,7 +82,8 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             buffer_kib: 16,
-            maximum_buffers: 12,
+            minimum_buffers: 0,
+            maximum_buffers: 64,
             flush_seconds: 1,
         }
     }
@@ -92,19 +100,34 @@ const MAX_PEAK_KIB: u64 = 1_048_576;
 const _: () = assert!(MAX_BUFFER_KIB as u64 * MAX_BUFFERS as u64 <= MAX_PEAK_KIB);
 
 impl SessionConfig {
-    /// Validates each range, that the buffer size is a multiple of 4 KiB, and the
+    /// Validates each range, that the minimum buffer count does not exceed the
+    /// maximum, that the buffer size is a multiple of 4 KiB, and the
     /// requested maximum buffer memory (a defensive 1 GiB cap that the ranges
     /// cannot reach today). A page multiple is expected
     /// not to be adjusted for real-time-only sessions, which keeps the reclaim
     /// fingerprint exact; the elevated reclaim tests verify this live.
-    pub(crate) fn new(buffer_kib: u32, maximum_buffers: u32, flush_seconds: u32) -> Result<Self> {
+    pub(crate) fn new(
+        buffer_kib: u32,
+        minimum_buffers: u32,
+        maximum_buffers: u32,
+        flush_seconds: u32,
+    ) -> Result<Self> {
         ensure!(
             (4..=MAX_BUFFER_KIB).contains(&buffer_kib),
             "ETW buffer size must be 4..=128 KiB, got {buffer_kib}"
         );
         ensure!(
+            minimum_buffers <= MAX_BUFFERS,
+            "ETW minimum buffers must be 0..=4096, got {minimum_buffers}"
+        );
+        ensure!(
             (4..=MAX_BUFFERS).contains(&maximum_buffers),
             "ETW maximum buffers must be 4..=4096, got {maximum_buffers}"
+        );
+        ensure!(
+            minimum_buffers <= maximum_buffers,
+            "ETW minimum buffers ({minimum_buffers}) must not exceed ETW maximum buffers \
+             ({maximum_buffers})"
         );
         ensure!(
             (1..=60).contains(&flush_seconds),
@@ -122,6 +145,7 @@ impl SessionConfig {
         );
         Ok(Self {
             buffer_kib,
+            minimum_buffers,
             maximum_buffers,
             flush_seconds,
         })
@@ -153,7 +177,7 @@ impl SessionProperties {
         // to this representation because RAW_TIMESTAMP is deliberately omitted.
         result.properties.Wnode.ClientContext = 2;
         result.properties.BufferSize = config.buffer_kib;
-        result.properties.MinimumBuffers = 4;
+        result.properties.MinimumBuffers = config.minimum_buffers;
         result.properties.MaximumBuffers = config.maximum_buffers;
         result.properties.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
         result.properties.FlushTimer = config.flush_seconds;
@@ -464,6 +488,36 @@ fn check_start_status(status: u32, session_name: &str, session_guid: &str) -> Re
     )
 }
 
+/// Stores the result of a session query. On failure only the error counters
+/// change, so the gauges keep their last values.
+fn store_statistics(counters: &CaptureCounters, status: u32, properties: &EVENT_TRACE_PROPERTIES) {
+    counters
+        .stats_valid
+        .store(status == ERROR_SUCCESS, Ordering::Relaxed);
+    if status == ERROR_SUCCESS {
+        counters
+            .etw_lost
+            .store(u64::from(properties.EventsLost), Ordering::Relaxed);
+        counters
+            .etw_buffers_lost
+            .store(u64::from(properties.RealTimeBuffersLost), Ordering::Relaxed);
+        counters
+            .etw_buffers_allocated
+            .store(u64::from(properties.NumberOfBuffers), Ordering::Relaxed);
+        counters
+            .etw_buffers_free
+            .store(u64::from(properties.FreeBuffers), Ordering::Relaxed);
+        counters
+            .etw_buffers_minimum
+            .store(u64::from(properties.MinimumBuffers), Ordering::Relaxed);
+        counters
+            .etw_buffers_maximum
+            .store(u64::from(properties.MaximumBuffers), Ordering::Relaxed);
+    } else {
+        counters.stats_errors.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 impl Capture {
     /// Starts an independent real-time session. If the name is held by a leaked
     /// session with this program's shape, reclaims it once and retries; any other
@@ -604,24 +658,9 @@ impl Capture {
         self.worker.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
-    fn store_statistics(&self, status: u32, properties: &EVENT_TRACE_PROPERTIES) {
-        self.counters
-            .stats_valid
-            .store(status == ERROR_SUCCESS, Ordering::Relaxed);
-        if status == ERROR_SUCCESS {
-            self.counters
-                .etw_lost
-                .store(u64::from(properties.EventsLost), Ordering::Relaxed);
-            self.counters
-                .etw_buffers_lost
-                .store(u64::from(properties.RealTimeBuffersLost), Ordering::Relaxed);
-        } else {
-            self.counters.stats_errors.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// Queries the live session and stores ETW's lost-event counters. The error
-    /// carries the Win32 status; failures are also counted in `stats_errors`.
+    /// Queries the live session and stores ETW's lost-event and buffer counters.
+    /// The error carries the Win32 status; failures are also counted in
+    /// `stats_errors`.
     pub(crate) fn query_statistics(&self) -> Result<(), u32> {
         let Some(session) = self.session else {
             return Err(ERROR_INVALID_HANDLE);
@@ -643,7 +682,7 @@ impl Capture {
         } else {
             status
         };
-        self.store_statistics(status, &properties.properties);
+        store_statistics(&self.counters, status, &properties.properties);
         if status == ERROR_SUCCESS {
             Ok(())
         } else {
@@ -678,7 +717,7 @@ impl Capture {
                     EVENT_TRACE_CONTROL_STOP,
                 )
             };
-            self.store_statistics(status, &properties.properties);
+            store_statistics(&self.counters, status, &properties.properties);
             if stop_outcome(status) == StopOutcome::Failed {
                 // Preserve ownership so an explicit retry or Drop can make a
                 // second stop attempt after the consumer has been closed.

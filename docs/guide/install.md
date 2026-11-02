@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, with the LocalService restricted-SID profile validated on 2026-11-01 · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the Windows performance counter provider (validated on the same lab host on 2026-11-01), the LocalService restricted-SID profile validated on 2026-11-01, and the default `--capacity 24576` in the service binary path · **Reviewed:** 2026-11-01
 
 > **Validation status:** the LocalService restricted-SID profile was validated
 > on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
@@ -22,13 +22,15 @@ service identity, and the SCM registration.
 | Install a new service | [Provision the service](#provision-the-service), steps 1 to 8 |
 | Test the profile on a new Windows build | [Validation checklist](#validation-checklist-for-the-localservice-restricted-profile) |
 | Set up the dnstap receiver | [Receiver configuration](#receiver-configuration) |
+| Read the performance counters | [Performance counters](configuration.md#performance-counters) |
 | Change an existing installation | [Repair or upgrade](#repair-or-upgrade) |
 
 The options are in [configuration.md](configuration.md). Diagnostics are in
 [troubleshooting.md](troubleshooting.md). Removal is in [uninstall.md](uninstall.md).
 
 Steps 3, 4 and 7 were run on the lab host recorded above. The other steps come
-from the source and the reviewed lab procedure.
+from the source and the reviewed lab procedure. The performance counter commands
+in steps 3 and 7 were run on the same host on 2026-11-01, by an administrator.
 
 ## Prerequisites
 
@@ -230,19 +232,21 @@ Only SYSTEM and Administrators keep write access. Ordinary users must not be
 able to replace the executable. The service SID gets read and execute in
 step 3. No write ACE is needed: the service writes no files.
 
-### 3. Copy the executable, register the service, and grant read and execute
+### 3. Copy the files, register the service and counters, and grant read and execute
 
 ```powershell
 Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
-$imagePath = '"{0}\etw-dnstap.exe" --receiver "{1}" --capacity 8192' -f `
+Copy-Item '.\packaging\perfcounters\etw-dnstap.man' $installDirectory
+$imagePath = '"{0}\etw-dnstap.exe" --receiver "{1}" --capacity 24576' -f `
     $installDirectory, $Receiver
 New-Service -Name EtwDnstap -BinaryPathName $imagePath `
     -StartupType Manual -DependsOn DNS
 icacls.exe $installDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(RX)'
+lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"
 ```
 
 Arguments go in the binary path. Arguments passed to `sc.exe start` are not used
-as configuration. The `--capacity 8192` shown here is the default. It is written
+as configuration. The `--capacity 24576` shown here is the default. It is written
 out so the value is visible. Add other options from
 [configuration.md](configuration.md) to the same string. The connection is TLS
 by default, so complete the [receiver certificate step](#receiver-certificate)
@@ -254,6 +258,19 @@ The name `NT SERVICE\EtwDnstap` resolves once the service exists, so the
 this grant, the copied executable is not readable by the service, and the
 service cannot start. Read and execute is not a write, so this grant to the
 service SID is enough. The lab confirmed it.
+
+The manifest, `etw-dnstap.man`, defines the performance counter set. `lodctr`
+reads it from the protected directory and registers the counter set. The
+counter instance appears only while the service runs. If the manifest is not
+registered, the service captures normally and logs nothing about it, but
+consumers cannot find the counter set: `typeperf -q EtwDnstap` lists nothing. To
+fix it, run `lodctr` again and restart the service.
+
+The lab validated this step on 2026-11-01 with the LocalService restricted-SID
+profile. The counters were read by an administrator. Reading by a non-admin
+member of Performance Monitor Users has not been tested. Consumers load the
+counter names from `etw-dnstap.exe`, and the step 2 ACL does not grant that group
+read access.
 
 ### Receiver certificate
 
@@ -533,8 +550,22 @@ sc.exe query EtwDnstap
 Repeat `sc.exe query EtwDnstap` while the state is `START_PENDING`. It should
 reach `RUNNING`. If it does not, see
 [troubleshooting.md](troubleshooting.md#the-service-does-not-reach-running).
-Look for a `capture started` line (Event ID 2) in the Application log. Then set
-the start type as described in [step 5](#start-type).
+Look for a `capture started` line (Event ID 2) in the Application log.
+
+Check that the performance counters are visible:
+
+```powershell
+typeperf -q EtwDnstap
+typeperf "\EtwDnstap(*)\*" -sc 5
+```
+
+`typeperf -q` lists the counter names. The second command prints five samples
+of every counter in every instance. The ETW gauges read 0 until the first ETW
+query succeeds. If the names do not appear, the manifest is not registered: run
+the `lodctr` command from step 3 again and restart the service. A warning
+(Event ID 3) appears only if a provider call fails at startup.
+
+Then set the start type as described in [step 5](#start-type).
 
 ### 8. Stop the service after the traffic you want
 
@@ -581,6 +612,10 @@ marked *lab* passed on build 26100. See
   `QueryServiceStatusEx`) succeeds under the restricted token.
 - *lab:* `sc.exe sidtype EtwDnstap unrestricted` (a negative test) makes the
   service stop at startup with `the process token is not restricted`.
+- *lab:* The counters are visible. `typeperf -q EtwDnstap` lists the counter
+  names, and `typeperf "\EtwDnstap(*)\*" -sc 5` shows values while the service
+  runs. The totals match the `capture stopped` counters, and the instance is gone
+  after the service stops.
 
 ## Receiver configuration
 
@@ -738,7 +773,7 @@ relative to the parent.
      name, with `-WhatIf` first. Then run `Restart-Computer`. Without the
      grant and the restart, the start fails with `StartTraceW: access denied`.
   5. Keep the service SID's read and execute grant from
-     [step 3](#3-copy-the-executable-register-the-service-and-grant-read-and-execute).
+     [step 3](#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute).
      Keep the recovery policy from [step 5](#5-configure-scm-recovery).
   6. Start the service. Confirm the account with `sc.exe qc EtwDnstap`.
 
@@ -788,6 +823,9 @@ sc.exe query EtwDnstap
   not, the service cannot start. Do not change the other ACLs. Fix only the
   service SID's read and execute grant from step 3.
 - The service must reach `RUNNING`, and a `capture started` line must appear.
+- If the new release also changes `etw-dnstap.man`, follow
+  [Replace the counter manifest](#replace-the-counter-manifest) between the stop
+  and the start.
 
 To roll back, stop the service, delete the new file, rename the backup back,
 and start the service:
@@ -801,6 +839,28 @@ sc.exe start EtwDnstap
 
 When the new executable works, delete `etw-dnstap.exe.bak`. The copy in the
 snapshot folder stays until you remove the folder.
+
+### Replace the counter manifest
+
+Do this only when a new release changes `etw-dnstap.man`. Take the snapshot
+first, as for the executable. Run these commands while the service is stopped,
+between `sc.exe stop` and `sc.exe start`.
+
+```powershell
+$installDirectory = 'C:\Program Files\EtwDnstap'
+unlodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man"
+Copy-Item '.\packaging\perfcounters\etw-dnstap.man' $installDirectory
+lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"
+```
+
+- Run `unlodctr` before you replace the file. It removes the registration of
+  the old manifest.
+- Run `lodctr` after the copy. It registers the new manifest.
+- Start the service, and check the counters as in
+  [step 7](#7-start-capture-and-check-that-it-is-running).
+- The snapshot folder does not hold the manifest. Keep a copy of the old
+  `etw-dnstap.man` if you may need to roll back. To roll back, repeat these
+  commands with the old file.
 
 ## Related
 

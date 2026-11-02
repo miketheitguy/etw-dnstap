@@ -1,6 +1,6 @@
 # Ring capacity and shutdown
 
-> **Status:** Current (the queue and shutdown reference. Its capacity experiment is historical.) · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush · **Evidence dated:** October 28-29, 2026 for the experiment · **Reviewed:** 2026-11-01
+> **Status:** Current (the queue and shutdown reference. Its capacity experiment is historical.) · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush, and the 24,576-event default capacity · **Evidence dated:** October 28-29, 2026 for the experiment · **Reviewed:** 2026-11-01
 
 This note is for maintainers, and for administrators who choose a capture
 capacity. It explains the queue bounds and the shutdown contract. It describes
@@ -20,7 +20,7 @@ The user-mode ETW callback leases preallocated storage and copies each accepted
 event. It then calls `crossbeam_channel::Sender::try_send` on a bounded event
 channel. It does not wait for capacity or allocate callback storage. A full
 channel drops the newest event and increments `ring_dropped`. The default
-capacity is 8192 events. `--capacity` accepts 1,024–262,144.
+capacity is 24,576 events (it was 8192 events before 2026-11-01). `--capacity` accepts 1,024–262,144.
 
 ### Parser wake and polling
 
@@ -98,7 +98,7 @@ the channel elements. Its totals are:
 
 | Configuration | Bytes | MiB |
 | --- | --- | --- |
-| Defaults | 29,595,984 | 28.22 |
+| Defaults (24,576 events, 64 jumbo slots) | 71,932,240 | 68.60 |
 | Maximum (262,144 events, 256 jumbo slots) | 711,076,688 | 678.14 |
 
 These totals exclude allocator overhead, native ETW buffers, stacks, TDH caches,
@@ -108,7 +108,7 @@ memory and every intake loss category under the intended workload.
 
 ## Historical capacity experiment
 
-The earlier capacity experiment used an allocation-based `ArrayQueue`. Its results explain the 8192 default. They are in [Ring capacity experiment (historical)](../history/ring-capacity-experiment.md).
+The earlier capacity experiment used an allocation-based `ArrayQueue`. Its results explain the former 8192 default, which is now 24,576. They are in [Ring capacity experiment (historical)](../history/ring-capacity-experiment.md).
 They do not validate the pooled implementation or its jumbo limit.
 
 ## Completion and resource ownership
@@ -138,4 +138,4 @@ Unit tests cover these cases:
 Synthetic tests do not establish live DNS
 throughput or an installed service's token configuration.
 
-**Unverified lab notes (P3z).** The results are not in the repository, so they are not evidence here. The run used a quiet host with one 6-vCPU lab VM, 1,000 queries/s, `--etw-max-buffers 12`, and only the 1 s ETW flush timer. The smallest ETW buffer size lost no events. Smaller rings dropped events in some runs. Delivery stayed at about one batch per second for every buffer size tested. This is one lab and one rate. Keep the default 8,192 for headroom (about 4 s of inflow at 1,000 queries/s).
+**Unverified lab notes (P3z).** The results are not in the repository, so they are not evidence here. The run used a quiet host with one 6-vCPU lab VM, 1,000 queries/s, `--etw-max-buffers 12`, and only the 1 s ETW flush timer. The smallest ETW buffer size lost no events. Smaller rings dropped events in some runs. Delivery stayed at about one batch per second for every buffer size tested. This is one lab and one rate. That run kept 8,192 for headroom (about 4 s of inflow at 1,000 queries/s). That was the default then. The default is now 24,576.

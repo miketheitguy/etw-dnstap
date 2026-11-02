@@ -23,6 +23,7 @@ use crate::{
         self, Capture, CaptureCounters, KeywordSelection, PoolManager, RawEtwEvent, SessionConfig,
     },
     network::{NetworkSink, ReceiverConfig},
+    perfcounters::{CounterSink, CounterSources, PerfPublisher, snapshot},
     sink::{FrameSink, SinkStats},
 };
 
@@ -51,7 +52,7 @@ pub(crate) struct CaptureArgs {
     tls_server_name: Option<String>,
 
     /// Event channel capacity, 1024–262144; full channels drop the newest event.
-    #[arg(long, default_value = "8192", value_parser = parse_capacity)]
+    #[arg(long, default_value = "24576", value_parser = parse_capacity)]
     capacity: usize,
 
     /// Concurrent records over 2 KiB; zero disables their capture (maximum 256).
@@ -75,9 +76,15 @@ pub(crate) struct CaptureArgs {
     #[arg(long, default_value = "16", value_parser = clap::value_parser!(u32).range(4..=128))]
     etw_buffer_kib: u32,
 
+    /// Requested minimum ETW buffers, reserved when the session starts, 0–4096 and
+    /// at most `--etw-max-buffers`. 0 lets ETW choose. ETW raises the value to at
+    /// least two per logical processor.
+    #[arg(long, default_value = "0", value_parser = clap::value_parser!(u32).range(0..=4096))]
+    etw_min_buffers: u32,
+
     /// Requested maximum ETW buffers, 4–4096. ETW may reserve more (at least two buffers
     /// per logical processor, and raises the maximum to at least that).
-    #[arg(long, default_value = "12", value_parser = clap::value_parser!(u32).range(4..=4096))]
+    #[arg(long, default_value = "64", value_parser = clap::value_parser!(u32).range(4..=4096))]
     etw_max_buffers: u32,
 
     /// ETW real-time flush interval in seconds, 1–60. ETW delivers real-time
@@ -255,6 +262,7 @@ impl PipelineConfig {
         check_identity(&self.identity).map_err(anyhow::Error::msg)?;
         SessionConfig::new(
             self.session.buffer_kib,
+            self.session.minimum_buffers,
             self.session.maximum_buffers,
             self.session.flush_seconds,
         )?;
@@ -288,6 +296,7 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
             identity: args.identity,
             session: SessionConfig::new(
                 args.etw_buffer_kib,
+                args.etw_min_buffers,
                 args.etw_max_buffers,
                 args.etw_flush_seconds,
             )?,
@@ -335,19 +344,19 @@ impl Drop for TimerResolution {
 }
 
 #[derive(Default)]
-struct ParseCounters {
-    dequeued: AtomicU64,
-    encoded: AtomicU64,
+pub(crate) struct ParseCounters {
+    pub(crate) dequeued: AtomicU64,
+    pub(crate) encoded: AtomicU64,
     ignored: AtomicU64,
-    rejected: AtomicU64,
+    pub(crate) rejected: AtomicU64,
     output_failed_events: AtomicU64,
-    output_errors: AtomicU64,
+    pub(crate) output_errors: AtomicU64,
     /// Events rejected because their schema failed to load (first failure and
     /// every cached rejection). Also counted in `rejected`.
     schema_rejected: AtomicU64,
     /// Deepest the event channel was seen: sampled by the parser on the first
     /// event after each idle wake and every 256 events, so a lower bound.
-    queue_depth_max: AtomicU64,
+    pub(crate) queue_depth_max: AtomicU64,
     #[cfg(feature = "diag-timing")]
     timing: DiagTiming,
 }
@@ -612,6 +621,7 @@ pub(crate) fn run_capture(
         stop,
         on_running,
         on_stopping,
+        PerfPublisher::start_or_warn,
     )
 }
 
@@ -628,7 +638,8 @@ fn receiver_config(config: &PipelineConfig, address: SocketAddr) -> io::Result<R
 /// before capture starts (it may return a sink that reconnects on its own and
 /// reports through the shared [`SinkStats`]), `start` begins event delivery, and
 /// the call returns after both workers have stopped and the counters have been
-/// reported.
+/// reported. `perf` starts the performance counter publisher for the named
+/// instance, or returns `None` when counters are unavailable.
 fn run_pipeline<S, P>(
     config: &PipelineConfig,
     connect: impl FnOnce(SocketAddr, Arc<SinkStats>) -> io::Result<S>,
@@ -636,6 +647,7 @@ fn run_pipeline<S, P>(
     stop: &AtomicBool,
     on_running: impl FnOnce() -> Result<()>,
     on_stopping: impl FnOnce() -> Result<()>,
+    perf: impl FnOnce(&str, CounterSources) -> Option<Box<dyn CounterSink>>,
 ) -> Result<()>
 where
     S: FrameSink + Send + 'static,
@@ -688,6 +700,18 @@ where
     let running_result = on_running();
     log_capture_started(config, producer.keywords());
     log_diag_settings(config.diag);
+    // Started while the startup deadline still holds; capture is already running.
+    // Query first so the first snapshot has the ETW maximum.
+    query_and_log_buffers_applied(&producer, &capture_counts);
+    let publisher = perf(
+        &config.session_name,
+        CounterSources {
+            capture: Arc::clone(&capture_counts),
+            parse: Arc::clone(&parse_counts),
+            sink: Arc::clone(&sink_stats),
+            capacity: config.capacity,
+        },
+    );
     startup_watchdog.disarm()?;
     let started = Instant::now();
     let mut monitor = Monitor::new(
@@ -697,6 +721,9 @@ where
         &sink_stats,
         Instant::now(),
     );
+    if let Some(publisher) = publisher {
+        monitor.start_publishing(publisher, Instant::now());
+    }
     let unexpected_exit = supervise(
         stop,
         config.duration.map(|limit| started + limit),
@@ -716,6 +743,8 @@ where
     producer_done.store(true, Ordering::Release);
     parser.thread().unpark();
     let parser_result = join_parser(parser);
+    // Both workers are gone; withdraw the counter instance.
+    drop(monitor);
     report_counts(&capture_counts, &parse_counts, &sink_stats);
     watchdog.disarm()?;
     combine_results(capture_result, parser_result)?;
@@ -727,12 +756,18 @@ where
     Ok(())
 }
 
-/// Received-rate threshold above which the low-rate ETW defaults are inadequate.
-const LOW_RATE_WARN_EVENTS_PER_SEC: f64 = 1500.0;
+/// Default channel capacity; `CaptureArgs` uses the same value.
+const DEFAULT_CAPACITY: usize = 24_576;
+/// Received rate above which the default buffer settings are untested. The lab
+/// validated them at about 20,000 events/s (10,000 queries/s); the 10% margin
+/// covers ETW's once-per-second delivery batches within a rate window.
+const DEFAULTS_VALIDATED_EVENTS_PER_SEC: f64 = 22_000.0;
 /// How often the supervisor re-reads the DNS Server service process ID.
 const TARGET_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// Rate window when counter snapshots are disabled.
 const DEFAULT_RATE_WINDOW: Duration = Duration::from_secs(60);
+/// How often the supervisor queries ETW and publishes the performance counters.
+const PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Measures the received-event rate over fixed windows.
 struct RateMonitor {
@@ -768,10 +803,10 @@ impl RateMonitor {
     }
 }
 
-/// True when the default ETW settings are in use and the rate exceeds what they
-/// were sized for.
-fn low_rate_defaults_exceeded(defaults_in_use: bool, events_per_second: f64) -> bool {
-    defaults_in_use && events_per_second > LOW_RATE_WARN_EVENTS_PER_SEC
+/// True when the default buffer settings are in use and the rate exceeds what
+/// they were validated for.
+fn default_rate_exceeded(defaults_in_use: bool, events_per_second: f64) -> bool {
+    defaults_in_use && events_per_second > DEFAULTS_VALIDATED_EVENTS_PER_SEC
 }
 
 /// Everything the supervisor schedules and reads while capture runs.
@@ -781,8 +816,16 @@ struct Monitor<'a> {
     sink: &'a SinkStats,
     stats: Schedule,
     target: Schedule,
+    /// Disabled until a counter publisher starts.
+    publish: Schedule,
     rate: RateMonitor,
+    /// The ETW settings and the channel capacity are all defaults.
     defaults_in_use: bool,
+    /// The rate warning was logged; it is logged at most once per run.
+    rate_warned: bool,
+    /// Channel capacity, the base of the channel fill counter.
+    capacity: usize,
+    perf: Option<Box<dyn CounterSink>>,
 }
 
 impl<'a> Monitor<'a> {
@@ -799,12 +842,36 @@ impl<'a> Monitor<'a> {
             sink,
             stats: Schedule::new(config.stats_interval(), now),
             target: Schedule::new(Some(TARGET_CHECK_INTERVAL), now),
+            publish: Schedule::new(None, now),
             rate: RateMonitor::new(
                 config.stats_interval().unwrap_or(DEFAULT_RATE_WINDOW),
                 now,
                 capture.received.load(Ordering::Relaxed),
             ),
-            defaults_in_use: config.uses_default_etw_settings(),
+            defaults_in_use: config.uses_default_etw_settings()
+                && config.capacity == DEFAULT_CAPACITY,
+            rate_warned: false,
+            capacity: config.capacity,
+            perf: None,
+        }
+    }
+
+    /// Publishes counters every [`PUBLISH_INTERVAL`] to `perf` until the
+    /// monitor is dropped.
+    fn start_publishing(&mut self, perf: Box<dyn CounterSink>, now: Instant) {
+        self.perf = Some(perf);
+        self.publish = Schedule::new(Some(PUBLISH_INTERVAL), now);
+    }
+
+    /// Publishes one snapshot of the counters, if a publisher is running.
+    fn publish_counters(&self) {
+        if let Some(perf) = &self.perf {
+            perf.publish(&snapshot(
+                self.capture,
+                self.parse,
+                self.sink,
+                self.capacity,
+            ));
         }
     }
 }
@@ -845,23 +912,58 @@ fn supervise(
         if let Some(rate) = monitor
             .rate
             .poll(now, monitor.capture.received.load(Ordering::Relaxed))
-            && low_rate_defaults_exceeded(monitor.defaults_in_use, rate)
+            && !monitor.rate_warned
+            && default_rate_exceeded(monitor.defaults_in_use, rate)
         {
+            monitor.rate_warned = true;
             tracing::warn!(
                 events_per_second = rate.round(),
-                "received rate is above what the default low-rate ETW settings are sized \
-                 for (about 1,500 events/s) and events may be dropped; restart with \
-                 --etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536"
+                "received rate is above what the default buffer settings were validated \
+                 for (about 20,000 events/s); if ring_dropped or etw_lost increase, raise \
+                 --capacity and --etw-max-buffers, for example --etw-buffer-kib 64 \
+                 --etw-max-buffers 256 --capacity 65536"
             );
         }
+        // One ETW query per iteration at most, shared by both ticks.
+        let mut queried = false;
         if monitor.stats.poll(now) {
-            if let Err(status) = capture.query_statistics() {
-                tracing::debug!(code = status, "periodic ETW session query failed");
-            }
+            query_session(capture);
+            queried = true;
             report_snapshot(monitor.capture, monitor.parse, monitor.sink);
+        }
+        if monitor.publish.poll(now) {
+            if !queried {
+                query_session(capture);
+            }
+            monitor.publish_counters();
         }
         thread::park_timeout(Duration::from_millis(50));
     }
+}
+
+/// Refreshes the ETW gauges and returns whether the query succeeded. A failed
+/// query leaves the last values in place.
+fn query_session(capture: &impl EventProducer) -> bool {
+    if let Err(status) = capture.query_statistics() {
+        tracing::debug!(code = status, "ETW session query failed");
+        return false;
+    }
+    true
+}
+
+/// Queries the session once and, only if the query succeeded, logs the buffer
+/// counts that ETW applied. They can differ from `etw_min_buffers` and
+/// `etw_max_buffers` in `capture started`.
+fn query_and_log_buffers_applied(capture: &impl EventProducer, counters: &CaptureCounters) {
+    if !query_session(capture) {
+        return;
+    }
+    tracing::info!(
+        etw_min_buffers_applied = counters.etw_buffers_minimum.load(Ordering::Relaxed),
+        etw_max_buffers_applied = counters.etw_buffers_maximum.load(Ordering::Relaxed),
+        etw_buffers_allocated = counters.etw_buffers_allocated.load(Ordering::Relaxed),
+        "ETW buffers applied"
+    );
 }
 
 fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
@@ -873,6 +975,7 @@ fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
         tls_server_name = config.tls_server_name.as_deref(),
         capacity = config.capacity,
         etw_buffer_kib = config.session.buffer_kib,
+        etw_min_buffers = config.session.minimum_buffers,
         etw_max_buffers = config.session.maximum_buffers,
         etw_flush_seconds = config.session.flush_seconds,
         match_any_keyword = format_args!("{:#x}", keywords.match_any),
@@ -1486,6 +1589,7 @@ mod tests {
             &stop,
             || Ok(()),
             || Ok(()),
+            |_name, _sources| None,
         )?;
         receiver.join().expect("receiver completes")?;
         assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
@@ -1499,7 +1603,7 @@ mod tests {
             "--receiver",
             "127.0.0.1:6000",
         ])?)?;
-        assert_eq!(valid.capacity, 8192);
+        assert_eq!(valid.capacity, 24_576);
         let mut bad = valid.clone();
         bad.capacity = 1;
         assert!(bad.validate().is_err());
@@ -1522,7 +1626,7 @@ mod tests {
             CaptureArgs::try_parse_from(["etw-dnstap", "--receiver", "127.0.0.1:6000"])
                 .expect("receiver arguments are valid")
                 .capacity,
-            8192
+            24_576
         );
         for capacity in ["0", "256"] {
             assert!(
@@ -1578,11 +1682,13 @@ mod tests {
 
         let defaults = parse(&[]).expect("default ETW arguments");
         assert_eq!(defaults.etw_buffer_kib, 16);
-        assert_eq!(defaults.etw_max_buffers, 12);
+        assert_eq!(defaults.etw_min_buffers, 0);
+        assert_eq!(defaults.etw_max_buffers, 64);
         assert_eq!(defaults.etw_flush_seconds, 1);
 
         for (flag, values) in [
             ("--etw-buffer-kib", &["0", "3", "132", "256", "1024"][..]),
+            ("--etw-min-buffers", &["4097", "4294967296"][..]),
             ("--etw-max-buffers", &["0", "3", "4097"][..]),
             ("--etw-flush-seconds", &["0", "61", "4294967296"][..]),
         ] {
@@ -1593,6 +1699,9 @@ mod tests {
         for (flag, value) in [
             ("--etw-buffer-kib", "4"),
             ("--etw-buffer-kib", "128"),
+            ("--etw-min-buffers", "0"),
+            ("--etw-min-buffers", "4"),
+            ("--etw-min-buffers", "4096"),
             ("--etw-max-buffers", "4"),
             ("--etw-max-buffers", "4096"),
             ("--etw-flush-seconds", "1"),
@@ -1600,6 +1709,139 @@ mod tests {
         ] {
             assert!(parse(&[flag, value]).is_ok(), "{flag} {value}");
         }
+    }
+
+    #[test]
+    fn etw_min_buffers_must_not_exceed_etw_max_buffers() {
+        let config = config_from(&["--etw-min-buffers", "32", "--etw-max-buffers", "64"]);
+        assert_eq!(config.session.minimum_buffers, 32);
+        assert_eq!(config.session.maximum_buffers, 64);
+        config.validate().expect("minimum below maximum");
+
+        let equal = config_from(&["--etw-min-buffers", "64", "--etw-max-buffers", "64"]);
+        assert_eq!(equal.session.minimum_buffers, 64);
+
+        // The range check passes in clap, so the failure comes from validation.
+        let args = parse_args_from([
+            "etw-dnstap",
+            "--receiver",
+            "127.0.0.1:6000",
+            "--etw-min-buffers",
+            "65",
+            "--etw-max-buffers",
+            "64",
+        ])
+        .expect("each value is in range");
+        let error = PipelineConfig::try_from(args).expect_err("minimum above maximum");
+        assert_eq!(
+            error.to_string(),
+            "ETW minimum buffers (65) must not exceed ETW maximum buffers (64)"
+        );
+
+        // The default maximum of 64 applies when only the minimum is given.
+        let args = parse_args_from([
+            "etw-dnstap",
+            "--receiver",
+            "127.0.0.1:6000",
+            "--etw-min-buffers",
+            "65",
+        ])
+        .expect("in range");
+        assert!(PipelineConfig::try_from(args).is_err(), "65 > default 64");
+    }
+
+    /// A producer whose session query stores fixed buffer counts or fails.
+    struct QueryProducer {
+        counters: Arc<CaptureCounters>,
+        status: Result<(), u32>,
+    }
+
+    impl EventProducer for QueryProducer {
+        fn keywords(&self) -> KeywordSelection {
+            KeywordSelection {
+                match_any: 0,
+                match_all: 0,
+                fallback: true,
+            }
+        }
+
+        fn is_finished(&self) -> bool {
+            false
+        }
+
+        fn stop(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn query_statistics(&self) -> Result<(), u32> {
+            if self.status.is_ok() {
+                self.counters
+                    .etw_buffers_minimum
+                    .store(12, Ordering::Relaxed);
+                self.counters
+                    .etw_buffers_maximum
+                    .store(40, Ordering::Relaxed);
+                self.counters
+                    .etw_buffers_allocated
+                    .store(14, Ordering::Relaxed);
+            }
+            self.status
+        }
+    }
+
+    /// Collects formatted log lines for the current thread's subscriber.
+    #[derive(Clone, Default)]
+    struct LogLines(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for LogLines {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogLines {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn logged_by_first_query(status: Result<(), u32>) -> String {
+        let lines = LogLines::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(lines.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        let counters = Arc::new(CaptureCounters::default());
+        let producer = QueryProducer {
+            counters: Arc::clone(&counters),
+            status,
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            query_and_log_buffers_applied(&producer, &counters);
+        });
+        let bytes = lines.0.lock().expect("log buffer").clone();
+        String::from_utf8(bytes).expect("log text")
+    }
+
+    #[test]
+    fn applied_buffer_counts_are_logged_only_after_a_successful_query() {
+        let text = logged_by_first_query(Ok(()));
+        assert!(text.contains("ETW buffers applied"), "{text}");
+        assert!(text.contains("etw_min_buffers_applied=12"), "{text}");
+        assert!(text.contains("etw_max_buffers_applied=40"), "{text}");
+        assert!(text.contains("etw_buffers_allocated=14"), "{text}");
+        assert_eq!(text.lines().count(), 1, "{text}");
+
+        let text = logged_by_first_query(Err(5));
+        assert!(text.is_empty(), "{text}");
     }
 
     #[test]
@@ -2027,17 +2269,23 @@ mod tests {
     #[test]
     fn default_etw_settings_are_detected() {
         assert!(config_from(&[]).uses_default_etw_settings());
+        assert!(!config_from(&["--etw-min-buffers", "8"]).uses_default_etw_settings());
         assert!(!config_from(&["--etw-max-buffers", "256"]).uses_default_etw_settings());
         assert!(!config_from(&["--etw-buffer-kib", "64"]).uses_default_etw_settings());
         assert!(!config_from(&["--etw-flush-seconds", "2"]).uses_default_etw_settings());
     }
 
     #[test]
-    fn low_rate_warning_needs_defaults_and_a_high_rate() {
-        assert!(low_rate_defaults_exceeded(true, 1501.0));
-        assert!(!low_rate_defaults_exceeded(true, 1500.0));
-        assert!(!low_rate_defaults_exceeded(true, 10.0));
-        assert!(!low_rate_defaults_exceeded(false, 50_000.0));
+    fn rate_warning_needs_defaults_and_a_rate_above_the_validated_one() {
+        assert!(default_rate_exceeded(true, 22_001.0));
+        assert!(!default_rate_exceeded(true, 22_000.0));
+        assert!(!default_rate_exceeded(true, 20_000.0));
+        assert!(!default_rate_exceeded(false, 50_000.0));
+    }
+
+    #[test]
+    fn default_capacity_matches_the_command_line_default() {
+        assert_eq!(config_from(&[]).capacity, DEFAULT_CAPACITY);
     }
 
     #[test]
@@ -2164,6 +2412,7 @@ mod tests {
             &stop,
             || Ok(()),
             || Ok(()),
+            |_name, _sources| None,
         )?;
         assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
         assert!(
@@ -2171,5 +2420,126 @@ mod tests {
             "prompt shutdown"
         );
         Ok(())
+    }
+
+    /// Counts the ETW queries that the supervisor runs.
+    struct QueryCountingProducer {
+        queries: Arc<AtomicU64>,
+    }
+
+    impl EventProducer for QueryCountingProducer {
+        fn keywords(&self) -> KeywordSelection {
+            KeywordSelection {
+                match_any: 0,
+                match_all: 0,
+                fallback: true,
+            }
+        }
+
+        fn is_finished(&self) -> bool {
+            false
+        }
+
+        fn stop(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn query_statistics(&self) -> Result<(), u32> {
+            self.queries.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Keeps every snapshot that the supervisor publishes.
+    struct RecordingSink {
+        published: Arc<std::sync::Mutex<Vec<crate::perfcounters::CounterValues>>>,
+    }
+
+    impl CounterSink for RecordingSink {
+        fn publish(&self, values: &crate::perfcounters::CounterValues) {
+            self.published.lock().expect("lock").push(*values);
+        }
+    }
+
+    /// Supervises for `run_for` and returns how many ETW queries ran and the
+    /// snapshots published, with the publisher on or off.
+    fn supervise_for_counters(
+        publish: bool,
+        stats_too: bool,
+        run_for: Duration,
+    ) -> (u64, Vec<crate::perfcounters::CounterValues>) {
+        let config = config_from(&[]);
+        let (capture, parse, sink) = (
+            CaptureCounters::default(),
+            ParseCounters::default(),
+            SinkStats::default(),
+        );
+        capture.received.store(5, Ordering::Relaxed);
+        let published = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let queries = Arc::new(AtomicU64::new(0));
+        let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+        if publish {
+            monitor.start_publishing(
+                Box::new(RecordingSink {
+                    published: Arc::clone(&published),
+                }),
+                Instant::now(),
+            );
+            let now = Instant::now();
+            monitor.publish = Schedule::new(Some(Duration::from_millis(10)), now);
+            if stats_too {
+                // Due in the same iteration as the publish tick.
+                monitor.stats = Schedule::new(Some(Duration::from_millis(10)), now);
+            }
+        }
+        let done = Arc::new(AtomicBool::new(false));
+        let parser_done = Arc::clone(&done);
+        let parser = thread::spawn(move || {
+            while !parser_done.load(Ordering::Relaxed) {
+                thread::park_timeout(Duration::from_millis(10));
+            }
+            Ok(())
+        });
+        let producer = QueryCountingProducer {
+            queries: Arc::clone(&queries),
+        };
+        let reason = supervise(
+            &AtomicBool::new(false),
+            Some(Instant::now() + run_for),
+            false,
+            &parser,
+            &producer,
+            &mut monitor,
+        );
+        assert_eq!(reason, None);
+        done.store(true, Ordering::Relaxed);
+        parser.join().expect("parser stub exits").expect("ok");
+        drop(monitor);
+        let published = published.lock().expect("lock").clone();
+        (queries.load(Ordering::SeqCst), published)
+    }
+
+    #[test]
+    fn supervisor_queries_etw_and_publishes_a_snapshot_on_each_tick() {
+        let (queries, published) = supervise_for_counters(true, false, Duration::from_millis(300));
+        assert!(published.len() >= 2, "{} snapshots", published.len());
+        assert_eq!(queries, u64::try_from(published.len()).expect("small"));
+        let last = published.last().expect("a snapshot");
+        assert_eq!(last.channel_capacity, 24_576);
+        assert_eq!(last.channel_depth, 5);
+    }
+
+    #[test]
+    fn supervisor_runs_one_etw_query_per_iteration_when_both_ticks_are_due() {
+        let (queries, published) = supervise_for_counters(true, true, Duration::from_millis(300));
+        assert!(published.len() >= 2, "{} snapshots", published.len());
+        assert_eq!(queries, u64::try_from(published.len()).expect("small"));
+    }
+
+    #[test]
+    fn supervisor_does_no_counter_work_without_a_publisher() {
+        let (queries, published) = supervise_for_counters(false, false, Duration::from_millis(200));
+        assert_eq!(queries, 0);
+        assert_eq!(published.len(), 0);
     }
 }

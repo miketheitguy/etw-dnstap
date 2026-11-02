@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush, and the new default capacity · **Reviewed:** 2026-11-01
 
 Start with the Application event log and the SCM state. The service writes its
 diagnostics to two places:
@@ -55,7 +55,7 @@ Search the Application log for the text, then go to the section named.
 | `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
 | `a capture worker exited before shutdown was requested` | Event ID 1 | A worker thread ended on its own. | [Restarts](#the-service-keeps-restarting) |
 | `ETW consumer did not return within 5 s of STOP` | Event ID 3 | The trace handle was closed to force the worker out. | [ETW warnings](#etw-consumer-and-session-warnings) |
-| `received rate is above what the default low-rate ETW settings` | Event ID 3 | The defaults are too small for the load. | [Low-rate warning](#low-rate-warning) |
+| `received rate is above what the default buffer settings were validated for` | Event ID 3 | The load is above the rate the defaults were validated for. | [Rate warning](#rate-warning) |
 | `rejected ETW event` | Event ID 3 | A parser rejection. The first four are logged. | [Rejected events](#rejected-events) |
 | `DNS event schema is unsupported and its events are rejected` | Event ID 3 | A schema did not load or did not compile. Its events are rejected. | [Rejected events](#rejected-events) |
 | `stale ETW session used a different buffer size` | Event ID 3 | A leaked session was reclaimed despite a buffer mismatch. | [Stale session](#stale-etw-session-blocks-startup) |
@@ -193,14 +193,17 @@ together. `rejected` counts events the parser rejected. Excluded event IDs (258,
 Compare your collector's record count with the client's count, and treat any
 difference as unexplained until you have read the counters.
 
-## Low-rate warning
+## Rate warning
 
-With the default ETW settings, the service logs `received rate is above what the
-default low-rate ETW settings are sized for (about 1,500 events/s) and events may
-be dropped`. It repeats at the end of each measurement window while the rate
-stays high.
+With the default buffer settings (the default ETW settings and the default
+`--capacity`), the service logs `received rate is above what the default buffer
+settings were validated for (about 20,000 events/s)` once per run. It logs it at
+the end of the first measurement window above 22,000 events per second. The
+warning does not mean that events were lost.
 
-Restart with the settings from
+Check `ring_dropped` and `etw_lost` in the `capture stats` events, or the
+Channel Full Drops and ETW Events Lost performance counters. If either rises,
+restart with the settings from
 [High-rate settings](configuration.md#high-rate-settings):
 
 ```text
@@ -213,7 +216,7 @@ second, one of two runs dropped 0.28% of events at the channel. After the
 restart, check that `ring_dropped` and `etw_lost` stop rising. If
 `ring_dropped` still rises, raise `--capacity`, for example to 131,072. The lab
 did not test 131,072. The startup deadline is 14 seconds at `--capacity 65536`
-and 18 seconds at 131,072. The defaults are tuned for about 1,000 queries per
+and 18 seconds at 131,072. The defaults were validated at 10,000 queries per
 second. Lab results for the defaults are in
 [Low-rate defaults](configuration.md#low-rate-defaults), and for this
 combination in [High-rate settings](configuration.md#high-rate-settings).
@@ -291,14 +294,14 @@ the same way. Only stop a session you can identify as this service's.
 ## Watchdog aborts or stop hangs
 
 Startup has a deadline of 10 seconds plus 1 second per 16,384 channel slots of
-`--capacity`, rounded up. The default gives 11 seconds, and 262,144 gives 26.
+`--capacity`, rounded up. The default gives 12 seconds, and 262,144 gives 26.
 Shutdown has a 10-second deadline. Inside shutdown, ETW waits up to 5 seconds for
 `ProcessTrace` to return before it closes the trace handle. See
 [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
 
 If a deadline passes, the service writes Event ID 5 to the Application log and
 the process aborts. The message names the phase, for example
-`the startup deadline of 11 s expired`. The abort does not free resources that
+`the startup deadline of 12 s expired`. The abort does not free resources that
 native calls still use. The result can be an incomplete capture. It can also
 leave a real-time ETW session. An administrator must then inspect and stop that
 session, or restart the computer.

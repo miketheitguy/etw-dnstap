@@ -1,6 +1,6 @@
 # Pooled ETW intake
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush and the 24,576-event default capacity (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-01
 
 This reference helps maintainers review the ownership, memory budget, and loss
 accounting of the pooled Event Tracing for Windows (ETW) intake. It describes the
@@ -110,7 +110,7 @@ after `ProcessTrace` returns.
 
 ## Memory budget and configuration
 
-The channel default is `--capacity 8192`. The command line accepts 1,024
+The channel default is `--capacity 24576`. It was 8192 before 2026-11-01. The command line accepts 1,024
 through 262,144. The pool itself accepts 1 through 262,144. Storage has two
 independent classes:
 
@@ -137,14 +137,14 @@ offsets, and the class metadata. `RawEtwEvent` occupies 104 bytes. With the lock
 free-list elements occupy 16 bytes and channel elements occupy 112 bytes. The
 following table counts requested element and payload storage:
 
-| Allocation contents | Default 8,192 / 64 | Maximum 262,144 / 256 |
+| Allocation contents | Default 24,576 / 64 | Maximum 262,144 / 256 |
 | --- | ---: | ---: |
-| Regular payloads | 16,781,312 bytes | 536,875,008 bytes |
+| Regular payloads | 50,335,744 bytes | 536,875,008 bytes |
 | Jumbo payloads | 8,395,776 bytes | 33,583,104 bytes |
-| Slot metadata allocations | 3,369,264 bytes | 107,060,016 bytes |
-| Free-list elements | 132,128 bytes | 4,198,432 bytes |
-| Channel elements | 917,504 bytes | 29,360,128 bytes |
-| Total counted storage | 29,595,984 bytes (28.22 MiB) | 711,076,688 bytes (678.14 MiB) |
+| Slot metadata allocations | 10,053,936 bytes | 107,060,016 bytes |
+| Free-list elements | 394,272 bytes | 4,198,432 bytes |
+| Channel elements | 2,752,512 bytes | 29,360,128 bytes |
+| Total counted storage | 71,932,240 bytes (68.60 MiB) | 711,076,688 bytes (678.14 MiB) |
 
 The maximum column uses the same per-slot sizes as the default column, with
 262,144 channel slots and 256 jumbo slots:
@@ -157,7 +157,7 @@ The maximum column uses the same per-slot sizes as the default column, with
 - Total: 536,875,008 + 33,583,104 + 107,060,016 + 4,198,432 + 29,360,128 = 711,076,688 bytes,
   which is 711,076,688 / 1,048,576 = 678.14 MiB.
 
-The maximum capacity therefore costs about 649.9 MiB more than the default. The previous maximum of
+The maximum capacity therefore costs about 609.5 MiB more than the default. The previous default of 8,192 counted 29,595,984 bytes (28.22 MiB). The previous maximum of
 65,536 / 256 counted 203,041,616 bytes (193.64 MiB).
 
 The high-rate setting `--capacity 65536` with the default 64 jumbo slots uses
@@ -170,8 +170,9 @@ the same sizes:
 - Channel elements: 65,536 x 112 = 7,340,032 bytes.
 - Total: 177,772,880 bytes, which is 169.54 MiB.
 
-On the lab VM, the process private bytes were about 31 MiB with the defaults
-and about 179 MiB with the high-rate settings. See the
+On the lab VM, the process private bytes were about 31 MiB with the previous
+defaults (8,192 events) and about 179 MiB with the high-rate settings. The lab has
+not measured the current defaults. See the
 [flush removal validation](../history/flush-removal-validation.md).
 
 The configuration reference gives `--capacity 131072` as an example for

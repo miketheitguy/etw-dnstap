@@ -95,6 +95,16 @@ pub(crate) struct CaptureCounters {
     pub(crate) receiver_disconnected: AtomicU64,
     pub(crate) etw_lost: AtomicU64,
     pub(crate) etw_buffers_lost: AtomicU64,
+    /// ETW buffers allocated to the session, from the last successful query.
+    pub(crate) etw_buffers_allocated: AtomicU64,
+    /// Allocated ETW buffers that are empty, from the last successful query.
+    pub(crate) etw_buffers_free: AtomicU64,
+    /// The fewest buffers ETW keeps for the session, as ETW reports it, from the
+    /// last successful query. ETW may have raised or reduced the requested value.
+    pub(crate) etw_buffers_minimum: AtomicU64,
+    /// The most buffers ETW lets the session use, as ETW reports it, from the
+    /// last successful query.
+    pub(crate) etw_buffers_maximum: AtomicU64,
     pub(crate) callback_errors: AtomicU64,
     pub(crate) stats_valid: AtomicBool,
     pub(crate) stats_errors: AtomicU64,

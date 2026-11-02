@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change and the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline.rs`) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline.rs`), the Windows performance counter provider (new in this build, not yet tested in the lab), and the new defaults `--etw-max-buffers 64` and `--capacity 24576` (not lab-tested as a set) · **Reviewed:** 2026-11-01
 
 Every option is set in the service binary path, not in `sc.exe start`. Install
 and provisioning steps are in [install.md](install.md). Symptoms are in
@@ -16,13 +16,14 @@ the range are rejected at startup.
 | `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Frame Streams TCP receiver. The connection is TLS by default and plaintext with `--plaintext`. Hostnames are rejected. The service starts even when the receiver is down and reconnects. See [Receiver connection](#receiver-connection). |
 | `--plaintext` | off | Flag | Disables TLS. The connection is plaintext TCP with no peer authentication. Use it only on a trusted network. See [TLS](#tls). |
 | `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | The name that the receiver certificate must match. It is also sent as SNI. Without it, the certificate must carry the receiver IP as an `iPAddress` SAN. |
-| `--capacity N` | `8192` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value. See [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
+| `--capacity N` | `24576` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value. See [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for records with a padded payload over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Without it, capture runs until SCM stops the service or a failure occurs. |
 | `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name, shape, and session GUID is reclaimed at startup. See [Session reclaim](#session-reclaim). The name also sets the session GUID that the ETW grant names. A new name therefore needs a run of the grant script with that name, and a restart. See [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
-| `--etw-max-buffers N` | `12` | 4 to 4,096 | Requested maximum ETW buffer count. See [ETW buffer minimums](#etw-buffer-minimums). |
+| `--etw-min-buffers N` | `0` | 0 to 4,096, at most `--etw-max-buffers` | Requested minimum ETW buffer count, reserved when the session starts. `0` lets ETW choose. ETW raises the value to at least two per logical processor. See [ETW buffer minimums](#etw-buffer-minimums). |
+| `--etw-max-buffers N` | `64` | 4 to 4,096 | Requested maximum ETW buffer count. ETW allocates buffers only on demand, up to this maximum. See [ETW buffer minimums](#etw-buffer-minimums). |
 | `--etw-flush-seconds SECONDS` | `1` | 1 to 60 | ETW real-time flush interval in seconds. ETW delivers real-time events about once per interval, so this value bounds delivery latency. A longer interval uses less CPU and makes each delivered batch larger. See [Low-rate defaults](#low-rate-defaults). |
 | `--stats-interval-seconds N` | `60` | 0 to 86,400 | Seconds between the `capture stats` and `output stats` log events. `0` disables them. The final `capture stopped` and `output stopped` events are always written. See [Log events and counters](#log-events-and-counters). |
 | `--help`, `-h` | | | Print help and exit. Capture does not start. |
@@ -55,20 +56,58 @@ capture behavior.
 
 ## ETW buffer minimums
 
-ETW raises the requested buffer counts. It sets the minimum buffers to at least
-two per logical processor, and it raises the maximum to at least that minimum.
-`--etw-max-buffers 12` is therefore the effective floor on a 6-CPU host, and the
-count is higher on larger hosts. Peak buffer memory can exceed the requested
-bound. Raising `--etw-max-buffers` only allows more buffers on demand. It does
-not allocate them up front.
+`--etw-min-buffers` sets the requested minimum buffer count. ETW allocates the
+minimum when the session starts and keeps those buffers for the whole session.
+The reserved memory is the minimum times `--etw-buffer-kib`. ETW allocates more
+buffers only on demand, up to the maximum, and that allocation happens during
+the burst that needs the buffers. Raising `--etw-max-buffers` only allows more
+buffers on demand. It does not allocate them up front.
+
+The default is `0`, which lets ETW choose. The service holds no fixed minimum.
+ETW raises the minimum to at least two buffers per logical processor, and it
+may reduce a minimum that exceeds its own limit. It raises the maximum to at
+least the adjusted minimum. The default maximum is 64. On a host with more than
+32 logical processors, ETW's minimum is above 64, and ETW raises the maximum to
+match. With the previous default maximum of 12, the maximum was the effective
+floor on a 6-CPU host: ETW's minimum and maximum were both 12 on the lab VM.
+Peak buffer memory can exceed the requested bound. With the default, a host with 1 logical
+processor reserves 2 buffers. A host with 2 or more logical processors reserves
+two per processor.
+
+The minimum must not exceed `--etw-max-buffers`. Otherwise the service does not
+start and reports `ETW minimum buffers (65) must not exceed ETW maximum buffers
+(64)`, with the two values given. ETW cannot change the minimum while the
+session runs, so a new value takes effect at the next service start.
+
+Microsoft advises starting to tune a session by setting the minimum and the
+maximum to the same value. Raise the maximum if the session drops events during
+peaks.
+
+ETW can apply different values than the ones requested. After the session
+starts, the service queries it once and writes the information event `ETW
+buffers applied`. It has `etw_min_buffers_applied`, `etw_max_buffers_applied`,
+and `etw_buffers_allocated`, as ETW reports them. If the query fails, the
+service writes no such event. The `ETW Buffers Allocated` counter also shows the
+effective minimum just after the session starts.
 
 ## Low-rate defaults
 
 This is the canonical statement of the default limits. Other documents link here.
 
-**The defaults are tuned for about 1,000 queries per second or less.** The
-low-rate warning below uses its own threshold of 1,500 events per second. Lab
-results at higher rates with the defaults follow.
+The defaults are `--etw-buffer-kib 16 --etw-max-buffers 64 --capacity 24576`:
+16 KiB buffers, at most 64 of them, and a channel of 24,576 events.
+
+**The lab validated the current defaults in one 60-second run at 10,000 queries
+per second** (about 20,000 events per second) on 2026-11-01. Every event was
+captured, with 0 ring drops and 0 `etw_lost`. ETW delivered late four times; each
+time about 35,000 to 41,000 events arrived in one second, and the channel peaked
+at 8,800 events. ETW had at most 5 buffers in use and allocated at most 18. The
+rate warning below uses a threshold of 22,000 events per second, just above
+this validated rate.
+
+The tables below were measured with the previous defaults: 16 KiB buffers, a
+maximum of 12, and a channel of 8,192 events. Read them as results for those
+settings.
 
 ETW delivers real-time events in batches about `--etw-flush-seconds` (1 second
 by default) apart. Delivery latency is therefore up to about 2 seconds, and
@@ -79,7 +118,7 @@ each delivered buffer, so the parser drains each batch while it arrives.
 
 The lab used one 6-vCPU, 4 GiB VM with Windows Server 2025, an authoritative
 load, and 50-second runs. The rates are the rates that the client achieved. The
-results with all defaults were:
+results with all of the previous defaults were:
 
 | Queries per second | Ring drops | `etw_lost` | Build |
 | --- | --- | --- | --- |
@@ -94,7 +133,7 @@ results with all defaults were:
 
 - The 8,192-event channel was full in every run at about 9,000 queries per
   second and above.
-- `etw_lost` is loss inside the default 16 KiB × 12 ETW buffers.
+- `etw_lost` is loss inside the previous default of 16 KiB × 12 ETW buffers.
 - The runs at about 30,000 queries per second lost more than the runs at
   44,000 to 50,000. They also used less service CPU: 1.8 to 1.9 seconds against
   6.6 to 8.7 seconds. Two clients with different pacing gave the same loss, so
@@ -106,12 +145,28 @@ results with all defaults were:
 See [ETW buffer wake validation](../history/buffer-wake-validation.md) and
 [ETW flush removal validation](../history/flush-removal-validation.md).
 
-The lab did not test these cases with the defaults:
+The lab did not test these cases with the previous defaults:
 
 - Other machines and vCPU counts.
 - Recursive or mixed workloads.
 - Runs longer than 50 seconds.
 - A TLS receiver. The lab used a plaintext receiver.
+
+Later lab runs on 2026-11-01 used other values:
+
+- With `--etw-buffer-kib 16`, `--etw-max-buffers 32`, and `--capacity 8192` at
+  10,000 queries per second, two 60-second runs dropped 10,751 and 12,747
+  events at the channel. Each drop followed a late ETW real-time delivery: a
+  second with about 1,500 events, then about 40,000 the next second. ETW lost
+  nothing.
+- In a 10-minute run at 10,000 queries per second with 16 KiB buffers, ETW had
+  up to 16 buffers in use and allocated up to 21.
+- With the previous default maximum of 12 buffers on the 6-vCPU lab VM, ETW's
+  minimum and maximum were both 12.
+
+The current defaults raise the channel to 24,576 events and the maximum to 64
+buffers. The lab has not run them as a set, so these results do not show that
+they avoid drops at 10,000 queries per second.
 
 ### High-rate settings
 
@@ -122,7 +177,7 @@ larger channel:
 --etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536
 ```
 
-The lab tested this combination on the same VM as the defaults. The load was
+The lab tested this combination on the same VM as the previous defaults. The load was
 authoritative, each run lasted 50 seconds, and the receiver was plaintext. The
 rates are the rates that the client achieved:
 
@@ -143,8 +198,10 @@ The peak queue is `queue_depth_max`, a sampled lower bound.
 - At about 49,400 queries per second, one of two runs filled the 65,536-event
   channel and dropped 0.28% of events. The other run peaked at 46,408.
 - At about 49,500 queries per second, the service used about 4.4 seconds of
-  CPU in each 50-second run. With the defaults it used 8.4 to 8.7 seconds.
-- Private bytes rose from about 31 MiB with the defaults to about 179 MiB.
+  CPU in each 50-second run. With the previous defaults it used 8.4 to 8.7
+  seconds.
+- Private bytes rose from about 31 MiB with the previous defaults to about
+  179 MiB.
 
 **65,536 is enough up to about 44,000 queries per second on this VM. It is
 marginal at a sustained 50,000.** For sustained rates near 50,000 queries per
@@ -175,8 +232,8 @@ Use these rules to choose the values:
 - A longer `--etw-flush-seconds` makes each delivery larger. If you raise it,
   raise `--capacity` by the same factor.
 - Larger ETW buffers reduce `etw_lost`. In the lab, 64 KiB × 256 buffers
-  removed the `etw_lost` that the defaults had at 30,000 queries per second and
-  above.
+  removed the `etw_lost` that the previous defaults had at 30,000 queries per
+  second and above.
 
 The lab results apply to one VM, an authoritative load only, and 50-second
 runs. The lab did not test other machines, recursive or mixed workloads, longer
@@ -191,17 +248,20 @@ Two earlier lab results do not apply to this build:
 - An explicit periodic flush, which the service no longer has, gave 0 ring
   drops at 10,000 and 20,000 queries per second with 64 KiB × 256 buffers. See
   [Removed periodic flush](../design/ring-buffer.md#removed-periodic-flush).
-- With 64 KiB × 256 buffers, the default 8,192-event channel, and no flush,
+- With 64 KiB × 256 buffers, the previous default 8,192-event channel, and no flush,
   the channel dropped 59 to 79% of events at 10,000 to 20,000 queries per
   second. That result predates the buffer wake. The lab did not repeat it with
   the buffer wake.
 
-**Warning.** The service can log a warning (Event ID 3) when the default ETW
-settings are in use. It logs the warning at the end of each measurement window
-in which the received rate is more than about 1,500 events per second. The
-window is `--stats-interval-seconds`, or 60 seconds when snapshots are disabled.
-The warning repeats while the rate stays high. It tells you to restart with
-`--etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536`.
+**Warning.** The service can log one warning (Event ID 3) per run when the
+default buffer settings are in use: the default ETW settings and the default
+`--capacity`. It logs it at the end of the first measurement window in which the
+received rate is more than 22,000 events per second, which is above the rate
+that the defaults were validated for. The window is `--stats-interval-seconds`,
+or 60 seconds when snapshots are disabled. The warning does not mean that events
+were lost. It tells you to watch `ring_dropped` and `etw_lost`, and to raise
+`--capacity` and `--etw-max-buffers` if they increase, for example to
+`--etw-buffer-kib 64 --etw-max-buffers 256 --capacity 65536`.
 
 ### Settings for 200,000 queries per second
 
@@ -218,7 +278,7 @@ Each value is a small margin above the largest value that the lab observed at
 | --- | --- | --- |
 | ETW buffer size (`--etw-buffer-kib`) | 128 KiB, no loss. About 373 events in each buffer. | 128 |
 | Maximum ETW buffers (`--etw-max-buffers`) | 29 allocated (3.6 MiB). At most 7 in use at the same time. | 32 (4 MiB) |
-| Minimum ETW buffers | 7 in use of ETW's minimum of 12 (2 per logical processor on the 6-vCPU VM) | ETW's minimum. The service has no option for it. |
+| Minimum ETW buffers (`--etw-min-buffers`) | 7 in use of ETW's minimum of 12 (2 per logical processor on the 6-vCPU VM) | `0`, the default. ETW chooses its minimum. |
 | Channel (`--capacity`) | Peak queue 21,622 | 24,576 |
 
 The lab ran this load twice for 50 seconds each, on the same VM as the other
@@ -255,14 +315,22 @@ events in batches in earlier runs. After you apply these settings, monitor
 `ring_dropped` and `etw_lost`. If either is not 0, raise `--capacity` or
 `--etw-max-buffers`.
 
+**Later lab runs lost events with these values.** The default
+`--etw-max-buffers` is now 64, which is above the 32 recommended here. On
+2026-11-01 the lab also ran 32 buffers with `--capacity 24576` at 200,000
+queries per second. One run had 37,133 ring drops and 351 `etw_lost`. Another
+had 3,219 `etw_lost`. See the lab notes. Treat 32 and 24,576 as the earlier
+recommendation, not as a setting that is known to lose nothing. The recorded
+results above stay as measured.
+
 See [200,000 QPS validation](../history/200k-qps-validation.md).
 
 ## Storage
 
-Counted storage at the defaults is 28.22 MiB. With the high-rate
-`--capacity 65536` and the default 64 jumbo slots, it is 169.54 MiB. With
-`--capacity 131072` and 64 jumbo slots, it is 331.04 MiB. With
-`--capacity 24576` and 64 jumbo slots, it is 68.60 MiB. With
+Counted storage at the defaults (`--capacity 24576` and 64 jumbo slots) is
+68.60 MiB. The previous default `--capacity 8192` counted 28.22 MiB. With the
+high-rate `--capacity 65536` and the default 64 jumbo slots, it is 169.54 MiB.
+With `--capacity 131072` and 64 jumbo slots, it is 331.04 MiB. With
 `--capacity 262144` and 64 jumbo slots, it is 654.04 MiB. At the
 maximum (262,144 events and 256 jumbo slots) it is 678.14 MiB. These are
 calculated payload, slot, free-list, and channel totals. They exclude the allocator, native ETW buffers, TDH caches,
@@ -420,8 +488,9 @@ certificate requirements for the receiver are in
 ## Startup and shutdown deadlines
 
 - **Startup.** The service-level startup deadline is 10 seconds plus 1 second
-  per 16,384 channel slots of `--capacity`, rounded up. The default 8,192 gives
-  11 seconds, and 262,144 gives 26 seconds. It covers the identity checks,
+  per 16,384 channel slots of `--capacity`, rounded up. The default 24,576 gives
+  12 seconds, and 262,144 gives 26 seconds. The previous default 8,192 gave
+  11 seconds. It covers the identity checks,
   argument validation, receiver connection, pool allocation, and capture start.
   Capture start has its own inner 10-second deadline.
 - **Shutdown.** The shutdown deadline is 10 seconds from the stop request to the
@@ -454,15 +523,17 @@ Clean them up once with `logman query -ets`, then `logman stop etw-dnstap-<pid> 
 ## Log events and counters
 
 Diagnostics go to the Application event log under source `EtwDnstap` and to
-stderr. The service writes no capture, metrics, or log files.
+stderr. The service writes no capture, metrics, or log files. The Windows
+performance counters show many of the same values. See
+[Performance counters](#performance-counters).
 
 ### Log event IDs
 
 | Event ID | Type | Written for |
 | --- | --- | --- |
 | 1 | Error | A fatal service failure, whether at startup or during the run. The text begins `EtwDnstap failed:`. |
-| 2 | Information | Every information-level line: `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, and `diagnostic settings applied` in diagnostic builds. |
-| 3 | Warning | Every warning-level line, such as an unavailable receiver, a lost connection, a failed reconnect, a rejected event, the low-rate warning, and a reclaimed session. |
+| 2 | Information | Every information-level line: `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, `ETW buffers applied`, and `diagnostic settings applied` in diagnostic builds. |
+| 3 | Warning | Every warning-level line, such as an unavailable receiver, a lost connection, a failed reconnect, a rejected event, the rate warning, and a reclaimed session. |
 | 4 | Error | An error-level line that does not by itself stop the service, such as the reason for a DNS Server change exit. |
 | 5 | Error | Watchdog expiry, written just before the process aborts. |
 
@@ -475,9 +546,16 @@ with the same fields, even when periodic snapshots are disabled.
 
 `capture started` records the session name, the session GUID (`session_guid`), receiver, `tls`
 (`true` unless `--plaintext` is given), `tls_server_name` when set, channel capacity, ETW
-buffer size, maximum buffers, flush seconds, the keyword masks
+buffer size, the requested minimum and maximum buffers (`etw_min_buffers` and
+`etw_max_buffers`), flush seconds, the keyword masks
 as `match_any_keyword` and `match_all_keyword` in hexadecimal, and
 `keyword_fallback`.
+
+`ETW buffers applied` follows `capture started` once. It records the minimum and
+maximum buffer counts and the allocated buffer count that ETW reported after the
+session started (`etw_min_buffers_applied`, `etw_max_buffers_applied`, and
+`etw_buffers_allocated`). The service writes it only when the ETW query
+succeeds. See [ETW buffer minimums](#etw-buffer-minimums).
 
 ### Capture counters
 
@@ -501,7 +579,7 @@ These fields appear on `capture stats` and `capture stopped`.
 | `callback_errors` | Records the callback could not copy or hand off, for example malformed native data, or thread-local state that is missing or re-entered. Not part of `intake_dropped`. |
 | `schema_rejected` | Records whose event schema failed to load or did not compile into a single-pass decode plan. This includes the first failure for each (event ID, version) key and each later record with that key. Part of `rejected`. |
 | `etw_stats_valid` | `true` when the last ETW query or stop succeeded. A flag, not a count. |
-| `etw_stats_errors` | Failed ETW statistics queries. |
+| `etw_stats_errors` | Failed ETW statistics queries. While the performance counters run, the service also queries once per second, and those failures count here too. |
 | `stale_sessions_reclaimed` | Leaked sessions stopped at startup. |
 | `etw_buffers_delivered` | ETW buffers whose delivery finished (calls of the buffer callback). |
 | `parser_wake_requests` | Delivered buffers that enqueued at least one event. Each sends one wake request to the parser. The request costs nothing when the parser is already running. This is therefore not a count of parser wakeups. |
@@ -545,6 +623,164 @@ dequeued       = encoded + ignored + rejected + output_failed_events
 - Live samples read separate atomic counters and can disagree briefly. The
   final report, written after capture stops and the parser joins, has no
   backlog, so the identities should close exactly there.
+
+## Performance counters
+
+The service publishes a Windows performance counter set named `EtwDnstap`. The
+lab validated it on 2026-11-01 (see below). The
+manifest is [`packaging/perfcounters/etw-dnstap.man`](../../packaging/perfcounters/etw-dnstap.man).
+The installed copy is `C:\Program Files\EtwDnstap\etw-dnstap.man`.
+[Install and provision](install.md#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute)
+registers it.
+
+You can read the counters in Performance Monitor, with `typeperf`, or with
+`logman` data collector sets. WMI (Windows Management Instrumentation) reads them
+through the `Win32_PerfRawData_*` classes. See [Reading the counters](#reading-the-counters).
+
+### Instance and timing
+
+The counter set has one instance. The instance name is the ETW session name, so
+the default instance is `EtwDnstap`. A different `--session-name` changes the
+instance name. ETW session names are unique on a host, so the name stays the same
+after each restart. Counter paths use the form `\EtwDnstap(<instance>)\<counter>`,
+so a session name with `(`, `)`, `#`, `/`, or `\` makes the instance hard to
+address. Use a session name without those characters.
+
+The instance exists only while capture runs. Counters start from zero when the
+service starts. A restart resets them.
+
+The rates and totals (IDs 1 to 3, 10 to 21, 32, and 51) are read by reference.
+Windows reads the live value each time a consumer collects, so a rate is exact
+for the consumer's own sample interval. The service publishes the other gauges
+(IDs 30, 31, 33, 34, 40 to 44, and 50) once per second.
+
+The ETW gauges come from an ETW statistics query. The service runs that query
+once per second, which is more often than `--stats-interval-seconds`. The ETW
+gauges read 0 until the first query succeeds. After that, each ETW gauge keeps
+the value of the last successful query.
+
+The counters add no work to the ETW callback or the parser loop. Their CPU cost
+has not been measured.
+
+### Catalog
+
+Each counter has a numeric ID from the manifest. The log counter column names
+the matching field in [Log events and counters](#log-events-and-counters). None
+means that the log has no matching field.
+
+#### Throughput rates
+
+| Counter | ID | Meaning | Log counter |
+| --- | --- | --- | --- |
+| Events Received/sec | 1 | DNS events accepted from ETW each second. | `received` |
+| Frames Sent/sec | 2 | Frames encoded and handed to the sink each second. This is not a delivery count. | `encoded` |
+| Events Dropped/sec | 3 | Events dropped at admission each second. | `intake_dropped` |
+
+The `/sec` counters are rates. The reader computes each rate from the change in
+the counter over time.
+
+#### Totals since the service started
+
+| Counter | ID | Meaning | Log counter |
+| --- | --- | --- | --- |
+| Events Received | 10 | DNS events accepted from ETW since the service started. | `received` |
+| Frames Sent | 11 | Frames encoded and handed to the sink since the service started. It includes frames dropped while the receiver is down (Receiver Down Drops), so it is not a delivery count. | `encoded` |
+| Events Dropped | 12 | Events dropped at admission. It includes IDs 13, 14, and 15. | `intake_dropped` |
+| Channel Full Drops | 13 | Events dropped because the channel was full. The newest event is dropped. | `ring_dropped` |
+| Pool Exhausted Drops | 14 | Events dropped because no pool slot was free, regular and jumbo together. | `pool_exhausted_regular` + `pool_exhausted_jumbo` |
+| Jumbo Pool Exhausted Drops | 15 | Jumbo-class events dropped because no jumbo slot was free, or because `--jumbo-capacity` is 0. | `pool_exhausted_jumbo` |
+| ETW Events Lost | 16 | Events that ETW reports as lost. | `etw_lost` |
+| ETW Buffers Lost | 17 | ETW buffers lost. This is a buffer count, not an event count. | `etw_buffers_lost` |
+| Receiver Down Drops | 18 | Frames discarded while the receiver was down. | `disconnected_dropped` |
+| Events Rejected | 19 | Dequeued events that the parser rejected. | `rejected` |
+| Callback Errors | 20 | Events that the ETW callback could not copy or hand off. | `callback_errors` |
+| Receiver Disconnects | 21 | Times the receiver connection was lost since the service started. | `receiver_disconnects` |
+
+How the totals relate:
+
+- Events Dropped (12) includes Channel Full Drops (13), Pool Exhausted Drops (14),
+  and Jumbo Pool Exhausted Drops (15). It also includes drops when the channel's
+  parser end is gone. Those drops have no counter of their own.
+- ETW Events Lost (16) and ETW Buffers Lost (17) are separate from Events Dropped.
+  They are ETW's own counts.
+- Receiver Down Drops (18) is separate from Events Dropped. It also counts frames
+  written since the last successful flush when a session failed. Those frames may
+  have reached the receiver.
+- To count every loss that the service can count, add 12, 16, and 18.
+
+#### Gauges
+
+| Counter | ID | Meaning | Log counter |
+| --- | --- | --- | --- |
+| Channel Depth | 30 | Events in the channel that the parser has not taken yet. The service derives this value from the other counts. | None |
+| Channel Capacity | 31 | The `--capacity` value. The `capture started` line also shows it. | None |
+| Channel Peak Depth | 32 | The deepest the channel was seen. The parser samples the depth, so this is a lower bound. | `queue_depth_max` |
+| % Channel Used | 33 | Channel Depth as a percentage of Channel Capacity. | None |
+| (base of 33) | 34 | Not displayed. It is the base for % Channel Used. | None |
+| ETW Buffers Allocated | 40 | ETW buffers allocated for the session. | None |
+| ETW Buffers In Use | 41 | Allocated buffers that ETW does not report as free. It never goes below 0. | None |
+| ETW Buffers Maximum | 42 | The maximum buffer count that ETW reports. It can be higher than `--etw-max-buffers`. See [ETW buffer minimums](#etw-buffer-minimums). | None |
+| % ETW Buffers Used | 43 | Buffers in use as a percentage of the maximum. | None |
+| (base of 43) | 44 | Not displayed. It is the base for % ETW Buffers Used. | None |
+| Receiver Connected | 50 | 1 while a Frame Streams session is established. Otherwise 0. | `receiver_connected` |
+| Receiver Reconnects | 51 | Successful reconnects after the first session. | `receiver_reconnects` |
+
+The ETW gauges come from the last successful query. They read 0 until the first
+query succeeds.
+
+### Reading the counters
+
+In Performance Monitor, add the counters from the **EtwDnstap** object. Choose
+the instance that matches the session name.
+
+```powershell
+typeperf -q EtwDnstap
+typeperf "\EtwDnstap(*)\*" -sc 5
+```
+
+`typeperf -q` lists the counter names. The second command prints five samples
+of every counter in every instance.
+
+Counters reset when the service restarts.
+
+### If the counters do not register
+
+An unregistered manifest causes no error in the service. Windows accepts the
+provider calls, but consumers cannot find the counter set: `typeperf -q
+EtwDnstap` lists nothing, and Performance Monitor has no **EtwDnstap** object. To
+fix it, register the manifest with `lodctr` as in
+[install.md](install.md#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute),
+then restart the service.
+
+If a provider call fails at startup, the service writes one warning (Event ID 3)
+that names the call and the Win32 status. Capture continues without counters.
+
+### Lab validation
+
+The lab validated the counters on 2026-11-01 on the 6-vCPU Windows Server 2025
+VM. The service ran as LocalService with a restricted service SID.
+
+- `lodctr` registered the manifest. An administrator's `typeperf -q EtwDnstap`
+  listed every counter by name.
+- In a 60-second run at 10,000 queries per second, the final totals matched the
+  `capture stopped` event: Events Received 1,200,000, Channel Full Drops 10,751,
+  and Channel Peak Depth 8,193. Events Received/sec read 19,700 to 21,000 in
+  steady seconds, which is 2 events for each query.
+- The instance disappeared when the service stopped.
+
+Not tested: a non-admin consumer, remote collection, WMI, and the CPU cost of the
+publication alone.
+
+### Suggested alerts
+
+These alerts are suggestions. Their thresholds have not been tested on a host.
+
+| Alert | Why |
+| --- | --- |
+| `% Channel Used` above 75 | In the 200,000 queries-per-second runs, ring drops followed the channel reaching `--capacity`. |
+| `% ETW Buffers Used` above 75 | In those runs, `etw_lost` followed ETW buffers in use reaching the maximum. |
+| Any increase in `Events Dropped`, `ETW Events Lost`, or `Receiver Down Drops` | These are the loss totals. Under normal load, each one should stay at 0. |
+| `Receiver Connected` at 0 | The receiver session is down. Frames discarded while it is 0 count in `Receiver Down Drops`. |
 
 ## Related
 

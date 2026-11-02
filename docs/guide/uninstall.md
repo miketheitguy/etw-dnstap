@@ -1,6 +1,6 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188`, and the Windows performance counter provider · **Reviewed:** 2026-11-01
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.
@@ -87,9 +87,19 @@ Use the `--session-name` you configured if it was not the default.
 Earlier builds named sessions `etw-dnstap-<pid>`. Those can remain after a crash. Confirm the process ID with `logman query -ets`,
 then stop only that session with `logman stop etw-dnstap-<pid> -ets`.
 
-## 6. Remove the executable and its directory
+## 6. Unregister the performance counters
 
-Confirm the directory holds only the executable before you delete it:
+```powershell
+unlodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man"
+```
+
+This removes the counter set registration. Run it after step 1 and before
+step 7. The command reads the manifest, and step 7 deletes it.
+
+## 7. Remove the executable and its directory
+
+Confirm the directory holds only the executable and its manifest before you
+delete it:
 
 ```powershell
 $installDirectory = 'C:\Program Files\EtwDnstap'
@@ -102,17 +112,18 @@ read and execute grant. You do not need `icacls` for removal. If you keep the
 directory for evidence, leave the ACLs in place, so it stays protected from
 ordinary users.
 
-## 7. Check the result
+## 8. Check the result
 
 ```powershell
 sc.exe query EtwDnstap
 net localgroup "Performance Log Users"
 logman query -ets
+typeperf -q EtwDnstap
 ```
 
 `sc.exe query` should report that the service does not exist (error 1060). The
 group list should not show `NT SERVICE\EtwDnstap`. The session list should not
-show `EtwDnstap`.
+show `EtwDnstap`. The `typeperf -q EtwDnstap` list should not show the counters.
 
 ## What is not removed
 

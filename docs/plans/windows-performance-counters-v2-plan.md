@@ -1,208 +1,352 @@
-# Minimal Windows V2 performance counter plan
+# Windows performance counters (V2) plan
 
-> **Status:** Proposed (future implementation tasks; none executed) · **Evidence dated:** not applicable · **Commit:** not applicable · **Reviewed:** 2026-11-01
->
-> **Note (2026-11-01):** this baseline predates periodic counter logging
-> (`--stats-interval-seconds`) and commit `f0b51f4`. The service now has periodic
-> ETW queries and a sampled queue-depth maximum (`queue_depth_max`). Re-check the
-> statements that say these are not restored before any implementation.
->
-> **Note (2026-11-01):** commit `69db97d` removed per-event TDH parsing. The
-> parser decodes each event with a plan compiled from the manifest schema, and it
-> uses TDH only to load that schema. Commit `dde7188` added the counters
-> `etw_buffers_delivered` and `parser_wake_requests`. Statements here about TDH
-> parsing describe the earlier design.
+> **Status:** Implemented; lab-validated · **Evidence dated:** 2026-11-01 · **Commit:** planned on top of `7ae60a6` · **Reviewed:** 2026-11-01
 
-This proposed design helps maintainers expose essential DNS pipeline progress
-and errors through Windows Performance Counters V2, without adding per-event
-instrumentation. It replaces the broader counter design with nine
-counters. This is documentation only; no counters or provider are implemented.
+This plan adds a Windows Performance Counters V2 provider to the service. It
+replaces the earlier nine-counter proposal in this file. That proposal predated
+the periodic ETW query, `queue_depth_max`, and the 200,000, 10,000, and 3,000
+queries-per-second lab runs of 2026-11-01. Those runs showed which values
+predict loss, and this catalog is built around them.
 
-## Scope and baseline
+## Goals
 
-Reuse the in-memory counters in the TCP-only working tree. The
-[ETW callback (`native_etw_callback`)](../../src/etw/intake.rs) filters supported DNS events, copies records to
-preallocated pools, and sends them through a bounded channel. The single
-[`parser loop`](../../src/pipeline.rs) performs TDH parsing, protobuf encoding,
-and TCP writer calls. The [`network sink`](../../src/network.rs) uses buffered
-Frame Streams output with deadlines. These are sequential processing stages,
-not three independent workers.
+- Let an administrator watch capture health in Performance Monitor, `typeperf`,
+  `logman` data collector sets, or WMI (`Win32_PerfRawData_*`), with no log
+  parsing.
+- Expose the leading indicators of loss, not only the loss totals:
+  - the channel fill level against `--capacity`
+  - ETW buffers in use against the ETW maximum
+- Add no work to the ETW callback or the parser loop.
+- A missing or failed counter registration never stops capture.
 
-The proposed addition only reads existing atomics outside those paths. It adds
-no callback/parser increments, loads, timing, branches, locks, allocation,
-record fields, or native calls. It does not split existing parse/encode outcomes
-or restore periodic ETW queries, queue high-water marks, or per-event timing.
-Keep the required TCP receiver and existing service behavior. The service writes
-no capture, metrics, or log files; an external PerfMon collector can persist its
-own samples under its own identity and storage policy.
+## Non-goals
 
-Read-only collection still creates cache traffic. The publisher, PERFLIB, and
-consumers also consume CPU and memory. This design minimizes additional work;
-it cannot promise zero performance impact. A proposed disabled mode skips all
-provider startup and publication while preserving existing diagnostics. Select
-the exact configuration mechanism during implementation; no flag is introduced
-by this plan.
+- No new per-event instrumentation, timing, or histograms.
+- No remote collection setup. PerfLib V2 serves local consumers and remote
+  consumers through its own RPC path. The service does nothing for either.
+- No change to the `capture stats` and `output stats` log events.
 
-## Nine proposed counters
+## Sources
 
-All nine values use eight-byte unsigned `perf_counter_large_rawcount`, a legal
-manifest type documented by the [counter schema](https://learn.microsoft.com/en-us/windows/win32/perfctrs/performance-counters-counter-complex-type).
-They are cumulative run totals, including the publisher sequence. IDs and names
-are proposed assignments, not shipped identifiers. Freeze their meanings after
-release and never reset them when a consumer reads or connects.
+The design follows these Microsoft Learn pages:
 
-The following catalog is the entire proposed counter set:
+- [Providing Counter Data Using Version 2.0](https://learn.microsoft.com/windows/win32/perfctrs/providing-counter-data-using-version-2-0)
+- [Performance Counters Schema](https://learn.microsoft.com/windows/win32/perfctrs/performance-counters-schema),
+  [counterSet](https://learn.microsoft.com/windows/win32/perfctrs/performance-counters-counterset-complex-type),
+  and [counter](https://learn.microsoft.com/windows/win32/perfctrs/performance-counters-counter-complex-type)
+- [CTRPP](https://learn.microsoft.com/windows/win32/perfctrs/ctrpp)
+- [About Performance Counters](https://learn.microsoft.com/windows/win32/perfctrs/about-performance-counters)
+  for counter types and the stateless-provider rule
+- [PerfStartProviderEx](https://learn.microsoft.com/windows/win32/api/perflib/nf-perflib-perfstartproviderex),
+  [PerfSetCounterSetInfo](https://learn.microsoft.com/windows/win32/api/perflib/nf-perflib-perfsetcountersetinfo),
+  [PerfCreateInstance](https://learn.microsoft.com/windows/win32/api/perflib/nf-perflib-perfcreateinstance),
+  [PerfSetULongLongCounterValue](https://learn.microsoft.com/windows/win32/api/perflib/nf-perflib-perfsetulonglongcountervalue)
 
-| ID | Name | Existing source and exact meaning |
-| --- | --- | --- |
-| 100 | Supported records | `CaptureCounters.received`: records passing the callback's provider and supported-ID filter, before admission decisions. Not client DNS queries. |
-| 103 | Channel full drops | `CaptureCounters.dropped`: records rejected by bounded-channel `try_send` with Full. Preserves the existing `ring_dropped` meaning. |
-| 108 | Intake drops | `CaptureCounters.intake_dropped`: existing total of channel-full, pool-exhausted, and in-process receiver-disconnected admission drops. Includes ID 103; never add them together as separate losses. |
-| 101 | Callback errors | `CaptureCounters.callback_errors`: supported records rejected for malformed copy metadata or missing, wrong, or reentrant callback producer state. Separate from intake drops. |
-| 300 | Records dequeued | `ParseCounters.dequeued`: records taken from the bounded channel before parsing. |
-| 401 | Frames staged | `ParseCounters.encoded`: successful `NetworkSink::write_frame` returns. The writer can retain bytes in `BufWriter`; this is not collector delivery or a separate protobuf-success count. |
-| 330 | Processing rejects | `ParseCounters.rejected`: combined TDH parse and encode rejection total, preserving the existing branch. This proposed ID does not reuse a parse-only counter meaning. |
-| 417 | Output operation errors | `ParseCounters.output_errors`: failed data-frame writes, explicit flushes, and final STOP/FINISH operations. Counts operations, not lost records; a finish-only failure can occur after all frames are staged. |
-| 5 | Publication sequence | Publisher-owned total, advanced only after all eight source values are copied successfully to native counters. No capture/parser update. |
+Key facts from those pages:
 
-The source fields and update points already exist in
-[`CaptureCounters`](../../src/etw.rs), the
-[callback (`native_etw_callback`)](../../src/etw/intake.rs), and
-[`ParseCounters` and `parse_loop`](../../src/pipeline.rs). The implementation must
-reuse those exact atomics and preserve their increment points. Only visibility
-or shared read access for the publisher may change; do not create shadow
-counters. The publication sequence is the only additional counter state.
+- A V2 provider is defined by a `.man` manifest. `lodctr /m:` registers it under
+  `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\_V2Providers\{ProviderGuid}`.
+  `unlodctr /m:` removes it. A changed counter set must be unregistered before it
+  is registered again.
+- The counter names and descriptions are string resources. CTRPP generates them
+  as an `.rc` file. They must be linked into the binary that the manifest's
+  `applicationIdentity` names. Consumers load the strings from that binary.
+- The provider calls `PerfStartProvider`, `PerfSetCounterSetInfo`,
+  `PerfCreateInstance`, then sets values with `PerfSetULongLongCounterValue`. It
+  calls `PerfDeleteInstance` and `PerfStopProvider` before it exits.
+- PERFLIB copies the instance block on a worker thread when a consumer
+  collects. Collection goes through `PCW.sys`. The provider needs no IPC.
+- Providers must behave as stateless. They never reset a value when a consumer
+  reads it. Rates come from `PERF_COUNTER_BULK_COUNT`: the consumer divides the
+  delta of a 64-bit total by the elapsed time.
 
-Use one multi-instance counter set, proposed name `EtwDnstap Pipeline`, with
-instance name `EtwDnstap-PID-RUN_TOKEN`. Generate the bounded per-start token
-outside capture; use the PID as numeric instance ID. Active PIDs are unique,
-and the token distinguishes restarts and PID reuse. Consumers enumerate and
-retain the full instance name instead of adding identity counters. Assign
-independent provider and counter-set GUIDs during implementation; never reuse
-the DNS ETW provider GUID. Names reveal no receiver, DNS name, address, payload,
-session name, or producer identity.
+## Architecture
 
-## Collection and interpretation
+```
+ETW callback ──► CaptureCounters (atomics) ◄── ETW session query (1 s)
+parser loop ───► ParseCounters  (atomics)            │
+TCP sink ──────► SinkStats      (atomics)            │
+                         │  relaxed loads, 1 s       │
+                         ▼                           │
+              supervisor thread (existing 50 ms loop)┘
+                         │  CounterValues snapshot
+                         ▼
+              PerfPublisher ──PerfSetULongLongCounterValue──► PERFLIB instance block
+                                                                  │
+                         Performance Monitor / typeperf / WMI ◄───┘ (PCW.sys)
+```
 
-A single dedicated publisher reads the eight existing atomics with relaxed
-loads once every five seconds, then copies values into PERFLIB-owned instance
-storage using the documented [eight-byte setter](https://learn.microsoft.com/en-us/windows/win32/api/perflib/nf-perflib-perfsetulonglongcountervalue).
-It advances ID 5 last after a successful batch. Do not publish native rate
-aliases or add collection callbacks. Create native state on this thread and
-keep its handles and pointers confined there.
+- **Hybrid update model.** A counter whose value is exactly one existing
+  `AtomicU64` is read by reference. `PerfSetCounterRefValue` points PERFLIB at
+  the atomic once, when the instance is created. PERFLIB then reads the live
+  value at each collection. Rates and totals are therefore exact at the moment
+  of collection, and the counter needs no publishing. A counter whose value is
+  derived (depth, ETW buffers in use, fractions, a boolean, the capacity) is set
+  by value with `PerfSetULongLongCounterValue` once a second.
+- **Why by reference for rates.** A by-value total published once a second and
+  sampled once a second by a consumer on its own timer gives some intervals with
+  no publication and some with two. The rate then reads 0 and then twice the
+  true value. A reference has no such beat.
+- **Reference safety.** PERFLIB reads the referenced `AtomicU64` with a plain
+  load on its own thread. Microsoft Learn (Interlocked Variable Access) states
+  that simple reads and writes to properly aligned 64-bit variables are atomic
+  on 64-bit Windows. `AtomicU64` is 8 bytes with 8-byte alignment, and Rust
+  writes it only with atomic operations. The module does not build for 32-bit
+  targets. The publisher owns `Arc` clones of the counter groups, and its drop
+  order is fixed: `PerfDeleteInstance`, then `PerfStopProvider`, then the `Arc`s
+  are released. PERFLIB can therefore never read freed memory.
+- **Publisher thread.** The existing supervisor thread publishes the by-value
+  counters. It already wakes every 50 ms and owns references to every counter
+  group. A 1-second `Schedule` adds the publication. No new thread, no
+  `ControlCallback`, and no global state are needed.
+- **Hot paths unchanged.** The ETW callback and the parser loop gain no stores,
+  branches, or calls. They keep the same atomic increments.
+- **ETW gauges.** The supervisor runs `query_statistics()` each publication
+  tick, as it already does for each `capture stats` tick. A query costs one
+  `ControlTraceW` call. The query also stores `NumberOfBuffers`, `FreeBuffers`,
+  and `MaximumBuffers` in three new `CaptureCounters` atomics.
+- **Channel depth.** The publisher derives the depth from the existing ledger
+  `received = intake_dropped + callback_errors + dequeued + backlog`. It clamps
+  the result to `0..=capacity`. It does not clone a channel endpoint, because a
+  cloned `Sender` or `Receiver` would change the channel's disconnect semantics.
+- **Instances.** The counter set is multi-instance. The instance name is the
+  ETW session name (`--session-name`, default `EtwDnstap`). ETW session names are
+  unique on a host, so the name is unique and stable across restarts, as the
+  instance-name rule requires. Counters restart from zero with the service.
+- **Failure policy.** If any registration call fails, the service logs one
+  warning naming the call and the Win32 status, then captures without counters.
+  A failed `PerfSetULongLongCounterValue` is ignored. An unregistered manifest
+  is not a failure: the provider calls succeed, and consumers cannot find the
+  counter set by name.
 
-Do not point `PerfSetCounterRefValue` at live Rust atomics. The
-[reference-counter API](https://learn.microsoft.com/en-us/windows/win32/api/perflib/nf-perflib-perfsetcounterrefvalue)
-does not establish that foreign dereferences obey
-[Rust atomic memory rules](https://doc.rust-lang.org/std/sync/atomic/index.html).
-Copied values avoid that ownership issue, but do not make a multi-counter
-snapshot atomic. Producers progress during reads, and consumers can observe
-partially updated native values. ID 5 is a heartbeat, not a transaction or
-seqlock guarantee; live counters need not reconcile exactly.
+## Counter catalog
 
-Derive approximate interval rates externally as raw-total deltas divided by
-host-monotonic elapsed time, across several publication periods. Five-second
-publication creates staircase values; faster polling does not create finer
-source samples. Require two observations from the same instance, positive elapsed
-time, and advancing sequence. A stable sequence across multiple expected
-publication periods signals stale or unavailable telemetry, not an idle service.
-A progressing sequence with unchanged source totals means the publisher is
-alive with no observed counter progress. It cannot distinguish idle capture
-from a blocked pipeline with backlog and is not a pipeline-health claim.
-Restart, disappearance, decreasing totals, or unsigned wrap invalidates the rate
-baseline. Use raw integers rather than rounded display values.
+Counter set `EtwDnstap`, multi-instance. Every counter is 8 bytes. The ID is the
+`id` attribute in the manifest and the `CounterId` in Rust. IDs are frozen once
+released. Types are the manifest names.
 
-These nine counters deliberately do not measure byte throughput, latency,
-queue/pool occupancy, stage CPU, separate parse/encode failures, or per-query
-results. They cannot prove zero ETW session loss, exact final drain, complete
-record accounting, or end-to-end collector delivery. Dequeued minus staged can
-include ignored, rejected, failed-write, and in-flight records; it is not a loss
-counter. Existing final diagnostics
-retain broader counters and stop-time ETW validity/loss information; they are
-not a guaranteed durable export. Use independently captured receiver/client
-ledgers and suitable final diagnostics when those claims matter. Do not add
-native queries or hot-path counters to make this minimal set answer them.
+Update model: IDs 1 to 3, 10 to 21, 32, and 51 are by reference. Each one carries
+`<counterAttribute name="reference"/>` in the manifest. IDs 30, 31, 33, 34, 40 to
+44, and 50 are by value, published once a second.
 
-Counter instances are volatile. An external collector can retain earlier
-samples, but cannot assume it observes the last publication before deletion.
-Do not add a shutdown grace sleep or durable service output to compensate.
+### Throughput rates
 
-## Native lifecycle, packaging, and access
-
-Use the documented [V2 provider workflow](https://learn.microsoft.com/en-us/windows/win32/perfctrs/providing-counter-data-using-version-2-0)
-and [CTRPP generation](https://learn.microsoft.com/en-us/windows/win32/perfctrs/ctrpp):
-manifest, generated helper header, localized resource script, and resources
-linked into the protected service executable. Compile one narrow maintained C
-translation unit that includes the generated header and invokes its generated
-initialization/cleanup helpers. Take exact symbols and signatures from pinned
-SDK output, with a bounded status-based Rust/C boundary and no allocator
-ownership crossing. Do not translate generated metadata into Rust.
-
-Match the repository's static CRT policy with `/MT`, compile as C, preserve
-strict warnings, static analysis, stack protection, SDL, CFG, and existing final
-link mitigations. Verify effective flags and native test instrumentation rather
-than assuming Rust ASan covers C. The wrapper must preserve only statuses the
-helpers actually expose: a void `CounterCleanup` cannot prove successful
-`PerfStopProvider`. Inspect generated cleanup/handle semantics and establish
-safe ownership completion before integration; never fabricate success or free
-possibly borrowed storage. Keep generated metadata alive as required and add no
-reference-counter buffers or native request callbacks.
-
-The proposed owner sequence is bounded and preserves existing supervision:
-
-1. After service identity validation, start the publisher thread and initialize
-   its provider/instance there; complete a bounded readiness handshake.
-2. Start capture through its existing path. Provider/publication failure emits
-   one bounded nonsensitive warning and continues capture without counters;
-   missing or stale telemetry is unavailable, not healthy zero values.
-3. On stop, preserve native capture join, parser drain/join, and existing final
-   diagnostics. Request a final copy if possible within the shutdown budget.
-4. On the publisher thread, delete its instance and invoke generated cleanup,
-   then join it before completing service shutdown. Preserve the ten-second
-   watchdog; do not detach workers or release uncertain native ownership.
-
-Package registration after protected executable/resources placement and
-unregistration before resource removal, with transactional upgrade/repair and
-rollback. Use supported V2 manifest registration tooling and verify exact target
-unregistration syntax; legacy registration APIs do not install V2 metadata.
-Do not self-register on service startup. Verify localized discovery as well as
-runtime publication; a started provider alone does not prove discoverability.
-
-Keep executable/resource/manifest writes restricted by existing trusted
-administrator/SYSTEM policy. Rates can disclose workload activity: verify actual
-local reader permissions against [limited-user counter access](https://learn.microsoft.com/en-us/windows/win32/perfctrs/limited-user-access-support).
-Do not claim administrator-only or service-SID isolation without evidence.
-Preserve service identity/privileges and avoid enabling remote collection to
-solve local discovery failures. Use existing diagnostics, adding a bounded
-warning path if needed, without misreporting optional metrics failure as service
-failure. Rollback disables publication and restores prior package registration
-and resources without changing TCP configuration.
-
-## Implementation tasks and verification
-
-These are future implementation tasks; this documentation change executes none
-of them. Preserve unrelated working-tree changes and assign one owner per file.
-
-| Order | Smallest reasonable model / effort | Inputs and proposed owned files | Deliverable and completion check |
+| ID | Name | Type | Source |
 | --- | --- | --- | --- |
-| 1 | GPT-6 Luna / low | This catalog; `src/etw.rs` (`CaptureCounters`), `src/etw/intake.rs` (`native_etw_callback`), `src/pipeline.rs`; proposed `src/metrics.rs` | Read-only access to eight existing atomics and the five-second snapshot. Review diff for zero added capture/parser instrumentation, unchanged record layout, and exactly nine public counters. |
-| 2, after 1 | GPT-6.1 Sol / medium | Pinned SDK generated output, native headers, Rust/C hardening policy; proposed native wrapper/header, manifest, resource/build integration, `src/metrics/windows.rs` | Generated-helper provider, copied publication, and bounded lifecycle. Prove exact ABI, cleanup semantics, partial-start failure safety, and no native pointers crossing threads. |
-| 3, after 2 | GPT-6.1 Sol / medium | Existing service/watchdog and provisioning policy; `src/service.rs`, `src/pipeline.rs`, chosen package/provision files | Optional failure/disabled behavior, protected resources, install/repair/upgrade/uninstall rollback. Disposable Windows checks prove discovery, local access, stop safety, and unchanged capture behavior without counters. |
-| 4, after 3 | GPT-6 Luna / medium for test orchestration; GPT-6.1 Sol / medium for mandatory native review | Settled diff, independent PDH/PerfMon consumers, compatible external workload/collector harness | Independent native ownership/ABI review, focused native tests, and paired overhead report; resolve review findings and verify concurrent consumers, consumer churn, partial publication, restart, stale sequence, missing resources, and shutdown. No historical JSONL harness compatibility is assumed. |
-| 5, after 4 | GPT-6 Luna / low | Verified shipped behavior and validation report; operator/developer documentation | Exact supported configuration/discovery instructions, interpretation limits, rollback, and documentation audit. Remove proposal language only for behavior actually implemented and verified. |
+| 1 | Events Received/sec | `perf_counter_bulk_count` | `CaptureCounters.received` |
+| 2 | Frames Sent/sec | `perf_counter_bulk_count` | `ParseCounters.encoded` |
+| 3 | Events Dropped/sec | `perf_counter_bulk_count` | `CaptureCounters.intake_dropped` |
 
-Compare matched release runs with metrics disabled and enabled, first without
-consumers and then with one/multiple consumers. Repeat at least three times at
-matched achieved load and record binary/configuration/instance identity. Use
-built-in Process/Thread counters and WPR for CPU, memory, I/O, scheduling, and
-contention rather than adding application counters. Check trace fidelity.
+### Totals since the service started
 
-Proposed acceptance requires zero new hot-path instrumentation, unchanged
-capture/output behavior, bounded shutdown, no ownership leaks, and no
-consumer-driven resets. At the declared accepted workload/rate/capacity, require
-zero channel-full drops and independently verify other capture/ETW/delivery gates;
-the nine-counter set alone cannot establish them. Report paired CPU and
-throughput variation; a proposed regression budget is at most 5% median service
-CPU-seconds per supported record and at least 98% of disabled-mode throughput,
-with all independent correctness gates still passing. These are review targets,
-not measured results or a zero-overhead promise.
+| ID | Name | Type | Detail | Source |
+| --- | --- | --- | --- | --- |
+| 10 | Events Received | `perf_counter_large_rawcount` | standard | `CaptureCounters.received` |
+| 11 | Frames Sent | `perf_counter_large_rawcount` | standard | `ParseCounters.encoded` |
+| 12 | Events Dropped | `perf_counter_large_rawcount` | standard | `CaptureCounters.intake_dropped` |
+| 13 | Channel Full Drops | `perf_counter_large_rawcount` | standard | `CaptureCounters.dropped` (`ring_dropped`) |
+| 14 | Pool Exhausted Drops | `perf_counter_large_rawcount` | advanced | `CaptureCounters.pool_exhausted` |
+| 15 | Jumbo Pool Exhausted Drops | `perf_counter_large_rawcount` | advanced | `CaptureCounters.pool_exhausted_jumbo` |
+| 16 | ETW Events Lost | `perf_counter_large_rawcount` | standard | `CaptureCounters.etw_lost` |
+| 17 | ETW Buffers Lost | `perf_counter_large_rawcount` | standard | `CaptureCounters.etw_buffers_lost` |
+| 18 | Receiver Down Drops | `perf_counter_large_rawcount` | standard | `SinkStats.disconnected_dropped` |
+| 19 | Events Rejected | `perf_counter_large_rawcount` | advanced | `ParseCounters.rejected` |
+| 20 | Callback Errors | `perf_counter_large_rawcount` | advanced | `CaptureCounters.callback_errors` |
+| 21 | Receiver Disconnects | `perf_counter_large_rawcount` | standard | `SinkStats.disconnects` |
+
+`Events Dropped` is the total of callback admission drops: channel full, pool
+exhausted, and in-process receiver disconnected. IDs 13 to 15 are parts of it.
+ETW losses (16, 17) and receiver-down drops (18) are separate losses. Add 12, 16,
+and 18 for all losses that the service can count.
+
+### Gauges
+
+| ID | Name | Type | Detail | Source |
+| --- | --- | --- | --- | --- |
+| 30 | Channel Depth | `perf_counter_large_rawcount` | standard | derived backlog (see Architecture) |
+| 31 | Channel Capacity | `perf_counter_large_rawcount` | standard | `--capacity` |
+| 32 | Channel Peak Depth | `perf_counter_large_rawcount` | standard | `ParseCounters.queue_depth_max` |
+| 33 | % Channel Used | `perf_large_raw_fraction`, `baseID="34"` | standard | depth |
+| 34 | (base of 33) | `perf_large_raw_base`, `noDisplay` | | `--capacity` |
+| 40 | ETW Buffers Allocated | `perf_counter_large_rawcount` | standard | `NumberOfBuffers` |
+| 41 | ETW Buffers In Use | `perf_counter_large_rawcount` | standard | `NumberOfBuffers - FreeBuffers`, saturating |
+| 42 | ETW Buffers Maximum | `perf_counter_large_rawcount` | standard | `MaximumBuffers` as ETW reports it |
+| 43 | % ETW Buffers Used | `perf_large_raw_fraction`, `baseID="44"` | standard | in use |
+| 44 | (base of 43) | `perf_large_raw_base`, `noDisplay` | | maximum |
+| 50 | Receiver Connected | `perf_counter_large_rawcount` | standard | `SinkStats.connected`: 1 or 0 |
+| 51 | Receiver Reconnects | `perf_counter_large_rawcount` | advanced | `SinkStats.reconnects` |
+
+The ETW gauges come from the last successful query. They read 0 until the first
+query succeeds.
+
+### Why these counters
+
+- **% Channel Used** and **% ETW Buffers Used** are the leading indicators. In
+  the 200,000 queries-per-second runs, ring drops followed the channel reaching
+  `--capacity`, and `etw_lost` followed ETW buffers in use reaching the maximum.
+  At 10,000 queries per second, ETW used 16 buffers in a spike against a default
+  maximum of 12.
+- **Events Dropped/sec**, **ETW Events Lost**, and **Receiver Down Drops** are
+  the loss alarms. Each one should read 0.
+- **Events Received/sec** and **Frames Sent/sec** show throughput. They track
+  each other when nothing is lost.
+- **Channel Peak Depth** keeps the worst moment that a 1-second sample can miss.
+
+Suggested alerts: `% Channel Used` above 75, `% ETW Buffers Used` above 75, any
+increase in `Events Dropped`, `ETW Events Lost`, or `Receiver Down Drops`, and
+`Receiver Connected` at 0.
+
+## Manifest and identifiers
+
+| Item | Value |
+| --- | --- |
+| Manifest | `packaging/perfcounters/etw-dnstap.man` |
+| Provider name | `EtwDnstap` |
+| Provider GUID | `{A7F0B1F4-C87D-4267-979F-594A4AB2145D}` |
+| Provider symbol | `EtwDnstapProvider` |
+| `providerType` | `userMode` |
+| `applicationIdentity` | `etw-dnstap.exe` |
+| Counter set name | `EtwDnstap` |
+| Counter set GUID | `{B02EDFA2-B961-4E06-89D2-56C95ECB336C}` |
+| Counter set symbol | `EtwDnstapPipeline` |
+| `instances` | `multiple` |
+| Counter URIs | `EtwDnstap.Pipeline.<CamelCaseName>` |
+
+The provider GUID is new. It is not the DNS Server ETW provider GUID and not the
+session GUID.
+
+## Build
+
+- Generate the resources once with CTRPP from the Windows SDK and commit the
+  output:
+  `ctrpp -o target/ctrpp/etw-dnstap-perf.h -rc packaging/perfcounters/etw-dnstap-perf.rc packaging/perfcounters/etw-dnstap.man`.
+  Commit only the `.rc`. The `.h` is C helper code that the Rust provider does
+  not use. Check the generated `.rc` for host paths before commit.
+- Add a `build.rs` that compiles the committed `.rc` with the `embed-resource`
+  crate (a build dependency) and links it into the executable. Building already
+  requires the Windows SDK, which provides `rc.exe`.
+- Add the `Win32_System_Performance` feature to `windows-sys`. The counter type
+  values are not in `windows-sys`. Define them in Rust from `winperf.h`:
+  - `PERF_COUNTER_BULK_COUNT = 0x1041_0500`
+  - `PERF_COUNTER_LARGE_RAWCOUNT = 0x0001_0100`
+  - `PERF_LARGE_RAW_FRACTION = 0x2002_0500`
+  - `PERF_LARGE_RAW_BASE = 0x4003_0500`
+- A unit test reads the manifest with `include_str!` and checks that every Rust
+  counter has the same ID and type as the manifest, and that the counts match.
+- `scripts/ci/verify-pe.ps1` must still pass on the release binary.
+
+## Code layout
+
+- `src/perfcounters.rs` (new):
+  - The counter table, `[CounterDef; N]` with ID, type, and detail level, in
+    manifest order.
+  - Each `CounterDef` has a `by_reference` flag. The manifest test checks that
+    exactly these counters carry the `reference` attribute.
+  - `CounterValues`: plain `u64` fields for the by-value counters only.
+  - `fn snapshot(capture, parse, sink, capacity) -> CounterValues`: pure, unit
+    tested. It covers the depth derivation and clamp, the saturating in-use
+    count, and booleans as 0 or 1.
+  - `PerfPublisher`:
+    - `start(instance_name, capture, parse, sink) -> Result<Self>` runs
+      `PerfStartProviderEx` with no callback, then `PerfSetCounterSetInfo` with a
+      `#[repr(C)]` template (`PERF_COUNTERSET_INFO` followed by
+      `PERF_COUNTER_INFO[N]`, `Offset = 8 * index`, `Size = 8`), then
+      `PerfCreateInstance` with instance ID 0. It then sets each by-reference
+      counter once with `PerfSetCounterRefValue` and `AtomicU64::as_ptr()`. If
+      any step fails, it undoes the earlier steps and returns the error.
+    - It owns `Arc` clones of `CaptureCounters`, `ParseCounters`, and
+      `SinkStats`.
+    - `publish(&self, &CounterValues)` sets each by-value counter.
+    - `Drop` runs `PerfDeleteInstance` then `PerfStopProvider`, before the
+      `Arc` fields are released.
+    - Compile-time checks: `AtomicU64` is 8 bytes with 8-byte alignment, and the
+      target is 64-bit.
+    - The type is neither `Send` nor `Sync`. It lives on the supervisor thread.
+- `src/etw.rs`, `src/etw/session.rs`: add `etw_buffers_allocated`,
+  `etw_buffers_free`, and `etw_buffers_maximum` to `CaptureCounters`.
+  `store_statistics` stores them on success.
+- `src/pipeline.rs`: start the publisher after capture starts. Add a 1-second
+  `publish` schedule to `Monitor`. On each tick, run `query_statistics()` and
+  then `publish`. Drop the publisher after the workers join, so the instance
+  disappears when capture ends.
+- Every `unsafe` block carries a `SAFETY:` comment, and every FFI status is
+  checked. Nothing in this path panics.
+
+## Installation
+
+- Copy `etw-dnstap.man` into `C:\Program Files\EtwDnstap\` next to the
+  executable.
+- Register it as an administrator:
+  `lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"`.
+- Unregister before uninstall, or before replacing a manifest whose counters
+  changed: `unlodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man"`.
+- Read the counters with
+  `typeperf "\EtwDnstap(*)\*" -sc 5`, or in Performance Monitor under
+  **EtwDnstap**.
+
+## Risks and checks
+
+| Risk | Check |
+| --- | --- |
+| The LocalService restricted-SID token cannot register a provider or create an instance | Lab: install, start, and read the counters with `typeperf`. Look for the warning event. |
+| Consumers cannot load the strings, so counters show no names | Lab: `typeperf -q EtwDnstap` lists the names. Inspect `ApplicationIdentity` under the `_V2Providers` key. |
+| Fraction counters display wrongly | Lab: `% Channel Used` agrees with Channel Depth / Channel Capacity under load. |
+| The publication costs measurable CPU | 10 setter calls and one `ControlTraceW` per second. Compare service CPU under the 10,000 queries-per-second load. |
+| PERFLIB reads a referenced counter after it is freed | Drop order in `PerfPublisher` (delete instance, stop provider, release the `Arc`s), with a test that the counter groups outlive the publisher. |
+| A by-reference rate reads wrongly | Lab: `Events Received/sec` agrees with the client rate and does not alternate between 0 and twice the rate. |
+| Manifest and Rust drift apart | The unit test from the Build section. |
+
+## Development plan
+
+| Step | Owner | Output |
+| --- | --- | --- |
+| 1 | Rust implementation agent | Manifest, CTRPP `.rc`, `build.rs`, `src/perfcounters.rs`, the `CaptureCounters` and `store_statistics` changes, supervisor wiring, unit tests. `cargo build --release`, `cargo test`, and `cargo clippy --all-targets` are clean. |
+| 2 | Documentation agent, in parallel with 1 | `docs/guide/install.md` (copy and register the manifest), `docs/guide/uninstall.md` (unregister), `docs/guide/configuration.md` (a performance counters section with the catalog and alerts), `docs/README.md` index. |
+| 3 | Orchestrator | Build check, `verify-pe.ps1`, the host-path check, then lab validation on DNSTap-WS2025 with the LocalService restricted profile and a 10,000 queries-per-second load. |
+| 4 | Code-review agent | Review of the full diff, with emphasis on FFI safety, failure handling, and hot-path impact. |
+| 5 | Orchestrator | Fix the confirmed findings, re-run the checks, and report. |
+
+## Lab results
+
+Run on 2026-11-01 on DNSTap-WS2025 (6 vCPUs, Windows Server 2025). The service
+ran as LocalService with a restricted service SID, with
+`--etw-buffer-kib 16 --etw-max-buffers 32 --capacity 8192`.
+
+- `lodctr /m:` succeeded and recorded the installed executable as
+  `ApplicationIdentity`. An administrator's `typeperf -q EtwDnstap` listed all
+  counters by name, so the string resources load.
+- In a 60-second run at 10,000 queries per second, the by-reference totals
+  matched the `capture stopped` event exactly: received 1,200,000, `ring_dropped`
+  10,751, and `queue_depth_max` 8,193. Events Received/sec read 19,700 to 21,000
+  in steady seconds. It did not alternate between 0 and twice the rate.
+- The gauges showed the cause of the drops. ETW skipped one delivery, and the
+  next second delivered about 40,000 events. `% Channel Used` read 98% in one
+  sample.
+- The instance disappeared when the service stopped.
+
+## Review outcome
+
+An independent code review found no blocker in the FFI, lifetime, or concurrency
+code. It found the following, which are fixed:
+
+- An unregistered manifest is not a failure. The docs and the warning said
+  otherwise.
+- `ParseCounters.output_errors` cannot change while capture runs, because the
+  network sink never returns a write or flush error. ID 21 is now Receiver
+  Disconnects, from `SinkStats.disconnects`.
+- The ETW maximum was 0 until the first 1-second tick. One query now runs before
+  the publisher starts.
+- The tests now check the exact fraction and base pairs, and the committed `.rc`
+  strings against the manifest.
+
+## Open items
+
+- A non-admin member of Performance Monitor Users has not read the counters.
+  Consumers load the names from `etw-dnstap.exe`, and the install ACL does not
+  grant that group read access. Test it, then either grant read on the
+  executable or document the limit.
+- Remote collection and WMI are not tested.
+- The committed `.rc` keeps the CTRPP header text, which says not to commit the
+  file. This repository commits it on purpose, so that the build needs only
+  `rc.exe` and not CTRPP. The drift test protects it.
+- Fuzz builds now run `build.rs` and need `rc.exe`.

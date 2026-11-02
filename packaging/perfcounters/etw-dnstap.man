@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Performance counter manifest for etw-dnstap.exe (Performance Counters V2).
+
+  Register as an administrator with: lodctr /m:<path-to-this-file> <install-dir>
+  Unregister with: unlodctr /m:<path-to-this-file>
+
+  Counter IDs are frozen once released. Regenerate etw-dnstap-perf.rc with CTRPP
+  after any change here; src/perfcounters.rs must list the same IDs and types.
+-->
+<instrumentationManifest xmlns="http://schemas.microsoft.com/win/2004/08/events">
+  <instrumentation>
+    <counters xmlns="http://schemas.microsoft.com/win/2005/12/counters" schemaVersion="2.0">
+      <provider providerName="EtwDnstap"
+                providerGuid="{A7F0B1F4-C87D-4267-979F-594A4AB2145D}"
+                symbol="EtwDnstapProvider"
+                applicationIdentity="etw-dnstap.exe"
+                providerType="userMode">
+        <counterSet guid="{B02EDFA2-B961-4E06-89D2-56C95ECB336C}"
+                    uri="EtwDnstap.Pipeline"
+                    name="EtwDnstap" nameID="2"
+                    descriptionID="4" description="Capture health of the etw-dnstap service. One instance for each ETW session."
+                    symbol="EtwDnstapPipeline"
+                    instances="multiple">
+          <counter id="1" uri="EtwDnstap.Pipeline.EventsReceivedPerSec"
+                   nameID="104" name="Events Received/sec"
+                   descriptionID="106" description="Rate of DNS events that the ETW callback accepted."
+                   type="perf_counter_bulk_count" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="2" uri="EtwDnstap.Pipeline.FramesSentPerSec"
+                   nameID="108" name="Frames Sent/sec"
+                   descriptionID="110" description="Rate of dnstap frames that the parser encoded and handed to the output. Includes frames dropped while the receiver is down (see Receiver Down Drops)."
+                   type="perf_counter_bulk_count" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="3" uri="EtwDnstap.Pipeline.EventsDroppedPerSec"
+                   nameID="112" name="Events Dropped/sec"
+                   descriptionID="114" description="Rate of events that the callback dropped before the parser."
+                   type="perf_counter_bulk_count" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="10" uri="EtwDnstap.Pipeline.EventsReceived"
+                   nameID="140" name="Events Received"
+                   descriptionID="142" description="Total DNS events that the ETW callback accepted since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="11" uri="EtwDnstap.Pipeline.FramesSent"
+                   nameID="144" name="Frames Sent"
+                   descriptionID="146" description="Total dnstap frames that the parser encoded and handed to the output since the service started. Includes frames dropped while the receiver is down (see Receiver Down Drops)."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="12" uri="EtwDnstap.Pipeline.EventsDropped"
+                   nameID="148" name="Events Dropped"
+                   descriptionID="150" description="Total events that the callback dropped before the parser: channel full, pool exhausted, or channel closed. Counters 13 to 15 are parts of it."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="13" uri="EtwDnstap.Pipeline.ChannelFullDrops"
+                   nameID="152" name="Channel Full Drops"
+                   descriptionID="154" description="Events dropped because the event channel was full."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="14" uri="EtwDnstap.Pipeline.PoolExhaustedDrops"
+                   nameID="156" name="Pool Exhausted Drops"
+                   descriptionID="158" description="Events dropped because no record buffer was free."
+                   type="perf_counter_large_rawcount" detailLevel="advanced">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="15" uri="EtwDnstap.Pipeline.JumboPoolExhaustedDrops"
+                   nameID="160" name="Jumbo Pool Exhausted Drops"
+                   descriptionID="162" description="Events dropped because no jumbo record buffer was free. Also counted in Pool Exhausted Drops."
+                   type="perf_counter_large_rawcount" detailLevel="advanced">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="16" uri="EtwDnstap.Pipeline.EtwEventsLost"
+                   nameID="164" name="ETW Events Lost"
+                   descriptionID="166" description="Total events that ETW lost before delivery to the service."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="17" uri="EtwDnstap.Pipeline.EtwBuffersLost"
+                   nameID="168" name="ETW Buffers Lost"
+                   descriptionID="170" description="Total real-time buffers that ETW lost before delivery to the service."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="18" uri="EtwDnstap.Pipeline.ReceiverDownDrops"
+                   nameID="172" name="Receiver Down Drops"
+                   descriptionID="174" description="Frames discarded because the receiver connection was down."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="19" uri="EtwDnstap.Pipeline.EventsRejected"
+                   nameID="176" name="Events Rejected"
+                   descriptionID="178" description="Events that the parser could not decode."
+                   type="perf_counter_large_rawcount" detailLevel="advanced">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="20" uri="EtwDnstap.Pipeline.CallbackErrors"
+                   nameID="180" name="Callback Errors"
+                   descriptionID="182" description="Events that the ETW callback could not handle."
+                   type="perf_counter_large_rawcount" detailLevel="advanced">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="21" uri="EtwDnstap.Pipeline.ReceiverDisconnects"
+                   nameID="184" name="Receiver Disconnects"
+                   descriptionID="186" description="Times the receiver connection was lost since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="30" uri="EtwDnstap.Pipeline.ChannelDepth"
+                   nameID="220" name="Channel Depth"
+                   descriptionID="222" description="Events now waiting in the event channel."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="31" uri="EtwDnstap.Pipeline.ChannelCapacity"
+                   nameID="224" name="Channel Capacity"
+                   descriptionID="226" description="Size of the event channel, set by --capacity."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="32" uri="EtwDnstap.Pipeline.ChannelPeakDepth"
+                   nameID="228" name="Channel Peak Depth"
+                   descriptionID="230" description="Deepest the event channel was seen since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="33" uri="EtwDnstap.Pipeline.ChannelUsedPercent"
+                   nameID="232" name="% Channel Used"
+                   descriptionID="234" description="Event channel depth as a percentage of its capacity."
+                   type="perf_large_raw_fraction" detailLevel="standard" baseID="34" />
+          <counter id="34" uri="EtwDnstap.Pipeline.ChannelUsedBase"
+                   nameID="236" name="% Channel Used Base"
+                   type="perf_large_raw_base" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="noDisplay" />
+            </counterAttributes>
+          </counter>
+          <counter id="40" uri="EtwDnstap.Pipeline.EtwBuffersAllocated"
+                   nameID="260" name="ETW Buffers Allocated"
+                   descriptionID="262" description="ETW buffers now allocated to the session."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="41" uri="EtwDnstap.Pipeline.EtwBuffersInUse"
+                   nameID="264" name="ETW Buffers In Use"
+                   descriptionID="266" description="ETW buffers now holding events that are not yet delivered."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="42" uri="EtwDnstap.Pipeline.EtwBuffersMaximum"
+                   nameID="268" name="ETW Buffers Maximum"
+                   descriptionID="270" description="Most ETW buffers that the session may use."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="43" uri="EtwDnstap.Pipeline.EtwBuffersUsedPercent"
+                   nameID="272" name="% ETW Buffers Used"
+                   descriptionID="274" description="ETW buffers in use as a percentage of the maximum."
+                   type="perf_large_raw_fraction" detailLevel="standard" baseID="44" />
+          <counter id="44" uri="EtwDnstap.Pipeline.EtwBuffersUsedBase"
+                   nameID="276" name="% ETW Buffers Used Base"
+                   type="perf_large_raw_base" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="noDisplay" />
+            </counterAttributes>
+          </counter>
+          <counter id="50" uri="EtwDnstap.Pipeline.ReceiverConnected"
+                   nameID="300" name="Receiver Connected"
+                   descriptionID="302" description="1 while the receiver connection is up, otherwise 0."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="51" uri="EtwDnstap.Pipeline.ReceiverReconnects"
+                   nameID="304" name="Receiver Reconnects"
+                   descriptionID="306" description="Successful receiver connections after the first."
+                   type="perf_counter_large_rawcount" detailLevel="advanced">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+        </counterSet>
+      </provider>
+    </counters>
+  </instrumentation>
+</instrumentationManifest>
