@@ -81,14 +81,14 @@ fn cold_pool_groups(c: &mut Criterion) {
         COLD_POOL_CAPACITY + 2,
         after - before,
     );
-    copy_record_cold_group(c, &pool);
-    two_thread_group(c, &pool);
+    copy_record_cold_group(c, pool);
+    two_thread_group(c, pool);
 }
 
 /// `copy_record` on a pool larger than the last-level cache. The free list is
 /// FIFO, so each iteration leases a slot last touched 65,000 events ago, as the
 /// service does at its tested capacity.
-fn copy_record_cold_group(c: &mut Criterion, pool: &Pool) {
+fn copy_record_cold_group(c: &mut Criterion, pool: Pool) {
     let mut group = c.benchmark_group("copy_record_cold");
     for (name, record) in [
         ("regular_query_256", Record::query()),
@@ -96,7 +96,7 @@ fn copy_record_cold_group(c: &mut Criterion, pool: &Pool) {
     ] {
         group.throughput(Throughput::Bytes(bytes(record.payload())));
         group.bench_function(name, |b| {
-            b.iter(|| copy_record(black_box(pool), black_box(&record)));
+            b.iter(|| copy_record(black_box(&pool), black_box(&record)));
         });
     }
     group.finish();
@@ -110,7 +110,7 @@ fn copy_record_cold_group(c: &mut Criterion, pool: &Pool) {
 /// count, the free-list ends, and the record bytes all cross cores here. The
 /// producer blocks on a full channel (the service drops instead) so that every
 /// run moves exactly `iters` events.
-fn two_thread_group(c: &mut Criterion, pool: &Pool) {
+fn two_thread_group(c: &mut Criterion, pool: Pool) {
     let mut group = c.benchmark_group("two_thread");
     group.throughput(Throughput::Elements(1));
     for (name, make) in [
@@ -119,7 +119,7 @@ fn two_thread_group(c: &mut Criterion, pool: &Pool) {
     ] {
         let mut pipeline = Pipeline::new();
         // Fill the schema cache, so every measured parse is a hit.
-        pipeline.parse_and_encode(copy_record(pool, &make()));
+        pipeline.parse_and_encode(copy_record(&pool, &make()));
         group.bench_function(name, |b| {
             b.iter_custom(|iters| {
                 let (sender, receiver) = bounded::<Copied>(CHANNEL_CAPACITY);
@@ -130,7 +130,7 @@ fn two_thread_group(c: &mut Criterion, pool: &Pool) {
                         let record = make();
                         for _ in 0..iters {
                             sender
-                                .send(copy_record(pool, &record))
+                                .send(copy_record(&pool, &record))
                                 .expect("the consumer outlives the producer");
                         }
                     });
