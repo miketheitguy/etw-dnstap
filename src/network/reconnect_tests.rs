@@ -1,4 +1,4 @@
-use super::test_support::{handshake, retry_policy};
+use super::test_support::{WAIT_TIMEOUT, handshake, retry_policy, wait_until};
 use super::*;
 use std::net::TcpListener;
 
@@ -67,21 +67,25 @@ fn reconnects_with_a_fresh_handshake_and_never_resends() {
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
     }
     sink.flush().expect("flush");
-    // Keep offering frames through the outage until the sink is back.
-    let give_up = Instant::now() + Duration::from_secs(20);
+    // Keep offering frames through the outage until the sink is back; the sink
+    // notices the outage and the finished reconnect only on a write or flush.
     let mut sequence = 1000u32;
-    let mut first_after_reconnect;
-    loop {
-        assert!(Instant::now() < give_up, "sink never reconnected");
+    let mut first_after_reconnect = sequence;
+    let mut reconnected_by_last_flush = false;
+    wait_until(WAIT_TIMEOUT, "the sink to reconnect", || {
         first_after_reconnect = sequence;
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
+        // This frame went out on the new session only if the reconnect had
+        // finished before or during the write. A reconnect that finishes inside
+        // flush() below dropped the frame, so it is acted on by the next
+        // iteration, whose write goes out on the new session.
+        let on_new_session =
+            reconnected_by_last_flush || stats.reconnects.load(Ordering::Relaxed) >= 1;
         sink.flush().expect("flush");
+        reconnected_by_last_flush = stats.reconnects.load(Ordering::Relaxed) >= 1;
         sequence += 1;
-        if stats.reconnects.load(Ordering::Relaxed) >= 1 {
-            break;
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
+        on_new_session
+    });
     for sequence in 100..103u32 {
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
     }
@@ -184,11 +188,18 @@ fn slow_socket_writes_are_counted_with_their_maximum() {
 #[test]
 fn deadline_clock_starts_at_the_first_io_of_each_operation() {
     let mut transport = DeadlineTcp::new(loopback_stream(), Duration::from_millis(50));
-    thread::sleep(Duration::from_millis(80));
-    assert!(transport.remaining().is_err(), "the armed window expired");
+    wait_until(WAIT_TIMEOUT, "the armed window to expire", || {
+        transport.remaining().is_err()
+    });
     transport.rearm();
+    // This sleep is the scenario, not a wait for a condition: the operation
+    // sits idle for longer than the 50 ms window before its first I/O. Idle
+    // time does not count against the deadline; the clock starts at the first
+    // remaining() call below, so nearly the whole window is still left.
     thread::sleep(Duration::from_millis(80));
-    // Idle time before the operation's first I/O does not count against it.
-    assert!(transport.remaining().is_ok());
+    let remaining = transport
+        .remaining()
+        .expect("the clock starts at the first I/O");
+    assert!(remaining > Duration::from_millis(40), "{remaining:?} left");
     assert!(transport.armed);
 }

@@ -25,3 +25,22 @@ pub(super) fn retry_policy(initial_ms: u64, max_ms: u64) -> BackoffPolicy {
         max: Duration::from_millis(max_ms),
     }
 }
+
+/// How long [`wait_until`] waits before failing. Generous: the reconnect
+/// policies in these tests retry within tens of milliseconds, and the bound
+/// only matters when a test fails.
+pub(super) const WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Polls `condition` until it holds. Fails the test when `timeout` elapses
+/// first, naming `what` was waited for. The condition may do work on each poll,
+/// such as offering frames to a sink so it notices a reconnect.
+pub(super) fn wait_until(timeout: Duration, what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !condition() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out after {timeout:?} waiting for {what}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
