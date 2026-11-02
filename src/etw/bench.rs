@@ -366,7 +366,10 @@ impl Pool {
     /// Panics if the pool cannot be allocated.
     #[must_use]
     pub fn with_capacity(regular: usize, jumbo: usize) -> Self {
-        Self(PoolManager::new(regular, jumbo).expect("benchmark pool allocates"))
+        Self(
+            PoolManager::with_progress(regular, jumbo, || Ok(()))
+                .expect("benchmark pool allocates"),
+        )
     }
 }
 
