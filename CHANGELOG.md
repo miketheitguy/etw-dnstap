@@ -47,6 +47,16 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- A criterion benchmark of the per-event hot path (`benches/hot_path.rs`,
+  `cargo bench-hot-path`) behind the new `bench` feature, which is never enabled in
+  a shipped build. Groups: `copy_record` (warm and cold pool), `decode`, `encode`,
+  `parse_and_encode` (IPv4, IPv6, and event 258), a two-thread producer and
+  consumer rate, and a decomposition into retained parse plus encode and recycle.
+  CI runs Clippy and the tests with the feature.
+- `datasets/baselines/code-review-2026-11-01/`, the Phase 0 baseline of the code
+  review remediation plan: binary size and hash, `verify-pe` output, criterion
+  numbers as the median of three quiet sessions with a drift bound and an A/B
+  procedure, the manual benchmark results, and the pool's private bytes.
 - A lab check, `scripts/performance/windows-startup-capacity.ps1`, that starts the
   service at the maximum `--capacity` and confirms the SCM reports Running. It
   reconfigures the installed service temporarily and restores the binary path,
