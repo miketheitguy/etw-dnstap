@@ -186,7 +186,7 @@ fn parse_fast<'a>(
         .map_err(|error| anyhow!("invalid DNS payload: {error:?}"))?;
     let tcp = integer(decoded.tcp, schema.tcp)?;
     ensure!(tcp <= 1, "invalid TCP Boolean");
-    let port = u16::try_from(integer(decoded.port, schema.port)?).context("Port exceeds u16")?;
+    let port = u16::try_from(integer(decoded.port, schema.port)?).context("port exceeds u16")?;
     ensure!(
         decoded.local.len() <= 512 && decoded.peer.len() <= 512,
         "DNS address exceeds size limit"
@@ -496,7 +496,7 @@ fn address(bytes: &[u8], kind: PropertyType, scratch: &mut [u8; 768]) -> Result<
     let text = match kind.input {
         TDH_INTYPE_UNICODESTRING => {
             ensure!(bytes.len().is_multiple_of(2), "odd Unicode address length");
-            ensure!(bytes.len() <= 512, "Unicode address exceeds size limit");
+            ensure!(bytes.len() <= 512, "UTF-16 address exceeds size limit");
             ensure!(bytes.ends_with(&[0, 0]), "unterminated Unicode address");
             let units = bytes[..bytes.len() - 2]
                 .as_chunks::<2>()
