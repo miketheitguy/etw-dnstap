@@ -188,6 +188,10 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- Internal: the Clippy lints `multiple_unsafe_ops_per_block`,
+  `missing_const_for_fn`, and `shadow_unrelated` are enabled as warnings in
+  `Cargo.toml`, so CI fails on them. Three functions became `const fn`, and the
+  test code was renamed or split to comply. No behavior change.
 - The network reconnect and deadline-clock tests wait on observable conditions
   with a 20 s bound instead of fixed sleeps, except for the one sleep that is the
   scenario (idle time before an operation's first I/O).

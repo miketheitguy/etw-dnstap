@@ -29,6 +29,13 @@ Notes:
   lints `unwrap_used` and `undocumented_unsafe_blocks`. Clippy `pedantic` lints
   are warnings, and CI runs Clippy with `-D warnings`, so they also fail CI. Do
   not add `#[allow]` to hide a warning without a comment that explains why.
+- `Cargo.toml` also enables the Clippy lints `multiple_unsafe_ops_per_block`,
+  `missing_const_for_fn`, and `shadow_unrelated` as warnings, so they fail CI
+  too. Put one unsafe operation in each `unsafe` block. A test module that
+  rebinds a name in many sequential cases can carry one
+  `#![expect(clippy::shadow_unrelated, reason = "...")]` at the top of its file.
+  Do not use `allow`, so that Clippy reports an expectation that is no longer
+  needed.
 - `unsafe` code is denied by default. Each `unsafe` block needs an
   `// SAFETY:` comment, which Clippy enforces (`undocumented_unsafe_blocks`).
 - The first build rebuilds the standard library (`build-std`). Expect it to take
