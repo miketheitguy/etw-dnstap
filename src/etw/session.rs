@@ -22,9 +22,9 @@ use windows_sys::{
             ENABLE_TRACE_PARAMETERS_VERSION_2, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
             EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_EVENT_ID,
             EVENT_FILTER_TYPE_EVENT_ID, EVENT_FILTER_TYPE_PID, EVENT_TRACE_BUFFERING_MODE,
-            EVENT_TRACE_CONTROL_FLUSH, EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP,
-            EVENT_TRACE_FILE_MODE_APPEND, EVENT_TRACE_FILE_MODE_CIRCULAR,
-            EVENT_TRACE_FILE_MODE_NEWFILE, EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW,
+            EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FILE_MODE_APPEND,
+            EVENT_TRACE_FILE_MODE_CIRCULAR, EVENT_TRACE_FILE_MODE_NEWFILE,
+            EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW,
             EVENT_TRACE_PRIVATE_LOGGER_MODE, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
             EVENT_TRACE_SYSTEM_LOGGER_MODE, EnableTraceEx2, OpenTraceW,
             PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
@@ -254,29 +254,6 @@ fn query_outcome(status: u32) -> QueryOutcome {
         ERROR_SUCCESS => QueryOutcome::Inspect,
         ERROR_WMI_INSTANCE_NOT_FOUND => QueryOutcome::Vanished,
         _ => QueryOutcome::Failed,
-    }
-}
-
-/// Requests an `EVENT_TRACE_CONTROL_FLUSH` on a session handle. `ERROR_MORE_DATA`
-/// only means the properties buffer was too small, which a flush ignores.
-fn flush_session(session: CONTROLTRACE_HANDLE) -> Result<(), u32> {
-    let mut properties = QueryProperties::new();
-    // SAFETY: The properties buffer is aligned, sized (Wnode.BufferSize and both
-    // offsets set), and outlives this synchronous call. The handle is only a
-    // value: a stopped or externally stopped session yields an error status, and
-    // the call does not dereference stale memory. A null name selects the handle.
-    let status = unsafe {
-        ControlTraceW(
-            session,
-            null(),
-            &raw mut properties.properties,
-            EVENT_TRACE_CONTROL_FLUSH,
-        )
-    };
-    if matches!(status, ERROR_SUCCESS | ERROR_MORE_DATA) {
-        Ok(())
-    } else {
-        Err(status)
     }
 }
 
@@ -641,15 +618,6 @@ impl Capture {
         } else {
             self.counters.stats_errors.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    /// Asks ETW to deliver buffered real-time events now. The error carries the
-    /// Win32 status; the caller counts outcomes. Statistics are not stored.
-    pub(crate) fn flush(&self) -> Result<(), u32> {
-        let Some(session) = self.session else {
-            return Err(ERROR_INVALID_HANDLE);
-        };
-        flush_session(session)
     }
 
     /// Queries the live session and stores ETW's lost-event counters. The error

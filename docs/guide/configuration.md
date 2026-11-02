@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change (defaults from `CaptureArgs` in `src/pipeline.rs`) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change and the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline.rs`) · **Reviewed:** 2026-11-01
 
 Every option is set in the service binary path, not in `sc.exe start`. Install
 and provisioning steps are in [install.md](install.md). Symptoms are in
@@ -23,8 +23,7 @@ the range are rejected at startup.
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
 | `--etw-max-buffers N` | `12` | 4 to 4,096 | Requested maximum ETW buffer count. See [ETW buffer minimums](#etw-buffer-minimums). |
-| `--etw-flush-seconds SECONDS` | `1` | 1 to 60 | ETW's own real-time flush interval. It is the delivery bound when `--etw-flush-ms` is `0`. |
-| `--etw-flush-ms MS` | `0` (off) | `0`, or 20 to 1,000 | How often the service asks ETW to flush the session. See [Low-rate defaults](#low-rate-defaults). |
+| `--etw-flush-seconds SECONDS` | `1` | 1 to 60 | ETW real-time flush interval in seconds. ETW delivers real-time events about once per interval, so this value bounds delivery latency. A longer interval uses less CPU and makes each delivered batch larger. See [Low-rate defaults](#low-rate-defaults). |
 | `--stats-interval-seconds N` | `60` | 0 to 86,400 | Seconds between the `capture stats` and `output stats` log events. `0` disables them. The final `capture stopped` and `output stopped` events are always written. See [Log events and counters](#log-events-and-counters). |
 | `--help`, `-h` | | | Print help and exit. Capture does not start. |
 | `--version`, `-V` | | | Print the package version and exit. Capture does not start. |
@@ -34,6 +33,11 @@ the range are rejected at startup.
 `--output`/`-o`, `--max-output-bytes`, and `--metrics` were removed. Arguments
 that use them fail command-line parsing. The service writes no capture or
 metrics files.
+
+This build removes `--etw-flush-ms`. The service no longer asks ETW to flush
+the session. A binary path that still has `--etw-flush-ms` fails command-line
+parsing, and the service does not start. Remove the option from the binary
+path. For high rates, use the settings in [High-rate settings](#high-rate-settings).
 
 ### Diagnostic flags (`diag-timing` builds only)
 
@@ -66,92 +70,146 @@ This is the canonical statement of the default limits. Other documents link here
 low-rate warning below uses its own threshold of 1,500 events per second. Lab
 results at higher rates with the defaults follow.
 
-With the periodic flush off (`--etw-flush-ms 0`), ETW delivers real-time events
-in batches about `--etw-flush-seconds` (1 second by default) apart. Delivery
-latency is therefore up to about 2 seconds, and usually under 1 second. A batch
+ETW delivers real-time events in batches about `--etw-flush-seconds` (1 second
+by default) apart. Delivery latency is therefore up to about 2 seconds, and
+usually under 1 second. The service does not ask ETW for more flushes. A batch
 that holds more events than the channel can take drops the excess unless the
 parser drains it while it arrives. The ETW buffer callback wakes the parser for
-each delivered buffer, so it does. The lab results on the 6-vCPU VM with all
-defaults and the committed build were:
+each delivered buffer, so the parser drains each batch while it arrives.
 
-- Authoritative loss was 0 at 1,000 and at 5,000 queries per second.
-- Authoritative loss was 0.32% at 10,000 queries per second. An earlier variant
-  with an always-on linger lost 1.08%.
-- Before this wake, the same 5,000 queries-per-second load lost about 19%.
+The lab used one 6-vCPU, 4 GiB VM with Windows Server 2025, an authoritative
+load, and 50-second runs. The rates are the rates that the client achieved. The
+results with all defaults were:
 
-These figures count channel drops only, in 50-second runs. See
-[ETW buffer wake validation](../history/buffer-wake-validation.md).
+| Queries per second | Ring drops | `etw_lost` | Build |
+| --- | --- | --- | --- |
+| 1,000 | 0 | 0 | Buffer wake, and this build (959 queries per second) |
+| 5,000 | 0 | 0 | Buffer wake |
+| 7,300 to 7,500 | 0 to 0.12%. 2 of 4 runs dropped events | 0 | This build |
+| 9,000 to 10,000 | 0.28 to 0.58% | 0 | This build. The buffer-wake build lost 0.32% |
+| 14,700 | 1.63% | 0 | This build |
+| 30,000 | 12.3 to 16.6% | 0.10 to 0.16% | This build, two clients. See the note below |
+| 44,000 | 2.23% | 0.135% | This build |
+| 49,500 to 50,000 | 0.34 to 4.39% | 0.199 to 0.215% | This build, two clients. The buffer-wake diag build had 0 ring drops and 0.03 to 0.11% `etw_lost` |
 
-One lab result predates the buffer wake. The lab used a 6-vCPU VM, Windows
-Server 2025, an authoritative workload, and the default 8,192-event channel. The
-configuration had the flush off, 64 KiB buffers, and 256 maximum buffers. With
-it, 59 to 79% of events were dropped at 10,000 to 20,000 queries per second.
+- The 8,192-event channel was full in every run at about 9,000 queries per
+  second and above.
+- `etw_lost` is loss inside the default 16 KiB × 12 ETW buffers.
+- The runs at about 30,000 queries per second lost more than the runs at
+  44,000 to 50,000. They also used less service CPU: 1.8 to 1.9 seconds against
+  6.6 to 8.7 seconds. Two clients with different pacing gave the same loss, so
+  the client is not the cause. The cause in the service or in ETW is not known.
+- At about 50,000 queries per second, the loss depended on the client: 0.34 to
+  1.24% with 54 client threads, and 4.39% with 4 threads and steady pacing.
+- Before the buffer wake, a 5,000 queries-per-second load lost about 19%.
 
-This flush-off configuration has not been measured again with the buffer wake.
+See [ETW buffer wake validation](../history/buffer-wake-validation.md) and
+[ETW flush removal validation](../history/flush-removal-validation.md).
 
-For higher rates, use the periodic flush with larger buffers:
-
-```text
---etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64
-```
-
-With that setting, the same lab reported 0 ring drops at 10,000 and 20,000
-queries per second. Tested intervals:
-
-| Queries/s | Flush interval | Result |
-| --- | --- | --- |
-| 20,000 | 50 ms | 0 ring drops |
-| 10,000 | 100 ms | 0 ring drops |
-| 50,000 | 100 ms | 0.04 to 0.91% loss. `etw_lost` was 0. |
-
-The 50,000 queries-per-second row needs care. The same source describes loss of
-0.3 to 1.7% at 50,000 queries per second **without** the periodic flush. The
-flush setting for that comparison run is not recorded in the same document, so
-treat the two figures as separate observations. The residual loss tracks host
-disturbance according to that source.
-
-These cases were not tested:
+The lab did not test these cases with the defaults:
 
 - Other machines and vCPU counts.
-- 25,000 to 45,000 queries per second.
 - Recursive or mixed workloads.
-- A 50 ms interval at 50,000 queries per second and above in a release build.
+- Runs longer than 50 seconds.
+- A TLS receiver. The lab used a plaintext receiver.
 
-Each delivered batch holds up to about twice the flush interval's worth of
-events (2 events per query). At higher rates, lower `--etw-flush-ms` or raise
-`--capacity` so that `2 × rate × interval` stays well below the channel
-capacity. At 20,000 queries per second, the largest batch was about 6,800
-events with a 100 ms interval and about 3,500 with 50 ms.
+### High-rate settings
 
-The evidence is in [ring-buffer.md](../design/ring-buffer.md) and
-[singlepass-four-core-test-results.md](../history/singlepass-four-core-test-results.md).
-The per-stage lab labels from the source reports are not defined elsewhere and
-are not used here.
+For rates above about 1,000 queries per second, use larger ETW buffers and a
+larger channel:
+
+```text
+--etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536
+```
+
+The lab tested this combination on the same VM as the defaults. The load was
+authoritative, each run lasted 50 seconds, and the receiver was plaintext. The
+rates are the rates that the client achieved:
+
+| Queries per second | Runs | Ring drops | `etw_lost` | Peak queue |
+| --- | --- | --- | --- | --- |
+| 7,300 to 7,500 | 4 | 0 | 0 | 8,201 to 8,876 |
+| 9,000 to 10,000 | 4 | 0 | 0 | 9,375 to 10,627 |
+| 14,700 | 1 | 0 | 0 | 16,776 |
+| 30,000 | 2 | 0 | 0 | 27,329 and 28,226 |
+| 44,000 | 1 | 0 | 0 | 30,643 |
+| 49,400 | 2 | 0 and 0.28% | 0 | 46,408, and 65,536 (full) |
+
+The peak queue is `queue_depth_max`, a sampled lower bound.
+
+- ETW lost no events in any run.
+- The channel dropped no events at every rate up to about 44,000 queries per
+  second. At 44,000 the peak queue was 30,643 of 65,536.
+- At about 49,400 queries per second, one of two runs filled the 65,536-event
+  channel and dropped 0.28% of events. The other run peaked at 46,408.
+- At about 49,500 queries per second, the service used about 4.4 seconds of
+  CPU in each 50-second run. With the defaults it used 8.4 to 8.7 seconds.
+- Private bytes rose from about 31 MiB with the defaults to about 179 MiB.
+
+**65,536 is enough up to about 44,000 queries per second on this VM. It is
+marginal at a sustained 50,000.** For sustained rates near 50,000 queries per
+second, raise `--capacity` further, for example to 131,072. The lab did not
+test 131,072.
+
+With the default `--jumbo-capacity 64`, the counted storage and the startup
+deadline are:
+
+| `--capacity` | Counted storage | Startup deadline | Lab-tested |
+| --- | --- | --- | --- |
+| 65,536 | 177,772,880 bytes (169.54 MiB) | 14 seconds | Yes |
+| 131,072 | 347,117,904 bytes (331.04 MiB) | 18 seconds | No |
+
+See [Storage](#storage) and
+[Startup and shutdown deadlines](#startup-and-shutdown-deadlines).
+
+Use these rules to choose the values:
+
+- ETW delivers events about once per `--etw-flush-seconds`. Each query makes 2
+  events. One delivery therefore holds up to about
+  `2 × queries/s × --etw-flush-seconds` events. Keep `--capacity` well above
+  this size.
+- The measured peak queue was far below that size, because the parser drains
+  the channel while a delivery arrives. At 44,000 queries per second the rule
+  gives 88,000 events, and the peak queue was 30,643. Use the rule as a safe
+  upper limit, not as a prediction.
+- A longer `--etw-flush-seconds` makes each delivery larger. If you raise it,
+  raise `--capacity` by the same factor.
+- Larger ETW buffers reduce `etw_lost`. In the lab, 64 KiB × 256 buffers
+  removed the `etw_lost` that the defaults had at 30,000 queries per second and
+  above.
+
+The lab results apply to one VM, an authoritative load only, and 50-second
+runs. The lab did not test other machines, recursive or mixed workloads, longer
+runs, a TLS receiver, or an `--etw-flush-seconds` value other than 1. See
+[ETW flush removal validation](../history/flush-removal-validation.md).
+
+After you change these settings, monitor `ring_dropped` and `etw_lost` under
+the real load.
+
+Two earlier lab results do not apply to this build:
+
+- An explicit periodic flush, which the service no longer has, gave 0 ring
+  drops at 10,000 and 20,000 queries per second with 64 KiB × 256 buffers. See
+  [Removed periodic flush](../design/ring-buffer.md#removed-periodic-flush).
+- With 64 KiB × 256 buffers, the default 8,192-event channel, and no flush,
+  the channel dropped 59 to 79% of events at 10,000 to 20,000 queries per
+  second. That result predates the buffer wake. The lab did not repeat it with
+  the buffer wake.
 
 **Warning.** The service can log a warning (Event ID 3) when the default ETW
 settings are in use. It logs the warning at the end of each measurement window
-in which the received rate is more than about 1,500 events per second. The window is `--stats-interval-seconds`,
-or 60 seconds when snapshots are disabled. The warning repeats while the rate
-stays high, and it names the high-rate settings above.
-
-### Flush cost
-
-With `--etw-flush-ms` enabled, the lab run wrote about 5 to 16% more ETW buffers
-and cost under 0.1% of a core when idle. The `capture stopped` line reports
-`etw_flushes`, `etw_flush_errors`, and `etw_flush_max_us` (the longest flush call,
-including scheduling delay on the supervisor). Lab maxima under load were 11 to
-46 ms, near multiples of the 15.6 ms timer tick. The idle maximum was about
-0.35 ms.
-
-A failed flush logs one warning and is counted. Capture continues. The ETW
-buffer callback wakes the parser when the flushed buffers arrive. After each
-successful periodic flush, the supervisor also wakes the parser as a backstop.
+in which the received rate is more than about 1,500 events per second. The
+window is `--stats-interval-seconds`, or 60 seconds when snapshots are disabled.
+The warning repeats while the rate stays high. It tells you to restart with
+`--etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536`.
 
 ## Storage
 
-Counted storage at the defaults is 28.22 MiB. At the maximum (262,144 events and
-256 jumbo slots) it is 678.14 MiB. These are calculated payload, slot, free-list,
-and channel totals. They exclude the allocator, native ETW buffers, TDH caches,
+Counted storage at the defaults is 28.22 MiB. With the high-rate
+`--capacity 65536` and the default 64 jumbo slots, it is 169.54 MiB. With
+`--capacity 131072` and 64 jumbo slots, it is 331.04 MiB. At the
+maximum (262,144 events and 256 jumbo slots) it is 678.14 MiB. These are
+calculated payload, slot, free-list, and channel totals. They exclude the allocator, native ETW buffers, TDH caches,
 protobuf data, and output buffers. They are not measured process-memory limits.
 See [pooled-intake.md](../design/pooled-intake.md) for the budget.
 
@@ -361,7 +419,7 @@ with the same fields, even when periodic snapshots are disabled.
 
 `capture started` records the session name, the session GUID (`session_guid`), receiver, `tls`
 (`true` unless `--plaintext` is given), `tls_server_name` when set, channel capacity, ETW
-buffer size, maximum buffers, flush seconds, `etw_flush_ms`, the keyword masks
+buffer size, maximum buffers, flush seconds, the keyword masks
 as `match_any_keyword` and `match_all_keyword` in hexadecimal, and
 `keyword_fallback`.
 
@@ -389,9 +447,6 @@ These fields appear on `capture stats` and `capture stopped`.
 | `etw_stats_valid` | `true` when the last ETW query or stop succeeded. A flag, not a count. |
 | `etw_stats_errors` | Failed ETW statistics queries. |
 | `stale_sessions_reclaimed` | Leaked sessions stopped at startup. |
-| `etw_flushes` | Successful periodic ETW flush requests. |
-| `etw_flush_errors` | Failed flush requests. Only the first is logged. |
-| `etw_flush_max_us` | Longest flush call in microseconds, including supervisor scheduling delay. |
 | `etw_buffers_delivered` | ETW buffers whose delivery finished (calls of the buffer callback). |
 | `parser_wake_requests` | Delivered buffers that enqueued at least one event. Each sends one wake request to the parser. The request costs nothing when the parser is already running. This is therefore not a count of parser wakeups. |
 

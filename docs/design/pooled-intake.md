@@ -1,6 +1,6 @@
 # Pooled ETW intake
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-01
 
 This reference helps maintainers review the ownership, memory budget, and loss
 accounting of the pooled Event Tracing for Windows (ETW) intake. It describes the
@@ -160,6 +160,34 @@ The maximum column uses the same per-slot sizes as the default column, with
 The maximum capacity therefore costs about 649.9 MiB more than the default. The previous maximum of
 65,536 / 256 counted 203,041,616 bytes (193.64 MiB).
 
+The high-rate setting `--capacity 65536` with the default 64 jumbo slots uses
+the same sizes:
+
+- Regular payloads: (65,536 + 2) x 2,048 = 134,221,824 bytes.
+- Jumbo payloads: 64 x 131,184 = 8,395,776 bytes.
+- Slot metadata: (65,538 + 64) x 408 = 65,602 x 408 = 26,765,616 bytes.
+- Free-list elements: 65,602 x 16 = 1,049,632 bytes.
+- Channel elements: 65,536 x 112 = 7,340,032 bytes.
+- Total: 177,772,880 bytes, which is 169.54 MiB.
+
+On the lab VM, the process private bytes were about 31 MiB with the defaults
+and about 179 MiB with the high-rate settings. See the
+[flush removal validation](../history/flush-removal-validation.md).
+
+The configuration reference gives `--capacity 131072` as an example for
+sustained rates near 50,000 queries per second. The lab did not test it. With
+the default 64 jumbo slots it uses the same sizes:
+
+- Regular payloads: (131,072 + 2) x 2,048 = 268,439,552 bytes.
+- Jumbo payloads: 64 x 131,184 = 8,395,776 bytes.
+- Slot metadata: (131,074 + 64) x 408 = 131,138 x 408 = 53,504,304 bytes.
+- Free-list elements: 131,138 x 16 = 2,098,208 bytes.
+- Channel elements: 131,072 x 112 = 14,680,064 bytes.
+- Total: 347,117,904 bytes, which is 331.04 MiB.
+
+The high-rate setting and its lab results are in the
+[configuration reference](../guide/configuration.md#high-rate-settings).
+
 These totals exclude allocator rounding, allocator metadata, the small queue and
 `Arc` headers, worker stacks, native ETW buffers, TDH caches, protobuf data, and
 output buffers. They are not process-private-memory measurements or total-memory
@@ -285,9 +313,6 @@ list is in
 | Live counter | Meaning |
 | --- | --- |
 | `foreign_pid_rejected` | Records from a process other than the DNS Server. Not counted in `received`. |
-| `etw_flushes` | Successful periodic ETW session flush requests |
-| `etw_flush_errors` | Failed flush requests. The first is logged with its Win32 status. |
-| `etw_flush_max_us` | Longest wall-clock duration of one flush call in microseconds. It includes scheduling delay on the supervisor thread. Lab maxima of 11-46 ms under load were near multiples of the 15.6 ms timer tick. The idle maximum was about 0.35 ms. |
 | `etw_buffers_delivered` | ETW buffers whose delivery finished (buffer callback calls) |
 | `parser_wake_requests` | Delivered buffers that enqueued events and so sent the parser a wake request |
 

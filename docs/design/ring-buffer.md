@@ -1,6 +1,6 @@
 # Ring capacity and shutdown
 
-> **Status:** Current (the queue and shutdown reference. Its capacity experiment is historical.) · **Describes:** `main` at commit `dde7188` · **Evidence dated:** October 28-29, 2026 for the experiment · **Reviewed:** 2026-11-01
+> **Status:** Current (the queue and shutdown reference. Its capacity experiment is historical.) · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush · **Evidence dated:** October 28-29, 2026 for the experiment · **Reviewed:** 2026-11-01
 
 This note is for maintainers, and for administrators who choose a capture
 capacity. It explains the queue bounds and the shutdown contract. It describes
@@ -11,8 +11,8 @@ loss-free capture at every traffic rate or event size.
 
 The defaults, their low-rate limits, and the recommended high-rate settings are
 stated once, in the [configuration reference](../guide/configuration.md#low-rate-defaults).
-Read that section before you choose `--capacity`, `--etw-flush-ms`, or the ETW
-buffer options.
+Read that section before you choose `--capacity`, `--etw-flush-seconds`, or the
+ETW buffer options.
 
 ### Enqueue
 
@@ -30,8 +30,6 @@ The parser takes events only with `try_recv`. It wakes in these ways:
   events.
 - After data, it polls for up to 200 µs before it parks.
 - Otherwise it parks with a timed backoff from 2 ms to 20 ms.
-- When the periodic ETW flush is on, the supervisor thread unparks it after each
-  successful flush, as a backstop.
 
 The per-event callback does not signal the parser after enqueue. It sets a
 same-thread flag. `ProcessTrace` calls the ETW buffer callback on the consumer
@@ -43,32 +41,49 @@ the parser's backed-off park. See
 The channel has no registered blocking receivers or selectors. Atomic retries,
 spinning, yielding, and preemption still apply.
 
-### Periodic flush
+### Delivery batches
 
-`--etw-flush-ms` is opt-in. Its default is 0, which is off. When it is set, the
-supervisor thread asks ETW to flush the session at that interval. Without it,
-ETW delivers about once per `--etw-flush-seconds`, even with full buffers. It
-delivers those buffers as one batch, which can overflow the channel.
+The service does not ask ETW to flush the session. ETW delivers real-time
+events about once per `--etw-flush-seconds`, even with full buffers. It
+delivers those buffers as one batch. The buffer callback wakes the parser for
+each delivered buffer, so the parser drains the batch while it arrives.
 
 On the 6-vCPU lab VM, ETW delivered one batch per second at 10k and 20k
-queries/s, which is about 20k and 39k events/s. It delivered promptly at 50k
-queries/s and above. The threshold is not known and may depend on the machine.
-At 10,000 queries/s with the flush off, about 59-61% of events were dropped
-there.
+queries/s, which is about 20k and 39k events/s. It delivered buffers
+continuously at 50k queries/s and above. The threshold is not known and can
+depend on the machine.
 
-The [configuration reference](../guide/configuration.md#low-rate-defaults) has
-the lab results for the in-process flush. They are not repeated here. The
-results include these items:
+Capacity guidance: one batch holds up to about
+2 x queries/s x `--etw-flush-seconds` events, because there are 2 events per
+query. Keep `--capacity` well above that size. In the lab, the measured peak
+queue was far below that size, because the parser drains during delivery. At
+about 44,000 queries/s the rule gives 88,000 events, and the peak queue was
+30,643. The recommended high-rate settings and their lab results are in the
+[configuration reference](../guide/configuration.md#high-rate-settings). With
+them, the channel dropped no events up to about 44,000 queries/s. At about
+49,400 queries/s, one of two runs filled the 65,536-event channel. See the
+[flush removal validation](../history/flush-removal-validation.md).
 
-- 0 ring drops at 10k and 20k queries/s with the flush, against 59-79% loss
-  without it.
-- The 50k comparison and the settings that it used.
-- The batch sizes and the untested cases.
+### Removed periodic flush
 
-Capacity guidance: each delivered batch holds up to about twice the flush
-interval's worth of events, because there are 2 events per query. In the
-batching regime, lower `--etw-flush-ms` or raise `--capacity`. Keep
-2 x rate x interval well below the channel capacity.
+Earlier builds had an opt-in periodic flush. The supervisor thread asked ETW to
+flush the session at a set interval, and it woke the parser after each flush.
+The buffer wake in commit `dde7188` made it unnecessary, so the maintainer
+removed it.
+The lab results below used that flush with 64 KiB × 256 buffers. They are
+history. They do not apply to the current build:
+
+| Queries/s | Flush interval | Result |
+| --- | --- | --- |
+| 20,000 | 50 ms | 0 ring drops |
+| 10,000 | 100 ms | 0 ring drops |
+| 50,000 | 100 ms | 0.04 to 0.91% loss. `etw_lost` was 0. |
+
+With the same buffers and no flush, before the buffer wake, the channel dropped
+59 to 79% of events at 10,000 to 20,000 queries/s. At 20,000 queries/s with the flush,
+the largest batch was about 6,800 events with a 100 ms interval and about 3,500
+with 50 ms. The flush wrote about 5 to 16% more ETW buffers and cost under 0.1%
+of a core when idle.
 
 ### Pools and memory budget
 

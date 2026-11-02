@@ -108,9 +108,10 @@ pub(super) fn install_producer(
 
 /// The `BufferCallback` registered with `OpenTraceW`. `ProcessTrace` calls it on
 /// the consumer thread after it has delivered every event of one buffer. A real-
-/// time session delivers its buffers in bursts (about once per flush interval),
-/// so the parser is woken while the burst arrives instead of after its next
-/// timed poll. The parser keeps one wake token, so no wake is lost.
+/// time session delivers its buffers in bursts (about once per
+/// `--etw-flush-seconds`), so the parser is woken while the burst arrives
+/// instead of after its next timed poll. The parser keeps one wake token, so no
+/// wake is lost.
 ///
 /// It reads no pointer and cannot panic. It returns TRUE, because FALSE would
 /// end `ProcessTrace`.
