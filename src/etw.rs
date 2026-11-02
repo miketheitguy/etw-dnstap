@@ -53,7 +53,7 @@ pub(crate) use intake::RawEtwEvent;
 pub(crate) use keywords::KeywordSelection;
 pub(crate) use pool::{MAX_CAPACITY, MAX_JUMBO_CAPACITY, MIN_CAPACITY, PoolManager};
 pub(crate) use schema::Parser;
-pub(crate) use session::{Capture, SessionConfig};
+pub(crate) use session::{Capture, SessionConfig, TargetChange, Win32Status};
 
 /// The service's ETW session GUID for `name`, as text for logs.
 pub(crate) fn session_guid_text(name: &str) -> String {

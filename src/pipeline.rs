@@ -21,6 +21,7 @@ use crate::{
     dnstap::Encoder,
     etw::{
         self, Capture, CaptureCounters, KeywordSelection, PoolManager, RawEtwEvent, SessionConfig,
+        TargetChange, Win32Status,
     },
     network::{NetworkSink, ReceiverConfig},
     perfcounters::{CounterSink, CounterSources, PerfPublisher, snapshot},
@@ -556,12 +557,12 @@ trait EventProducer {
     ///
     /// # Errors
     /// Returns the native status when the query fails.
-    fn query_statistics(&self) -> Result<(), u32> {
+    fn query_statistics(&self) -> Result<(), Win32Status> {
         Ok(())
     }
-    /// A reason capture can no longer be trusted (for example the process the
-    /// source filters on was replaced), or `None`.
-    fn target_change(&self) -> Option<String> {
+    /// Why capture can no longer be trusted (the process the source filters on
+    /// stopped or was replaced), or `None`.
+    fn target_change(&self) -> Option<TargetChange> {
         None
     }
 }
@@ -579,11 +580,11 @@ impl EventProducer for Capture {
         Capture::stop(self)
     }
 
-    fn query_statistics(&self) -> Result<(), u32> {
+    fn query_statistics(&self) -> Result<(), Win32Status> {
         Capture::query_statistics(self)
     }
 
-    fn target_change(&self) -> Option<String> {
+    fn target_change(&self) -> Option<TargetChange> {
         Capture::target_change(self)
     }
 }
@@ -898,16 +899,16 @@ fn supervise(
         }
         let now = Instant::now();
         if monitor.target.poll(now)
-            && let Some(reason) = capture.target_change()
+            && let Some(change) = capture.target_change()
         {
             // The PID filter and callback check now match no process. Exiting
             // with a failure lets SCM recovery restart the service, which
             // resolves the new PID at startup.
             tracing::error!(
-                "{reason}; stopping so the service can be restarted and re-resolve the DNS \
+                "{change}; stopping so the service can be restarted and re-resolve the DNS \
                  Server process"
             );
-            break Some(reason);
+            break Some(change.to_string());
         }
         if let Some(rate) = monitor
             .rate
@@ -945,7 +946,7 @@ fn supervise(
 /// query leaves the last values in place.
 fn query_session(capture: &impl EventProducer) -> bool {
     if let Err(status) = capture.query_statistics() {
-        tracing::debug!(code = status, "ETW session query failed");
+        tracing::debug!(%status, "ETW session query failed");
         return false;
     }
     true
@@ -1755,7 +1756,7 @@ mod tests {
     /// A producer whose session query stores fixed buffer counts or fails.
     struct QueryProducer {
         counters: Arc<CaptureCounters>,
-        status: Result<(), u32>,
+        status: Result<(), Win32Status>,
     }
 
     impl EventProducer for QueryProducer {
@@ -1776,7 +1777,7 @@ mod tests {
             Ok(())
         }
 
-        fn query_statistics(&self) -> Result<(), u32> {
+        fn query_statistics(&self) -> Result<(), Win32Status> {
             if self.status.is_ok() {
                 self.counters
                     .etw_buffers_minimum
@@ -1815,7 +1816,7 @@ mod tests {
         }
     }
 
-    fn logged_by_first_query(status: Result<(), u32>) -> String {
+    fn logged_by_first_query(status: Result<(), Win32Status>) -> String {
         let lines = LogLines::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(lines.clone())
@@ -1843,7 +1844,7 @@ mod tests {
         assert!(text.contains("etw_buffers_allocated=14"), "{text}");
         assert_eq!(text.lines().count(), 1, "{text}");
 
-        let text = logged_by_first_query(Err(5));
+        let text = logged_by_first_query(Err(Win32Status(5)));
         assert!(text.is_empty(), "{text}");
     }
 
@@ -2350,9 +2351,9 @@ mod tests {
             Ok(())
         }
 
-        fn target_change(&self) -> Option<String> {
+        fn target_change(&self) -> Option<TargetChange> {
             self.moved
-                .then(|| "the DNS Server service restarted (process ID 1 -> 2)".to_owned())
+                .then_some(TargetChange::Restarted { old: 1, new: 2 })
         }
     }
 
@@ -2449,7 +2450,7 @@ mod tests {
             Ok(())
         }
 
-        fn query_statistics(&self) -> Result<(), u32> {
+        fn query_statistics(&self) -> Result<(), Win32Status> {
             self.queries.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }

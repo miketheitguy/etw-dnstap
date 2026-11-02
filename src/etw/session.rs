@@ -1,6 +1,7 @@
 //! Creates, queries, reclaims, and stops the ETW session, and owns [`Capture`].
 
 use std::{
+    fmt,
     mem::{offset_of, size_of},
     ptr::null,
     sync::{Arc, atomic::Ordering},
@@ -398,18 +399,63 @@ pub(crate) struct Capture {
     dns_pid: u32,
 }
 
+/// A Win32 status code returned by an ETW control call. The raw code stays
+/// available for matching; `Display` adds the system message text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Win32Status(pub(crate) u32);
+
+impl fmt::Display for Win32Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} (code {})",
+            std::io::Error::from_raw_os_error(self.0.cast_signed()),
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for Win32Status {}
+
+/// Why the DNS Server process ID the session filters on is no longer valid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TargetChange {
+    /// The DNS Server service stopped. It ran as `pid`.
+    Stopped { pid: u32 },
+    /// The DNS Server service restarted under a new process ID.
+    Restarted { old: u32, new: u32 },
+}
+
+impl fmt::Display for TargetChange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stopped { pid } => {
+                write!(
+                    f,
+                    "the DNS Server service stopped (it ran as process ID {pid})"
+                )
+            }
+            Self::Restarted { old, new } => {
+                write!(
+                    f,
+                    "the DNS Server service restarted (process ID {old} -> {new})"
+                )
+            }
+        }
+    }
+}
+
 /// What the supervisor concluded from re-reading the DNS service process ID.
 /// `observed` is `None` when the query itself failed, which proves nothing.
-fn classify_target(expected: u32, observed: Option<u32>) -> Option<String> {
+fn classify_target(expected: u32, observed: Option<u32>) -> Option<TargetChange> {
     match observed {
         None => None,
         Some(pid) if pid == expected => None,
-        Some(0) => Some(format!(
-            "the DNS Server service stopped (it ran as process ID {expected})"
-        )),
-        Some(pid) => Some(format!(
-            "the DNS Server service restarted (process ID {expected} -> {pid})"
-        )),
+        Some(0) => Some(TargetChange::Stopped { pid: expected }),
+        Some(pid) => Some(TargetChange::Restarted {
+            old: expected,
+            new: pid,
+        }),
     }
 }
 
@@ -667,9 +713,9 @@ impl Capture {
     /// Queries the live session and stores ETW's lost-event and buffer counters.
     /// The error carries the Win32 status; failures are also counted in
     /// `stats_errors`.
-    pub(crate) fn query_statistics(&self) -> Result<(), u32> {
+    pub(crate) fn query_statistics(&self) -> Result<(), Win32Status> {
         let Some(session) = self.session else {
-            return Err(ERROR_INVALID_HANDLE);
+            return Err(Win32Status(ERROR_INVALID_HANDLE));
         };
         let mut properties = QueryProperties::new();
         // SAFETY: The properties buffer is aligned, sized (Wnode.BufferSize and both
@@ -692,14 +738,14 @@ impl Capture {
         if status == ERROR_SUCCESS {
             Ok(())
         } else {
-            Err(status)
+            Err(Win32Status(status))
         }
     }
 
-    /// Re-reads the DNS Server service process ID. Returns a reason when the
+    /// Re-reads the DNS Server service process ID. Returns the change when the
     /// service stopped or restarted, which invalidates the PID filter. A failed
     /// query is inconclusive and returns `None`.
-    pub(crate) fn target_change(&self) -> Option<String> {
+    pub(crate) fn target_change(&self) -> Option<TargetChange> {
         classify_target(self.dns_pid, service_process_id_raw(DNS_SERVICE).ok())
     }
 
