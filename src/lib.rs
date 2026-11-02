@@ -35,7 +35,9 @@ pub mod fuzzing {
 #[cfg(feature = "bench")]
 #[doc(hidden)]
 pub mod bench {
-    pub use crate::etw::bench::{Copied, Decoded, Pipeline, Plan, Pool, Record, copy_record};
+    pub use crate::etw::bench::{
+        Copied, Decoded, Pipeline, Plan, Pool, Record, copy_record, private_bytes,
+    };
 }
 
 /// Runs capture through the Windows Service Control Manager dispatcher.

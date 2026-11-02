@@ -22,7 +22,6 @@ use anyhow::{Result, bail};
 use windows_sys::{Win32::Foundation::ERROR_SUCCESS, core::GUID};
 
 #[cfg(feature = "bench")]
-#[allow(unsafe_code)]
 pub(crate) mod bench;
 mod decode;
 #[cfg(feature = "diag-timing")]

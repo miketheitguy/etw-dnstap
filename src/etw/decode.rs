@@ -267,7 +267,7 @@ fn valid_target(target: usize, field: &FieldSpec, layout: Layout) -> bool {
 
 /// One property of the saved template, with the output type TDH reports for its
 /// input type.
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(any(test, feature = "fuzzing", feature = "bench"))]
 pub(super) fn template_field(name: &str, input: i32) -> FieldSpec {
     use windows_sys::Win32::System::Diagnostics::Etw::{
         TDH_OUTTYPE_HEXBINARY, TDH_OUTTYPE_STRING, TDH_OUTTYPE_UNSIGNEDBYTE,
@@ -296,7 +296,7 @@ pub(super) fn template_field(name: &str, input: i32) -> FieldSpec {
 ///
 /// # Panics
 /// Panics for any other event ID.
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(any(test, feature = "fuzzing", feature = "bench"))]
 pub(super) fn saved_template(id: u16) -> Vec<FieldSpec> {
     assert!(matches!(id, 256..=258), "no saved template for {id}");
     let u8_field = |name| template_field(name, TDH_INTYPE_UINT8);

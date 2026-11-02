@@ -8,17 +8,24 @@
 //!
 //! Records are built by hand in the layout of the saved v0 DNS Server template.
 //! Their packets are a 60-byte A query and a 100-byte response, plus a
-//! 4,096-byte response that needs a jumbo slot. The parser's schema cache is
+//! 4,096-byte response that needs a jumbo slot, an IPv6 query, and a
+//! response-failure record (event 258). The parser's schema cache is
 //! filled through the production path: the process-local test manifest
 //! (`src/etw/testdata/decoder-fixture.man`) is registered with
 //! `TdhLoadManifest`, so the first `parse` of each event ID makes a real TDH
 //! call and every later one is a cache hit. The manifest defines event version
 //! 250, so the records carry that version; the live provider emits version 0.
+//!
+//! Every wrapper is `#[inline(never)]`. The benchmark crate calls into this
+//! crate, and a profile change such as fat LTO must not move the measured
+//! boundary.
 
 use std::{os::windows::ffi::OsStrExt, path::PathBuf, sync::Arc, sync::OnceLock};
 
-use windows_sys::Win32::System::Diagnostics::Etw::{
-    EVENT_DESCRIPTOR, EVENT_HEADER, EVENT_RECORD, TdhLoadManifest,
+use windows_sys::Win32::System::{
+    Diagnostics::Etw::{EVENT_DESCRIPTOR, EVENT_HEADER, EVENT_RECORD, TdhLoadManifest},
+    ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX},
+    Threading::GetCurrentProcess,
 };
 
 use super::{
@@ -39,6 +46,8 @@ const QNAME_WIRE: &[u8] = b"\x07service\x07example\x03com\x00";
 const QNAME_TEXT: &str = "(7)service(7)example(3)com(0)";
 const INTERFACE_IP: &str = "192.0.2.53";
 const CLIENT_IP: &str = "198.51.100.42";
+const INTERFACE_IPV6: &str = "2001:db8::53";
+const CLIENT_IPV6: &str = "2001:db8:1::42";
 const CLIENT_PORT: u32 = 54_321;
 const XID: u32 = 0x1234;
 /// Trailing metadata the decoder never reads but the copy must carry.
@@ -46,24 +55,28 @@ const GUID_TEXT: &str = "{3F2504E0-4F89-11D3-9A0C-0305E82C3301}";
 /// Total length of the jumbo response packet.
 const JUMBO_PACKET_LENGTH: usize = 4_096;
 
-/// Regular slots in the benchmark pool. It must hold every lease a benchmark
-/// batch keeps outstanding (`benches/hot_path.rs` keeps at most 1,024).
+/// Regular slots in the default benchmark pool. It must hold every lease a
+/// benchmark batch keeps outstanding (`benches/hot_path.rs` keeps at most
+/// 1,024). It is small enough to stay cache resident, which `Pool::with_capacity`
+/// lifts for the cold-pool group.
 const POOL_CAPACITY: usize = 2_048;
 const POOL_JUMBO_CAPACITY: usize = 64;
 
-/// One DNS Server event as ETW would deliver it: the header fields the parser
-/// reads and a payload in the saved template's layout.
+/// One DNS Server event as ETW would deliver it: a prebuilt native record whose
+/// header carries the fields the parser reads and whose user data is a payload in
+/// the saved template's layout.
 pub struct Record {
-    header: EVENT_HEADER,
+    /// Built once, so the timed copy does not pay for constructing it. Its
+    /// `UserData` points into `payload`'s heap allocation, which stays put when
+    /// the `Record` moves because `payload` is never modified after `new`.
+    native: EVENT_RECORD,
     payload: Vec<u8>,
-    payload_length: u16,
 }
 
 impl Record {
     fn new(event_id: u16, payload: Vec<u8>) -> Self {
-        let payload_length = u16::try_from(payload.len()).expect("record payloads fit u16");
-        Self {
-            header: EVENT_HEADER {
+        let native = EVENT_RECORD {
+            EventHeader: EVENT_HEADER {
                 ProviderId: PROVIDER,
                 TimeStamp: TIMESTAMP,
                 EventDescriptor: EVENT_DESCRIPTOR {
@@ -73,33 +86,58 @@ impl Record {
                 },
                 ..Default::default()
             },
-            payload,
-            payload_length,
-        }
+            UserDataLength: u16::try_from(payload.len()).expect("record payloads fit u16"),
+            // The `*mut` is a type requirement of EVENT_RECORD only; the copy
+            // reads the payload and never writes through this pointer.
+            UserData: payload.as_ptr().cast_mut().cast(),
+            ..Default::default()
+        };
+        Self { native, payload }
     }
 
     /// Event 256 (client query) over UDP carrying a 60-byte A query.
     #[must_use]
     pub fn query() -> Self {
-        Self::new(256, query_payload(&query_packet()))
+        Self::new(256, query_payload(&query_packet(), INTERFACE_IP, CLIENT_IP))
+    }
+
+    /// Event 256 with the same query over IPv6 addresses.
+    #[must_use]
+    pub fn query_ipv6() -> Self {
+        Self::new(
+            256,
+            query_payload(&query_packet(), INTERFACE_IPV6, CLIENT_IPV6),
+        )
     }
 
     /// Event 257 (client response) over UDP carrying a 100-byte response.
     #[must_use]
     pub fn response() -> Self {
-        Self::new(257, response_payload(&response_packet()))
+        Self::new(
+            257,
+            response_payload(&response_packet(), INTERFACE_IP, CLIENT_IP),
+        )
     }
 
     /// Event 257 carrying a 4,096-byte TXT response. The payload exceeds a
     /// regular slot, so `copy_record` takes a jumbo slot.
     #[must_use]
     pub fn jumbo_response() -> Self {
-        Self::new(257, response_payload(&jumbo_packet()))
+        Self::new(
+            257,
+            response_payload(&jumbo_packet(), INTERFACE_IP, CLIENT_IP),
+        )
+    }
+
+    /// Event 258 (response failure) carrying a 37-byte SERVFAIL response.
+    #[must_use]
+    pub fn response_failure() -> Self {
+        Self::new(258, failure_payload(&failure_packet()))
     }
 
     #[must_use]
     pub fn event_id(&self) -> u16 {
-        self.header.EventDescriptor.Id
+        self.native.EventHeader.EventDescriptor.Id
     }
 
     /// The ETW user data: every template property, including the trailing
@@ -132,11 +170,11 @@ fn buffer_size(packet: &[u8]) -> u32 {
 }
 
 /// Event 256 user data in the `Query` template layout.
-fn query_payload(packet: &[u8]) -> Vec<u8> {
+fn query_payload(packet: &[u8], interface_ip: &str, client_ip: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(packet.len() + 192);
     payload.push(0); // TCP
-    ansi(&mut payload, INTERFACE_IP); // InterfaceIP
-    ansi(&mut payload, CLIENT_IP); // Source
+    ansi(&mut payload, interface_ip); // InterfaceIP
+    ansi(&mut payload, client_ip); // Source
     payload.push(1); // RD
     ansi(&mut payload, QNAME_TEXT); // QNAME
     u32_le(&mut payload, 1); // QTYPE A
@@ -151,11 +189,11 @@ fn query_payload(packet: &[u8]) -> Vec<u8> {
 }
 
 /// Event 257 user data in the `Response` template layout.
-fn response_payload(packet: &[u8]) -> Vec<u8> {
+fn response_payload(packet: &[u8], interface_ip: &str, client_ip: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(packet.len() + 256);
     payload.push(0); // TCP
-    ansi(&mut payload, INTERFACE_IP); // InterfaceIP
-    ansi(&mut payload, CLIENT_IP); // Destination
+    ansi(&mut payload, interface_ip); // InterfaceIP
+    ansi(&mut payload, client_ip); // Destination
     payload.push(1); // AA
     payload.push(0); // AD
     ansi(&mut payload, QNAME_TEXT); // QNAME
@@ -174,6 +212,29 @@ fn response_payload(packet: &[u8]) -> Vec<u8> {
     u32_le(&mut payload, 0); // ElapsedTime
     unicode(&mut payload, GUID_TEXT); // GUID
     unicode(&mut payload, "false"); // StaleRecordsPresent
+    payload
+}
+
+/// Event 258 user data in the `ResponseFailure` template layout.
+fn failure_payload(packet: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(packet.len() + 192);
+    payload.push(0); // TCP
+    ansi(&mut payload, INTERFACE_IP); // InterfaceIP
+    unicode(&mut payload, "SERVFAIL"); // Reason
+    ansi(&mut payload, CLIENT_IP); // Destination
+    ansi(&mut payload, QNAME_TEXT); // QNAME
+    u32_le(&mut payload, 1); // QTYPE A
+    u32_le(&mut payload, XID); // XID
+    u32_le(&mut payload, 2); // RCODE SERVFAIL
+    u32_le(&mut payload, CLIENT_PORT); // Port
+    u32_le(&mut payload, 0x8182); // Flags
+    unicode(&mut payload, "example.com"); // Zone
+    unicode(&mut payload, ""); // PolicyName
+    u32_le(&mut payload, buffer_size(packet)); // BufferSize
+    payload.extend_from_slice(packet); // PacketData
+    unicode(&mut payload, ""); // AdditionalInfo
+    u32_le(&mut payload, 0); // ElapsedTime
+    unicode(&mut payload, GUID_TEXT); // GUID
     payload
 }
 
@@ -248,6 +309,14 @@ fn response_packet() -> Vec<u8> {
     packet
 }
 
+/// A 37-byte SERVFAIL response: header (12) and the question (25).
+fn failure_packet() -> Vec<u8> {
+    let mut packet = Vec::with_capacity(37);
+    dns_header(&mut packet, 0x8182, 0, 0);
+    question(&mut packet);
+    packet
+}
+
 /// A 4,096-byte response whose single TXT answer fills the rest of the packet
 /// with character strings of at most 255 bytes.
 fn jumbo_packet() -> Vec<u8> {
@@ -273,17 +342,31 @@ fn jumbo_packet() -> Vec<u8> {
     packet
 }
 
-/// A record pool sized for the benchmark: 2,048 regular slots and 64 jumbo slots.
+/// A record pool. Clones share the pool, so a producer thread can lease from it
+/// while another thread recycles.
+#[derive(Clone)]
 pub struct Pool(Arc<PoolManager>);
 
 impl Pool {
+    /// A pool of 2,048 regular slots and 64 jumbo slots, small enough to stay
+    /// cache resident.
+    ///
     /// # Panics
     /// Panics if the pool cannot be allocated.
     #[must_use]
     pub fn new() -> Self {
-        Self(
-            PoolManager::new(POOL_CAPACITY, POOL_JUMBO_CAPACITY).expect("benchmark pool allocates"),
-        )
+        Self::with_capacity(POOL_CAPACITY, POOL_JUMBO_CAPACITY)
+    }
+
+    /// A pool of `regular` regular slots (plus the two the service adds) and
+    /// `jumbo` jumbo slots. The free list is FIFO, so a pool larger than the
+    /// last-level cache hands out slots that are cold, as production does.
+    ///
+    /// # Panics
+    /// Panics if the pool cannot be allocated.
+    #[must_use]
+    pub fn with_capacity(regular: usize, jumbo: usize) -> Self {
+        Self(PoolManager::new(regular, jumbo).expect("benchmark pool allocates"))
     }
 }
 
@@ -293,29 +376,55 @@ impl Default for Pool {
     }
 }
 
+/// The process's private bytes (committed, unshared memory), for measuring what
+/// a pool holds resident: read it before and after `Pool::with_capacity`.
+///
+/// # Panics
+/// Panics if the query fails.
+#[must_use]
+pub fn private_bytes() -> u64 {
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+    let size = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).expect("struct size fits");
+    counters.cb = size;
+    // SAFETY: `counters` is a live PROCESS_MEMORY_COUNTERS_EX whose leading
+    // fields are a PROCESS_MEMORY_COUNTERS, and `size` is its size; the pseudo
+    // handle from GetCurrentProcess needs no close.
+    #[allow(unsafe_code)]
+    let succeeded = unsafe {
+        K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            std::ptr::from_mut(&mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+            size,
+        )
+    };
+    assert!(succeeded != 0, "the process memory query succeeds");
+    u64::try_from(counters.PrivateUsage).expect("usize fits u64")
+}
+
 /// A record deep-copied into a pooled slot. Dropping it recycles the slot.
 pub struct Copied(RawEtwEvent);
+
+impl Copied {
+    /// Recycles the slot, as the parser thread does when it is done with the
+    /// record.
+    #[inline(never)]
+    pub fn recycle(self) {}
+}
 
 /// Deep-copies `record` into a slot of `pool`, as the ETW callback does for a
 /// delivered record.
 ///
 /// # Panics
 /// Panics when the slot class the record needs is exhausted.
+#[inline(never)]
 #[must_use]
 pub fn copy_record(pool: &Pool, record: &Record) -> Copied {
-    let source = EVENT_RECORD {
-        EventHeader: record.header,
-        UserDataLength: record.payload_length,
-        // The `*mut` is a type requirement of EVENT_RECORD only; the copy reads
-        // the payload and never writes through this pointer.
-        UserData: record.payload.as_ptr().cast_mut().cast(),
-        ..Default::default()
-    };
     // SAFETY: `record` owns `payload` for this synchronous call, `UserDataLength`
     // is its length, the record advertises no extended data, and the pool slots
     // are separate allocations that cannot overlap the payload.
-    let event = unsafe { intake::copy_record(&source, &pool.0) }.expect("the pool has a free slot");
-    Copied(event)
+    #[allow(unsafe_code)]
+    let copied = unsafe { intake::copy_record(&record.native, &pool.0) };
+    Copied(copied.expect("the pool has a free slot"))
 }
 
 /// The single-pass plan compiled from the saved template of one event ID.
@@ -337,11 +446,26 @@ impl Plan {
         )
     }
 
-    /// Decodes one payload and returns its borrowed `TCP`, `Port`,
-    /// `InterfaceIP`, peer address, and `PacketData` fields, or `None` for a
-    /// payload the plan rejects.
+    /// Decodes one payload and returns the total length of its borrowed `TCP`,
+    /// `Port`, `InterfaceIP`, peer address, and `PacketData` fields, or `None`
+    /// for a payload the plan rejects. A length is a cheap value that still
+    /// depends on every field offset.
+    #[inline(never)]
     #[must_use]
-    pub fn decode<'a>(&self, payload: &'a [u8]) -> Option<[&'a [u8]; 5]> {
+    pub fn decode(&self, payload: &[u8]) -> Option<usize> {
+        let decoded = self.0.decode(payload).ok()?;
+        Some(
+            decoded.tcp.len()
+                + decoded.port.len()
+                + decoded.local.len()
+                + decoded.peer.len()
+                + decoded.packet.len(),
+        )
+    }
+
+    /// The five borrowed fields, for the tests.
+    #[cfg(test)]
+    fn fields<'a>(&self, payload: &'a [u8]) -> Option<[&'a [u8]; 5]> {
         let decoded = self.0.decode(payload).ok()?;
         Some([
             decoded.tcp,
@@ -384,6 +508,7 @@ impl Pipeline {
     ///
     /// # Panics
     /// Panics if the parser rejects the event.
+    #[inline(never)]
     pub fn parse<'e>(&mut self, event: &'e Copied) -> Decoded<'e> {
         Decoded(
             self.parser
@@ -397,9 +522,27 @@ impl Pipeline {
     ///
     /// # Panics
     /// Panics if the encoder rejects the view.
+    #[inline(never)]
     pub fn encode(&mut self, decoded: &Decoded<'_>) -> &[u8] {
         self.encoder
             .encode(&decoded.0)
+            .expect("the decoded event encodes")
+    }
+
+    /// Parse and encode on a record that stays leased: the production steps
+    /// without the recycle, and with the record already warm in cache.
+    ///
+    /// # Panics
+    /// Panics if the parser or the encoder rejects the event.
+    #[inline(never)]
+    pub fn parse_encode_retained(&mut self, event: &Copied) -> &[u8] {
+        let decoded = self
+            .parser
+            .parse(&event.0)
+            .expect("the record parses")
+            .expect("the event ID is supported");
+        self.encoder
+            .encode(&decoded)
             .expect("the decoded event encodes")
     }
 
@@ -408,6 +551,7 @@ impl Pipeline {
     ///
     /// # Panics
     /// Panics if the parser or the encoder rejects the event.
+    #[inline(never)]
     pub fn parse_and_encode(&mut self, event: Copied) -> &[u8] {
         crate::pipeline::parse_and_encode(&mut self.parser, event.0, &mut self.encoder)
             .expect("the record parses and encodes")
@@ -436,6 +580,7 @@ fn load_manifest() {
         let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         // SAFETY: `path` is a NUL-terminated UTF-16 string that outlives this
         // synchronous call and is kept alive for the process in `MANIFEST`.
+        #[allow(unsafe_code)]
         let status = unsafe { TdhLoadManifest(path.as_ptr()) };
         check_status(status, "load the benchmark manifest")
             .expect("the fixture manifest loads (run under cargo bench)");
@@ -448,31 +593,61 @@ mod tests {
     use super::*;
     use crate::etw::pool::REGULAR_BYTES;
 
+    /// Every record kind with its packet length, local address text, and peer
+    /// address text.
+    fn records() -> Vec<(Record, usize, &'static [u8], &'static [u8])> {
+        vec![
+            (Record::query(), 60, b"192.0.2.53\0", b"198.51.100.42\0"),
+            (Record::response(), 100, b"192.0.2.53\0", b"198.51.100.42\0"),
+            (
+                Record::jumbo_response(),
+                JUMBO_PACKET_LENGTH,
+                b"192.0.2.53\0",
+                b"198.51.100.42\0",
+            ),
+            (
+                Record::query_ipv6(),
+                60,
+                b"2001:db8::53\0",
+                b"2001:db8:1::42\0",
+            ),
+            (
+                Record::response_failure(),
+                37,
+                b"192.0.2.53\0",
+                b"198.51.100.42\0",
+            ),
+        ]
+    }
+
     #[test]
     fn packets_have_the_documented_lengths() {
         assert_eq!(query_packet().len(), 60);
         assert_eq!(response_packet().len(), 100);
+        assert_eq!(failure_packet().len(), 37);
         assert_eq!(jumbo_packet().len(), JUMBO_PACKET_LENGTH);
         assert!(Record::query().payload().len() <= REGULAR_BYTES);
+        assert!(Record::query_ipv6().payload().len() <= REGULAR_BYTES);
         assert!(Record::response().payload().len() <= REGULAR_BYTES);
+        assert!(Record::response_failure().payload().len() <= REGULAR_BYTES);
         assert!(Record::jumbo_response().payload().len() > REGULAR_BYTES);
     }
 
     #[test]
     fn records_decode_with_the_saved_template() {
-        for (record, packet_length) in [
-            (Record::query(), 60),
-            (Record::response(), 100),
-            (Record::jumbo_response(), JUMBO_PACKET_LENGTH),
-        ] {
+        for (record, packet_length, local, peer) in records() {
             let plan = Plan::new(record.event_id());
-            let fields = plan.decode(record.payload()).expect("the record decodes");
+            let fields = plan.fields(record.payload()).expect("the record decodes");
             assert_eq!(fields[0], [0]);
             assert_eq!(fields[1], CLIENT_PORT.to_le_bytes());
-            assert_eq!(fields[2], b"192.0.2.53\0");
-            assert_eq!(fields[3], b"198.51.100.42\0");
+            assert_eq!(fields[2], local);
+            assert_eq!(fields[3], peer);
             assert_eq!(fields[4].len(), packet_length);
             assert_eq!(fields[4][2] & 0x80 != 0, record.event_id() != 256);
+            assert_eq!(
+                plan.decode(record.payload()),
+                Some(1 + 4 + local.len() + peer.len() + packet_length)
+            );
         }
     }
 
@@ -480,18 +655,26 @@ mod tests {
     fn copied_records_parse_and_encode_through_the_manifest_schema() {
         let pool = Pool::new();
         let mut pipeline = Pipeline::new();
-        for (record, packet_length) in [
-            (Record::query(), 60),
-            (Record::response(), 100),
-            (Record::jumbo_response(), JUMBO_PACKET_LENGTH),
-        ] {
+        for (record, packet_length, _, _) in records() {
             let event = copy_record(&pool, &record);
             let decoded = pipeline.parse(&event);
             let frame = pipeline.encode(&decoded).to_vec();
             assert!(frame.len() > packet_length);
             assert!(frame.ends_with(&[0x78, 1]));
+            assert_eq!(pipeline.parse_encode_retained(&event), frame);
+            event.recycle();
             let event = copy_record(&pool, &record);
             assert_eq!(pipeline.parse_and_encode(event), frame);
         }
+    }
+
+    #[test]
+    fn a_larger_pool_holds_more_private_bytes() {
+        let before = private_bytes();
+        let pool = Pool::with_capacity(4_096, 0);
+        let after = private_bytes();
+        // 4,098 slots of 2,048 bytes; allow for allocator and OS rounding.
+        assert!(after - before >= 4_098 * 2_048 / 2, "{before} -> {after}");
+        drop(pool);
     }
 }

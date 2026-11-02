@@ -35,10 +35,11 @@ diag-timing = ["windows-sys/Win32_Media"]
 # the separate `fuzz/` crate. Never enable it in a shipped build.
 fuzzing = []
 # Benchmark only: exposes `#[doc(hidden)] etw_dnstap::bench` entry points used by
-# `benches/hot_path.rs`. It implies `fuzzing` because the records are built from
-# the saved DNS Server template that feature compiles in. Never enable it in a
+# `benches/hot_path.rs`. The records are built from the saved DNS Server template,
+# which `src/etw/decode.rs` compiles in for this feature too. The process memory
+# counters report the benchmark pool's private bytes. Never enable it in a
 # shipped build.
-bench = ["fuzzing"]
+bench = ["windows-sys/Win32_System_ProcessStatus"]
 
 [build-dependencies]
 # Compiles packaging/perfcounters/etw-dnstap-perf.rc (counter names) into the exe.
