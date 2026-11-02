@@ -152,6 +152,7 @@ These documents are in `plans/`. Each status block gives its execution state. Th
 | [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | Windows Performance Counters V2 provider for the `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. It replaces the earlier nine-counter proposal. |
 | [ETW minimum buffers plan](plans/etw-min-buffers-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | The `--etw-min-buffers` option for the ETW session's `MinimumBuffers`. The default `0` lets ETW choose. It also logs the buffer counts that ETW applied. |
 | [Response failure capture plan](plans/response-failure-capture-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `335e501` | Captures DNS Server event 258 (`RESPONSE_FAILURE`, for example SERVFAIL) as `CLIENT_RESPONSE`. Adds the `RESPONSE_FAILURE` keyword, removes the level filter, and extends the event-ID filter to 256, 257, and 258. |
+| [Code review remediation plan](plans/code-review-remediation-plan.md) | Proposed. Execution in progress on the `plan/code-review-remediation` branch | Nov 1, 2026 | written at `fc983ab` | Findings of the 2026-11-01 Rust code review (performance, error handling, style, security) and the phased remediation: SCM wait hint, revocation wording, LNK2047 detector, cleanups, benchmark, performance experiments, `pipeline.rs` split. |
 
 ## History
 
