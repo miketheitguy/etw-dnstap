@@ -88,7 +88,7 @@ fn assert_reset(error: &anyhow::Error, phase: &str) {
     assert!(error.chain().any(|cause| {
         cause
             .downcast_ref::<io::Error>()
-            .is_some_and(|source| source.raw_os_error() == Some(10054))
+            .is_some_and(|io_source| io_source.raw_os_error() == Some(10054))
     }));
 }
 

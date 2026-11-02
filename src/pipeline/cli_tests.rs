@@ -1,5 +1,10 @@
 //! Command-line boundaries: receiver syntax, repeated flags, and cross-field limits.
 
+#![expect(
+    clippy::shadow_unrelated,
+    reason = "each case parses new arguments into the same names; numbering the cases adds noise"
+)]
+
 use super::*;
 use clap::error::ErrorKind;
 

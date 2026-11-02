@@ -136,7 +136,7 @@ impl Record {
     }
 
     #[must_use]
-    pub fn event_id(&self) -> u16 {
+    pub const fn event_id(&self) -> u16 {
         self.native.EventHeader.EventDescriptor.Id
     }
 
@@ -390,13 +390,17 @@ pub fn private_bytes() -> u64 {
     let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
     let size = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).expect("struct size fits");
     counters.cb = size;
+    // SAFETY: GetCurrentProcess takes no arguments and returns a pseudo handle
+    // that needs no close.
+    #[allow(unsafe_code)]
+    let process = unsafe { GetCurrentProcess() };
     // SAFETY: `counters` is a live PROCESS_MEMORY_COUNTERS_EX whose leading
-    // fields are a PROCESS_MEMORY_COUNTERS, and `size` is its size; the pseudo
-    // handle from GetCurrentProcess needs no close.
+    // fields are a PROCESS_MEMORY_COUNTERS, and `size` is its size; `process` is
+    // the current-process pseudo handle.
     #[allow(unsafe_code)]
     let succeeded = unsafe {
         K32GetProcessMemoryInfo(
-            GetCurrentProcess(),
+            process,
             std::ptr::from_mut(&mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
             size,
         )
@@ -667,8 +671,8 @@ mod tests {
             assert!(frame.ends_with(&[0x78, 1]));
             assert_eq!(pipeline.parse_encode_retained(&event), frame);
             event.recycle();
-            let event = copy_record(&pool, &record);
-            assert_eq!(pipeline.parse_and_encode(event), frame);
+            let second = copy_record(&pool, &record);
+            assert_eq!(pipeline.parse_and_encode(second), frame);
         }
     }
 

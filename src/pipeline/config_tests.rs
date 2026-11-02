@@ -29,12 +29,12 @@ fn pipeline_config_validation_matches_the_command_line() -> Result<()> {
         "127.0.0.1:6000",
     ])?)?;
     assert_eq!(valid.capacity, 24_576);
-    let mut bad = valid.clone();
-    bad.capacity = 1;
-    assert!(bad.validate().is_err());
-    let mut bad = valid;
-    bad.receiver = "0.0.0.0:6000".parse()?;
-    assert!(bad.validate().is_err());
+    let mut bad_capacity = valid.clone();
+    bad_capacity.capacity = 1;
+    assert!(bad_capacity.validate().is_err());
+    let mut bad_receiver = valid;
+    bad_receiver.receiver = "0.0.0.0:6000".parse()?;
+    assert!(bad_receiver.validate().is_err());
     Ok(())
 }
 
@@ -164,7 +164,7 @@ fn etw_min_buffers_must_not_exceed_etw_max_buffers() {
     );
 
     // The default maximum of 64 applies when only the minimum is given.
-    let args = parse_args_from([
+    let min_only_args = parse_args_from([
         "etw-dnstap",
         "--receiver",
         "127.0.0.1:6000",
@@ -172,7 +172,10 @@ fn etw_min_buffers_must_not_exceed_etw_max_buffers() {
         "65",
     ])
     .expect("in range");
-    assert!(PipelineConfig::try_from(args).is_err(), "65 > default 64");
+    assert!(
+        PipelineConfig::try_from(min_only_args).is_err(),
+        "65 > default 64"
+    );
 }
 
 #[test]
@@ -181,9 +184,10 @@ fn session_name_defaults_and_can_be_overridden() {
     let args = CaptureArgs::try_parse_from(base).expect("default arguments");
     assert_eq!(args.session_name, DEFAULT_SESSION_NAME);
     assert_eq!(args.session_name, "EtwDnstap");
-    let args = CaptureArgs::try_parse_from([base[0], base[1], base[2], "--session-name", "Mine"])
-        .expect("explicit session name");
-    assert_eq!(args.session_name, "Mine");
+    let overridden =
+        CaptureArgs::try_parse_from([base[0], base[1], base[2], "--session-name", "Mine"])
+            .expect("explicit session name");
+    assert_eq!(overridden.session_name, "Mine");
 }
 
 #[test]

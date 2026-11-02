@@ -159,7 +159,7 @@ impl DrainTiming<'_> {
     }
 
     /// Called for each event handed to the consumer.
-    pub(crate) fn event(&mut self) {
+    pub(crate) const fn event(&mut self) {
         self.run += 1;
     }
 

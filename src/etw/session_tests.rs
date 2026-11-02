@@ -1,3 +1,8 @@
+#![expect(
+    clippy::shadow_unrelated,
+    reason = "sequential cases in one test rebind the same result name; numbering them adds noise"
+)]
+
 use super::*;
 
 use crate::etw::test_support::{offset_u32, utf16_nul};

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::shadow_unrelated,
+    reason = "each step rebuilds the by-value event or field list from the same fixture; numbering the steps adds noise"
+)]
+
 use super::*;
 use crate::{
     dnstap::Encoder,

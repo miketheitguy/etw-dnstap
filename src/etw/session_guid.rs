@@ -101,12 +101,12 @@ mod tests {
 
     #[test]
     fn version_and_variant_bits_are_set() {
-        let guid = guid_from_digest(&[0xFF; 20]);
-        assert_eq!(guid.data3 >> 12, 5);
-        assert_eq!(guid.data4[0] & 0xC0, 0x80);
-        let guid = guid_from_digest(&[0; 20]);
-        assert_eq!(guid.data3 >> 12, 5);
-        assert_eq!(guid.data4[0] & 0xC0, 0x80);
+        let ones = guid_from_digest(&[0xFF; 20]);
+        assert_eq!(ones.data3 >> 12, 5);
+        assert_eq!(ones.data4[0] & 0xC0, 0x80);
+        let zeros = guid_from_digest(&[0; 20]);
+        assert_eq!(zeros.data3 >> 12, 5);
+        assert_eq!(zeros.data4[0] & 0xC0, 0x80);
     }
 
     #[test]

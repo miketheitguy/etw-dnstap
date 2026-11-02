@@ -88,7 +88,7 @@ fn pipeline_runs_a_fake_producer_against_a_loopback_receiver() -> Result<()> {
     let stop = AtomicBool::new(true);
     run_pipeline(
         &config,
-        |address, _stats| crate::network::Connection::connect(address),
+        |target, _stats| crate::network::Connection::connect(target),
         |_start| {
             Ok(FakeProducer {
                 stopped: producer_stopped,
@@ -198,8 +198,8 @@ fn applied_buffer_counts_are_logged_only_after_a_successful_query() {
     assert!(text.contains("etw_buffers_allocated=14"), "{text}");
     assert_eq!(text.lines().count(), 1, "{text}");
 
-    let text = logged_by_first_query(Err(Win32Status(5)));
-    assert!(text.is_empty(), "{text}");
+    let failed_text = logged_by_first_query(Err(Win32Status(5)));
+    assert!(failed_text.is_empty(), "{failed_text}");
 }
 
 #[cfg(feature = "diag-timing")]

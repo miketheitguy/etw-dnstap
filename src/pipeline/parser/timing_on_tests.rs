@@ -22,8 +22,8 @@ fn diag_timing_counts_parks_runs_and_wake_lengths() {
             match idle_calls {
                 1 => {}
                 2 => {
-                    for value in 0..3 {
-                        send.try_send(value).expect("space available");
+                    for item in 0..3 {
+                        send.try_send(item).expect("space available");
                     }
                 }
                 _ => done.store(true, Ordering::Release),

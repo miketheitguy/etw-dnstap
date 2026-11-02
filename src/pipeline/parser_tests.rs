@@ -111,8 +111,8 @@ fn idle_parser_drains_final_enqueue_before_joined_producer_completion() -> Resul
             let result = drain_queue(&queue, &done, &DiagTiming::default(), |value| {
                 if let Some(value) = value {
                     values.push(value);
-                } else if let Some(send) = idle_send.take() {
-                    send.send(()).context("report idle parser")?;
+                } else if let Some(idle_sender) = idle_send.take() {
+                    idle_sender.send(()).context("report idle parser")?;
                 }
                 Ok(())
             });

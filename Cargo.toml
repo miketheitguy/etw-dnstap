@@ -92,3 +92,6 @@ unsafe_op_in_unsafe_fn = "deny"
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "warn"
+missing_const_for_fn = "warn"
+shadow_unrelated = "warn"

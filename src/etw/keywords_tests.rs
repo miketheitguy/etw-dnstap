@@ -1,3 +1,8 @@
+#![expect(
+    clippy::shadow_unrelated,
+    reason = "each case rebinds the same name for its own input; numbering the cases adds noise"
+)]
+
 use super::*;
 use crate::etw::test_support::{offset_u32, utf16_nul_bytes};
 use anyhow::anyhow;

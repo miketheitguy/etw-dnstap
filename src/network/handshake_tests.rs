@@ -1,5 +1,10 @@
 //! Negative and fragmentation cases for the Frame Streams control handshake.
 
+#![expect(
+    clippy::shadow_unrelated,
+    reason = "each case serves a new receiver and rebinds the same names; numbering the cases adds noise"
+)]
+
 use super::test_support::handshake;
 use super::*;
 use proptest::prelude::*;
