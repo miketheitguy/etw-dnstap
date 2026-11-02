@@ -391,6 +391,32 @@ fn reclaim_decision(
     Ok(())
 }
 
+/// The source of [`RawEtwEvent`]s the pipeline supervises. [`Capture`] is the
+/// production implementation; pipeline tests supply fakes.
+pub(crate) trait EventProducer {
+    /// The keyword masks the producer subscribed with, for the startup log.
+    fn keywords(&self) -> KeywordSelection;
+    /// True once the producer stopped delivering on its own.
+    fn is_finished(&self) -> bool;
+    /// Stops delivery and waits until no producer thread can still send.
+    ///
+    /// # Errors
+    /// Returns an error if the source could not be stopped cleanly.
+    fn stop(&mut self) -> Result<()>;
+    /// Refreshes the source's own loss counters into the shared counters.
+    ///
+    /// # Errors
+    /// Returns the native status when the query fails.
+    fn query_statistics(&self) -> Result<(), Win32Status> {
+        Ok(())
+    }
+    /// Why capture can no longer be trusted (the process the source filters on
+    /// stopped or was replaced), or `None`.
+    fn target_change(&self) -> Option<TargetChange> {
+        None
+    }
+}
+
 /// Owns only the session created by its successful `StartTrace` call.
 pub(crate) struct Capture {
     session: Option<CONTROLTRACE_HANDLE>,
@@ -704,20 +730,22 @@ impl Capture {
         );
         Ok(capture)
     }
+}
 
+impl EventProducer for Capture {
     /// The keyword masks this session enabled and whether they are the fallback.
-    pub(crate) const fn keywords(&self) -> KeywordSelection {
+    fn keywords(&self) -> KeywordSelection {
         self.keywords
     }
 
-    pub(crate) fn is_finished(&self) -> bool {
+    fn is_finished(&self) -> bool {
         self.worker.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     /// Queries the live session and stores ETW's lost-event and buffer counters.
     /// The error carries the Win32 status; failures are also counted in
     /// `stats_errors`.
-    pub(crate) fn query_statistics(&self) -> Result<(), Win32Status> {
+    fn query_statistics(&self) -> Result<(), Win32Status> {
         let Some(session) = self.session else {
             return Err(Win32Status(ERROR_INVALID_HANDLE));
         };
@@ -749,7 +777,7 @@ impl Capture {
     /// Re-reads the DNS Server service process ID. Returns the change when the
     /// service stopped or restarted, which invalidates the PID filter. A failed
     /// query is inconclusive and returns `None`.
-    pub(crate) fn target_change(&self) -> Option<TargetChange> {
+    fn target_change(&self) -> Option<TargetChange> {
         classify_target(self.dns_pid, service_process_id_raw(DNS_SERVICE).ok())
     }
 
@@ -758,7 +786,7 @@ impl Capture {
     /// Order: `ControlTrace(STOP)`, then a bounded wait for `ProcessTrace` to
     /// deliver its remaining buffers and return on its own, then `CloseTrace`
     /// (which only forces the worker out if the wait expired), then the join.
-    pub(crate) fn stop(&mut self) -> Result<()> {
+    fn stop(&mut self) -> Result<()> {
         let mut failure = None;
         let mut session_stopped = false;
         if let Some(session) = self.session.take() {

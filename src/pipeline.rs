@@ -20,8 +20,8 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 use crate::{
     dnstap::Encoder,
     etw::{
-        self, Capture, CaptureCounters, KeywordSelection, PoolManager, RawEtwEvent, SessionConfig,
-        TargetChange, Win32Status,
+        self, Capture, CaptureCounters, EventProducer, KeywordSelection, PoolManager, RawEtwEvent,
+        SessionConfig,
     },
     network::{NetworkSink, ReceiverConfig},
     perfcounters::{CounterSink, CounterSources, PerfPublisher, snapshot},
@@ -539,54 +539,6 @@ struct ProducerStart<'a> {
     /// Read only by diagnostic producers.
     #[cfg(feature = "diag-timing")]
     pub(crate) diag: DiagContext,
-}
-
-/// The source of [`RawEtwEvent`]s the pipeline supervises. [`Capture`] is the
-/// production implementation; tests supply fakes.
-trait EventProducer {
-    /// The keyword masks the producer subscribed with, for the startup log.
-    fn keywords(&self) -> KeywordSelection;
-    /// True once the producer stopped delivering on its own.
-    fn is_finished(&self) -> bool;
-    /// Stops delivery and waits until no producer thread can still send.
-    ///
-    /// # Errors
-    /// Returns an error if the source could not be stopped cleanly.
-    fn stop(&mut self) -> Result<()>;
-    /// Refreshes the source's own loss counters into the shared counters.
-    ///
-    /// # Errors
-    /// Returns the native status when the query fails.
-    fn query_statistics(&self) -> Result<(), Win32Status> {
-        Ok(())
-    }
-    /// Why capture can no longer be trusted (the process the source filters on
-    /// stopped or was replaced), or `None`.
-    fn target_change(&self) -> Option<TargetChange> {
-        None
-    }
-}
-
-impl EventProducer for Capture {
-    fn keywords(&self) -> KeywordSelection {
-        Capture::keywords(self)
-    }
-
-    fn is_finished(&self) -> bool {
-        Capture::is_finished(self)
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        Capture::stop(self)
-    }
-
-    fn query_statistics(&self) -> Result<(), Win32Status> {
-        Capture::query_statistics(self)
-    }
-
-    fn target_change(&self) -> Option<TargetChange> {
-        Capture::target_change(self)
-    }
 }
 
 pub(crate) fn run_capture(
@@ -1432,6 +1384,7 @@ mod cli_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::etw::{TargetChange, Win32Status};
     use std::{
         io::{Read, Write},
         net::TcpListener,
