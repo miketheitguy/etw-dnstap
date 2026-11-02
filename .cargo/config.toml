@@ -27,7 +27,8 @@ rustflags = [
     # provider) ships its x86_64 assembly as prebuilt NASM objects without
     # EH-continuation metadata, so /GUARD:EHCONT alone rejects them (LNK2047).
     # This flag links anyway: the rest of the image keeps EHCONT metadata and
-    # those routines never unwind (release builds abort on panic). The linker
+    # no panic or exception unwinds through those routines in the release
+    # profile (panic = "abort", see [profile.release] in Cargo.toml). The linker
     # still prints one LNK2047 line per object, which rustc forwards as a
     # "linker stdout" warning. (ring's C objects also draw LNK4291; the
     # linker generates conservative metadata for those, so they need no

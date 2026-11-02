@@ -76,7 +76,7 @@ function ConvertTo-ExceptionKey([string]$Module) {
     $m = [regex]::Match($Module, '^(?<archive>[^()]+)\((?<object>[^()]+)\)$')
     if (-not $m.Success) { return $Module }
     $archive = $m.Groups['archive'].Value -replace '^.*[\\/]', ''
-    $object = $m.Groups['object'].Value
+    $object = $m.Groups['object'].Value -replace '^.*[\\/]', ''
     # lib<crate>-<16 hex>.rlib -> lib<crate>.rlib (also .lib).
     $archive = [regex]::Replace($archive, '-[0-9a-f]{16}(\.(rlib|lib))$', '$1')
     return "$archive($object)"
@@ -124,8 +124,8 @@ $allowed = Read-Allowlist $allowlistFile
 $unexpected = @($observedKeys | Where-Object { $allowed -notcontains $_ })
 $missing = @($allowed | Where-Object { $observedKeys -notcontains $_ })
 
-$unexpectedText = if ($unexpected.Count -eq 0) { 'none' } else { $unexpected -join ', ' }
-$missingText = if ($missing.Count -eq 0) { 'none' } else { $missing -join ', ' }
+$unexpectedText = if ($unexpected.Count -eq 0) { 'none' } else { ($unexpected -join ', ') + '. Review, then add it to scripts/ci/link-exceptions.txt (procedure in its header).' }
+$missingText = if ($missing.Count -eq 0) { 'none' } else { ($missing -join ', ') + '. Delete the stale line from scripts/ci/link-exceptions.txt (procedure in its header).' }
 Add-Check 'no LNK2047 object outside the allowlist' ($unexpected.Count -eq 0) ("unexpected: {0}" -f $unexpectedText)
 Add-Check 'every allowlisted object was reported (allowlist not stale)' ($missing.Count -eq 0) ("missing: {0}" -f $missingText)
 Add-Check 'LNK2047 set equals the allowlist' ($unexpected.Count -eq 0 -and $missing.Count -eq 0) ("{0} LNK2047 line(s), {1} distinct object(s), {2} allowlisted" -f $lnk2047Lines, $observedKeys.Count, $allowed.Count)
