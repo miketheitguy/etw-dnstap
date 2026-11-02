@@ -38,7 +38,35 @@ pub(crate) struct PoolManager {
 }
 
 impl PoolManager {
+    /// Slots allocated between two progress reports. The startup budget in
+    /// `pipeline::startup_budget` allows one second per interval, so a report
+    /// arrives at least once per budgeted second of allocation.
+    pub(crate) const PROGRESS_INTERVAL: usize = 16_384;
+
+    /// Allocates a pool without progress reports. The pipeline always reports
+    /// progress, so this constructor serves the tests.
+    #[cfg(test)]
     pub(crate) fn new(capacity: usize, jumbo_capacity: usize) -> Result<Arc<Self>> {
+        Self::with_progress(capacity, jumbo_capacity, || Ok(()))
+    }
+
+    /// Allocates and touches every slot before any callback can run, calling
+    /// `progress` after each [`Self::PROGRESS_INTERVAL`] slots (regular and jumbo
+    /// counted together). An error from `progress` stops the allocation.
+    pub(crate) fn with_progress(
+        capacity: usize,
+        jumbo_capacity: usize,
+        progress: impl FnMut() -> Result<()>,
+    ) -> Result<Arc<Self>> {
+        Self::with_progress_interval(capacity, jumbo_capacity, Self::PROGRESS_INTERVAL, progress)
+    }
+
+    fn with_progress_interval(
+        capacity: usize,
+        jumbo_capacity: usize,
+        interval: usize,
+        mut progress: impl FnMut() -> Result<()>,
+    ) -> Result<Arc<Self>> {
         ensure!(
             (1..=MAX_CAPACITY).contains(&capacity),
             "invalid channel capacity"
@@ -47,15 +75,18 @@ impl PoolManager {
             jumbo_capacity <= usize::from(MAX_JUMBO_CAPACITY),
             "invalid jumbo capacity"
         );
+        ensure!(interval != 0, "invalid progress interval");
         let pool = Arc::new(Self {
             regular: ArrayQueue::new(capacity + 2),
             jumbo: (jumbo_capacity != 0).then(|| ArrayQueue::new(jumbo_capacity)),
         });
-        for _ in 0..capacity + 2 {
-            pool.add_slot(REGULAR_BYTES, false)?;
-        }
-        for _ in 0..jumbo_capacity {
-            pool.add_slot(JUMBO_BYTES, true)?;
+        let regular = (0..capacity + 2).map(|_| (REGULAR_BYTES, false));
+        let jumbo = (0..jumbo_capacity).map(|_| (JUMBO_BYTES, true));
+        for (allocated, (size, is_jumbo)) in (1..).zip(regular.chain(jumbo)) {
+            pool.add_slot(size, is_jumbo)?;
+            if allocated % interval == 0 {
+                progress()?;
+            }
         }
         Ok(pool)
     }
@@ -231,5 +262,79 @@ mod tests {
     fn x64_storage_sizes_match_documented_budget() {
         assert_eq!(std::mem::size_of::<Slot>(), 408);
         assert_eq!(std::mem::size_of::<super::super::RawEtwEvent>(), 104);
+    }
+
+    /// Allocates with `interval` and returns how often progress was reported.
+    fn progress_reports(capacity: usize, jumbo: usize, interval: usize) -> usize {
+        let mut reports = 0;
+        let pool = PoolManager::with_progress_interval(capacity, jumbo, interval, || {
+            reports += 1;
+            Ok(())
+        })
+        .expect("bounded test pool");
+        assert!(pool.acquire(1).is_some());
+        reports
+    }
+
+    #[test]
+    fn progress_is_reported_once_per_interval_over_regular_and_jumbo_slots() {
+        // capacity + 2 regular slots plus the jumbo slots, integer-divided.
+        assert_eq!(progress_reports(1, 0, 4), 0);
+        assert_eq!(progress_reports(2, 0, 4), 1);
+        assert_eq!(progress_reports(6, 0, 4), 2);
+        assert_eq!(progress_reports(6, 4, 4), 3);
+        assert_eq!(progress_reports(5, 1, 4), 2);
+        assert_eq!(progress_reports(1, 1, 1), 4);
+    }
+
+    #[test]
+    fn new_reports_no_progress_below_the_interval_and_once_at_it() {
+        let mut reports = 0;
+        drop(PoolManager::with_progress(1, 1, || {
+            reports += 1;
+            Ok(())
+        }));
+        assert_eq!(reports, 0);
+        // Exactly PROGRESS_INTERVAL slots: capacity + 2 regular, no jumbo.
+        let mut reports = 0;
+        drop(PoolManager::with_progress(
+            PoolManager::PROGRESS_INTERVAL - 2,
+            0,
+            || {
+                reports += 1;
+                Ok(())
+            },
+        ));
+        assert_eq!(reports, 1);
+    }
+
+    #[test]
+    fn progress_matches_the_startup_budget_at_the_maximum_capacity() {
+        // 262_144 + 2 regular slots and 256 jumbo slots: 16 reports, one per
+        // budgeted second (the budget allows 16 s of allocation at this size).
+        let slots = MAX_CAPACITY + 2 + usize::from(MAX_JUMBO_CAPACITY);
+        assert_eq!(slots / PoolManager::PROGRESS_INTERVAL, 16);
+        assert_eq!(MAX_CAPACITY.div_ceil(PoolManager::PROGRESS_INTERVAL), 16);
+    }
+
+    #[test]
+    fn a_failed_progress_report_stops_the_allocation() {
+        let mut reports = 0;
+        let error = PoolManager::with_progress_interval(6, 0, 2, || {
+            reports += 1;
+            if reports == 2 {
+                anyhow::bail!("status link lost")
+            }
+            Ok(())
+        })
+        .err()
+        .expect("allocation stops at the failed report");
+        assert_eq!(reports, 2);
+        assert!(error.to_string().contains("status link lost"));
+    }
+
+    #[test]
+    fn a_zero_progress_interval_is_rejected() {
+        assert!(PoolManager::with_progress_interval(1, 0, 0, || Ok(())).is_err());
     }
 }

@@ -8,6 +8,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, ensure};
@@ -116,7 +117,12 @@ unsafe extern "system" fn service_main(_count: u32, _arguments: *mut *mut u16) {
     let result = run_registered(handle);
     let final_guard = pipeline::ShutdownWatchdog::arm();
     if result.is_err() {
-        let _status = report_status(handle, SERVICE_STOP_PENDING, false);
+        let _status = report_status(
+            handle,
+            SERVICE_STOP_PENDING,
+            false,
+            pipeline::SHUTDOWN_TIMEOUT,
+        );
     }
     if let Err(error) = &result {
         report_failure(error);
@@ -126,7 +132,7 @@ unsafe extern "system" fn service_main(_count: u32, _arguments: *mut *mut u16) {
     let failed = result.is_err();
     // SCM may terminate the process after Stopped, so publish the result first.
     save_result(result);
-    if let Err(error) = report_status(handle, SERVICE_STOPPED, failed) {
+    if let Err(error) = report_status(handle, SERVICE_STOPPED, failed, Duration::ZERO) {
         save_result(Err(error));
     }
     // This retires only the supervisor; all capture work and result publication
@@ -139,7 +145,14 @@ unsafe extern "system" fn service_main(_count: u32, _arguments: *mut *mut u16) {
 fn run_registered(handle: SERVICE_STATUS_HANDLE) -> Result<()> {
     let mut startup_guard = Some(pipeline::ShutdownWatchdog::arm());
     let result = (|| {
-        report_status(handle, SERVICE_START_PENDING, false)?;
+        // The capacity, and so the full startup budget, is not known until the
+        // arguments are taken below; the base budget covers the steps before.
+        report_status(
+            handle,
+            SERVICE_START_PENDING,
+            false,
+            pipeline::STARTUP_BASE_BUDGET,
+        )?;
         // Identity is verified before the arguments are used: the command line
         // is already parsed, but an unprivileged or misconfigured host never
         // acts on its configuration.
@@ -151,26 +164,36 @@ fn run_registered(handle: SERVICE_STATUS_HANDLE) -> Result<()> {
             .context("missing service arguments")?
             .map_err(|text| anyhow!("invalid service arguments: {text}"))?;
         // The startup budget grows with --capacity, because the event pool is
-        // allocated and touched before the service reports Running.
+        // allocated and touched before the service reports Running. Tell the
+        // SCM the full budget now, with an advanced checkpoint.
+        let budget = pipeline::startup_budget(&args);
+        report_status(handle, SERVICE_START_PENDING, false, budget)?;
         if let Some(guard) = startup_guard.take() {
             guard.disarm()?;
         }
-        startup_guard = Some(pipeline::ShutdownWatchdog::arm_for(
-            "startup",
-            pipeline::startup_budget(&args),
-        ));
+        startup_guard = Some(pipeline::ShutdownWatchdog::arm_for("startup", budget));
         let stop = STOP.get().context("missing service stop state")?;
         pipeline::run_capture(
             args,
             stop,
+            // Pool allocation is the long step: one report per allocated
+            // progress interval keeps the checkpoint moving inside the hint.
+            || report_status(handle, SERVICE_START_PENDING, false, budget),
             || {
-                report_status(handle, SERVICE_RUNNING, false)?;
+                report_status(handle, SERVICE_RUNNING, false, Duration::ZERO)?;
                 if let Some(guard) = startup_guard.take() {
                     guard.disarm()?;
                 }
                 Ok(())
             },
-            || report_status(handle, SERVICE_STOP_PENDING, false),
+            || {
+                report_status(
+                    handle,
+                    SERVICE_STOP_PENDING,
+                    false,
+                    pipeline::SHUTDOWN_TIMEOUT,
+                )
+            },
         )
     })();
     if let Some(guard) = startup_guard.take() {
@@ -223,7 +246,23 @@ fn checkpoint_for(counter: &AtomicU32, state: u32) -> u32 {
     }
 }
 
-fn status_record(state: u32, failed: bool, checkpoint: u32) -> SERVICE_STATUS {
+/// Wait hint for a pending state, in milliseconds. The hint is the watchdog
+/// budget of the same phase (`STARTUP_BASE_BUDGET` before the arguments are
+/// known, `startup_budget` after, `SHUTDOWN_TIMEOUT` for a stop) rather than a
+/// fixed value: the watchdog measures from the start of the phase and aborts
+/// the process when its budget expires, so a control program that waits for
+/// the hint after the latest report never outlives a hung service, and never
+/// gives up on a start or stop the service still allows itself. Between
+/// reports, the pool allocation advances the checkpoint once per
+/// `PoolManager::PROGRESS_INTERVAL` slots, which the budget prices at one
+/// second each, so the hint also holds on a host that allocates slowly.
+fn wait_hint_ms(budget: Duration) -> u32 {
+    u32::try_from(budget.as_millis()).unwrap_or(u32::MAX)
+}
+
+/// The status record for `state`. `budget` sets the wait hint of a pending
+/// state and is ignored for a settled one, whose hint must be zero.
+fn status_record(state: u32, failed: bool, checkpoint: u32, budget: Duration) -> SERVICE_STATUS {
     let pending = is_pending(state);
     SERVICE_STATUS {
         dwServiceType: SERVICE_WIN32_OWN_PROCESS,
@@ -240,12 +279,19 @@ fn status_record(state: u32, failed: bool, checkpoint: u32) -> SERVICE_STATUS {
         },
         dwServiceSpecificExitCode: u32::from(failed),
         dwCheckPoint: checkpoint,
-        dwWaitHint: if pending { 15_000 } else { 0 },
+        dwWaitHint: if pending { wait_hint_ms(budget) } else { 0 },
     }
 }
 
-fn report_status(handle: SERVICE_STATUS_HANDLE, state: u32, failed: bool) -> Result<()> {
-    let status = status_record(state, failed, checkpoint_for(&CHECKPOINT, state));
+/// Reports `state` to the SCM. `budget` is the wait hint for a pending state
+/// (see [`wait_hint_ms`]); pass [`Duration::ZERO`] for a settled state.
+fn report_status(
+    handle: SERVICE_STATUS_HANDLE,
+    state: u32,
+    failed: bool,
+    budget: Duration,
+) -> Result<()> {
+    let status = status_record(state, failed, checkpoint_for(&CHECKPOINT, state), budget);
     // SAFETY: This handle was returned by RegisterServiceCtrlHandlerExW for this
     // ServiceMain; it is borrowed (never CloseHandle'd). status is initialized.
     if unsafe { SetServiceStatus(handle, &raw const status) } == 0 {
@@ -810,19 +856,71 @@ mod tests {
 
     #[test]
     fn pending_status_accepts_no_controls_and_failure_is_reported() {
-        let pending = status_record(SERVICE_START_PENDING, false, 1);
+        let pending = status_record(SERVICE_START_PENDING, false, 1, Duration::from_secs(12));
         assert_eq!(pending.dwControlsAccepted, 0);
-        assert!(pending.dwWaitHint > 0);
+        assert_eq!(pending.dwWaitHint, 12_000);
         assert_eq!(pending.dwCheckPoint, 1);
-        let running = status_record(SERVICE_RUNNING, false, 0);
+        let running = status_record(SERVICE_RUNNING, false, 0, Duration::ZERO);
         assert_eq!(
             running.dwControlsAccepted,
             SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
         );
-        let stopped = status_record(SERVICE_STOPPED, true, 0);
+        assert_eq!(running.dwWaitHint, 0);
+        let stopped = status_record(SERVICE_STOPPED, true, 0, Duration::ZERO);
         assert_eq!(stopped.dwWin32ExitCode, ERROR_SERVICE_SPECIFIC_ERROR);
         assert_eq!(stopped.dwServiceSpecificExitCode, 1);
         assert_eq!(stopped.dwCheckPoint, 0);
+        assert_eq!(stopped.dwWaitHint, 0);
+    }
+
+    #[test]
+    fn settled_states_report_no_wait_hint_even_with_a_budget() {
+        for state in [SERVICE_RUNNING, SERVICE_STOPPED] {
+            let record = status_record(state, false, 0, Duration::from_secs(26));
+            assert_eq!(record.dwWaitHint, 0, "state {state}");
+            assert_eq!(record.dwCheckPoint, 0, "state {state}");
+        }
+    }
+
+    #[test]
+    fn wait_hint_is_the_phase_budget_in_milliseconds() {
+        assert_eq!(wait_hint_ms(pipeline::STARTUP_BASE_BUDGET), 10_000);
+        assert_eq!(wait_hint_ms(pipeline::SHUTDOWN_TIMEOUT), 10_000);
+        // startup_budget at the default and maximum --capacity (its scaling is
+        // tested with the pipeline): 12 s and 26 s.
+        assert_eq!(wait_hint_ms(Duration::from_secs(12)), 12_000);
+        assert_eq!(wait_hint_ms(Duration::from_secs(26)), 26_000);
+        assert_eq!(wait_hint_ms(Duration::from_millis(1_500)), 1_500);
+        assert_eq!(wait_hint_ms(Duration::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn startup_reports_advance_one_checkpoint_per_progress_report() {
+        // The sequence run_registered produces at the maximum capacity: the base
+        // report, the budget report, one progress report per allocated
+        // interval (16 at 262,144 + 2 regular and 256 jumbo slots), Running.
+        let counter = AtomicU32::new(0);
+        let budget = Duration::from_secs(26);
+        let report = |state: u32, budget: Duration| {
+            status_record(state, false, checkpoint_for(&counter, state), budget)
+        };
+        let base = report(SERVICE_START_PENDING, pipeline::STARTUP_BASE_BUDGET);
+        assert_eq!((base.dwCheckPoint, base.dwWaitHint), (1, 10_000));
+        let budgeted = report(SERVICE_START_PENDING, budget);
+        assert_eq!((budgeted.dwCheckPoint, budgeted.dwWaitHint), (2, 26_000));
+        let slots = crate::etw::MAX_CAPACITY + 2 + usize::from(crate::etw::MAX_JUMBO_CAPACITY);
+        let progress_reports = slots / crate::etw::PoolManager::PROGRESS_INTERVAL;
+        assert_eq!(progress_reports, 16);
+        for expected in 3..=u32::try_from(progress_reports + 2).expect("small count") {
+            let progress = report(SERVICE_START_PENDING, budget);
+            assert_eq!(progress.dwCheckPoint, expected);
+            assert_eq!(progress.dwWaitHint, 26_000);
+        }
+        let running = report(SERVICE_RUNNING, Duration::ZERO);
+        assert_eq!((running.dwCheckPoint, running.dwWaitHint), (0, 0));
+        // A later stop starts a fresh pending sequence with the shutdown budget.
+        let stopping = report(SERVICE_STOP_PENDING, pipeline::SHUTDOWN_TIMEOUT);
+        assert_eq!((stopping.dwCheckPoint, stopping.dwWaitHint), (1, 10_000));
     }
 
     #[test]

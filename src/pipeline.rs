@@ -441,14 +441,22 @@ impl DiagTiming {
     }
 }
 
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Startup budget: the base timeout plus one second per 16384 channel slots,
-/// because allocating and touching the event pool (about 2.3 KiB per slot, up to
-/// roughly 640 MB) dominates startup at large `--capacity`.
+/// Startup budget before `--capacity` is known: the identity checks, the
+/// argument hand-over, the receiver connection, and the capture start.
+pub(crate) const STARTUP_BASE_BUDGET: Duration = Duration::from_secs(10);
+
+/// Startup budget: the base budget plus one second per
+/// [`PoolManager::PROGRESS_INTERVAL`] channel slots, because allocating and
+/// touching the event pool (about 2.3 KiB per slot, up to roughly 640 MB)
+/// dominates startup at large `--capacity`. The pool reports progress once per
+/// interval, so the service refreshes its SCM checkpoint at least once per
+/// budgeted second of allocation.
 pub(crate) fn startup_budget(args: &CaptureArgs) -> Duration {
     let slots = u64::try_from(args.capacity).unwrap_or(u64::MAX);
-    SHUTDOWN_TIMEOUT + Duration::from_secs(slots.div_ceil(16_384))
+    let interval = u64::try_from(PoolManager::PROGRESS_INTERVAL).unwrap_or(u64::MAX);
+    STARTUP_BASE_BUDGET + Duration::from_secs(slots.div_ceil(interval))
 }
 
 /// Records the abort in the Event Log (best effort, bounded) and terminates.
@@ -588,9 +596,26 @@ impl EventProducer for Capture {
     }
 }
 
+/// Callbacks the pipeline fires as it changes state. The service layer maps
+/// them to SCM status reports; tests pass no-op closures.
+struct Lifecycle<Progress, Running, Stopping> {
+    /// Called from the pool allocation once per
+    /// [`PoolManager::PROGRESS_INTERVAL`] allocated slots.
+    progress: Progress,
+    /// Called once capture is delivering events.
+    running: Running,
+    /// Called when shutdown begins.
+    stopping: Stopping,
+}
+
+/// Runs capture until `stop` is set or the pipeline ends. `on_progress` is
+/// called from the pool allocation once per [`PoolManager::PROGRESS_INTERVAL`]
+/// slots, `on_running` once capture is delivering events, and `on_stopping`
+/// when shutdown begins. The service layer maps them to SCM status reports.
 pub(crate) fn run_capture(
     args: CaptureArgs,
     stop: &AtomicBool,
+    on_progress: impl FnMut() -> Result<()>,
     on_running: impl FnOnce() -> Result<()>,
     on_stopping: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
@@ -619,8 +644,11 @@ pub(crate) fn run_capture(
             )
         },
         stop,
-        on_running,
-        on_stopping,
+        Lifecycle {
+            progress: on_progress,
+            running: on_running,
+            stopping: on_stopping,
+        },
         PerfPublisher::start_or_warn,
     )
 }
@@ -638,28 +666,41 @@ fn receiver_config(config: &PipelineConfig, address: SocketAddr) -> io::Result<R
 /// before capture starts (it may return a sink that reconnects on its own and
 /// reports through the shared [`SinkStats`]), `start` begins event delivery, and
 /// the call returns after both workers have stopped and the counters have been
-/// reported. `perf` starts the performance counter publisher for the named
-/// instance, or returns `None` when counters are unavailable.
+/// reported. `lifecycle` carries the state callbacks (see [`Lifecycle`]). `perf`
+/// starts the performance counter publisher for the named instance, or returns
+/// `None` when counters are unavailable.
 fn run_pipeline<S, P>(
     config: &PipelineConfig,
     connect: impl FnOnce(SocketAddr, Arc<SinkStats>) -> io::Result<S>,
     start: impl FnOnce(ProducerStart<'_>) -> Result<P>,
     stop: &AtomicBool,
-    on_running: impl FnOnce() -> Result<()>,
-    on_stopping: impl FnOnce() -> Result<()>,
+    lifecycle: Lifecycle<
+        impl FnMut() -> Result<()>,
+        impl FnOnce() -> Result<()>,
+        impl FnOnce() -> Result<()>,
+    >,
     perf: impl FnOnce(&str, CounterSources) -> Option<Box<dyn CounterSink>>,
 ) -> Result<()>
 where
     S: FrameSink + Send + 'static,
     P: EventProducer,
 {
+    let Lifecycle {
+        progress: on_progress,
+        running: on_running,
+        stopping: on_stopping,
+    } = lifecycle;
     // Declared before any worker thread so it drops after both are joined.
     let _diag_levers = begin_diag_levers(config.diag)?;
     let sink_stats = Arc::new(SinkStats::default());
     let writer = connect(config.receiver, Arc::clone(&sink_stats))
         .context("connect/negotiation with dnstap receiver")?;
     let (sender, queue) = crossbeam_channel::bounded(config.capacity);
-    let pool = PoolManager::new(config.capacity, usize::from(config.jumbo_capacity))?;
+    let pool = PoolManager::with_progress(
+        config.capacity,
+        usize::from(config.jumbo_capacity),
+        on_progress,
+    )?;
     let producer_done = Arc::new(AtomicBool::new(false));
     let capture_counts = Arc::new(CaptureCounters::default());
     let parse_counts = Arc::new(ParseCounters::default());
@@ -1589,8 +1630,11 @@ mod tests {
                 })
             },
             &stop,
-            || Ok(()),
-            || Ok(()),
+            Lifecycle {
+                progress: || Ok(()),
+                running: || Ok(()),
+                stopping: || Ok(()),
+            },
             |_name, _sources| None,
         )?;
         receiver.join().expect("receiver completes")?;
@@ -2322,9 +2366,24 @@ mod tests {
                 .expect("valid arguments"),
             )
         };
-        assert_eq!(budget("8192"), SHUTDOWN_TIMEOUT + Duration::from_secs(1));
-        assert_eq!(budget("262144"), SHUTDOWN_TIMEOUT + Duration::from_secs(16));
+        assert_eq!(budget("8192"), STARTUP_BASE_BUDGET + Duration::from_secs(1));
+        assert_eq!(
+            budget("16384"),
+            STARTUP_BASE_BUDGET + Duration::from_secs(1)
+        );
+        assert_eq!(
+            budget("16385"),
+            STARTUP_BASE_BUDGET + Duration::from_secs(2)
+        );
+        assert_eq!(
+            budget("262144"),
+            STARTUP_BASE_BUDGET + Duration::from_secs(16)
+        );
+        assert_eq!(budget("262144"), Duration::from_secs(26));
         assert!(budget("262144") > budget("1024"));
+        // One budgeted second per progress report, so the service refreshes its
+        // SCM checkpoint inside every second of the allocation budget.
+        assert_eq!(PoolManager::PROGRESS_INTERVAL, 16_384);
     }
 
     /// A producer scripted for supervisor tests.
@@ -2405,6 +2464,7 @@ mod tests {
         let producer_stopped = Arc::clone(&stopped);
         let stop = AtomicBool::new(true);
         let started = Instant::now();
+        let mut progress_reports = 0;
         run_pipeline(
             &config,
             NetworkSink::start,
@@ -2414,10 +2474,24 @@ mod tests {
                 })
             },
             &stop,
-            || Ok(()),
-            || Ok(()),
+            Lifecycle {
+                progress: || {
+                    progress_reports += 1;
+                    Ok(())
+                },
+                running: || Ok(()),
+                stopping: || Ok(()),
+            },
             |_name, _sources| None,
         )?;
+        // The default pool (24,576 + 2 regular and 64 jumbo slots) crosses the
+        // progress interval exactly once.
+        assert_eq!(
+            progress_reports,
+            (config.capacity + 2 + usize::from(config.jumbo_capacity))
+                / PoolManager::PROGRESS_INTERVAL
+        );
+        assert_eq!(progress_reports, 1);
         assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
         assert!(
             started.elapsed() < Duration::from_secs(8),

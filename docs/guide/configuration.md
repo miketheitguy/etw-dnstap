@@ -517,6 +517,11 @@ certificate requirements for the receiver are in
   11 seconds. It covers the identity checks,
   argument validation, receiver connection, pool allocation, and capture start.
   Capture start has its own inner 10-second deadline.
+- **SCM progress.** The service reports the startup deadline to the SCM as the
+  `START_PENDING` wait hint. It advances the checkpoint after every 16,384
+  allocated pool slots. `sc.exe query EtwDnstap` shows the values as
+  `CHECKPOINT` and `WAIT_HINT`. The `STOP_PENDING` wait hint is the shutdown
+  deadline.
 - **Shutdown.** The shutdown deadline is 10 seconds from the stop request to the
   final report. Inside it, ETW waits up to 5 seconds for `ProcessTrace` to
   return on its own after the session stops. Only then does it close the trace

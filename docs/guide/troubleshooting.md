@@ -90,7 +90,9 @@ has no instance mutex, so there is no mutex to clear.
 Repeat `sc.exe query EtwDnstap` while the state is `START_PENDING` or
 `STOP_PENDING`. The startup deadline is 10 seconds plus 1 second per 16,384
 channel slots of `--capacity`. Do not assume a hang until that deadline has
-passed.
+passed. The `WAIT_HINT` value shows the deadline in milliseconds. The
+`CHECKPOINT` value advances after every 16,384 allocated pool slots. A
+checkpoint that does not advance before the wait hint passes indicates a hang.
 
 ## The receiver is down or unreachable
 
