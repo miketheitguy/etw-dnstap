@@ -59,7 +59,7 @@ pub(crate) struct TlsConfig {
 
 impl TlsConfig {
     /// TLS 1.2 and 1.3 only, with the receiver certificate verified by the
-    /// Windows system store (including revocation) and no client certificate.
+    /// Windows system store (end-entity revocation only, soft-fail) and no client certificate.
     fn system(server_name: ServerName<'static>) -> io::Result<Self> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let client = ClientConfig::builder_with_provider(provider)

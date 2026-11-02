@@ -37,8 +37,9 @@ const DEFAULT_SESSION_NAME: &str = "EtwDnstap";
 )]
 pub(crate) struct CaptureArgs {
     /// Frame Streams TCP receiver as an IP:PORT. Uses TLS 1.2 or 1.3 unless
-    /// `--plaintext` is set. The receiver certificate is verified with the
-    /// Windows system certificate store, including revocation.
+    /// `--plaintext` is set. The receiver certificate is verified with the Windows
+    /// system certificate store. Revocation is checked for that certificate only.
+    /// An unobtainable revocation status does not fail the connection.
     #[arg(long, value_parser = parse_receiver)]
     receiver: SocketAddr,
 

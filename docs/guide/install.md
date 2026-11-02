@@ -284,8 +284,11 @@ met:
   `Cert:\CurrentUser\Root` does not count.
 - The certificate carries the receiver IP as an `iPAddress` SAN, or it carries
   the name that you pass to `--tls-server-name`.
-- The revocation endpoints named in the chain are reachable from the host, or
-  the CRL is already cached.
+
+Revocation endpoints do not need to be reachable. The service checks revocation
+for the receiver certificate only and proceeds when the status cannot be
+obtained. A reachable endpoint that answers slowly can push the handshake past
+its 2-second deadline; see [TLS](configuration.md#tls).
 
 To import a private CA into the machine root store:
 

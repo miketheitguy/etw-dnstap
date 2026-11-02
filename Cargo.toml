@@ -18,7 +18,7 @@ crossbeam-channel = "0.5.15"
 prost = "0.14"
 # ring, not aws-lc-rs: aws-lc-rs needs CMake and NASM on Windows MSVC.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-# Verifies receiver certificates with the Windows system store and revocation.
+# Verifies receiver certificates with the Windows system store; end-entity revocation, soft-fail.
 rustls-platform-verifier = "0.7"
 thiserror = "2"
 tracing = "0.1"
