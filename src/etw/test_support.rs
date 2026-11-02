@@ -31,8 +31,10 @@ thread_local! {
     static TRACK_ALLOCATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg_attr(miri, allow(dead_code))]
 struct TrackingAllocator;
 
+#[cfg_attr(miri, allow(dead_code))]
 fn allocation_tick(kind: u8) {
     if TRACK_ALLOCATIONS
         .try_with(std::cell::Cell::get)
@@ -77,6 +79,12 @@ unsafe impl std::alloc::GlobalAlloc for TrackingAllocator {
     }
 }
 
+// Miri runs without the counting allocator: the Windows System allocator reads
+// an alignment header just below every over-aligned block, outside the range
+// that Stacked Borrows grants a Box, and Miri reports that read as undefined
+// behavior when the test harness drops its channel. The allocation counts stay
+// at zero under Miri, so the no-allocation assertions pass trivially there.
+#[cfg(not(miri))]
 #[global_allocator]
 static ALLOCATOR: TrackingAllocator = TrackingAllocator;
 

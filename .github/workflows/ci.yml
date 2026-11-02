@@ -262,3 +262,58 @@ jobs:
           name: fuzz-artifacts
           path: fuzz/artifacts
           if-no-files-found: ignore
+
+  miri:
+    name: Miri on the pure-Rust modules (advisory)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # Advisory until it has passed on hosted runners. Miri interprets only the
+    # modules without FFI: the ETW decoder, Frame Streams, the dnstap encoder,
+    # and the keyword-array parser. The name filters in the last step leave out
+    # every test that calls a windows-sys function; constants and plain structs
+    # from windows-sys are fine.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and Miri
+        run: |
+          rustup toolchain install --profile minimal
+          rustup component add miri
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+      # Built from outside the repository: inside it, the sysroot build picks
+      # up the build-std setting and the target rustflags in .cargo/config.toml
+      # and fails with E0464 (two copies of core). --config and environment
+      # overrides do not reach that nested build. A copy of the toolchain file
+      # keeps the pinned nightly. The test run itself tolerates the config:
+      # cargo rebuilds std through the Miri driver, and the link arguments are
+      # never used because nothing is linked.
+      - name: Build the Miri sysroot
+        run: |
+          cp rust-toolchain.toml "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          cargo miri setup
+      # The property tests honor PROPTEST_CASES; Miri runs them at 8 cases
+      # instead of 256, and the failure-persistence file is off because
+      # Miri's isolation rejects the working-directory lookup. The three tests
+      # left out take 12 to 85 minutes each under Miri: the decoder truncation
+      # sweep, the decoder odd payload offset scan, and the dnstap-versus-prost
+      # comparison across every packet size. They still run natively in the
+      # rust job.
+      - name: Miri
+        env:
+          MIRIFLAGS: -Zmiri-env-forward=PROPTEST_CASES -Zmiri-env-forward=PROPTEST_DISABLE_FAILURE_PERSISTENCE
+          PROPTEST_CASES: "8"
+          PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+        run: >-
+          cargo miri test --locked --
+          etw::decode::tests framestream:: dnstap::
+          etw::keywords::tests::parse_keyword_array
+          etw::keywords::tests::select_keywords
+          --skip truncation_sweep_covers
+          --skip failure_reason_at_an_odd
+          --skip direct_bytes_match_independent

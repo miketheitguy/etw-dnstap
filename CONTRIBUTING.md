@@ -58,6 +58,17 @@ Notes:
   - The markdown link check (`python -I scripts/ci/linkcheck.py`).
 - An advisory `sanitizers` job runs `cargo test-release` and `cargo asan`. It
   does not block a merge until it passes on hosted runners.
+- An advisory `miri` job runs `cargo miri test` on the modules without FFI:
+  `etw::decode`, `framestream`, `dnstap`, and the keyword-array parser in
+  `etw::keywords`. The name filters in `.github/workflows/ci.yml` leave out
+  every test that calls a `windows-sys` function and three tests that take
+  more than ten minutes each under Miri. To run it locally, add the component
+  with `rustup component add miri`, run `cargo miri setup` from a directory
+  outside the repository that holds a copy of `rust-toolchain.toml` (inside
+  the repository the sysroot build picks up `build-std` and fails), then run
+  the job's command with the job's `MIRIFLAGS`, `PROPTEST_CASES`, and
+  `PROPTEST_DISABLE_FAILURE_PERSISTENCE` settings. The counting allocator in
+  `src/etw/test_support.rs` is compiled out under Miri.
 - Coverage and a 60-second fuzz smoke run (`fuzz/`) are report-only. They do
   not block a merge. Local `cargo fuzz run` currently fails at build on MSVC
   with an LLVM COMDAT error, which is why the fuzz smoke run is advisory.
