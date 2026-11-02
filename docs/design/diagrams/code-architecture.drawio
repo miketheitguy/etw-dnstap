@@ -29,7 +29,7 @@
         <mxCell id="w" value="&lt;b&gt;Lifecycle watchdogs&lt;/b&gt;&lt;br&gt;Startup: 10 s + 1 s per 16,384 slots&lt;br&gt;Shutdown: 10 s; Event ID 5 on expiry" style="rounded=1;arcSize=12;fillColor=#fff3db;strokeColor=#c6902d;fontColor=#644516;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="55" y="455" width="265" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="p" value="&lt;b&gt;pipeline.rs controller&lt;/b&gt;&lt;br&gt;Start sink, capture, parser&lt;br&gt;Supervise: flush, PID, stats&lt;br&gt;Stop, drain, report" style="rounded=1;arcSize=12;fillColor=#f1edfa;strokeColor=#8974b4;fontColor=#392d5b;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
+        <mxCell id="p" value="&lt;b&gt;pipeline/supervisor.rs controller&lt;/b&gt;&lt;br&gt;Start sink, capture, parser&lt;br&gt;Supervise: flush, PID, stats&lt;br&gt;Stop, drain, report" style="rounded=1;arcSize=12;fillColor=#f1edfa;strokeColor=#8974b4;fontColor=#392d5b;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">
           <mxGeometry x="390" y="275" width="180" height="120" as="geometry" />
         </mxCell>
         <mxCell id="e" value="&lt;b&gt;etw/session.rs&lt;/b&gt;&lt;br&gt;Real-time session; keywords&lt;br&gt;DNS PID and event-ID filters&lt;br&gt;ProcessTrace worker" style="rounded=1;arcSize=12;fillColor=#eaf3fb;strokeColor=#4b84b5;fontColor=#17324d;fontSize=13;spacing=8;html=1;whiteSpace=wrap;overflow=hidden;" vertex="1" parent="1">

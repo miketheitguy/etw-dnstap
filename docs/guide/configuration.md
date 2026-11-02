@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline.rs`), the Windows performance counter provider (new in this build, not yet tested in the lab), and the new defaults `--etw-max-buffers 64` and `--capacity 24576` (not lab-tested as a set), and response failure capture (event 258, subscription keywords and level; not yet tested in the lab) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline/config.rs`), the Windows performance counter provider (new in this build, not yet tested in the lab), and the new defaults `--etw-max-buffers 64` and `--capacity 24576` (not lab-tested as a set), and response failure capture (event 258, subscription keywords and level; not yet tested in the lab) · **Reviewed:** 2026-11-01
 
 Every option is set in the service binary path, not in `sc.exe start`. Install
 and provisioning steps are in [install.md](install.md). Symptoms are in
@@ -8,7 +8,7 @@ and provisioning steps are in [install.md](install.md). Symptoms are in
 
 ## Options
 
-Defaults and ranges come from `CaptureArgs` in `src/pipeline.rs`. Values outside
+Defaults and ranges come from `CaptureArgs` in `src/pipeline/config.rs`. Values outside
 the range are rejected at startup.
 
 | Option | Default | Range or format | Meaning |
