@@ -17,10 +17,11 @@ use windows_sys::Win32::{
     Foundation::ERROR_INSUFFICIENT_BUFFER,
     System::Diagnostics::Etw::{
         DecodingSourceXMLFile, EVENT_HEADER, EVENT_PROPERTY_INFO, EVENT_RECORD,
-        PropertyHasCustomSchema, PropertyParamCount, PropertyParamLength, PropertyStruct,
-        TDH_INTYPE_ANSISTRING, TDH_INTYPE_BOOLEAN, TDH_INTYPE_UINT8, TDH_INTYPE_UINT16,
-        TDH_INTYPE_UINT32, TDH_INTYPE_UNICODESTRING, TDH_OUTTYPE_IPV4, TDH_OUTTYPE_IPV6,
-        TDH_OUTTYPE_PORT, TRACE_EVENT_INFO, TdhGetEventInformation,
+        PropertyHasCustomSchema, PropertyParamCount, PropertyParamFixedCount,
+        PropertyParamFixedLength, PropertyParamLength, PropertyStruct, TDH_INTYPE_ANSISTRING,
+        TDH_INTYPE_BOOLEAN, TDH_INTYPE_UINT8, TDH_INTYPE_UINT16, TDH_INTYPE_UINT32,
+        TDH_INTYPE_UNICODESTRING, TDH_OUTTYPE_IPV4, TDH_OUTTYPE_IPV6, TDH_OUTTYPE_PORT,
+        TRACE_EVENT_INFO, TdhGetEventInformation,
     },
 };
 
@@ -33,6 +34,13 @@ use crate::event::{DecodedDnsEvent, DnsEventMetadata, Transport};
 
 /// Schemas cached per parser; the cache is cleared when it fills.
 const MAX_CACHED_SCHEMAS: usize = 8;
+/// The `EVENT_PROPERTY_INFO.Flags` bits (`PROPERTY_FLAGS` in `tdh.h`) the
+/// single-pass compiler interprets: the length and count arms, fixed or by
+/// index. A property with any other bit set is kept as an opaque name.
+const SUPPORTED_PROPERTY_FLAGS: u32 =
+    (PropertyParamLength | PropertyParamCount | PropertyParamFixedLength | PropertyParamFixedCount)
+        .cast_unsigned();
+const _: () = assert!(SUPPORTED_PROPERTY_FLAGS == 0x36);
 
 #[cfg(test)]
 #[path = "schema_tests.rs"]
@@ -91,7 +99,7 @@ impl Parser {
 
     /// Events rejected because their (event id, version) schema failed to load or
     /// did not compile into a single-pass plan.
-    pub(crate) fn schema_rejected_events(&self) -> u64 {
+    pub(crate) const fn schema_rejected_events(&self) -> u64 {
         self.rejected_events
     }
 
@@ -131,7 +139,7 @@ impl Parser {
                 key.1
             );
         }
-        let schema = match event.with_record(|record| load_schema(record, peer_name)) {
+        let loaded = match event.with_record(|record| load_schema(record, peer_name)) {
             Ok(schema) => schema,
             Err(error) => {
                 self.remember_rejected(key);
@@ -145,19 +153,19 @@ impl Parser {
                 return Err(error.context(format!("DNS event {id} version {} schema", key.1)));
             }
         };
-        self.insert_schema(key, schema);
-        let schema = self
+        self.insert_schema(key, loaded);
+        let cached = self
             .schemas
             .last()
             .map(|(_, schema)| schema)
             .context("missing cached DNS schema")?;
-        parse_fast(schema, event.header(), event.payload(), &mut self.text).map(Some)
+        parse_fast(cached, event.header(), event.payload(), &mut self.text).map(Some)
     }
 }
 
 /// The property that holds the peer address: event 256 names it `Source`;
 /// 257 and 258 name it `Destination`.
-fn peer_property(id: u16) -> Option<PropertyName> {
+const fn peer_property(id: u16) -> Option<PropertyName> {
     match id {
         256 => Some(PropertyName::Source),
         257 | 258 => Some(PropertyName::Destination),
@@ -178,7 +186,7 @@ fn parse_fast<'a>(
         .map_err(|error| anyhow!("invalid DNS payload: {error:?}"))?;
     let tcp = integer(decoded.tcp, schema.tcp)?;
     ensure!(tcp <= 1, "invalid TCP Boolean");
-    let port = u16::try_from(integer(decoded.port, schema.port)?).context("Port exceeds u16")?;
+    let port = u16::try_from(integer(decoded.port, schema.port)?).context("port exceeds u16")?;
     ensure!(
         decoded.local.len() <= 512 && decoded.peer.len() <= 512,
         "DNS address exceeds size limit"
@@ -235,7 +243,7 @@ fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema>
     #[cfg(test)]
     tdh_tick();
     // SAFETY: storage is aligned, initialized, and at least size bytes long.
-    let status = unsafe {
+    let fill_status = unsafe {
         TdhGetEventInformation(
             record,
             0,
@@ -244,7 +252,7 @@ fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema>
             &raw mut size,
         )
     };
-    check_status(status, "TdhGetEventInformation")?;
+    check_status(fill_status, "TdhGetEventInformation")?;
     ensure!(
         size <= capacity && size as usize >= size_of::<TRACE_EVENT_INFO>(),
         "invalid TDH metadata result size"
@@ -267,17 +275,12 @@ fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema>
     let array_offset = offset_of!(TRACE_EVENT_INFO, EventPropertyInfoArray);
     let count = info.TopLevelPropertyCount as usize;
     validate_property_array(info.PropertyCount as usize, count, size as usize)?;
-    // SAFETY: The offset has native struct alignment, and the count fits the
+    // SAFETY: array_offset lies inside the allocation: size covers at least the
+    // fixed TRACE_EVENT_INFO header, which ends with the property array.
+    let array = unsafe { storage.as_ptr().byte_add(array_offset) }.cast::<EVENT_PROPERTY_INFO>();
+    // SAFETY: The array has native struct alignment, and count entries fit the
     // initialized TDH allocation as checked above.
-    let properties = unsafe {
-        std::slice::from_raw_parts(
-            storage
-                .as_ptr()
-                .byte_add(array_offset)
-                .cast::<EVENT_PROPERTY_INFO>(),
-            count,
-        )
-    };
+    let properties = unsafe { std::slice::from_raw_parts(array, count) };
     // SAFETY: The successful TDH result initialized size bytes inside storage.
     let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), size as usize) };
     compile_schema(properties, bytes, peer_name)
@@ -340,7 +343,7 @@ fn normalize_fields(
         }
         let name = property_name(bytes, offset)?;
         if prop.Flags & (PropertyStruct | PropertyHasCustomSchema) != 0
-            || prop.Flags.cast_unsigned() & !0x36 != 0
+            || prop.Flags.cast_unsigned() & !SUPPORTED_PROPERTY_FLAGS != 0
         {
             // Keep the name and unsupported flags so the compiler can check
             // duplicate targets while ignoring layouts strictly after its prefix.
@@ -355,22 +358,22 @@ fn normalize_fields(
             });
             continue;
         }
-        // SAFETY: The flags exclude struct/custom union layouts. Count and length
-        // arms are selected independently according to their discriminating flags.
-        let (native, count, length) = unsafe {
-            (
-                prop.Anonymous1.nonStructType,
-                if prop.Flags & PropertyParamCount != 0 {
-                    prop.Anonymous2.countPropertyIndex
-                } else {
-                    prop.Anonymous2.count
-                },
-                if prop.Flags & PropertyParamLength != 0 {
-                    prop.Anonymous3.lengthPropertyIndex
-                } else {
-                    prop.Anonymous3.length
-                },
-            )
+        // SAFETY: The flags exclude PropertyStruct and PropertyHasCustomSchema,
+        // so Anonymous1 holds the nonStructType arm.
+        let native = unsafe { prop.Anonymous1.nonStructType };
+        let count = if prop.Flags & PropertyParamCount != 0 {
+            // SAFETY: PropertyParamCount selects the countPropertyIndex arm.
+            unsafe { prop.Anonymous2.countPropertyIndex }
+        } else {
+            // SAFETY: Without PropertyParamCount, Anonymous2 holds the count arm.
+            unsafe { prop.Anonymous2.count }
+        };
+        let length = if prop.Flags & PropertyParamLength != 0 {
+            // SAFETY: PropertyParamLength selects the lengthPropertyIndex arm.
+            unsafe { prop.Anonymous3.lengthPropertyIndex }
+        } else {
+            // SAFETY: Without PropertyParamLength, Anonymous3 holds the length arm.
+            unsafe { prop.Anonymous3.length }
         };
         fields.push(FieldSpec {
             name,
@@ -428,9 +431,12 @@ fn find_property(
                 prop.Flags & (PropertyStruct | PropertyHasCustomSchema | PropertyParamCount) == 0,
                 "unsupported structured property {name}"
             );
-            // SAFETY: Flags above select the nonStructType and fixed-count
-            // union members in the documented EVENT_PROPERTY_INFO layout.
-            let (native, count) = unsafe { (prop.Anonymous1.nonStructType, prop.Anonymous2.count) };
+            // SAFETY: The flags exclude PropertyStruct and PropertyHasCustomSchema,
+            // so Anonymous1 holds the nonStructType arm.
+            let native = unsafe { prop.Anonymous1.nonStructType };
+            // SAFETY: The flags exclude PropertyParamCount, so Anonymous2 holds
+            // the fixed count arm.
+            let count = unsafe { prop.Anonymous2.count };
             ensure!(count <= 1, "unsupported property array {name}");
             return Ok(PropertyType {
                 input: i32::from(native.InType),
@@ -452,7 +458,7 @@ enum PropertyName {
 }
 
 impl PropertyName {
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
             Self::Tcp => "TCP",
             Self::Port => "Port",
@@ -490,7 +496,7 @@ fn address(bytes: &[u8], kind: PropertyType, scratch: &mut [u8; 768]) -> Result<
     let text = match kind.input {
         TDH_INTYPE_UNICODESTRING => {
             ensure!(bytes.len().is_multiple_of(2), "odd Unicode address length");
-            ensure!(bytes.len() <= 512, "Unicode address exceeds size limit");
+            ensure!(bytes.len() <= 512, "UTF-16 address exceeds size limit");
             ensure!(bytes.ends_with(&[0, 0]), "unterminated Unicode address");
             let units = bytes[..bytes.len() - 2]
                 .as_chunks::<2>()

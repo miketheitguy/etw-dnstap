@@ -361,9 +361,9 @@ impl PerfPublisher {
         // SAFETY: The GUID and the context outlive this synchronous call, the
         // context has no callbacks or allocators, and `provider` is a valid
         // output location.
-        let status =
+        let start_status =
             unsafe { PerfStartProviderEx(&raw const guid, &raw const context, &raw mut provider) };
-        check(status, "PerfStartProviderEx")?;
+        check(start_status, "PerfStartProviderEx")?;
         // From here the value stops the provider when an error drops it.
         let mut publisher = Self {
             provider,
@@ -376,14 +376,14 @@ impl PerfPublisher {
         // the whole `#[repr(C)]` template, whose size is passed. PerfLib may
         // write the template (it computes the instance offsets); that is sound
         // because the template is a mutable local that nothing else borrows.
-        let status = unsafe {
+        let set_info_status = unsafe {
             PerfSetCounterSetInfo(
                 publisher.provider,
                 (&raw mut template).cast::<PERF_COUNTERSET_INFO>(),
                 size_u32(size_of::<Template>()),
             )
         };
-        check(status, "PerfSetCounterSetInfo")?;
+        check(set_info_status, "PerfSetCounterSetInfo")?;
 
         let name: Vec<u16> = instance_name
             .encode_utf16()
@@ -397,8 +397,8 @@ impl PerfPublisher {
         };
         if instance.is_null() {
             // SAFETY: Reads the calling thread's last error; nothing ran since the call.
-            let status = unsafe { GetLastError() };
-            check(status, "PerfCreateInstance")?;
+            let create_error = unsafe { GetLastError() };
+            check(create_error, "PerfCreateInstance")?;
             bail!("PerfCreateInstance returned no instance");
         }
         publisher.instance = instance;

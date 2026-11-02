@@ -54,7 +54,7 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// Help and version requests are successful output, not argument failures.
-fn is_informational(kind: clap::error::ErrorKind) -> bool {
+const fn is_informational(kind: clap::error::ErrorKind) -> bool {
     matches!(
         kind,
         clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion

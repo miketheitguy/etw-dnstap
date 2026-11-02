@@ -16,6 +16,25 @@ const DNS_HEADER_LENGTH: usize = 12;
 const MAX_DNS_MESSAGE_LENGTH: usize = 65_535;
 const MAX_IDENTITY_LENGTH: usize = 1_024;
 
+/// Protobuf wire type 0 (varint), the low three bits of a tag byte.
+const WIRE_TYPE_VARINT: u8 = 0;
+/// Protobuf wire type 2 (length-delimited), the low three bits of a tag byte.
+const WIRE_TYPE_LENGTH_DELIMITED: u8 = 2;
+/// A one-byte protobuf tag, `(field_number << 3) | wire_type`, for fields 1..=15.
+const fn tag(field_number: u8, wire_type: u8) -> u8 {
+    (field_number << 3) | wire_type
+}
+/// Tag byte of `Dnstap.message` (field 14, length-delimited) in `dnstap.proto`.
+const DNSTAP_MESSAGE_TAG: u8 = tag(14, WIRE_TYPE_LENGTH_DELIMITED);
+/// Tag byte of `Dnstap.type` (field 15, varint) in `dnstap.proto`.
+const DNSTAP_TYPE_TAG: u8 = tag(15, WIRE_TYPE_VARINT);
+/// Value of `Dnstap.Type.MESSAGE` in `dnstap.proto`.
+const DNSTAP_TYPE_MESSAGE: u8 = 1;
+/// Tag byte of `Message.query_message` (field 10, length-delimited).
+const QUERY_MESSAGE_TAG: u8 = tag(10, WIRE_TYPE_LENGTH_DELIMITED);
+/// Tag byte of `Message.response_message` (field 14, length-delimited).
+const RESPONSE_MESSAGE_TAG: u8 = tag(14, WIRE_TYPE_LENGTH_DELIMITED);
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EncodeError {
     #[error("unsupported DNS Server event ID {0}")]
@@ -215,17 +234,21 @@ impl Encoder {
         self.tap
             .encode(&mut self.output)
             .map_err(EncodeError::Protobuf)?;
-        self.output.push(0x72);
+        self.output.push(DNSTAP_MESSAGE_TAG);
         prost::encoding::encode_varint(message_length as u64, &mut self.output);
         self.message
             .encode(&mut self.output)
             .map_err(EncodeError::Protobuf)?;
-        self.output.push(if is_response { 0x72 } else { 0x52 });
+        self.output.push(if is_response {
+            RESPONSE_MESSAGE_TAG
+        } else {
+            QUERY_MESSAGE_TAG
+        });
         prost::encoding::encode_varint(packet_length as u64, &mut self.output);
         let packet_start = self.output.len();
         let packet_end = checked_length(&[packet_start, packet_length])?;
         self.output.resize(length, 0);
-        self.output[packet_end..].copy_from_slice(&[0x78, 1]);
+        self.output[packet_end..].copy_from_slice(&[DNSTAP_TYPE_TAG, DNSTAP_TYPE_MESSAGE]);
         fill(&mut self.output[packet_start..packet_end])?;
         if (self.output[packet_start + 2] & 0x80 != 0) != is_response {
             return Err(EncodeError::IncorrectDirection(event_id).into());

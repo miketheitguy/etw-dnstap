@@ -48,7 +48,7 @@ impl CallbackContext {
     /// Requires `EventHeader.ProcessId == expected_pid` on every accepted record;
     /// there is no way to build a context without that filter. Callers box the
     /// context so the address handed to `OpenTraceW` stays stable.
-    pub(super) fn new(
+    pub(super) const fn new(
         pool: Arc<PoolManager>,
         counters: Arc<CaptureCounters>,
         expected_pid: u32,
@@ -62,7 +62,7 @@ impl CallbackContext {
 }
 
 /// True when a record from `actual` may be accepted given the expected emitter.
-fn pid_allowed(expected: u32, actual: u32) -> bool {
+const fn pid_allowed(expected: u32, actual: u32) -> bool {
     expected == actual
 }
 
@@ -276,9 +276,13 @@ pub(super) unsafe fn copy_record(
     let mut length = data_length;
     let mut extended_length = 0usize;
     for index in 0..count {
-        // SAFETY: Caller supplies count initialized descriptors. Reading unaligned
-        // also handles defensive fixtures without creating an unaligned reference.
-        let item = unsafe { record.ExtendedData.add(index).read_unaligned() };
+        // SAFETY: index < count, and the caller supplies count descriptors at
+        // ExtendedData, so the offset pointer stays inside that array.
+        let descriptor = unsafe { record.ExtendedData.add(index) };
+        // SAFETY: The caller supplies count initialized descriptors. Reading
+        // unaligned also handles defensive fixtures without creating an
+        // unaligned reference.
+        let item = unsafe { descriptor.read_unaligned() };
         let size = usize::from(item.DataSize);
         if size != 0 && item.DataPtr == 0 {
             return Err(CopyError::Malformed);
@@ -311,15 +315,14 @@ pub(super) unsafe fn copy_record(
         let mut item = items[index];
         let size = usize::from(item.DataSize);
         if size != 0 {
-            // SAFETY: Caller guarantees readable item storage. Preflight checked
-            // offset + size <= acquired capacity, and each offset is 8-aligned.
+            // SAFETY: Preflight checked offset + size <= acquired capacity, so
+            // the 8-aligned offset stays inside the exclusive slot.
+            let destination = unsafe { buffer.bytes_mut().add(offsets[index]) };
+            // SAFETY: The caller guarantees size readable bytes at DataPtr, and
+            // the slot has size bytes of room at destination (checked above).
             // The independent slot cannot overlap a native ETW input buffer.
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    item.DataPtr as *const u8,
-                    buffer.bytes_mut().add(offsets[index]),
-                    size,
-                );
+                std::ptr::copy_nonoverlapping(item.DataPtr as *const u8, destination, size);
             }
         }
         item.DataPtr = 0;
@@ -336,13 +339,13 @@ pub(super) unsafe fn copy_record(
 
 impl RawEtwEvent {
     /// The native event header copied at intake.
-    pub(super) fn header(&self) -> &EVENT_HEADER {
+    pub(super) const fn header(&self) -> &EVENT_HEADER {
         &self.header
     }
 
     /// Mutable header access so schema tests can corrupt a copied event.
     #[cfg(test)]
-    pub(super) fn header_mut(&mut self) -> &mut EVENT_HEADER {
+    pub(super) const fn header_mut(&mut self) -> &mut EVENT_HEADER {
         &mut self.header
     }
 

@@ -585,7 +585,7 @@ fn event_id_filter_payload_bytes_are_exact() {
 #[test]
 fn event_id_filter_contains_exactly_the_supported_ids() {
     let payload = EventIdFilterPayload::new();
-    assert!(payload.filter_in);
+    assert_eq!(payload.filter_in, 1);
     assert_eq!(usize::from(payload.count), 3);
     assert_eq!(payload.events, [256, 257, 258]);
     assert_eq!(SUPPORTED_EVENT_IDS, [256, 257, 258]);
@@ -641,16 +641,31 @@ fn both_filters_are_passed_to_enable_parameters() {
 fn target_change_classification() {
     assert_eq!(classify_target(10, Some(10)), None);
     assert_eq!(classify_target(10, None), None);
-    assert!(
-        classify_target(10, Some(0))
-            .expect("stopped")
-            .contains("stopped")
+    assert_eq!(
+        classify_target(10, Some(0)),
+        Some(TargetChange::Stopped { pid: 10 })
     );
-    assert!(
-        classify_target(10, Some(11))
-            .expect("restarted")
-            .contains("10 -> 11")
+    assert_eq!(
+        classify_target(10, Some(11)),
+        Some(TargetChange::Restarted { old: 10, new: 11 })
     );
+    assert_eq!(
+        TargetChange::Stopped { pid: 10 }.to_string(),
+        "the DNS Server service stopped (it ran as process ID 10)"
+    );
+    assert_eq!(
+        TargetChange::Restarted { old: 10, new: 11 }.to_string(),
+        "the DNS Server service restarted (process ID 10 -> 11)"
+    );
+}
+
+#[test]
+fn win32_status_displays_the_system_text_and_code() {
+    let status = Win32Status(ERROR_INVALID_HANDLE);
+    let text = status.to_string();
+    assert!(text.ends_with("(code 6)"), "{text}");
+    assert!(text.len() > "(code 6)".len(), "{text}");
+    assert_eq!(status.0, ERROR_INVALID_HANDLE);
 }
 
 #[test]

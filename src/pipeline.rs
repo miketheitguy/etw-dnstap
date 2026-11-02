@@ -20,7 +20,8 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 use crate::{
     dnstap::Encoder,
     etw::{
-        self, Capture, CaptureCounters, KeywordSelection, PoolManager, RawEtwEvent, SessionConfig,
+        self, Capture, CaptureCounters, EventProducer, KeywordSelection, PoolManager, RawEtwEvent,
+        SessionConfig,
     },
     network::{NetworkSink, ReceiverConfig},
     perfcounters::{CounterSink, CounterSources, PerfPublisher, snapshot},
@@ -549,54 +550,6 @@ struct ProducerStart<'a> {
     pub(crate) diag: DiagContext,
 }
 
-/// The source of [`RawEtwEvent`]s the pipeline supervises. [`Capture`] is the
-/// production implementation; tests supply fakes.
-trait EventProducer {
-    /// The keyword masks the producer subscribed with, for the startup log.
-    fn keywords(&self) -> KeywordSelection;
-    /// True once the producer stopped delivering on its own.
-    fn is_finished(&self) -> bool;
-    /// Stops delivery and waits until no producer thread can still send.
-    ///
-    /// # Errors
-    /// Returns an error if the source could not be stopped cleanly.
-    fn stop(&mut self) -> Result<()>;
-    /// Refreshes the source's own loss counters into the shared counters.
-    ///
-    /// # Errors
-    /// Returns the native status when the query fails.
-    fn query_statistics(&self) -> Result<(), u32> {
-        Ok(())
-    }
-    /// A reason capture can no longer be trusted (for example the process the
-    /// source filters on was replaced), or `None`.
-    fn target_change(&self) -> Option<String> {
-        None
-    }
-}
-
-impl EventProducer for Capture {
-    fn keywords(&self) -> KeywordSelection {
-        Capture::keywords(self)
-    }
-
-    fn is_finished(&self) -> bool {
-        Capture::is_finished(self)
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        Capture::stop(self)
-    }
-
-    fn query_statistics(&self) -> Result<(), u32> {
-        Capture::query_statistics(self)
-    }
-
-    fn target_change(&self) -> Option<String> {
-        Capture::target_change(self)
-    }
-}
-
 /// Callbacks the pipeline fires as it changes state. The service layer maps
 /// them to SCM status reports; tests pass no-op closures.
 struct Lifecycle<Progress, Running, Stopping> {
@@ -819,7 +772,7 @@ struct RateMonitor {
 }
 
 impl RateMonitor {
-    fn new(window: Duration, now: Instant, received: u64) -> Self {
+    const fn new(window: Duration, now: Instant, received: u64) -> Self {
         Self {
             window,
             window_start: now,
@@ -940,16 +893,16 @@ fn supervise(
         }
         let now = Instant::now();
         if monitor.target.poll(now)
-            && let Some(reason) = capture.target_change()
+            && let Some(change) = capture.target_change()
         {
             // The PID filter and callback check now match no process. Exiting
             // with a failure lets SCM recovery restart the service, which
             // resolves the new PID at startup.
             tracing::error!(
-                "{reason}; stopping so the service can be restarted and re-resolve the DNS \
+                "{change}; stopping so the service can be restarted and re-resolve the DNS \
                  Server process"
             );
-            break Some(reason);
+            break Some(change.to_string());
         }
         if let Some(rate) = monitor
             .rate
@@ -987,7 +940,7 @@ fn supervise(
 /// query leaves the last values in place.
 fn query_session(capture: &impl EventProducer) -> bool {
     if let Err(status) = capture.query_statistics() {
-        tracing::debug!(code = status, "ETW session query failed");
+        tracing::debug!(%status, "ETW session query failed");
         return false;
     }
     true
@@ -1035,23 +988,23 @@ struct DiagLevers {
     _timer: Option<TimerResolution>,
 }
 
-#[cfg_attr(
-    not(feature = "diag-timing"),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "Starting the diagnostic timer can fail; the normal build has no timer."
-    )
-)]
+#[cfg(feature = "diag-timing")]
 fn begin_diag_levers(diag: DiagContext) -> Result<DiagLevers> {
-    #[cfg(not(feature = "diag-timing"))]
-    let _ = diag;
     Ok(DiagLevers {
-        #[cfg(feature = "diag-timing")]
         _timer: diag
             .timer_resolution_ms
             .map(TimerResolution::begin)
             .transpose()?,
     })
+}
+
+#[cfg(not(feature = "diag-timing"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Starting the diagnostic timer can fail; the normal build has no timer."
+)]
+const fn begin_diag_levers(_diag: DiagContext) -> Result<DiagLevers> {
+    Ok(DiagLevers {})
 }
 
 /// Records which diagnostic levers a run applied.
@@ -1069,7 +1022,7 @@ fn log_diag_settings(diag: DiagContext) {
 }
 
 #[cfg(not(feature = "diag-timing"))]
-fn log_diag_settings(_diag: DiagContext) {}
+const fn log_diag_settings(_diag: DiagContext) {}
 
 /// Applies the configured diagnostic priority to the calling thread.
 #[cfg(feature = "diag-timing")]
@@ -1080,7 +1033,7 @@ fn apply_thread_priority(diag: DiagContext) {
 }
 
 #[cfg(not(feature = "diag-timing"))]
-fn apply_thread_priority(_diag: DiagContext) {}
+const fn apply_thread_priority(_diag: DiagContext) {}
 
 fn spawn_parser<S>(
     queue: Receiver<RawEtwEvent>,
@@ -1473,6 +1426,7 @@ mod cli_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::etw::{TargetChange, Win32Status};
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -1800,7 +1754,7 @@ mod tests {
     /// A producer whose session query stores fixed buffer counts or fails.
     struct QueryProducer {
         counters: Arc<CaptureCounters>,
-        status: Result<(), u32>,
+        status: Result<(), Win32Status>,
     }
 
     impl EventProducer for QueryProducer {
@@ -1821,7 +1775,7 @@ mod tests {
             Ok(())
         }
 
-        fn query_statistics(&self) -> Result<(), u32> {
+        fn query_statistics(&self) -> Result<(), Win32Status> {
             if self.status.is_ok() {
                 self.counters
                     .etw_buffers_minimum
@@ -1860,7 +1814,7 @@ mod tests {
         }
     }
 
-    fn logged_by_first_query(status: Result<(), u32>) -> String {
+    fn logged_by_first_query(status: Result<(), Win32Status>) -> String {
         let lines = LogLines::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(lines.clone())
@@ -1888,7 +1842,7 @@ mod tests {
         assert!(text.contains("etw_buffers_allocated=14"), "{text}");
         assert_eq!(text.lines().count(), 1, "{text}");
 
-        let text = logged_by_first_query(Err(5));
+        let text = logged_by_first_query(Err(Win32Status(5)));
         assert!(text.is_empty(), "{text}");
     }
 
@@ -2410,9 +2364,9 @@ mod tests {
             Ok(())
         }
 
-        fn target_change(&self) -> Option<String> {
+        fn target_change(&self) -> Option<TargetChange> {
             self.moved
-                .then(|| "the DNS Server service restarted (process ID 1 -> 2)".to_owned())
+                .then_some(TargetChange::Restarted { old: 1, new: 2 })
         }
     }
 
@@ -2524,7 +2478,7 @@ mod tests {
             Ok(())
         }
 
-        fn query_statistics(&self) -> Result<(), u32> {
+        fn query_statistics(&self) -> Result<(), Win32Status> {
             self.queries.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }

@@ -44,7 +44,7 @@ impl<W: Write> FrameStreamWriter<W> {
         if payload.is_empty() || payload.len() > MAX_FRAME_LENGTH {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Frame Streams data length must be between 1 and 1048576 bytes",
+                "data frame length must be between 1 and 1048576 bytes",
             ));
         }
         let length = u32::try_from(payload.len())
@@ -57,7 +57,7 @@ impl<W: Write> FrameStreamWriter<W> {
     }
 
     /// Access the transport to set an operation deadline before writing.
-    pub(crate) fn get_mut(&mut self) -> &mut W {
+    pub(crate) const fn get_mut(&mut self) -> &mut W {
         &mut self.writer
     }
 
@@ -83,7 +83,7 @@ impl<W: Write> FrameStreamWriter<W> {
     fn check_healthy(&self) -> io::Result<()> {
         if self.failed {
             return Err(io::Error::other(
-                "Frame Streams writer failed during an earlier write",
+                "frame writer failed during an earlier write",
             ));
         }
         Ok(())

@@ -1,6 +1,7 @@
 //! Creates, queries, reclaims, and stops the ETW session, and owns [`Capture`].
 
 use std::{
+    fmt,
     mem::{offset_of, size_of},
     ptr::null,
     sync::{Arc, atomic::Ordering},
@@ -53,6 +54,10 @@ const SUBSCRIPTION_LEVEL: u8 = 0xFF;
 /// 10 s shutdown watchdog, so the parser join and Frame Streams FINISH keep the
 /// rest.
 const WORKER_EXIT_WAIT: Duration = Duration::from_secs(5);
+/// `EnableTraceEx2` `Timeout`, in milliseconds: how long the call waits for the
+/// provider's enable callback to complete before it returns `ERROR_TIMEOUT`
+/// (0 would return without waiting; `INFINITE` would wait forever).
+const ENABLE_TIMEOUT_MS: u32 = 5000;
 
 #[cfg(test)]
 #[path = "session_tests.rs"]
@@ -256,7 +261,7 @@ enum StopOutcome {
     Failed,
 }
 
-fn stop_outcome(status: u32) -> StopOutcome {
+const fn stop_outcome(status: u32) -> StopOutcome {
     match status {
         // MORE_DATA means ETW stopped the session but the properties buffer was
         // too small for everything it wanted to return.
@@ -275,7 +280,7 @@ enum QueryOutcome {
     Failed,
 }
 
-fn query_outcome(status: u32) -> QueryOutcome {
+const fn query_outcome(status: u32) -> QueryOutcome {
     match status {
         ERROR_SUCCESS => QueryOutcome::Inspect,
         ERROR_WMI_INSTANCE_NOT_FOUND => QueryOutcome::Vanished,
@@ -345,13 +350,13 @@ fn reclaim_decision(
     stop: impl FnOnce(&mut QueryProperties) -> u32,
 ) -> Result<()> {
     let mut queried = QueryProperties::new();
-    let status = query(&mut queried);
-    match query_outcome(status) {
+    let query_status = query(&mut queried);
+    match query_outcome(query_status) {
         QueryOutcome::Inspect => {}
         QueryOutcome::Vanished => return Ok(()),
         QueryOutcome::Failed => bail!(
-            "query existing ETW session '{display_name}' failed: {} (code {status})",
-            std::io::Error::from_raw_os_error(status.cast_signed())
+            "query existing ETW session '{display_name}' failed: {} (code {query_status})",
+            std::io::Error::from_raw_os_error(query_status.cast_signed())
         ),
     }
     ensure!(
@@ -369,13 +374,13 @@ fn reclaim_decision(
         );
     }
     let mut stopping = QueryProperties::new();
-    let status = stop(&mut stopping);
+    let stop_status = stop(&mut stopping);
     ensure!(
-        stop_outcome(status) == StopOutcome::Stopped,
-        "stopping stale ETW session '{display_name}' failed: {} (code {status})",
-        std::io::Error::from_raw_os_error(status.cast_signed())
+        stop_outcome(stop_status) == StopOutcome::Stopped,
+        "stopping stale ETW session '{display_name}' failed: {} (code {stop_status})",
+        std::io::Error::from_raw_os_error(stop_status.cast_signed())
     );
-    if status == ERROR_WMI_INSTANCE_NOT_FOUND {
+    if stop_status == ERROR_WMI_INSTANCE_NOT_FOUND {
         // The session vanished between QUERY and STOP; the retry can proceed.
         return Ok(());
     }
@@ -384,6 +389,32 @@ fn reclaim_decision(
         .fetch_add(1, Ordering::Relaxed);
     tracing::warn!(session = display_name, "reclaimed stale ETW session");
     Ok(())
+}
+
+/// The source of [`RawEtwEvent`]s the pipeline supervises. [`Capture`] is the
+/// production implementation; pipeline tests supply fakes.
+pub(crate) trait EventProducer {
+    /// The keyword masks the producer subscribed with, for the startup log.
+    fn keywords(&self) -> KeywordSelection;
+    /// True once the producer stopped delivering on its own.
+    fn is_finished(&self) -> bool;
+    /// Stops delivery and waits until no producer thread can still send.
+    ///
+    /// # Errors
+    /// Returns an error if the source could not be stopped cleanly.
+    fn stop(&mut self) -> Result<()>;
+    /// Refreshes the source's own loss counters into the shared counters.
+    ///
+    /// # Errors
+    /// Returns the native status when the query fails.
+    fn query_statistics(&self) -> Result<(), Win32Status> {
+        Ok(())
+    }
+    /// Why capture can no longer be trusted (the process the source filters on
+    /// stopped or was replaced), or `None`.
+    fn target_change(&self) -> Option<TargetChange> {
+        None
+    }
 }
 
 /// Owns only the session created by its successful `StartTrace` call.
@@ -398,18 +429,63 @@ pub(crate) struct Capture {
     dns_pid: u32,
 }
 
+/// A Win32 status code returned by an ETW control call. The raw code stays
+/// available for matching; `Display` adds the system message text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Win32Status(pub(crate) u32);
+
+impl fmt::Display for Win32Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} (code {})",
+            std::io::Error::from_raw_os_error(self.0.cast_signed()),
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for Win32Status {}
+
+/// Why the DNS Server process ID the session filters on is no longer valid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TargetChange {
+    /// The DNS Server service stopped. It ran as `pid`.
+    Stopped { pid: u32 },
+    /// The DNS Server service restarted under a new process ID.
+    Restarted { old: u32, new: u32 },
+}
+
+impl fmt::Display for TargetChange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stopped { pid } => {
+                write!(
+                    f,
+                    "the DNS Server service stopped (it ran as process ID {pid})"
+                )
+            }
+            Self::Restarted { old, new } => {
+                write!(
+                    f,
+                    "the DNS Server service restarted (process ID {old} -> {new})"
+                )
+            }
+        }
+    }
+}
+
 /// What the supervisor concluded from re-reading the DNS service process ID.
 /// `observed` is `None` when the query itself failed, which proves nothing.
-fn classify_target(expected: u32, observed: Option<u32>) -> Option<String> {
+const fn classify_target(expected: u32, observed: Option<u32>) -> Option<TargetChange> {
     match observed {
         None => None,
         Some(pid) if pid == expected => None,
-        Some(0) => Some(format!(
-            "the DNS Server service stopped (it ran as process ID {expected})"
-        )),
-        Some(pid) => Some(format!(
-            "the DNS Server service restarted (process ID {expected} -> {pid})"
-        )),
+        Some(0) => Some(TargetChange::Stopped { pid: expected }),
+        Some(pid) => Some(TargetChange::Restarted {
+            old: expected,
+            new: pid,
+        }),
     }
 }
 
@@ -431,14 +507,14 @@ fn wait_until(mut done: impl FnMut() -> bool, budget: Duration, poll: Duration) 
 /// `CloseTrace` statuses that are not failures. After a successful STOP the
 /// consumer handle may already be invalid because `ProcessTrace` returned and
 /// released it.
-fn close_trace_benign(status: u32, session_stopped: bool) -> bool {
+const fn close_trace_benign(status: u32, session_stopped: bool) -> bool {
     matches!(status, ERROR_SUCCESS | ERROR_CTX_CLOSE_PENDING)
         || (session_stopped && status == ERROR_INVALID_HANDLE)
 }
 
 /// `ProcessTrace` return statuses that are not failures; see
 /// [`close_trace_benign`] for `ERROR_INVALID_HANDLE`.
-fn process_trace_benign(status: u32, session_stopped: bool) -> bool {
+const fn process_trace_benign(status: u32, session_stopped: bool) -> bool {
     matches!(status, ERROR_SUCCESS | ERROR_CANCELLED)
         || (session_stopped && status == ERROR_INVALID_HANDLE)
 }
@@ -559,13 +635,13 @@ impl Capture {
             KeywordChoice::Narrowed { .. } => {}
         }
         let guid = session_guid(display_name)?;
-        let (mut status, mut session) = start_session(&name, guid, &config);
-        if status == ERROR_ALREADY_EXISTS {
+        let (mut start_status, mut session) = start_session(&name, guid, &config);
+        if start_status == ERROR_ALREADY_EXISTS {
             // One reclaim and one retry; a second failure is a startup error.
             reclaim_stale_session(&name, display_name, &counters, &config, &guid)?;
-            (status, session) = start_session(&name, guid, &config);
+            (start_status, session) = start_session(&name, guid, &config);
         }
-        check_start_status(status, display_name, &format_guid(&guid))?;
+        check_start_status(start_status, display_name, &format_guid(&guid))?;
         let keywords = choice.selection();
         let mut capture = Self {
             session: Some(session),
@@ -590,7 +666,7 @@ impl Capture {
         // array, whose entries point at `filter_payload` and `pid_payload`; all of
         // them are stack locals that remain alive and unmoved for this synchronous
         // call, and ETW copies them before returning.
-        let status = unsafe {
+        let enable_status = unsafe {
             EnableTraceEx2(
                 session,
                 &PROVIDER,
@@ -598,11 +674,11 @@ impl Capture {
                 SUBSCRIPTION_LEVEL,
                 keywords.match_any,
                 keywords.match_all,
-                5000,
+                ENABLE_TIMEOUT_MS,
                 &raw const parameters,
             )
         };
-        check_enable_status(status)?;
+        check_enable_status(enable_status)?;
 
         let mut context = Box::new(CallbackContext::new(
             Arc::clone(&pool),
@@ -654,22 +730,24 @@ impl Capture {
         );
         Ok(capture)
     }
+}
 
+impl EventProducer for Capture {
     /// The keyword masks this session enabled and whether they are the fallback.
-    pub(crate) fn keywords(&self) -> KeywordSelection {
+    fn keywords(&self) -> KeywordSelection {
         self.keywords
     }
 
-    pub(crate) fn is_finished(&self) -> bool {
+    fn is_finished(&self) -> bool {
         self.worker.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     /// Queries the live session and stores ETW's lost-event and buffer counters.
     /// The error carries the Win32 status; failures are also counted in
     /// `stats_errors`.
-    pub(crate) fn query_statistics(&self) -> Result<(), u32> {
+    fn query_statistics(&self) -> Result<(), Win32Status> {
         let Some(session) = self.session else {
-            return Err(ERROR_INVALID_HANDLE);
+            return Err(Win32Status(ERROR_INVALID_HANDLE));
         };
         let mut properties = QueryProperties::new();
         // SAFETY: The properties buffer is aligned, sized (Wnode.BufferSize and both
@@ -692,14 +770,14 @@ impl Capture {
         if status == ERROR_SUCCESS {
             Ok(())
         } else {
-            Err(status)
+            Err(Win32Status(status))
         }
     }
 
-    /// Re-reads the DNS Server service process ID. Returns a reason when the
+    /// Re-reads the DNS Server service process ID. Returns the change when the
     /// service stopped or restarted, which invalidates the PID filter. A failed
     /// query is inconclusive and returns `None`.
-    pub(crate) fn target_change(&self) -> Option<String> {
+    fn target_change(&self) -> Option<TargetChange> {
         classify_target(self.dns_pid, service_process_id_raw(DNS_SERVICE).ok())
     }
 
@@ -708,13 +786,16 @@ impl Capture {
     /// Order: `ControlTrace(STOP)`, then a bounded wait for `ProcessTrace` to
     /// deliver its remaining buffers and return on its own, then `CloseTrace`
     /// (which only forces the worker out if the wait expired), then the join.
-    pub(crate) fn stop(&mut self) -> Result<()> {
+    fn stop(&mut self) -> Result<()> {
         let mut failure = None;
         let mut session_stopped = false;
         if let Some(session) = self.session.take() {
-            let mut properties = SessionProperties::new(&SessionConfig::default(), GUID::default());
+            // STOP is an output call like QUERY: ETW fills the properties and
+            // writes both names, so the buffer needs both name offsets set.
+            let mut properties = QueryProperties::new();
             // SAFETY: Only the handle successfully created above is stopped; null
-            // name forces handle lookup. The output buffer is aligned and sized.
+            // name forces handle lookup. The output buffer is aligned and sized
+            // (Wnode.BufferSize and both name offsets set).
             let status = unsafe {
                 ControlTraceW(
                     session,
@@ -789,7 +870,9 @@ impl Drop for Capture {
 /// definition declares a one-element flexible array.
 #[repr(C)]
 struct EventIdFilterPayload {
-    filter_in: bool,
+    /// The C `BOOLEAN` (one byte) `FilterIn`: 1 includes the listed events, 0
+    /// excludes them.
+    filter_in: u8,
     reserved: u8,
     count: u16,
     events: [u16; SUPPORTED_EVENT_IDS.len()],
@@ -816,7 +899,7 @@ impl EventIdFilterPayload {
     /// Builds an include-only filter for [`SUPPORTED_EVENT_IDS`].
     const fn new() -> Self {
         Self {
-            filter_in: true,
+            filter_in: 1,
             reserved: 0,
             #[expect(
                 clippy::cast_possible_truncation,
