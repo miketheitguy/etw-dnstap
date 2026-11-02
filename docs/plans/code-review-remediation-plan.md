@@ -148,10 +148,10 @@ cargo test --locked
 cargo test --locked --features diag-timing
 cargo build --locked --release
 pwsh -NoProfile -File scripts/ci/verify-pe.ps1 -Path target/x86_64-pc-windows-msvc/release/etw-dnstap.exe
-git diff --cached | Select-String -Pattern 'C:\\Users|/c/Users|C:/Users|~/|\$HOME|%USERPROFILE%'
 ```
 
-The last line must print nothing (see CLAUDE.md). Phases 2 and 3 also need a
+Then run the staged-diff host-path check from CLAUDE.md; it must print
+nothing. Phases 2 and 3 also need a
 lab run on the WS2025 guest, following the receiver rules in
 `scripts/performance/README.md` (collector output to a null logger; count
 delivery with `ss -tin` on the receiver).
