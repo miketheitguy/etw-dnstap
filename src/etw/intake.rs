@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 
 use super::{
     CaptureCounters, MAX_EXTENDED_ITEMS, PoolManager, dns_provider,
-    pool::{PooledBuffer, REGULAR_BYTES},
+    pool::{ITEM_TABLE_BYTES, PooledBuffer, REGULAR_BYTES},
     supported,
 };
 
@@ -297,8 +297,18 @@ pub(super) unsafe fn copy_record(
         length = length.checked_add(size).ok_or_else(invalid)?;
         items[index] = item;
     }
-    let mut buffer = pool.acquire(length).ok_or(CopyError::Exhausted {
-        jumbo: length > REGULAR_BYTES,
+    // The item cells sit at the end of the slot (see `pool::Slot`), after the
+    // last payload byte rounded up to 8. Reserve them now, so the slot class
+    // and the capacity check cover payload, padding, and cells together.
+    let needed = if count == 0 {
+        length
+    } else {
+        align_payload(length)
+            .and_then(|aligned| aligned.checked_add(count * ITEM_TABLE_BYTES))
+            .ok_or_else(invalid)?
+    };
+    let mut buffer = pool.acquire(needed).ok_or(CopyError::Exhausted {
+        jumbo: needed > REGULAR_BYTES,
     })?;
     if data_length != 0 {
         // SAFETY: The validated nonempty source is readable by caller contract.
@@ -316,8 +326,9 @@ pub(super) unsafe fn copy_record(
         let mut item = items[index];
         let size = usize::from(item.DataSize);
         if size != 0 {
-            // SAFETY: Preflight checked offset + size <= acquired capacity, so
-            // the 8-aligned offset stays inside the exclusive slot.
+            // SAFETY: Preflight checked offset + size <= length, and the slot has
+            // at least length + the item cells (`needed`) bytes, so the 8-aligned
+            // offset stays inside the exclusive slot, clear of the cells.
             let destination = unsafe { buffer.bytes_mut().add(offsets[index]) };
             // SAFETY: The caller guarantees size readable bytes at DataPtr, and
             // the slot has size bytes of room at destination (checked above).
@@ -327,7 +338,7 @@ pub(super) unsafe fn copy_record(
             }
         }
         item.DataPtr = 0;
-        buffer.set_item(index, item, offsets[index]);
+        buffer.set_item(index, &item, offsets[index]);
     }
     Ok(RawEtwEvent {
         header: record.EventHeader,
@@ -361,8 +372,9 @@ impl RawEtwEvent {
     /// The record and repaired raw pointers are valid only during `operation`.
     pub(super) fn with_record<T>(&self, operation: impl FnOnce(&EVENT_RECORD) -> T) -> T {
         let count = usize::from(self.extended_count);
-        let mut extended = *self.buffer.items();
+        let mut extended = [EVENT_HEADER_EXTENDED_DATA_ITEM::default(); MAX_EXTENDED_ITEMS];
         for (index, item) in extended.iter_mut().take(count).enumerate() {
+            *item = self.buffer.item(index);
             item.DataPtr = if item.DataSize == 0 {
                 0
             } else {

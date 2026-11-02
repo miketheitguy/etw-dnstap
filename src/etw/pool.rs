@@ -7,14 +7,22 @@ use windows_sys::Win32::System::Diagnostics::Etw::EVENT_HEADER_EXTENDED_DATA_ITE
 use super::MAX_EXTENDED_ITEMS;
 
 pub(super) const REGULAR_BYTES: usize = 2048;
+/// Bytes of one extended-data item in a slot's table: a header word and an
+/// offset word.
+pub(super) const ITEM_TABLE_BYTES: usize = 16;
 // Two u16-sized payload regions plus one alignment gap of at most seven bytes per
-// extended item, rounded up to 8. copy_record admits at most 65_535 bytes of
-// user data and 65_535 bytes of extended data, so its largest layout is
-// 65_535 + 7 * MAX_EXTENDED_ITEMS + 65_535 <= JUMBO_BYTES.
-pub(super) const JUMBO_BYTES: usize = (2 * 65_535 + 7 * MAX_EXTENDED_ITEMS).next_multiple_of(8);
+// extended item and one more before the item table, then the table itself,
+// rounded up to 8. copy_record admits at most 65_535 bytes of user data and
+// 65_535 bytes of extended data, so its largest layout is
+// 65_535 + 7 * MAX_EXTENDED_ITEMS + 7 + 65_535 + ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS
+// <= JUMBO_BYTES.
+pub(super) const JUMBO_BYTES: usize =
+    (2 * 65_535 + (7 + ITEM_TABLE_BYTES) * MAX_EXTENDED_ITEMS + 7).next_multiple_of(8);
 const _: () = {
     assert!(JUMBO_BYTES.is_multiple_of(8));
-    assert!(JUMBO_BYTES >= 2 * 65_535 + 7 * MAX_EXTENDED_ITEMS);
+    assert!(JUMBO_BYTES >= 2 * 65_535 + (7 + ITEM_TABLE_BYTES) * MAX_EXTENDED_ITEMS + 7);
+    assert!(size_of::<EVENT_HEADER_EXTENDED_DATA_ITEM>() == 16);
+    assert!(REGULAR_BYTES >= ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS);
 };
 pub(crate) const MAX_CAPACITY: usize = 262_144;
 /// Smallest capacity accepted on the command line (`PoolManager::new` accepts 1).
@@ -22,11 +30,40 @@ pub(crate) const MIN_CAPACITY: usize = 1_024;
 /// Largest `--jumbo-capacity`; the command line and `PoolManager::new` both enforce it.
 pub(crate) const MAX_JUMBO_CAPACITY: u16 = 256;
 
+/// A slot's header. The bytes hold the payload at the front and, for a record
+/// with extended data, one `ITEM_TABLE_BYTES` cell per item at the very end:
+/// item `i` occupies the `i`th 16-byte cell counted from the end, so the cells
+/// need no count to find. This keeps the 384 bytes of per-item tables out of
+/// every slot header, where this provider (which sends no extended data)
+/// never used them. `copy_record` asks `acquire` for room for the payload, its
+/// alignment padding, and the cells, so the two regions cannot overlap.
 struct Slot {
     bytes: Box<[u64]>,
-    items: [EVENT_HEADER_EXTENDED_DATA_ITEM; MAX_EXTENDED_ITEMS],
-    offsets: [usize; MAX_EXTENDED_ITEMS],
     jumbo: bool,
+}
+
+/// The four `u16` fields of an item that precede `DataPtr`, packed little-endian.
+/// `DataPtr` is not stored: `copy_record` zeroes it, and `with_record` repairs it
+/// from the offset.
+fn pack_item(item: &EVENT_HEADER_EXTENDED_DATA_ITEM) -> u64 {
+    let [r0, r1] = item.Reserved1.to_le_bytes();
+    let [t0, t1] = item.ExtType.to_le_bytes();
+    let [b0, b1] = item.Anonymous._bitfield.to_le_bytes();
+    let [s0, s1] = item.DataSize.to_le_bytes();
+    u64::from_le_bytes([r0, r1, t0, t1, b0, b1, s0, s1])
+}
+
+/// The inverse of [`pack_item`], with `DataPtr` zero.
+fn unpack_item(word: u64) -> EVENT_HEADER_EXTENDED_DATA_ITEM {
+    let [r0, r1, t0, t1, b0, b1, s0, s1] = word.to_le_bytes();
+    let mut item = EVENT_HEADER_EXTENDED_DATA_ITEM {
+        Reserved1: u16::from_le_bytes([r0, r1]),
+        ExtType: u16::from_le_bytes([t0, t1]),
+        DataSize: u16::from_le_bytes([s0, s1]),
+        ..Default::default()
+    };
+    item.Anonymous._bitfield = u16::from_le_bytes([b0, b1]);
+    item
 }
 
 /// Allocated before callbacks; slots move between exactly one free list and lease.
@@ -108,8 +145,6 @@ impl PoolManager {
         bytes.resize(size / 8, 0u64);
         self.recycle(Box::new(Slot {
             bytes: bytes.into_boxed_slice(),
-            items: [EVENT_HEADER_EXTENDED_DATA_ITEM::default(); MAX_EXTENDED_ITEMS],
-            offsets: [0; MAX_EXTENDED_ITEMS],
             jumbo,
         }));
         Ok(())
@@ -174,20 +209,44 @@ impl PooledBuffer {
     pub(super) fn bytes_mut(&mut self) -> *mut u8 {
         self.slot_mut().bytes.as_mut_ptr().cast()
     }
-    pub(super) fn items(&self) -> &[EVENT_HEADER_EXTENDED_DATA_ITEM; MAX_EXTENDED_ITEMS] {
-        &self.slot().items
+    /// Index of the header word of item `index` in the slot's words; its offset
+    /// word follows. Counted from the end, see [`Slot`]. Aborts for an index at
+    /// or beyond `MAX_EXTENDED_ITEMS`, which no caller passes.
+    fn cell(&self, index: usize) -> usize {
+        if index >= MAX_EXTENDED_ITEMS {
+            std::process::abort();
+        }
+        self.slot().bytes.len() - 2 * (index + 1)
     }
+
+    /// Stores item `index` and the payload offset of its data in the table at the
+    /// end of the slot. The caller reserved the cell through `acquire`.
     pub(super) fn set_item(
         &mut self,
         index: usize,
-        item: EVENT_HEADER_EXTENDED_DATA_ITEM,
+        item: &EVENT_HEADER_EXTENDED_DATA_ITEM,
         offset: usize,
     ) {
-        self.slot_mut().items[index] = item;
-        self.slot_mut().offsets[index] = offset;
+        let cell = self.cell(index);
+        let Ok(offset) = u64::try_from(offset) else {
+            std::process::abort();
+        };
+        let words = &mut self.slot_mut().bytes;
+        words[cell] = pack_item(item);
+        words[cell + 1] = offset;
     }
+
+    /// Item `index`, with `DataPtr` zero. Valid for `index <` the count passed to
+    /// `set_item`; other cells hold stale or zero words.
+    pub(super) fn item(&self, index: usize) -> EVENT_HEADER_EXTENDED_DATA_ITEM {
+        unpack_item(self.slot().bytes[self.cell(index)])
+    }
+
     pub(super) fn offset(&self, index: usize) -> usize {
-        self.slot().offsets[index]
+        let Ok(offset) = usize::try_from(self.slot().bytes[self.cell(index) + 1]) else {
+            std::process::abort();
+        };
+        offset
     }
 }
 
@@ -271,8 +330,47 @@ mod tests {
 
     #[test]
     fn x64_storage_sizes_match_documented_budget() {
-        assert_eq!(std::mem::size_of::<Slot>(), 408);
+        assert_eq!(std::mem::size_of::<Slot>(), 24);
+        assert_eq!(REGULAR_BYTES, 2048);
+        assert_eq!(JUMBO_BYTES, 131_448);
         assert_eq!(std::mem::size_of::<super::super::RawEtwEvent>(), 104);
+    }
+
+    #[test]
+    fn item_cells_round_trip_at_the_end_of_the_slot() {
+        let pool = PoolManager::new(1, 1).expect("bounded test pool");
+        for length in [REGULAR_BYTES, JUMBO_BYTES] {
+            let mut lease = pool.acquire(length).expect("slot");
+            for index in 0..MAX_EXTENDED_ITEMS {
+                let value = u16::try_from(index).expect("small index");
+                let mut item = EVENT_HEADER_EXTENDED_DATA_ITEM {
+                    Reserved1: 0x1000 + value,
+                    ExtType: 0x2000 + value,
+                    DataSize: 0x3000 + value,
+                    DataPtr: 0xdead_beef,
+                    ..Default::default()
+                };
+                item.Anonymous._bitfield = 0x4000 + value;
+                lease.set_item(index, &item, 8 * (index + 1));
+            }
+            for index in 0..MAX_EXTENDED_ITEMS {
+                let value = u16::try_from(index).expect("small index");
+                let item = lease.item(index);
+                assert_eq!(item.Reserved1, 0x1000 + value);
+                assert_eq!(item.ExtType, 0x2000 + value);
+                assert_eq!(item.Anonymous._bitfield, 0x4000 + value);
+                assert_eq!(item.DataSize, 0x3000 + value);
+                assert_eq!(item.DataPtr, 0, "DataPtr is not stored");
+                assert_eq!(lease.offset(index), 8 * (index + 1));
+            }
+            // The cells are the last 16 * MAX_EXTENDED_ITEMS bytes; the rest of
+            // the slot is untouched (zero on a fresh slot).
+            let payload = length - ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS;
+            // SAFETY: The exclusive lease owns `length` initialized bytes.
+            let bytes = unsafe { std::slice::from_raw_parts(lease.bytes(), length) };
+            assert!(bytes[..payload].iter().all(|byte| *byte == 0));
+            assert!(bytes[payload..].iter().any(|byte| *byte != 0));
+        }
     }
 
     /// Allocates with `interval` and returns how often progress was reported.

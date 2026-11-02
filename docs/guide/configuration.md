@@ -213,8 +213,8 @@ deadline are:
 
 | `--capacity` | Counted storage | Startup deadline | Lab-tested |
 | --- | --- | --- | --- |
-| 65,536 | 177,772,880 bytes (169.54 MiB) | 14 seconds | Yes |
-| 131,072 | 347,117,904 bytes (331.04 MiB) | 18 seconds | No |
+| 65,536 | 152,598,608 bytes (145.53 MiB) | 14 seconds | Yes |
+| 131,072 | 296,777,808 bytes (283.03 MiB) | 18 seconds | No |
 
 See [Storage](#storage) and
 [Startup and shutdown deadlines](#startup-and-shutdown-deadlines).
@@ -303,9 +303,10 @@ Why these values:
 Costs:
 
 - Counted storage with `--capacity 24576` and the default 64 jumbo slots is
-  71,932,240 bytes (68.60 MiB). The service allocates it at startup. With
-  `--capacity 262144`, the counted storage is 654.04 MiB, and the measured
-  private bytes were about 684 MiB.
+  62,486,608 bytes (59.59 MiB). The service allocates it at startup. With
+  `--capacity 262144`, the counted storage is 558.03 MiB, and the private
+  bytes measured with the earlier 408-byte slot header were about 684 MiB (the
+  header is now 24 bytes, about 96 MiB less at this capacity).
 - The startup deadline at this capacity is 12 seconds.
 - ETW buffer memory is at most 4 MiB with 32 buffers of 128 KiB.
 
@@ -328,11 +329,11 @@ See [200,000 QPS validation](../history/200k-qps-validation.md).
 ## Storage
 
 Counted storage at the defaults (`--capacity 24576` and 64 jumbo slots) is
-68.60 MiB. The previous default `--capacity 8192` counted 28.22 MiB. With the
-high-rate `--capacity 65536` and the default 64 jumbo slots, it is 169.54 MiB.
-With `--capacity 131072` and 64 jumbo slots, it is 331.04 MiB. With
-`--capacity 262144` and 64 jumbo slots, it is 654.04 MiB. At the
-maximum (262,144 events and 256 jumbo slots) it is 678.14 MiB. These are
+59.59 MiB. The previous default `--capacity 8192` counts 25.22 MiB. With the
+high-rate `--capacity 65536` and the default 64 jumbo slots, it is 145.53 MiB.
+With `--capacity 131072` and 64 jumbo slots, it is 283.03 MiB. With
+`--capacity 262144` and 64 jumbo slots, it is 558.03 MiB. At the
+maximum (262,144 events and 256 jumbo slots) it is 582.11 MiB. These are
 calculated payload, slot, free-list, and channel totals. They exclude the allocator, native ETW buffers, TDH caches,
 protobuf data, and output buffers. They are not measured process-memory limits.
 See [pooled-intake.md](../design/pooled-intake.md) for the budget.

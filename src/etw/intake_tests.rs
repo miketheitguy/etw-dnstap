@@ -311,7 +311,12 @@ fn scoped_native_record_repairs_all_items_and_clears_stale_reused_slot() {
                     continue;
                 }
                 let pointer = usize::try_from(item.DataPtr).expect("native pointer fits target");
-                assert!(pointer >= base + 37 && pointer + size <= base + pool::REGULAR_BYTES);
+                // The payload and its padding end before the 16 item cells at the
+                // end of the slot.
+                let cells = pool::ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS;
+                assert!(
+                    pointer >= base + 37 && pointer + size <= base + pool::REGULAR_BYTES - cells
+                );
                 assert_eq!(pointer % 8, 0);
                 // SAFETY: The pointer is repaired into the retained initialized
                 // lease range and checked in bounds immediately above.
@@ -326,7 +331,7 @@ fn scoped_native_record_repairs_all_items_and_clears_stale_reused_slot() {
     });
     assert_eq!(counts, AllocCounts::default());
     assert!(
-        event.buffer.items().iter().all(|item| item.DataPtr == 0),
+        (0..MAX_EXTENDED_ITEMS).all(|index| event.buffer.item(index).DataPtr == 0),
         "view pointer repair never mutates stored descriptors"
     );
     drop(event);
@@ -392,7 +397,8 @@ fn copies_payload_and_extended_data_before_callback_returns() -> Result<()> {
         );
     }
     assert_eq!(owned.buffer.offset(0) % 8, 0);
-    assert_eq!(owned.buffer.items()[0].DataPtr, 0);
+    assert_eq!(owned.buffer.item(0).DataPtr, 0);
+    assert_eq!(owned.buffer.item(0).DataSize, 3);
     Ok(())
 }
 
@@ -682,6 +688,52 @@ fn queued_records_survive_native_owner_exit_and_drain_after_disconnect() {
     drop(slots);
 }
 
+/// A record with extended data needs room for its item cells at the end of the
+/// slot, so it can need the jumbo class when the same payload alone fits regular.
+#[test]
+fn item_cells_count_against_the_regular_slot_capacity() {
+    let pool = PoolManager::new(1, 0).expect("pool");
+    let mut item = EVENT_HEADER_EXTENDED_DATA_ITEM {
+        ExtType: 11,
+        ..Default::default()
+    };
+    let mut payload = vec![0x77u8; pool::REGULAR_BYTES];
+    let mut copy = |data_length: usize| {
+        let record = EVENT_RECORD {
+            UserData: payload.as_mut_ptr().cast(),
+            UserDataLength: u16::try_from(data_length).expect("small payload"),
+            ExtendedData: &raw mut item,
+            ExtendedDataCount: 1,
+            ..Default::default()
+        };
+        // SAFETY: The payload Vec backs the advertised range; the one empty
+        // descriptor reads no data.
+        unsafe { copy_record(&record, pool) }
+    };
+    // 2,032 payload bytes plus one 16-byte cell fill the 2,048-byte slot.
+    let fits = copy(pool::REGULAR_BYTES - pool::ITEM_TABLE_BYTES).expect("exactly fits");
+    assert_eq!(fits.buffer.item(0).ExtType, 11);
+    assert_eq!(
+        fits.buffer.offset(0),
+        pool::REGULAR_BYTES - pool::ITEM_TABLE_BYTES
+    );
+    assert!(fits.payload().iter().all(|byte| *byte == 0x77));
+    drop(fits);
+    // 2,040 bytes would overlap the cell: the record needs a jumbo slot.
+    assert!(matches!(
+        copy(pool::REGULAR_BYTES - pool::ITEM_TABLE_BYTES + 8),
+        Err(CopyError::Exhausted { jumbo: true })
+    ));
+    // The same payload without extended data still fits a regular slot.
+    let plain = EVENT_RECORD {
+        UserData: payload.as_mut_ptr().cast(),
+        UserDataLength: u16::try_from(pool::REGULAR_BYTES).expect("regular"),
+        ..Default::default()
+    };
+    // SAFETY: The payload Vec backs the advertised range.
+    assert!(unsafe { copy_record(&plain, pool) }.is_ok());
+}
+
 #[test]
 fn largest_record_and_all_extended_descriptors_fit_and_recycle() {
     let pool = PoolManager::new(1, 1).expect("pool");
@@ -714,9 +766,15 @@ fn largest_record_and_all_extended_descriptors_fit_and_recycle() {
         pool.acquire(pool::REGULAR_BYTES + 1).is_none(),
         "jumbo lease remains exclusive"
     );
-    for (index, item) in owned.buffer.items().iter().enumerate() {
+    for index in 0..MAX_EXTENDED_ITEMS {
+        let item = owned.buffer.item(index);
         assert_eq!(item.DataPtr, 0);
         assert_eq!(owned.buffer.offset(index) % 8, 0);
+        assert!(
+            owned.buffer.offset(index) + usize::from(item.DataSize)
+                <= pool::JUMBO_BYTES - pool::ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS,
+            "item data ends before the item cells"
+        );
         // SAFETY: Each checked item range is initialized in the retained lease.
         let bytes = unsafe {
             std::slice::from_raw_parts(
@@ -950,7 +1008,8 @@ mod copy_record_properties {
                 for (index, (bytes, _)) in items.iter().enumerate() {
                     let offset = owned.buffer.offset(index);
                     prop_assert_eq!(offset % 8, 0);
-                    prop_assert_eq!(owned.buffer.items()[index].DataPtr, 0);
+                    prop_assert_eq!(owned.buffer.item(index).DataPtr, 0);
+                    prop_assert_eq!(usize::from(owned.buffer.item(index).DataSize), bytes.len());
                     // SAFETY: copy_record initialized this in-bounds range in the lease.
                     let copied = unsafe {
                         std::slice::from_raw_parts(owned.buffer.bytes().add(offset), bytes.len())

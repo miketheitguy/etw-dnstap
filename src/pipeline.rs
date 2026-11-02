@@ -451,7 +451,7 @@ pub(crate) const STARTUP_BASE_BUDGET: Duration = Duration::from_secs(10);
 
 /// Startup budget: the base budget plus one second per
 /// [`PoolManager::PROGRESS_INTERVAL`] channel slots, because allocating and
-/// touching the event pool (about 2.3 KiB per slot, up to roughly 640 MB)
+/// touching the event pool (about 2.1 KiB per slot, up to roughly 560 MB)
 /// dominates startup at large `--capacity`. The pool reports progress once per
 /// interval, so the service refreshes its SCM checkpoint at least once per
 /// budgeted second of allocation.
