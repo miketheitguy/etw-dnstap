@@ -1,6 +1,6 @@
 # Code review remediation plan
 
-> **Status:** Proposed. Execution in progress on the `plan/code-review-remediation` branch · **Evidence dated:** 2026-11-01 · **Commit:** written at `fc983ab` · **Reviewed:** 2026-11-01
+> **Status:** Approved. Phase 0 and Phase 1 executed on the `plan/code-review-remediation` branch; Phases 2 to 4 in progress · **Evidence dated:** 2026-11-01 · **Commit:** written at `fc983ab` · **Reviewed:** 2026-11-01
 
 This plan records the findings of the 2026-11-01 Rust code review of `main` at
 `fc983ab` and the steps that act on them. The review covered performance,
@@ -208,6 +208,9 @@ result, and any deviation from the plan.
 
 | Step | Commit | Gate | Notes |
 | --- | --- | --- | --- |
+| 1.3 LNK2047 detector | `1fabf32` | script 6/6 on a fresh release link; full gate pass | build-engineer review: ship after four comment-level edits (update procedure, failure-message pointer, unwind wording, object basename normalization), applied and re-verified under both PowerShell editions. CONTRIBUTING conflict with 1.5 resolved by keeping both bullet sets. |
+| 1.6 Test waits and Miri | `a442727` | full gate pass (268 tests); Miri 56 tests in 555 s locally | code-reviewer: no-ship until three fixes (a scenario sleep restored, a reconnect-test race, a positive test-count floor) plus a 60-minute timeout, runner-temp handling, and a 20 s wait bound; all applied. The job is advisory until it has run on a hosted runner. |
+| Phase 1 integration | `a442727` | fmt; clippy default, diag-timing, fuzzing, bench; tests 268, 273, 272; cargo-deny; fresh release link with the link-exception script; verify-pe 21/21; linkcheck; Python tests | Complete on 2026-11-02. Every step was implemented and separately reviewed by a specialist agent before merge. |
 | 1.5 Benchmark and Phase 0 | `da06e4e`, fix-up `1236fe7` | full gate pass incl. `--features bench` (272 tests) and cargo-deny | performance-engineer review: conditional ship; required fixes applied (host-path line, unsupported 139 ns explanation withdrawn, A/B protocol and drift bound, cold-pool group) plus two-thread and decomposition groups, CI steps for the feature, IPv6 and event 258 records. Baseline re-recorded as the median of three quiet sessions. Key numbers: `parse_and_encode` 153 ns (IPv4 query), two-thread 231 ns per event, so crossing cores adds about 80 ns. The merge needed one fix-up: the bench pool now uses `with_progress`. |
 | 1.2 Revocation wording | `b7c0614` | fmt, clippy, linkcheck pass | security-auditor review: no-ship until five wording fixes; applied by technical-writer, committed at integration. Also corrected the install guide, `src/network.rs` doc comment, `Cargo.toml` comment, and the existing CHANGELOG entry. |
 | 1.1 SCM start progress | `dbaf472` | full gate pass, 267 tests | surgeon-reviewer: Rust change sound; lab script restore-flag ordering fixed and re-run on the WS2025 guest (RUNNING at 417 ms, configuration restored). Pre-existing `Invoke-LabGuest` argument bug fixed (not in the plan). `PoolManager::new` is now test-only; `with_progress` is the production constructor. |

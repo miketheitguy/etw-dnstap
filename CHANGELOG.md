@@ -47,6 +47,16 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- CI captures the release link output and fails when the linker's LNK2047 object
+  set (ring's prebuilt NASM objects, the `/FORCE:GUARDEHCONT` exception) differs
+  from `scripts/ci/link-exceptions.txt` in either direction. The allowlist header
+  gives the update procedure, and `.cargo/config.toml` records the ring decision
+  and the withdrawal of RUSTSEC-2025-0007.
+- An advisory CI `miri` job runs the decoder, Frame Streams, dnstap encoder, and
+  keyword-array parser tests under Miri with Stacked Borrows on and asserts that
+  at least 50 tests ran. The test-only counting allocator is compiled out under
+  Miri because the Windows system allocator's alignment header read is outside
+  the borrow it is given.
 - A criterion benchmark of the per-event hot path (`benches/hot_path.rs`,
   `cargo bench-hot-path`) behind the new `bench` feature, which is never enabled in
   a shipped build. Groups: `copy_record` (warm and cold pool), `decode`, `encode`,
@@ -172,6 +182,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- The network reconnect and deadline-clock tests wait on observable conditions
+  with a 20 s bound instead of fixed sleeps, except for the one sleep that is the
+  scenario (idle time before an operation's first I/O).
 - The service reports `SERVICE_START_PENDING` progress to the SCM once per 16,384
   allocated pool slots, and the start and stop wait hints equal the startup
   budget (10 s plus 1 s per 16,384 slots) and the 10 s shutdown deadline instead
