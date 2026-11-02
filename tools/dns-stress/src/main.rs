@@ -1,6 +1,7 @@
 //! Pipelined laboratory DNS load generator; workers never share packet counters.
 
 mod dns;
+mod pacing;
 mod stats;
 
 use std::{
@@ -20,11 +21,18 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, ValueEnum};
 use dns::{Name, parse_response};
+use pacing::Grid;
 use serde::Serialize;
 use stats::{Counts, Histogram, Latency};
 
 /// Longest idle sleep, which bounds how late a response can be noticed.
 const IDLE_POLL_CAP: Duration = Duration::from_millis(1);
+/// Most sends in one loop pass, so expiry, receives, and metrics cannot starve.
+const SEND_BATCH: usize = 64;
+/// Most receives in one loop pass.
+const RECEIVE_BATCH: usize = 256;
+/// Query IDs per socket generation.
+const ID_SPACE: usize = 65536;
 
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -169,9 +177,9 @@ impl Worker {
                     state: State::Unused,
                     sent: now
                 };
-                65536
+                ID_SPACE
             ],
-            deadlines: VecDeque::with_capacity(65536),
+            deadlines: VecDeque::with_capacity(ID_SPACE),
             next_id: 0,
             outstanding: 0,
             counts: Counts {
@@ -315,7 +323,7 @@ impl Worker {
     /// sharing the host. The wake-up is the next send (when one is possible) or
     /// the deadline, capped so responses are still polled promptly.
     fn idle(&self, options: &Options, next_send: Instant, deadline: Instant) {
-        let can_send = self.outstanding < usize::from(options.inflight) && self.next_id != 65536;
+        let can_send = self.send_room(options) != 0;
         let wake = if can_send {
             next_send.min(deadline)
         } else {
@@ -325,6 +333,47 @@ impl Worker {
             wake.saturating_duration_since(Instant::now())
                 .min(IDLE_POLL_CAP),
         );
+    }
+
+    /// Sends that the in-flight window and the ID space permit, at most one batch.
+    fn send_room(&self, options: &Options) -> usize {
+        SEND_BATCH
+            .min(usize::from(options.inflight).saturating_sub(self.outstanding))
+            .min(ID_SPACE - self.next_id)
+    }
+
+    /// Sends `names[name]` with the next query ID. Returns false when the
+    /// socket did not accept the complete datagram; the caller ends the batch.
+    fn send_next(&mut self, query: &mut Vec<u8>, names: &[Name], name: usize) -> Result<bool> {
+        let id = u16::try_from(self.next_id)?;
+        query.clear();
+        query.extend_from_slice(&names[name].query);
+        query[..2].copy_from_slice(&id.to_be_bytes());
+        let sent_at = Instant::now();
+        match self.socket.send(query) {
+            Ok(size) if size == query.len() => {
+                self.entries[self.next_id] = Entry {
+                    name,
+                    state: State::Pending,
+                    sent: sent_at,
+                };
+                self.deadlines.push_back(id);
+                self.next_id += 1;
+                if self.next_id == ID_SPACE {
+                    self.rotation_wait_started = Some(Instant::now());
+                }
+                self.outstanding += 1;
+                self.counts.sent += 1;
+                self.counts.bytes_sent += size as u64;
+                self.counts.peak_outstanding = self.counts.peak_outstanding.max(self.outstanding);
+                Ok(true)
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(false),
+            Ok(_) | Err(_) => {
+                self.counts.send_errors += 1;
+                Ok(false)
+            }
+        }
     }
 
     // Send/receive batches bound each loop so expiry and measurement cannot starve.
@@ -337,10 +386,10 @@ impl Worker {
     ) -> Result<()> {
         let end = start + Duration::from_secs(options.duration);
         let timeout = Duration::from_millis(options.timeout_ms);
-        let interval = options.qps.map(|qps| {
-            Duration::from_nanos((1_000_000_000 * u64::from(options.threads)).div_ceil(qps))
-        });
-        let mut next_send = start;
+        // Paced workers send on an absolute grid from the shared start. A late
+        // wake-up sends every due slot, so sleep overshoot does not lower the rate.
+        let grid = options.qps.map(|qps| Grid::new(options.threads, qps));
+        let mut next_slot = 0_u64;
         let mut next_metric = start + Duration::from_secs(1);
         let mut next_name = usize::from(self.id) % names.len();
         let mut query = Vec::with_capacity(271);
@@ -361,55 +410,43 @@ impl Worker {
                     .context("metrics writer stopped")?;
                 next_metric += Duration::from_secs(1);
             }
-            if self.next_id == 65536 && self.outstanding == 0 && now < end {
+            if self.next_id == ID_SPACE && self.outstanding == 0 && now < end {
                 self.rotate(options)?;
             }
+            let now = Instant::now();
+            let room = if now < end {
+                self.send_room(options)
+            } else {
+                0
+            };
+            let batch = match grid {
+                Some(grid) => {
+                    let due = pacing::due(
+                        grid,
+                        nanos(now.saturating_duration_since(start)),
+                        next_slot,
+                        room,
+                    );
+                    next_slot = due.slot;
+                    self.counts.pacing_slots_skipped += due.skipped;
+                    due.count
+                }
+                None => room,
+            };
             let mut progress = false;
-            for _ in 0..64 {
-                let now = Instant::now();
-                if now >= end
-                    || now < next_send
-                    || self.outstanding >= usize::from(options.inflight)
-                    || self.next_id == 65536
-                {
+            for _ in 0..batch {
+                if Instant::now() >= end {
                     break;
                 }
-                let id = u16::try_from(self.next_id)?;
-                query.clear();
-                query.extend_from_slice(&names[next_name].query);
-                query[..2].copy_from_slice(&id.to_be_bytes());
-                let sent_at = Instant::now();
-                match self.socket.send(&query) {
-                    Ok(size) if size == query.len() => {
-                        self.entries[self.next_id] = Entry {
-                            name: next_name,
-                            state: State::Pending,
-                            sent: sent_at,
-                        };
-                        self.deadlines.push_back(id);
-                        self.next_id += 1;
-                        if self.next_id == 65536 {
-                            self.rotation_wait_started = Some(Instant::now());
-                        }
-                        self.outstanding += 1;
-                        self.counts.sent += 1;
-                        self.counts.bytes_sent += size as u64;
-                        self.counts.peak_outstanding =
-                            self.counts.peak_outstanding.max(self.outstanding);
-                        next_name = (next_name + 1) % names.len();
-                        if let Some(interval) = interval {
-                            next_send = sent_at + interval;
-                        }
-                        progress = true;
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                    Ok(_) | Err(_) => {
-                        self.counts.send_errors += 1;
-                        break;
-                    }
+                if !self.send_next(&mut query, names, next_name)? {
+                    break;
                 }
+                next_name = (next_name + 1) % names.len();
+                // Advance on the grid, not from the send time.
+                next_slot += 1;
+                progress = true;
             }
-            for _ in 0..256 {
+            for _ in 0..RECEIVE_BATCH {
                 match self.socket.recv(&mut buffer) {
                     Ok(size) => {
                         self.receive(
@@ -430,6 +467,11 @@ impl Worker {
                 }
             }
             if !progress {
+                let next_send = grid.map_or(start, |grid| {
+                    start
+                        .checked_add(Duration::from_nanos(grid.slot_offset_ns(next_slot)))
+                        .unwrap_or(end)
+                });
                 self.idle(options, next_send, next_metric.min(end));
             }
         }
@@ -561,7 +603,7 @@ fn main() -> Result<()> {
         measured_send_duration_ns: options.duration * 1_000_000_000,
         elapsed_with_drain_ns: nanos(start.elapsed()),
         load_model: if options.qps.is_some() {
-            "paced closed loop; no catch-up bursts"
+            "paced closed loop; absolute schedule; catch-up of at most 100 ms backlog"
         } else {
             "unpaced bounded closed loop"
         },
@@ -699,7 +741,7 @@ mod tests {
         let options = options(server.local_addr()?);
         let mut worker = Worker::new(0, &options)?;
         let old_endpoint = worker.socket.local_addr()?;
-        worker.next_id = 65536;
+        worker.next_id = ID_SPACE;
         worker.entries[0].state = State::Completed;
         worker.rotate(&options)?;
         assert_eq!(worker.next_id, 0);
@@ -770,6 +812,29 @@ mod tests {
         assert_eq!(worker.counts.peak_outstanding, 8);
         assert_eq!(worker.counts.timeouts, 0);
         assert_eq!(worker.outstanding, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn paced_run_recovers_sleep_overshoot() -> Result<()> {
+        // 5,000 QPS on one worker is one slot every 200 us, shorter than the
+        // usual idle sleep. A schedule relative to each send would lose the
+        // overshoot of every sleep; the absolute grid sends each due slot.
+        let server = UdpSocket::bind("127.0.0.1:0")?;
+        let mut options = options(server.local_addr()?);
+        options.qps = Some(5_000);
+        options.inflight = 8192;
+        options.timeout_ms = 1;
+        let names = vec![Name::parse("paced.example", false)?];
+        let mut worker = Worker::new(0, &options)?;
+        let (sender, _receiver) = mpsc::sync_channel(8);
+        worker.run_loop(&options, &names, Instant::now(), &sender)?;
+        // Slots 0 through 4,999 are due before the one-second deadline. Allow
+        // for a host stall that ends after the deadline.
+        assert!(worker.counts.sent <= 5_000, "sent {}", worker.counts.sent);
+        assert!(worker.counts.sent >= 4_750, "sent {}", worker.counts.sent);
+        assert_eq!(worker.counts.sent, worker.counts.timeouts);
+        assert_eq!(worker.counts.send_errors, 0);
         Ok(())
     }
 

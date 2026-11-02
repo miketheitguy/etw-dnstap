@@ -82,7 +82,15 @@ for that selection and the [pooled VM review](../../docs/performance/pooled-vm-p
 for the later capped ramp and confirmations. The thread count remains configurable.
 
 Change `--qps` to select a different global sending ceiling. Each worker receives
-an equal share. **Omitting `--qps` selects uncapped mode:** each worker fills its outstanding window
+an equal share. Each worker sends on a fixed schedule from the shared start:
+send slot `k` is due `ceil(k * threads * 1e9 / qps)` nanoseconds after the
+start. The schedule does not depend on when the previous send occurred. When a
+worker wakes late, it sends all due slots, at most 64 in each loop pass and
+within the `--inflight` window and the ID space. Thus sleep overshoot does not
+lower the achieved rate. If the oldest due slot is more than 100 ms late, the
+worker does not send the backlog as a burst. It drops the older slots, counts
+them in `pacing_slots_skipped`, and continues at the latest due slot.
+**Omitting `--qps` selects uncapped mode:** each worker fills its outstanding window
 as quickly as send and receive processing permit. Tune `--threads` and
 `--inflight` during calibration before selecting the measured load.
 
@@ -159,6 +167,7 @@ Counter meanings are as follows:
 | `sockets_used` | Current and retired sockets across generations |
 | `rotation_count` | Completed socket rotations |
 | `rotation_wait_us` | Cumulative microseconds paused for ID-exhaustion drain during the sending window |
+| `pacing_slots_skipped` | Paced send slots dropped because the worker was more than 100 ms behind its schedule. Always 0 in uncapped mode |
 
 A timeout does not prove network packet loss. This client cannot measure kernel
 or network dropped datagrams, so it reports no fabricated drop count. In a
@@ -178,10 +187,15 @@ histograms produce null percentiles. The 2048 `latency_histogram_bins` use
 `floor(log2(max(ns,1))) * 32 + floor((ns - 2^power) * 32 / 2^power)`.
 
 The load is a bounded closed loop. Slow responses and full windows reduce the
-offered load. Pacing never catches up with a burst after a stall. The histogram
-does not correct coordinated omission and does not represent latency for
-queries that could have been offered during stalls. Compare achieved QPS,
-timeouts, and server/service resource measurements alongside the percentiles.
+offered load. After a delay of up to 100 ms, pacing sends the missed slots to
+restore the requested rate. After a longer stall, it drops the missed slots
+and counts them in `pacing_slots_skipped`. A nonzero value shows that the
+client did not offer the requested load. In a paced run, `sent` plus
+`pacing_slots_skipped` is approximately the requested ceiling multiplied by
+the duration. The histogram does not correct coordinated omission and does
+not represent latency for queries that could have been offered during stalls.
+Compare achieved QPS, timeouts, and server/service resource measurements
+alongside the percentiles.
 
 ## Response identity and resource bounds
 

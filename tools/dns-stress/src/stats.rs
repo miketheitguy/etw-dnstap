@@ -27,6 +27,8 @@ pub(crate) struct Counts {
     pub(crate) sockets_used: usize,
     pub(crate) rotation_count: u64,
     pub(crate) rotation_wait_us: u64,
+    /// Paced send slots dropped because the backlog exceeded the catch-up bound.
+    pub(crate) pacing_slots_skipped: u64,
 }
 
 impl Counts {
@@ -55,7 +57,8 @@ impl Counts {
             noerror_without_answers,
             sockets_used,
             rotation_count,
-            rotation_wait_us
+            rotation_wait_us,
+            pacing_slots_skipped
         );
         for (left, right) in self.rcode.iter_mut().zip(other.rcode) {
             *left += right;
