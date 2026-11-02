@@ -1,0 +1,333 @@
+{
+    "label":  "pilot-base-5k",
+    "image":  "base",
+    "image_sha256":  "40E63F9DDD2B089B21B046EAFE0F21129B74DFCDE0A3DBE464D106C77775ED8E",
+    "qps_requested":  5000,
+    "duration_s":  60,
+    "threads":  4,
+    "inflight":  1024,
+    "client_sha256":  "82CFB758153DB8BF2E00E0FB25E932B84154DB2737B8D52CBA05A3D4E61D38A6",
+    "host_build_processes_at_start":  0,
+    "begin":  {
+                  "installed_sha256":  "40E63F9DDD2B089B21B046EAFE0F21129B74DFCDE0A3DBE464D106C77775ED8E",
+                  "path_name":  "\"C:\\Program Files\\EtwDnstap\\etw-dnstap.exe\" --receiver 172.27.215.60:6000 --session-name EtwDnstap-Lab --plaintext --stats-interval-seconds 5",
+                  "started_local":  "2026-11-02T06:36:00.0692129-08:00",
+                  "swapped":  true,
+                  "pid":  4728,
+                  "PSComputerName":  "DNSTap-WS2025",
+                  "RunspaceId":  "949a7e5b-66c6-46e2-a568-76bd04362779",
+                  "PSShowComputerName":  true
+              },
+    "pre":  {
+                "working_set":  81473536,
+                "peak_working_set":  81489920,
+                "counters":  {
+                                 "receiver down drops":  0,
+                                 "etw events lost":  0,
+                                 "receiver disconnects":  0,
+                                 "pool exhausted drops":  0,
+                                 "jumbo pool exhausted drops":  0,
+                                 "events received":  0,
+                                 "events dropped":  0,
+                                 "receiver connected":  1,
+                                 "callback errors":  0,
+                                 "channel peak depth":  0,
+                                 "etw buffers lost":  0,
+                                 "frames sent":  0,
+                                 "channel full drops":  0,
+                                 "events rejected":  0
+                             },
+                "pid":  4728,
+                "handles":  112,
+                "cpu_seconds":  0.015625,
+                "dns_cpu_seconds":  1209.453125,
+                "threads":  [
+                                {
+                                    "tid":  3300,
+                                    "name":  "main",
+                                    "cycles":  15406600
+                                },
+                                {
+                                    "tid":  4180,
+                                    "name":  "",
+                                    "cycles":  2271720
+                                },
+                                {
+                                    "tid":  2720,
+                                    "name":  "",
+                                    "cycles":  513040
+                                },
+                                {
+                                    "tid":  3692,
+                                    "name":  "",
+                                    "cycles":  183480
+                                },
+                                {
+                                    "tid":  3816,
+                                    "name":  "",
+                                    "cycles":  302280
+                                },
+                                {
+                                    "tid":  4436,
+                                    "name":  "",
+                                    "cycles":  102132360
+                                },
+                                {
+                                    "tid":  4420,
+                                    "name":  "",
+                                    "cycles":  162800
+                                },
+                                {
+                                    "tid":  4192,
+                                    "name":  "dnstap-parser",
+                                    "cycles":  13638240
+                                },
+                                {
+                                    "tid":  3796,
+                                    "name":  "etw-consumer",
+                                    "cycles":  761200
+                                }
+                            ],
+                "utc":  "2026-11-02T14:36:08.6857350Z",
+                "thread_count":  9,
+                "total_cpu_pct":  2.2204755609781746,
+                "virtual_bytes":  2203485507584,
+                "state":  "Running",
+                "private_bytes":  76451840,
+                "user_seconds":  0,
+                "PSComputerName":  "DNSTap-WS2025",
+                "RunspaceId":  "949a7e5b-66c6-46e2-a568-76bd04362779",
+                "PSShowComputerName":  true
+            },
+    "rx_pre":  {
+                   "utc":  "2026-11-02T14:36:11.3079010Z",
+                   "connections":  1,
+                   "bytes_received":  [
+                                          84
+                                      ],
+                   "raw":  "0      0      172.27.215.60:6000 172.27.215.163:49964\r\n\t cubic wscale:8,9 rto:201 rtt:0.295/0.122 ato:40 mss:1460 pmtu:1500 rcvmss:536 advmss:1460 cwnd:10 bytes_sent:42 bytes_acked:42 bytes_received:84 segs_out:4 segs_in:9 data_segs_out:1 data_segs_in:7 send 395932203bps lastsnd:11126 lastrcv:11126 lastack:11126 pacing_rate 791864400bps delivery_rate 44923072bps delivered:2 app_limited rcv_space:14600 rcv_ssthresh:64076 minrtt:0.26 snd_wnd:65280 rcv_wnd:64512"
+               },
+    "client_exit_code":  0,
+    "client_start_utc":  "2026-11-02T14:36:11.3307116Z",
+    "client_end_utc":  "2026-11-02T14:37:12.5480569Z",
+    "polls":  [
+                  {
+                      "working_set":  87842816,
+                      "peak_working_set":  89165824,
+                      "host_total_cpu_pct":  5.0877174242653478,
+                      "pid":  4728,
+                      "handles":  114,
+                      "cpu_seconds":  0.125,
+                      "dns_cpu_seconds":  1210.484375,
+                      "utc":  "2026-11-02T14:36:21.4901662Z",
+                      "thread_count":  10,
+                      "total_cpu_pct":  4.0851281729526789,
+                      "virtual_bytes":  2203493310464,
+                      "state":  "Running",
+                      "private_bytes":  82608128,
+                      "user_seconds":  0.078125
+                  },
+                  {
+                      "working_set":  85663744,
+                      "peak_working_set":  89538560,
+                      "host_total_cpu_pct":  5.5895072884157511,
+                      "pid":  4728,
+                      "handles":  114,
+                      "cpu_seconds":  0.28125,
+                      "dns_cpu_seconds":  1211.96875,
+                      "utc":  "2026-11-02T14:36:34.2577672Z",
+                      "thread_count":  7,
+                      "total_cpu_pct":  4.3944410511667087,
+                      "virtual_bytes":  2203484909568,
+                      "state":  "Running",
+                      "private_bytes":  80355328,
+                      "user_seconds":  0.1875
+                  },
+                  {
+                      "working_set":  88563712,
+                      "peak_working_set":  89538560,
+                      "host_total_cpu_pct":  6.9184214070848071,
+                      "pid":  4728,
+                      "handles":  114,
+                      "cpu_seconds":  0.34375,
+                      "dns_cpu_seconds":  1213.65625,
+                      "utc":  "2026-11-02T14:36:46.3448546Z",
+                      "thread_count":  7,
+                      "total_cpu_pct":  4.6353603524255327,
+                      "virtual_bytes":  2203487809536,
+                      "state":  "Running",
+                      "private_bytes":  83279872,
+                      "user_seconds":  0.25
+                  },
+                  {
+                      "working_set":  87695360,
+                      "peak_working_set":  89538560,
+                      "host_total_cpu_pct":  6.1305860437573472,
+                      "pid":  4728,
+                      "handles":  114,
+                      "cpu_seconds":  0.421875,
+                      "dns_cpu_seconds":  1214.78125,
+                      "utc":  "2026-11-02T14:36:58.4239529Z",
+                      "thread_count":  7,
+                      "total_cpu_pct":  3.1847141295255121,
+                      "virtual_bytes":  2203486941184,
+                      "state":  "Running",
+                      "private_bytes":  82403328,
+                      "user_seconds":  0.328125
+                  },
+                  {
+                      "working_set":  86241280,
+                      "peak_working_set":  89579520,
+                      "host_total_cpu_pct":  4.7114844865476346,
+                      "pid":  4728,
+                      "handles":  114,
+                      "cpu_seconds":  0.5,
+                      "dns_cpu_seconds":  1215.90625,
+                      "utc":  "2026-11-02T14:37:10.5303519Z",
+                      "thread_count":  7,
+                      "total_cpu_pct":  6.0363111677119612,
+                      "virtual_bytes":  2203485487104,
+                      "state":  "Running",
+                      "private_bytes":  80936960,
+                      "user_seconds":  0.390625
+                  }
+              ],
+    "post":  {
+                 "working_set":  82067456,
+                 "peak_working_set":  89579520,
+                 "counters":  {
+                                  "receiver down drops":  0,
+                                  "etw events lost":  0,
+                                  "receiver disconnects":  0,
+                                  "pool exhausted drops":  0,
+                                  "jumbo pool exhausted drops":  0,
+                                  "events received":  600000,
+                                  "events dropped":  0,
+                                  "receiver connected":  1,
+                                  "callback errors":  0,
+                                  "channel peak depth":  5538,
+                                  "etw buffers lost":  0,
+                                  "frames sent":  600000,
+                                  "channel full drops":  0,
+                                  "events rejected":  0
+                              },
+                 "pid":  4728,
+                 "handles":  114,
+                 "cpu_seconds":  0.5,
+                 "dns_cpu_seconds":  1216.15625,
+                 "threads":  [
+                                 {
+                                     "tid":  3300,
+                                     "name":  "main",
+                                     "cycles":  15970680
+                                 },
+                                 {
+                                     "tid":  3816,
+                                     "name":  "",
+                                     "cycles":  585200
+                                 },
+                                 {
+                                     "tid":  4436,
+                                     "name":  "",
+                                     "cycles":  161656440
+                                 },
+                                 {
+                                     "tid":  4420,
+                                     "name":  "",
+                                     "cycles":  162800
+                                 },
+                                 {
+                                     "tid":  4192,
+                                     "name":  "dnstap-parser",
+                                     "cycles":  911770640
+                                 },
+                                 {
+                                     "tid":  3796,
+                                     "name":  "etw-consumer",
+                                     "cycles":  870288320
+                                 },
+                                 {
+                                     "tid":  3912,
+                                     "name":  "",
+                                     "cycles":  3682800
+                                 }
+                             ],
+                 "utc":  "2026-11-02T14:37:18.6062496Z",
+                 "thread_count":  7,
+                 "total_cpu_pct":  1.6406511862446016,
+                 "virtual_bytes":  2203481313280,
+                 "state":  "Running",
+                 "private_bytes":  76726272,
+                 "user_seconds":  0.390625,
+                 "PSComputerName":  "DNSTap-WS2025",
+                 "RunspaceId":  "949a7e5b-66c6-46e2-a568-76bd04362779",
+                 "PSShowComputerName":  true
+             },
+    "rx_post":  {
+                    "utc":  "2026-11-02T14:37:21.0208962Z",
+                    "connections":  1,
+                    "bytes_received":  [
+                                           61809204
+                                       ],
+                    "raw":  "0      0      172.27.215.60:6000 172.27.215.163:49964\r\n\t cubic wscale:8,9 rto:201 rtt:0.295/0.122 ato:40 mss:1460 pmtu:1500 rcvmss:1460 advmss:1460 cwnd:10 bytes_sent:42 bytes_acked:42 bytes_received:61809204 segs_out:1885 segs_in:1911 data_segs_out:1 data_segs_in:1909 send 395932203bps lastsnd:80840 lastrcv:7545 lastack:7545 pacing_rate 791864400bps delivery_rate 44923072bps delivered:2 app_limited rcv_rtt:0.409 rcv_space:327538 rcv_ssthresh:3673156 minrtt:0.26 snd_wnd:65280 rcv_wnd:3755520"
+                },
+    "host_build_processes_max_during":  0,
+    "host_build_processes_at_end":  0,
+    "client":  {
+                   "sent":  300000,
+                   "completed":  300000,
+                   "successful":  300000,
+                   "timeouts":  0,
+                   "send_errors":  0,
+                   "pacing_slots_skipped":  0,
+                   "measured_send_duration_ns":  60000000000,
+                   "qps_achieved":  5000,
+                   "p50_ns":  1032191,
+                   "p99_ns":  1736703
+               },
+    "stop":  {
+                 "state":  "Stopped",
+                 "events":  [
+                                "2026-11-02T14:36:00.208403Z INFO capture started session=\"EtwDnstap-Lab\" session_guid=\"43b7b2fc-777a-5214-b6ed-665c1ff9e972\" receiver=172.27.215.60:6000 tls=false capacity=24576 etw_buffer_kib=16 etw_min_buffers=0 etw_max_buffers=64 etw_flush_seconds=1 match_any_keyword=0x7 match_all_keyword=0x0 keyword_fallback=false failed_responses_captured=true",
+                                "2026-11-02T14:36:00.208604Z INFO ETW buffers applied etw_min_buffers_applied=12 etw_max_buffers_applied=64 etw_buffers_allocated=12",
+                                "2026-11-02T14:36:05.239184Z INFO capture stats received=0 dequeued=0 encoded=0 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=0 parser_wake_requests=0",
+                                "2026-11-02T14:36:05.239295Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=0 queue_depth_max=0",
+                                "2026-11-02T14:36:10.266761Z INFO capture stats received=0 dequeued=0 encoded=0 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=0 parser_wake_requests=0",
+                                "2026-11-02T14:36:10.266877Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=0 queue_depth_max=0",
+                                "2026-11-02T14:36:15.277786Z INFO capture stats received=20224 dequeued=20224 encoded=20224 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=439 parser_wake_requests=439",
+                                "2026-11-02T14:36:15.277905Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=56 queue_depth_max=5538",
+                                "2026-11-02T14:36:20.328376Z INFO capture stats received=70870 dequeued=70870 encoded=70870 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=1539 parser_wake_requests=1539",
+                                "2026-11-02T14:36:20.328487Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:36:25.347572Z INFO capture stats received=121704 dequeued=121704 encoded=121704 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=2646 parser_wake_requests=2646",
+                                "2026-11-02T14:36:25.347681Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:36:30.367612Z INFO capture stats received=173790 dequeued=173790 encoded=173790 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=3779 parser_wake_requests=3779",
+                                "2026-11-02T14:36:30.367717Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:36:35.430117Z INFO capture stats received=224736 dequeued=224736 encoded=224736 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=4889 parser_wake_requests=4889",
+                                "2026-11-02T14:36:35.430229Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:36:40.483212Z INFO capture stats received=276231 dequeued=276231 encoded=276231 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=6009 parser_wake_requests=6009",
+                                "2026-11-02T14:36:40.483325Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:36:45.516139Z INFO capture stats received=317232 dequeued=317232 encoded=317232 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=6903 parser_wake_requests=6903",
+                                "2026-11-02T14:36:45.516249Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:36:50.552360Z INFO capture stats received=368663 dequeued=368663 encoded=368663 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=8023 parser_wake_requests=8023",
+                                "2026-11-02T14:36:50.552475Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:36:55.606568Z INFO capture stats received=420000 dequeued=420000 encoded=420000 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=9142 parser_wake_requests=9142",
+                                "2026-11-02T14:36:55.606685Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:37:00.641033Z INFO capture stats received=471296 dequeued=471296 encoded=471296 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=10259 parser_wake_requests=10259",
+                                "2026-11-02T14:37:00.641138Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:37:05.642591Z INFO capture stats received=523687 dequeued=523687 encoded=523687 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=11397 parser_wake_requests=11397",
+                                "2026-11-02T14:37:05.642693Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:37:10.691772Z INFO capture stats received=575783 dequeued=575783 encoded=575783 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=12529 parser_wake_requests=12529",
+                                "2026-11-02T14:37:10.691897Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=121 queue_depth_max=5538",
+                                "2026-11-02T14:37:15.697159Z INFO capture stats received=600000 dequeued=600000 encoded=600000 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=13060 parser_wake_requests=13060",
+                                "2026-11-02T14:37:15.697259Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=142 queue_depth_max=5538",
+                                "2026-11-02T14:37:20.728776Z INFO capture stats received=600000 dequeued=600000 encoded=600000 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=13060 parser_wake_requests=13060",
+                                "2026-11-02T14:37:20.728891Z INFO output stats output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=142 queue_depth_max=5538",
+                                "2026-11-02T14:37:21.119919Z INFO capture stopped received=600000 dequeued=600000 encoded=600000 ignored=0 ring_dropped=0 intake_dropped=0 pool_exhausted_regular=0 pool_exhausted_jumbo=0 foreign_pid_rejected=0 receiver_disconnected=0 etw_lost=0 etw_buffers_lost=0 callback_errors=0 rejected=0 schema_rejected=0 etw_stats_valid=true etw_stats_errors=0 stale_sessions_reclaimed=0 etw_buffers_delivered=13060 parser_wake_requests=13060",
+                                "2026-11-02T14:37:21.120024Z INFO output stopped output_failed_events=0 output_errors=0 receiver_connected=true receiver_disconnects=0 receiver_reconnects=0 receiver_reconnect_failures=0 disconnected_dropped=0 slow_writes=0 write_max_us=142 queue_depth_max=5538"
+                            ],
+                 "exit_code":  0,
+                 "PSComputerName":  "DNSTap-WS2025",
+                 "RunspaceId":  "949a7e5b-66c6-46e2-a568-76bd04362779",
+                 "PSShowComputerName":  true
+             }
+}

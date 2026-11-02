@@ -357,10 +357,11 @@ spelled `'profile.release.panic="unwind"'` for Cargo's own parser.)
 | File | Content |
 | --- | --- |
 | `README.md` | This record |
-| `sha256.txt` | SHA-256 of the release `etw-dnstap.exe`, in the format of `datasets/baselines/arrayqueue-v2/sha256.txt`. The binary itself is not in the clone (`*.exe` is ignored). |
+| `sha256.txt` | SHA-256 of the release `etw-dnstap.exe`, in the format of `datasets/baselines/arrayqueue-v2/sha256.txt`, then the two images of the lab comparison (`etw-dnstap-base-e61179d.exe`, `etw-dnstap-phase2-25742af.exe`). The binaries themselves are not in the clone (`*.exe` is ignored). |
 | `criterion.csv` | The criterion numbers, one row per benchmark: median of the three recorded sessions, spreads, and the median session's confidence interval |
 | `criterion-sessions.csv` | The criterion numbers of every benchmark in every session, s1 to s8 |
 | `manual-benchmarks.txt` | Raw output of the two manual benchmarks, one run per session |
+| `lab/` | The Phase 2 lab comparison: per-run snapshots (`run-*.json`), `runs.csv`, `summary.csv`, `guest-state.json`, and the scripts that produced them (`tools/`). See [Phase 2 lab comparison](#phase-2-lab-comparison) |
 
 ## Phase 2 results
 
@@ -698,7 +699,202 @@ checks (same dumpbin switches, patterns, and masks) and a comparison of the
 `scripts/ci/link-exceptions.txt` (equal, 8 and 8) had already given the same
 answers.
 
-The lab comparison of `scripts/performance/README.md` (needs Windows PowerShell
-5.1 and PowerShell Direct to the guest) has not been run. Items 10 and 11 are
-therefore not yet validated with the lab's real thread contention, the one place
-where item 10's predicted contended-atomic saving could appear.
+The lab comparison that Phase 2 requires (Windows PowerShell 5.1 and
+PowerShell Direct to the guest) was run afterwards and is recorded in
+[Phase 2 lab comparison](#phase-2-lab-comparison) below. It found 11.5% fewer
+cycles per event in the shipped service and 13% less private memory, with no
+change in what the receiver gets.
+
+### Phase 2 lab comparison
+
+Run on 2026-11-02 on the lab guest `DNSTap-WS2025`. It compares the two shipped
+release images under the same load: the integration branch before Phase 2
+(`e61179d`) against the Phase 2 merge (`25742af`), all four changes together.
+It does not isolate one change. It is the check that the criterion sections
+above could not make: real thread contention, the real `panic = "abort"` build,
+and the real ETW, socket, and receiver path.
+
+| | Base (before Phase 2) | Phase 2 merge |
+| --- | --- | --- |
+| Commit | `e61179d` | `25742af` |
+| Image | 2,458,112 bytes | 2,210,816 bytes (-10.1%) |
+| SHA-256 | `40e63f9ddd2b089b21b046eafe0f21129b74dfcde0a3dbe464d106c77775ed8e` | `ef31e6593fc91534493e9bfc2e0d75618c1176b28c140dea3a81d91fa393b3d0` |
+
+Both were built with `cargo build --locked --release` and passed
+`scripts/ci/verify-pe.ps1` (21 of 21). The hashes are in [sha256.txt](sha256.txt).
+
+#### Method
+
+- Setup. The guest is a Hyper-V VM with 6 vCPUs and 4 GiB (`lab.json` still
+  says 2 vCPUs). The service runs as `NT AUTHORITY\LocalService` with the lab's
+  installed command line (`--receiver ... --session-name EtwDnstap-Lab --plaintext --stats-interval-seconds 5`)
+  and every other option at its default: `capacity=24576`, `etw_buffer_kib=16`,
+  `etw_max_buffers=64`. Both images logged the same `capture started` line.
+- Load. The paced-schedule build of `tools/dns-stress` (commit `6d49577`; not
+  rebuilt for this run; client SHA-256 `82cfb758153db8bf2e00e0fb25e932b84154db2737b8d52cba05a3d4e61d38a6`),
+  on the Hyper-V host, authoritative mode, 4 threads, `--inflight 1024`,
+  `--qps 10000`, 120 s, so 1,200,000 queries and 2,400,000 events per run. Two
+  60 s pilots (base at 5,000 QPS, Phase 2 at 10,000 QPS; kept as `run-pilot-*.json`)
+  showed the pipeline working and no drops at either rate, so the matrix uses
+  10,000 QPS. The earlier lab runs that
+  dropped events at this rate used `capacity=8192`; the default is now 24,576.
+- Order. Base, Phase 2, Base, Phase 2, Base, Phase 2 (`r1` to `r6`), 25 s idle
+  between runs. Every run stopped the service, copied the image over the
+  installed executable when it differed (hash and executable SDDL checked), started
+  the service, waited 8 s, and then took the start snapshot. The service was
+  therefore restarted for every run, and all counters start at zero.
+- Receiver. DNS-collector 3.2.3 on `DNSTap-Ubuntu2604`. Its pipeline ends in the
+  `devnull` logger (`routing-policy: forward: [discard]`), trace logging is off,
+  and the unit sets `StandardOutput=null` and `StandardError=null`. It was
+  already in that state, so nothing was changed on the receiver. Delivery is
+  counted from `ss -tin` `bytes_received` on the receiver socket, before the load
+  and 6 s after it, divided by 103.01 bytes per frame.
+- Per run, on the guest, at the start and 6 s after the client ended: the
+  service process CPU time, the private bytes and working set, the cycle time of
+  every thread (`QueryThreadCycleTime`; threads are named with
+  `GetThreadDescription`: `dnstap-parser`, `etw-consumer`, and everything else
+  as `other`), and the EtwDnstap performance counters (Events Received, Frames
+  Sent, Events Dropped, and the drop counters). The deltas cover the 120 s load
+  and about 14 s of idle at the edges. Private bytes were also polled every 10 s
+  during the load. After the stop, the `capture stopped` event log line was read.
+- Quiet host. Before each run `tasklist` showed no `cargo`, `rustc`, `link`,
+  `cl`, `lld`, or `miri` process, and the run script checked again every 10 s
+  and at the end. The count was 0 in all six runs.
+- Restore. The installed executable (`a37729cb...`), the service command line,
+  the service state (Stopped), the executable SDDL, and the SCM SDDL were
+  compared with the state saved before the first run and matched after the last
+  ([guest-state.json](lab/guest-state.json)). The staging directory on the guest was removed.
+
+Scripts and raw data are in [lab/](lab/): `run-<run>.json` (one per run, with
+the snapshots, the polls, and the event log lines), `runs.csv` (one row per
+run), `summary.csv` (medians and spreads), `guest-state.json`, and `tools/` (the
+scripts that ran the lab, and the analyzer; `tools/common.ps1` has the user
+module directory removed from the `PSModulePath` line).
+
+#### Per run
+
+Delivery, at 10,000 QPS requested for 120 s:
+
+| Run | Image | QPS achieved | Events received (counter) | Frames delivered (receiver bytes / 103.01) | Service drops | Peak queue depth |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| r1 | base | 9,999.97 | 2,399,992 | 2,400,113 | 0 | 5,663 |
+| r2 | Phase 2 | 10,000.00 | 2,400,000 | 2,400,121 | 0 | 6,367 |
+| r3 | base | 9,999.97 | 2,399,992 | 2,400,113 | 0 | 5,777 |
+| r4 | Phase 2 | 10,000.00 | 2,400,000 | 2,400,121 | 0 | 6,043 |
+| r5 | base | 10,000.00 | 2,400,000 | 2,400,121 | 0 | 5,701 |
+| r6 | Phase 2 | 10,000.00 | 2,400,000 | 2,400,121 | 0 | 7,263 |
+
+"Service drops" is the Events Dropped counter (drops at admission, which
+includes Channel Full Drops and Pool Exhausted Drops). All six runs also had `etw_lost=0`,
+`pool_exhausted=0`, zero client timeouts and send errors, one receiver
+connection, and a clean stop (exit code 0). The counter `Frames Sent` (frames encoded) equals
+`Events Received` in every run.
+
+Cost. Cycles are thread cycle times in billions. Service CPU is
+`Process.TotalProcessorTime`, which advances in 15.6 ms ticks.
+
+| Run | Image | Service CPU (s) | `dnstap-parser` Gcycles | `etw-consumer` Gcycles | Total Gcycles | Cycles per event | Frames per CPU second | Frames per Gcycle | Private MiB at start / end |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| r1 | base | 1.656 | 3.564 | 3.664 | 7.343 | 3,060 | 1,449,125 | 326,844 | 72.86 / 73.16 |
+| r2 | Phase 2 | 1.297 | 3.099 | 3.302 | 6.514 | 2,714 | 1,850,696 | 368,457 | 63.38 / 63.75 |
+| r3 | base | 1.453 | 3.668 | 3.771 | 7.551 | 3,146 | 1,651,691 | 317,870 | 72.91 / 73.23 |
+| r4 | Phase 2 | 1.469 | 3.144 | 3.319 | 6.574 | 2,739 | 1,634,125 | 365,113 | 63.36 / 63.75 |
+| r5 | base | 1.813 | 3.578 | 3.711 | 7.403 | 3,085 | 1,324,205 | 324,213 | 72.86 / 73.17 |
+| r6 | Phase 2 | 1.641 | 3.123 | 3.315 | 6.550 | 2,729 | 1,462,931 | 366,442 | 63.38 / 63.75 |
+
+The remaining threads (`main` and the unnamed ones) used 0.11 Gcycles in every
+run, 1.5% of the total, with no difference between the images.
+
+#### Comparison
+
+Median of three runs per image, Phase 2 against base. "Range" is (largest minus
+smallest) over the median. "Pairs" are the changes of the adjacent runs (r2
+against r1, r4 against r3, r6 against r5).
+
+| Metric | Base | Phase 2 | Change | Range base / Phase 2 | Pairs | Reading |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| Cycles per event, `dnstap-parser` | 1,491 | 1,301 | -12.7% | 2.9% / 1.4% | -13.1, -14.3, -12.7% | Real: ranges do not overlap |
+| Cycles per event, `etw-consumer` | 1,546 | 1,381 | -10.7% | 2.9% / 0.5% | -9.9, -12.0, -10.7% | Real: ranges do not overlap |
+| Cycles per event, all threads | 3,085 | 2,729 | -11.5% | 2.8% / 0.9% | -11.3, -12.9, -11.5% | Real: ranges do not overlap |
+| Frames per Gcycle | 324,213 | 366,442 | +13.0% | 2.8% / 0.9% | +12.7, +14.9, +13.0% | The same result, inverted |
+| Service CPU seconds (tick accounting) | 1.656 | 1.469 | -11.3% | 21.7% / 23.4% | -21.7, +1.1, -9.5% | Inside noise: the ranges overlap and one pair has the wrong sign |
+| Frames per CPU second (tick accounting) | 1,449,125 | 1,634,125 | +12.8% | 22.6% / 23.7% | +27.7, -1.1, +10.5% | Inside noise, same reason |
+| Frames delivered | 2,400,113 | 2,400,121 | 0.0% | 0.0% / 0.0% | | Nothing: both deliver everything offered |
+| Service drops | 0 | 0 | | | | Nothing |
+| Private bytes at start (idle, pool allocated) | 72.86 MiB | 63.38 MiB | -13.0% | 0.1% / 0.03% | -13.0, -13.1, -13.0% | Real |
+| Private bytes at end (idle after load) | 73.17 MiB | 63.75 MiB | -12.9% | 0.1% / 0.0% | -12.9, -12.9, -12.9% | Real |
+| Private bytes during load (mean of 10 s polls) | 84.42 MiB | 74.68 MiB | -11.5% | 1.5% / 2.5% | -9.3, -11.5, -12.8% | Real |
+| Peak working set | 98.55 MiB | 89.76 MiB | -8.9% | 1.9% / 0.5% | -8.9, -10.8, -8.7% | Real |
+| Peak channel depth | 5,701 | 6,367 | +11.7% | 2.0% / 19.2% | +12.4, +4.6, +27.4% | Higher in all three pairs; see below |
+| `dns.exe` CPU seconds (not the service) | 26.12 | 27.66 | +5.9% | 9.5% / 3.9% | +5.9, -5.5, +7.7% | Inside noise, as expected |
+
+What the lab shows:
+
+- The service spends 11.5% fewer cycles per event, split over both threads:
+  about 190 fewer on `dnstap-parser` and 165 fewer on `etw-consumer`, 355 in
+  all. The gain is the same size in each of the three adjacent pairs, and no
+  base run is as cheap as any Phase 2 run, so it is not drift. The `etw-consumer`
+  thread is the one that leases and fills the pool slot, and the
+  `dnstap-parser` thread is the one that encodes and recycles it, so the gain
+  appears on both sides of the handoff.
+- Size against the host benchmark. The criterion groups above saved, per event, about
+  26.6 ns in parse and encode (`parse_and_encode/query_256`), 9.6 ns in the
+  warm copy (`copy_record/regular_query_256`), and 4.9 ns in recycle
+  (`decompose/recycle/query_256`), about 41 ns in total on one core. If the guest runs near the
+  host's 4.4 GHz base clock (not measured), 355 cycles is about 80 ns, twice
+  that. It fits the expectation that Phase 2 removes contention cost that the
+  single-thread groups cannot see (the `two_thread` group saved 34 ns). This
+  experiment compares whole images. It does not show how much of the extra
+  comes from the leaked pool (item 10), the smaller slot header (item 11), or
+  LTO (item 9).
+- The pool memory saving is confirmed in the shipped service: 9.5 MiB less
+  private memory at defaults (the counted storage of the pool is 9.01 MiB
+  smaller, 59.59 against 68.60 MiB; the rest is the smaller image and its
+  data). The cost during load, measured by 10 s polls, is also about 10 MiB lower.
+- Nothing changed in what reaches the receiver: both images delivered all
+  events offered, with zero drops, and the receiver byte counts match the
+  counters.
+- Peak channel depth was higher with Phase 2 in all three pairs (6,043 to 7,263
+  against 5,663 to 5,777), still about 30% of the 24,576 slots and with no drops.
+  The peak is a single maximum over a bursty arrival pattern. With three runs I
+  cannot say whether it reflects a faster `etw-consumer` thread draining ETW
+  batches into the queue faster than `dnstap-parser` takes them out, or is chance. Watch it
+  at higher rates, where a smaller headroom would show as drops. This
+  comparison did not test those rates.
+
+#### Caveats
+
+- One session, one load level (10,000 QPS, authoritative names), one
+  configuration (defaults), and three runs per image. A different rate,
+  `--capacity 65536`, the recursive workload, or a drop-inducing rate may
+  behave differently. The `--capacity 65536` memory figures in the sections
+  above (145.53 against 169.54 MiB of storage) were not measured in the lab.
+- The cycle counts are thread cycle times from `QueryThreadCycleTime` inside a
+  VM. They are proportional to CPU time on that VM and good for comparing two
+  images on it, but they are not converted to time, and they would not compare across
+  hosts. The process CPU time uses the 15.6 ms scheduler tick, and its
+  run-to-run range (22%) is much larger than the tick size, so it is sampled
+  accounting, not a measurement of the difference. Use the cycle counts.
+- The window of each delta is the 120 s load plus about 14 s of idle at its
+  edges, the same for both images. Threads are matched by thread ID between the
+  two snapshots; a thread that existed at the start and had exited by the end
+  (start-up threads, under 0.1 Gcycles) is not counted.
+- Two base runs (r1, r3) received 8 events fewer than 2 x 1,200,000, and the
+  receiver bytes match 8 fewer frames. The service reports `etw_lost=0`, no
+  drops, and every client query succeeded, so the 8 events were not delivered
+  to the service. The cause was not investigated. It is 0.0003% of the events.
+  The 103.01 bytes per frame is an average, which is why the frames
+  delivered by bytes are 121 above the counted events (0.005%).
+- The base image here is 2,458,112 bytes, but item 9 above lists 2,396,672
+  bytes for the Phase 2 base commit. I did not find the reason for the
+  61,440-byte difference. The size
+  line of the CHANGELOG uses the item 9 figure (-7.7%, same tree before and after
+  the profile change). The lab pair is -10.1%.
+- The runs alternate base and Phase 2, so a steady drift of the guest would
+  look like a trend across `r1`, `r3`, `r5`. The base runs show none (cycles
+  per event 3,060, 3,146, 3,085). The guest also runs the DNS Server, which used
+  26 to 28 CPU seconds per run with no difference between the images, and the Hyper-V
+  host ran at 7% to 9% CPU, so noise from sharing is limited but not controlled.
+- The client is the paced-schedule `dns-stress` build named above, not the build
+  that `scripts/performance/lab.json` points to (SHA-256 `4d545060...`), which the
+  2026-11-01 lab notes record as not holding the target rate at 30,000 QPS and above.

@@ -1,0 +1,43 @@
+{
+  "note": "Guest state before the lab comparison and after the restore. SDDL strings are replaced by their SHA-256 (they carry machine SIDs).",
+  "before": {
+    "state": "Stopped",
+    "start_name": "NT AUTHORITY\\LocalService",
+    "start_mode": "Auto",
+    "path_name": "\"C:\\Program Files\\EtwDnstap\\etw-dnstap.exe\" --receiver 172.27.215.60:6000 --session-name EtwDnstap-Lab --plaintext --stats-interval-seconds 5",
+    "binary_sha256": "A37729CBDE5809566F7C3104597B6D00C69D544BB0B0A23180F97948EF6956B0"
+  },
+  "after": {
+    "state": "Stopped",
+    "start_name": "NT AUTHORITY\\LocalService",
+    "start_mode": "Auto",
+    "path_name": "\"C:\\Program Files\\EtwDnstap\\etw-dnstap.exe\" --receiver 172.27.215.60:6000 --session-name EtwDnstap-Lab --plaintext --stats-interval-seconds 5",
+    "binary_sha256": "A37729CBDE5809566F7C3104597B6D00C69D544BB0B0A23180F97948EF6956B0"
+  },
+  "sddl_sha256": {
+    "executable_before": "dea072852608552d614d8bf65a109f8ffb4aae041e01b60f0a167862703f8414",
+    "executable_after": "dea072852608552d614d8bf65a109f8ffb4aae041e01b60f0a167862703f8414",
+    "scm_before": "bcd82042d84854fd9beea20949fcb2affba48a67b3158a42fab27b1b867b8b65",
+    "scm_after": "bcd82042d84854fd9beea20949fcb2affba48a67b3158a42fab27b1b867b8b65"
+  },
+  "staged_images": [
+    {
+      "len": 2458112,
+      "name": "base.exe",
+      "sha": "40E63F9DDD2B089B21B046EAFE0F21129B74DFCDE0A3DBE464D106C77775ED8E"
+    },
+    {
+      "len": 2453504,
+      "name": "original.exe",
+      "sha": "A37729CBDE5809566F7C3104597B6D00C69D544BB0B0A23180F97948EF6956B0"
+    },
+    {
+      "len": 2210816,
+      "name": "phase2.exe",
+      "sha": "EF31E6593FC91534493E9BFC2E0D75618C1176B28C140DEA3A81D91FA393B3D0"
+    }
+  ],
+  "restore_matches_before": true,
+  "guest_work_dir_removed": true,
+  "sddl_unchanged": true
+}

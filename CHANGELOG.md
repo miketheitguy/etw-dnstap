@@ -179,6 +179,12 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   descriptor value it changes. `-Restore` writes them back. Commit `700dd62`.
 - The install guide has a snapshot procedure before a repair or upgrade. Commit
   `700dd62`.
+- Internal: a `socket_write` criterion group (`benches/hot_path.rs`) that
+  measures the Frame Streams write path, and the Phase 2 results of the code
+  review remediation plan in
+  `datasets/baselines/code-review-2026-11-01/` (host criterion tables and a lab
+  comparison of the two release images: 11.5% fewer thread cycles per event,
+  13% less private memory, same delivery and no drops at 10,000 QPS).
 
 ### Changed
 
@@ -323,6 +329,22 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   [cleanup-validation.md](docs/history/cleanup-validation.md), and the cleanup
   plan moved to `docs/history/`. The decoder contract now states the `Port`
   byte order, cache, and epoch rules correctly. Commit `21e31c0`.
+- The release profile uses fat LTO and one codegen unit. Parse and encode are
+  about 10% faster, the release image is 7.7% smaller, and release builds take
+  about 50% longer. In the lab, the service with all four Phase 2 changes used
+  11.5% fewer thread cycles per event than the build before them (3,085 to
+  2,729, three runs per image, ranges 2.8% and 0.9%, at 10,000 QPS).
+- Event pool leases no longer count references. The pool is allocated once and
+  lives for the process.
+- The extended-data item tables moved from the slot header to the end of the
+  slot bytes. Pool memory is 15% smaller: 59.59 MiB at defaults (was 68.60) and
+  145.53 MiB at `--capacity 65536` (was 169.54). In the lab the service's
+  private bytes at defaults went from 72.9 to 63.4 MiB. A record with extended
+  data needs 16 bytes more room per item for a regular slot, and this provider
+  sends none.
+- The Frame Streams writer sets socket timeouts only when the time left moves
+  by more than 5 ms. A blocked socket call can run up to 5 ms past its 2 s
+  deadline.
 
 ### Removed
 
