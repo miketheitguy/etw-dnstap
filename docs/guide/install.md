@@ -215,7 +215,7 @@ if ($receiverEndpoint.Port -eq 0 -or
 $Receiver = $receiverEndpoint.ToString()   # IPv6 is written as [address]:port
 ```
 
-The validation mirrors `check_receiver` in `src/pipeline.rs`: a numeric IP with a
+The validation mirrors `check_receiver` in `src/pipeline/config.rs`: a numeric IP with a
 nonzero port, not unspecified and not multicast. It does not test reachability.
 Check that with a connection test to the collector.
 

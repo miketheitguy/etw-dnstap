@@ -345,6 +345,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - The Frame Streams writer sets socket timeouts only when the time left moves
   by more than 5 ms. A blocked socket call can run up to 5 ms past its 2 s
   deadline.
+- Internal: `src/pipeline.rs` is split into `src/pipeline/config.rs` (command
+  line and validation), `watchdog.rs`, `supervisor.rs`, and `parser.rs`, with
+  the tests beside each module. No behavior change.
 
 ### Removed
 
