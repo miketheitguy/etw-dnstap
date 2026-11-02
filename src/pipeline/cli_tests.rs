@@ -89,7 +89,7 @@ fn repeated_and_conflicting_flags_are_errors_not_last_wins() {
         ["--capacity", "2048"],
         ["--session-name", "Other"],
         ["--identity", "other"],
-        ["--etw-flush-ms", "50"],
+        ["--etw-flush-seconds", "2"],
         ["--duration", "5"],
     ] {
         // Supply each flag twice (the base command line already has --receiver).
@@ -99,6 +99,14 @@ fn repeated_and_conflicting_flags_are_errors_not_last_wins() {
         }
         let error = parse(&extra).expect_err("repeated flag");
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{pair:?}");
+    }
+}
+
+#[test]
+fn removed_etw_flush_ms_option_is_an_unknown_argument() {
+    for extra in [&["--etw-flush-ms", "50"][..], &["--etw-flush-ms=50"]] {
+        let error = parse(extra).expect_err("--etw-flush-ms was removed");
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{extra:?}");
     }
 }
 

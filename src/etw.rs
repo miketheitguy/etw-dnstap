@@ -98,15 +98,6 @@ pub(crate) struct CaptureCounters {
     pub(crate) callback_errors: AtomicU64,
     pub(crate) stats_valid: AtomicBool,
     pub(crate) stats_errors: AtomicU64,
-    /// Successful periodic `EVENT_TRACE_CONTROL_FLUSH` requests.
-    pub(crate) etw_flushes: AtomicU64,
-    /// Failed periodic flush requests.
-    pub(crate) etw_flush_errors: AtomicU64,
-    /// Longest wall-clock duration of one flush call in microseconds, measured
-    /// by the caller. It includes scheduling delay on the supervisor thread.
-    pub(crate) etw_flush_max_us: AtomicU64,
-    /// Set once a flush has been reported as slow.
-    pub(crate) etw_flush_slow_warned: AtomicBool,
     /// Leaked sessions from an earlier instance that startup stopped and replaced.
     pub(crate) stale_sessions_reclaimed: AtomicU64,
     /// ETW buffers whose delivery finished (calls of the buffer callback).

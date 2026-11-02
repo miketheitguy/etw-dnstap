@@ -65,7 +65,7 @@ The live log differs from schema 2 in these names. It reports ETW loss as
 `pool_exhausted_regular` and `pool_exhausted_jumbo`, with no `pool_exhausted`
 field. It has no `queue_backlog` or `output_limit_dropped` field. It adds
 `foreign_pid_rejected`, `schema_rejected`, `disconnected_dropped`, and the ETW
-flush and buffer-delivery counters.
+buffer-delivery counters.
 
 The service distinguishes these loss units:
 

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush · **Reviewed:** 2026-11-01
 
 Start with the Application event log and the SCM state. The service writes its
 diagnostics to two places:
@@ -54,9 +54,7 @@ Search the Application log for the text, then go to the section named.
 | `shutting down while the dnstap receiver is disconnected` | Event ID 3 | The service stopped without sending STOP. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
 | `a capture worker exited before shutdown was requested` | Event ID 1 | A worker thread ended on its own. | [Restarts](#the-service-keeps-restarting) |
-| `ETW session flush failed` | Event ID 3 | A periodic flush failed once. Capture continues. | [ETW warnings](#etw-flush-and-consumer-warnings) |
-| `ETW session flush took` | Event ID 3 | One flush call took over 1 second. | [ETW warnings](#etw-flush-and-consumer-warnings) |
-| `ETW consumer did not return within 5 s of STOP` | Event ID 3 | The trace handle was closed to force the worker out. | [ETW warnings](#etw-flush-and-consumer-warnings) |
+| `ETW consumer did not return within 5 s of STOP` | Event ID 3 | The trace handle was closed to force the worker out. | [ETW warnings](#etw-consumer-and-session-warnings) |
 | `received rate is above what the default low-rate ETW settings` | Event ID 3 | The defaults are too small for the load. | [Low-rate warning](#low-rate-warning) |
 | `rejected ETW event` | Event ID 3 | A parser rejection. The first four are logged. | [Rejected events](#rejected-events) |
 | `DNS event schema is unsupported and its events are rejected` | Event ID 3 | A schema did not load or did not compile. Its events are rejected. | [Rejected events](#rejected-events) |
@@ -176,7 +174,7 @@ shutdown. A restart resets every counter. The loss categories are:
 
 | Counter | Meaning | Action |
 | --- | --- | --- |
-| `ring_dropped` | The event channel was full. The newest event was dropped. | Raise `--capacity`, or use the periodic flush for moderate or high rates. See [Low-rate defaults](configuration.md#low-rate-defaults). |
+| `ring_dropped` | The event channel was full. The newest event was dropped. | Raise `--capacity`. For moderate or high rates, use the [high-rate settings](configuration.md#high-rate-settings). |
 | `pool_exhausted_regular`, `pool_exhausted_jumbo` | The pool had no free slot of the record's class. | Raise `--jumbo-capacity` if `pool_exhausted_jumbo` rises. With `--jumbo-capacity 0`, every jumbo record is counted here. |
 | `receiver_disconnected` | The channel's parser end was gone. This is the event channel, not TCP. | Check whether the parser stopped. See [restarts](#the-service-keeps-restarting). |
 | `disconnected_dropped` | Frames lost to a TCP outage. | Fix the receiver path. See [the receiver section](#the-receiver-is-down-or-unreachable). |
@@ -202,23 +200,26 @@ default low-rate ETW settings are sized for (about 1,500 events/s) and events ma
 be dropped`. It repeats at the end of each measurement window while the rate
 stays high.
 
-Restart with the high-rate settings from
-[Low-rate defaults](configuration.md#low-rate-defaults):
+Restart with the settings from
+[High-rate settings](configuration.md#high-rate-settings):
 
 ```text
---etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64
+--etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536
 ```
 
-Then check that `ring_dropped` stops rising. The defaults are tuned for about
-1,000 queries per second. Lab results at higher rates are in
-[Low-rate defaults](configuration.md#low-rate-defaults).
+On the 6-vCPU lab VM with an authoritative load, this combination lost no
+events up to about 44,000 queries per second. At about 49,400 queries per
+second, one of two runs dropped 0.28% of events at the channel. After the
+restart, check that `ring_dropped` and `etw_lost` stop rising. If
+`ring_dropped` still rises, raise `--capacity`, for example to 131,072. The lab
+did not test 131,072. The startup deadline is 14 seconds at `--capacity 65536`
+and 18 seconds at 131,072. The defaults are tuned for about 1,000 queries per
+second. Lab results for the defaults are in
+[Low-rate defaults](configuration.md#low-rate-defaults), and for this
+combination in [High-rate settings](configuration.md#high-rate-settings).
 
-## ETW flush and consumer warnings
+## ETW consumer and session warnings
 
-- **`ETW session flush failed`** (once). Later flush failures are counted in
-  `etw_flush_errors`. Capture continues.
-- **`ETW session flush took N ms`** (once). A flush call took over one second.
-  Check the host's load. `etw_flush_max_us` records the longest flush.
 - **`ETW consumer did not return within 5 s of STOP`.** The service closes the
   trace handle to force the worker out. Events still in ETW buffers at that
   point may not be delivered, and `etw_lost` may not account for them. Check the
@@ -311,8 +312,10 @@ capture.
 
 ## Upgrading
 
-- A removed option (`--output`, `--max-output-bytes`, `--metrics`) fails command-line
-  parsing. Remove it from the binary path.
+- A removed option (`--output`, `--max-output-bytes`, `--metrics`,
+  `--etw-flush-ms`) fails command-line parsing, and the service does not start.
+  Remove it from the binary path. To replace `--etw-flush-ms`, use the
+  [high-rate settings](configuration.md#high-rate-settings).
 - A service still running as LocalSystem or the virtual account refuses to
   start. Follow the upgrade steps in
   [install.md](install.md#repair-cases). In summary:

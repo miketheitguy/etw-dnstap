@@ -338,26 +338,6 @@ fn assert_log_file_session_refused(name_text: &str, mode: u32) {
 
 #[test]
 #[ignore = "requires an elevated session"]
-fn flush_succeeds_on_live_real_time_session() {
-    const NAME: &str = "EtwDnstap-FlushTest";
-    let name = utf16_nul(NAME);
-    let config = SessionConfig::default();
-    let _cleanup = StopSessionOnDrop {
-        name: name.clone(),
-        log_file: None,
-    };
-    let (status, session) = start_session(&name, session_guid(NAME).expect("guid"), &config);
-    assert_eq!(status, ERROR_SUCCESS, "session should start");
-    assert_eq!(flush_session(session), Ok(()), "flush should succeed");
-    assert_eq!(
-        flush_session(session),
-        Ok(()),
-        "repeat flush should succeed"
-    );
-}
-
-#[test]
-#[ignore = "requires an elevated session"]
 fn reclaim_replaces_leaked_real_time_session() {
     const NAME: &str = "EtwDnstap-ReclaimTest-Replace";
     let name = utf16_nul(NAME);

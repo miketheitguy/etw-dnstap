@@ -80,22 +80,11 @@ pub(crate) struct CaptureArgs {
     #[arg(long, default_value = "12", value_parser = clap::value_parser!(u32).range(4..=4096))]
     etw_max_buffers: u32,
 
-    /// ETW real-time flush interval in seconds, 1–60. This is ETW's own flush
-    /// timer. With `--etw-flush-ms` enabled the explicit flush
-    /// bounds delivery latency to about that interval; this timer is the bound
-    /// with the default `--etw-flush-ms 0`. Longer intervals use less CPU.
+    /// ETW real-time flush interval in seconds, 1–60. ETW delivers real-time
+    /// events about once per interval, so this bounds delivery latency. Longer
+    /// intervals use less CPU and make each delivered batch larger.
     #[arg(long, default_value = "1", value_parser = clap::value_parser!(u32).range(1..=60))]
     etw_flush_seconds: u32,
-
-    /// Interval in milliseconds at which the service asks ETW to flush its session
-    /// buffers, 20–1000, or 0 to disable (the default). ETW otherwise delivers
-    /// real-time events about once per `--etw-flush-seconds`, even when its buffers
-    /// are full, which at moderate rates arrives as one large batch that can
-    /// overflow the event channel. The defaults suit about 1,000 queries/s or less;
-    /// for higher rates use `--etw-flush-ms 50 --etw-max-buffers 256
-    /// --etw-buffer-kib 64`.
-    #[arg(long, default_value = "0", value_parser = parse_etw_flush_ms)]
-    etw_flush_ms: u32,
 
     /// Seconds between counter snapshots in the log (queue depth, drops, ETW loss,
     /// receiver connection state), 0-86400; 0 disables the snapshots. The final
@@ -135,28 +124,14 @@ fn check_receiver(address: SocketAddr) -> Result<SocketAddr, String> {
     Ok(address)
 }
 
-fn parse_etw_flush_ms(value: &str) -> Result<u32, String> {
-    let milliseconds: u32 = value
-        .parse()
-        .map_err(|_| "etw-flush-ms must be an integer")?;
-    check_etw_flush_ms(milliseconds)
-}
-
-fn check_etw_flush_ms(milliseconds: u32) -> Result<u32, String> {
-    if milliseconds != 0 && !(20..=1000).contains(&milliseconds) {
-        return Err("etw-flush-ms must be 0 (disabled) or 20-1000".into());
-    }
-    Ok(milliseconds)
-}
-
-/// Schedules periodic ETW flushes on the supervisor thread.
-struct FlushSchedule {
+/// Schedules a periodic task on the supervisor thread.
+struct Schedule {
     interval: Option<Duration>,
     next: Instant,
 }
 
-impl FlushSchedule {
-    /// `None` disables flushing.
+impl Schedule {
+    /// `None` disables the task.
     fn new(interval: Option<Duration>, now: Instant) -> Self {
         Self {
             interval,
@@ -164,7 +139,7 @@ impl FlushSchedule {
         }
     }
 
-    /// True when a flush is due; advances `next` to `now + interval`.
+    /// True when the task is due; advances `next` to `now + interval`.
     fn poll(&mut self, now: Instant) -> bool {
         match self.interval {
             Some(interval) if now >= self.next => {
@@ -174,58 +149,6 @@ impl FlushSchedule {
             _ => false,
         }
     }
-
-    /// How long the supervisor may park: the time until the next flush, capped
-    /// at `cap` and at least 1 ms; `cap` when flushing is disabled.
-    fn park_for(&self, now: Instant, cap: Duration) -> Duration {
-        if self.interval.is_none() {
-            return cap;
-        }
-        self.next
-            .saturating_duration_since(now)
-            .max(Duration::from_millis(1))
-            .min(cap)
-    }
-}
-
-/// Longest single flush the supervisor tolerates silently.
-const SLOW_ETW_FLUSH: Duration = Duration::from_secs(1);
-
-/// Counts one flush outcome. Only the first failure is logged; failures never
-/// stop capture.
-fn record_etw_flush(counters: &CaptureCounters, result: Result<(), u32>) {
-    match result {
-        Ok(()) => {
-            counters.etw_flushes.fetch_add(1, Ordering::Relaxed);
-        }
-        Err(status) => {
-            if counters.etw_flush_errors.fetch_add(1, Ordering::Relaxed) == 0 {
-                tracing::warn!(
-                    code = status,
-                    "ETW session flush failed: {}; capture continues, further failures counted",
-                    std::io::Error::from_raw_os_error(status.cast_signed())
-                );
-            }
-        }
-    }
-}
-
-/// Runs one flush, counts it, and records its duration. Returns whether it
-/// succeeded.
-fn flush_etw(capture: &impl EventProducer, counters: &CaptureCounters) -> bool {
-    let flush_started = Instant::now();
-    let result = capture.flush();
-    let elapsed = flush_started.elapsed();
-    let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-    counters
-        .etw_flush_max_us
-        .fetch_max(micros, Ordering::Relaxed);
-    if elapsed > SLOW_ETW_FLUSH && !counters.etw_flush_slow_warned.swap(true, Ordering::Relaxed) {
-        tracing::warn!("ETW session flush took {} ms", elapsed.as_millis());
-    }
-    let succeeded = result.is_ok();
-    record_etw_flush(counters, result);
-    succeeded
 }
 
 fn parse_capacity(value: &str) -> Result<usize, String> {
@@ -307,8 +230,6 @@ pub(crate) struct PipelineConfig {
     pub(crate) session_name: String,
     pub(crate) identity: String,
     pub(crate) session: SessionConfig,
-    /// Explicit ETW flush interval in milliseconds; zero disables it.
-    pub(crate) etw_flush_ms: u32,
     /// Seconds between counter snapshots; zero disables them.
     pub(crate) stats_interval_seconds: u32,
     pub(crate) diag: DiagContext,
@@ -332,18 +253,12 @@ impl PipelineConfig {
         check_jumbo_capacity(self.jumbo_capacity).map_err(anyhow::Error::msg)?;
         check_session_name(&self.session_name).map_err(anyhow::Error::msg)?;
         check_identity(&self.identity).map_err(anyhow::Error::msg)?;
-        check_etw_flush_ms(self.etw_flush_ms).map_err(anyhow::Error::msg)?;
         SessionConfig::new(
             self.session.buffer_kib,
             self.session.maximum_buffers,
             self.session.flush_seconds,
         )?;
         Ok(())
-    }
-
-    /// The periodic ETW flush interval, or `None` when disabled.
-    fn etw_flush_interval(&self) -> Option<Duration> {
-        (self.etw_flush_ms != 0).then(|| Duration::from_millis(u64::from(self.etw_flush_ms)))
     }
 
     /// The counter snapshot interval, or `None` when disabled.
@@ -354,7 +269,7 @@ impl PipelineConfig {
 
     /// True when the ETW buffer and flush settings are the low-rate defaults.
     fn uses_default_etw_settings(&self) -> bool {
-        self.etw_flush_ms == 0 && self.session == SessionConfig::default()
+        self.session == SessionConfig::default()
     }
 }
 
@@ -376,7 +291,6 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
                 args.etw_max_buffers,
                 args.etw_flush_seconds,
             )?,
-            etw_flush_ms: args.etw_flush_ms,
             stats_interval_seconds: args.stats_interval_seconds,
             diag: DiagContext {
                 #[cfg(feature = "diag-timing")]
@@ -624,11 +538,6 @@ trait EventProducer {
     fn keywords(&self) -> KeywordSelection;
     /// True once the producer stopped delivering on its own.
     fn is_finished(&self) -> bool;
-    /// Asks the source to deliver buffered events now; the error is a Win32 status.
-    ///
-    /// # Errors
-    /// Returns the native status when the request fails.
-    fn flush(&self) -> Result<(), u32>;
     /// Stops delivery and waits until no producer thread can still send.
     ///
     /// # Errors
@@ -655,10 +564,6 @@ impl EventProducer for Capture {
 
     fn is_finished(&self) -> bool {
         Capture::is_finished(self)
-    }
-
-    fn flush(&self) -> Result<(), u32> {
-        Capture::flush(self)
     }
 
     fn stop(&mut self) -> Result<()> {
@@ -874,9 +779,8 @@ struct Monitor<'a> {
     capture: &'a CaptureCounters,
     parse: &'a ParseCounters,
     sink: &'a SinkStats,
-    flush: FlushSchedule,
-    stats: FlushSchedule,
-    target: FlushSchedule,
+    stats: Schedule,
+    target: Schedule,
     rate: RateMonitor,
     defaults_in_use: bool,
 }
@@ -893,9 +797,8 @@ impl<'a> Monitor<'a> {
             capture,
             parse,
             sink,
-            flush: FlushSchedule::new(config.etw_flush_interval(), now),
-            stats: FlushSchedule::new(config.stats_interval(), now),
-            target: FlushSchedule::new(Some(TARGET_CHECK_INTERVAL), now),
+            stats: Schedule::new(config.stats_interval(), now),
+            target: Schedule::new(Some(TARGET_CHECK_INTERVAL), now),
             rate: RateMonitor::new(
                 config.stats_interval().unwrap_or(DEFAULT_RATE_WINDOW),
                 now,
@@ -927,14 +830,6 @@ fn supervise(
             break Some("a capture worker exited before shutdown was requested".to_owned());
         }
         let now = Instant::now();
-        // Flushing here, not in the ETW callback, keeps the callback wake-free
-        // (docs/history/ring-wakeup.md). The park ends at the next flush deadline, so the
-        // cadence is the setting plus at most one timer tick (about 15.6 ms).
-        if monitor.flush.poll(now) && flush_etw(capture, monitor.capture) {
-            // The ETW buffer callback also wakes the parser when the flushed
-            // buffers arrive; this wake is a cheap backstop.
-            parser.thread().unpark();
-        }
         if monitor.target.poll(now)
             && let Some(reason) = capture.target_change()
         {
@@ -956,7 +851,7 @@ fn supervise(
                 events_per_second = rate.round(),
                 "received rate is above what the default low-rate ETW settings are sized \
                  for (about 1,500 events/s) and events may be dropped; restart with \
-                 --etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64"
+                 --etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536"
             );
         }
         if monitor.stats.poll(now) {
@@ -965,11 +860,7 @@ fn supervise(
             }
             report_snapshot(monitor.capture, monitor.parse, monitor.sink);
         }
-        thread::park_timeout(
-            monitor
-                .flush
-                .park_for(Instant::now(), Duration::from_millis(50)),
-        );
+        thread::park_timeout(Duration::from_millis(50));
     }
 }
 
@@ -984,7 +875,6 @@ fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
         etw_buffer_kib = config.session.buffer_kib,
         etw_max_buffers = config.session.maximum_buffers,
         etw_flush_seconds = config.session.flush_seconds,
-        etw_flush_ms = config.etw_flush_ms,
         match_any_keyword = format_args!("{:#x}", keywords.match_any),
         match_all_keyword = format_args!("{:#x}", keywords.match_all),
         keyword_fallback = keywords.fallback,
@@ -1206,7 +1096,8 @@ pub(crate) fn parse_and_encode<'e>(
 }
 
 // The per-event ETW callback stays wake-free; see docs/history/ring-wakeup.md.
-// A real-time session delivers events in bursts (about once per flush interval).
+// A real-time session delivers events in bursts (about once per
+// `--etw-flush-seconds`).
 // The ETW buffer callback wakes the parser once per delivered buffer that
 // enqueued events, so draining starts within microseconds of a burst. After
 // data, the parser lingers for LINGER_AFTER_DATA before it parks, so a burst
@@ -1374,9 +1265,6 @@ macro_rules! emit_counts {
             etw_stats_valid = capture.stats_valid.load(Ordering::Relaxed),
             etw_stats_errors = capture.stats_errors.load(Ordering::Relaxed),
             stale_sessions_reclaimed = capture.stale_sessions_reclaimed.load(Ordering::Relaxed),
-            etw_flushes = capture.etw_flushes.load(Ordering::Relaxed),
-            etw_flush_errors = capture.etw_flush_errors.load(Ordering::Relaxed),
-            etw_flush_max_us = capture.etw_flush_max_us.load(Ordering::Relaxed),
             etw_buffers_delivered = capture.etw_buffers_delivered.load(Ordering::Relaxed),
             parser_wake_requests = capture.parser_wake_requests.load(Ordering::Relaxed),
             $capture_message
@@ -1445,37 +1333,18 @@ mod tests {
     };
 
     #[test]
-    fn etw_flush_ms_validation() {
-        let parse = |value: &str| {
-            CaptureArgs::try_parse_from([
-                "etw-dnstap",
-                "--receiver",
-                "127.0.0.1:5000",
-                &format!("--etw-flush-ms={value}"),
-            ])
-        };
-        for ok in ["0", "20", "50", "1000"] {
-            assert!(parse(ok).is_ok(), "{ok}");
-        }
-        for bad in ["1", "19", "1001", "-1", "x"] {
-            assert!(parse(bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn flush_schedule_disabled_is_never_due_and_parks_cap() {
+    fn schedule_disabled_is_never_due() {
         let start = Instant::now();
-        let mut schedule = FlushSchedule::new(None, start);
-        let cap = Duration::from_millis(50);
+        let mut schedule = Schedule::new(None, start);
+        assert!(!schedule.poll(start));
         assert!(!schedule.poll(start + Duration::from_secs(60)));
-        assert_eq!(schedule.park_for(start, cap), cap);
     }
 
     #[test]
-    fn flush_schedule_is_due_exactly_at_interval() {
+    fn schedule_is_due_exactly_at_interval() {
         let ms = Duration::from_millis;
         let start = Instant::now();
-        let mut schedule = FlushSchedule::new(Some(ms(100)), start);
+        let mut schedule = Schedule::new(Some(ms(100)), start);
         assert!(!schedule.poll(start));
         assert!(!schedule.poll(start + ms(99)));
         assert!(schedule.poll(start + ms(100)));
@@ -1484,33 +1353,6 @@ mod tests {
         assert!(schedule.poll(start + ms(200)));
         assert!(schedule.poll(start + ms(5000)));
         assert!(!schedule.poll(start + ms(5001)));
-    }
-
-    #[test]
-    fn flush_schedule_park_for_is_bounded() {
-        let ms = Duration::from_millis;
-        let start = Instant::now();
-        let schedule = FlushSchedule::new(Some(ms(100)), start);
-        let cap = ms(50);
-        assert_eq!(schedule.park_for(start + ms(70), cap), ms(30));
-        assert_eq!(schedule.park_for(start, cap), cap);
-        assert_eq!(schedule.park_for(start + ms(100), cap), ms(1));
-        assert_eq!(schedule.park_for(start + ms(500), cap), ms(1));
-    }
-
-    #[test]
-    fn record_etw_flush_counts_outcomes_separately() {
-        let counters = CaptureCounters::default();
-        for _ in 0..3 {
-            record_etw_flush(&counters, Ok(()));
-        }
-        assert_eq!(counters.etw_flushes.load(Ordering::Relaxed), 3);
-        assert_eq!(counters.etw_flush_errors.load(Ordering::Relaxed), 0);
-        for _ in 0..2 {
-            record_etw_flush(&counters, Err(5));
-        }
-        assert_eq!(counters.etw_flushes.load(Ordering::Relaxed), 3);
-        assert_eq!(counters.etw_flush_errors.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -1600,10 +1442,6 @@ mod tests {
             false
         }
 
-        fn flush(&self) -> Result<(), u32> {
-            Ok(())
-        }
-
         fn stop(&mut self) -> Result<()> {
             self.stopped.store(true, Ordering::SeqCst);
             Ok(())
@@ -1662,12 +1500,8 @@ mod tests {
             "127.0.0.1:6000",
         ])?)?;
         assert_eq!(valid.capacity, 8192);
-        assert_eq!(valid.etw_flush_interval(), None);
         let mut bad = valid.clone();
         bad.capacity = 1;
-        assert!(bad.validate().is_err());
-        let mut bad = valid.clone();
-        bad.etw_flush_ms = 5;
         assert!(bad.validate().is_err());
         let mut bad = valid;
         bad.receiver = "0.0.0.0:6000".parse()?;
@@ -1746,7 +1580,6 @@ mod tests {
         assert_eq!(defaults.etw_buffer_kib, 16);
         assert_eq!(defaults.etw_max_buffers, 12);
         assert_eq!(defaults.etw_flush_seconds, 1);
-        assert_eq!(defaults.etw_flush_ms, 0);
 
         for (flag, values) in [
             ("--etw-buffer-kib", &["0", "3", "132", "256", "1024"][..]),
@@ -2194,7 +2027,6 @@ mod tests {
     #[test]
     fn default_etw_settings_are_detected() {
         assert!(config_from(&[]).uses_default_etw_settings());
-        assert!(!config_from(&["--etw-flush-ms", "50"]).uses_default_etw_settings());
         assert!(!config_from(&["--etw-max-buffers", "256"]).uses_default_etw_settings());
         assert!(!config_from(&["--etw-buffer-kib", "64"]).uses_default_etw_settings());
         assert!(!config_from(&["--etw-flush-seconds", "2"]).uses_default_etw_settings());
@@ -2246,7 +2078,6 @@ mod tests {
 
     /// A producer scripted for supervisor tests.
     struct ScriptedProducer {
-        flushes: Arc<std::sync::atomic::AtomicU32>,
         moved: bool,
     }
 
@@ -2261,12 +2092,6 @@ mod tests {
 
         fn is_finished(&self) -> bool {
             false
-        }
-
-        fn flush(&self) -> Result<(), u32> {
-            self.flushes
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(())
         }
 
         fn stop(&mut self) -> Result<()> {
@@ -2288,7 +2113,7 @@ mod tests {
             SinkStats::default(),
         );
         let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
-        monitor.target = FlushSchedule::new(Some(Duration::from_millis(10)), Instant::now());
+        monitor.target = Schedule::new(Some(Duration::from_millis(10)), Instant::now());
         let done = Arc::new(AtomicBool::new(false));
         let parser_done = Arc::clone(&done);
         let parser = thread::spawn(move || {
@@ -2297,10 +2122,7 @@ mod tests {
             }
             Ok(())
         });
-        let producer = ScriptedProducer {
-            flushes: Arc::default(),
-            moved: true,
-        };
+        let producer = ScriptedProducer { moved: true };
         let reason = supervise(
             &AtomicBool::new(false),
             None,
@@ -2313,50 +2135,6 @@ mod tests {
         assert!(reason.contains("restarted"), "{reason}");
         done.store(true, Ordering::Relaxed);
         parser.join().expect("parser stub exits").expect("ok");
-    }
-
-    #[test]
-    fn supervisor_wakes_the_parser_after_each_successful_flush() {
-        let config = config_from(&["--etw-flush-ms", "20"]);
-        let (capture, parse, sink) = (
-            CaptureCounters::default(),
-            ParseCounters::default(),
-            SinkStats::default(),
-        );
-        let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
-        let done = Arc::new(AtomicBool::new(false));
-        let wakes = Arc::new(AtomicU64::new(0));
-        let (parser_done, parser_wakes) = (Arc::clone(&done), Arc::clone(&wakes));
-        let parser = thread::spawn(move || {
-            // A long park: only an explicit unpark ends it early.
-            while !parser_done.load(Ordering::Relaxed) {
-                thread::park_timeout(Duration::from_secs(30));
-                parser_wakes.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(())
-        });
-        let flushes = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let producer = ScriptedProducer {
-            flushes: Arc::clone(&flushes),
-            moved: false,
-        };
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopper = {
-            let stop = Arc::clone(&stop);
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(400));
-                stop.store(true, Ordering::Relaxed);
-            })
-        };
-        assert!(supervise(&stop, None, false, &parser, &producer, &mut monitor).is_none());
-        stopper.join().expect("stopper exits");
-        done.store(true, Ordering::Relaxed);
-        parser.thread().unpark();
-        parser.join().expect("parser stub exits").expect("ok");
-        let flush_count = u64::from(flushes.load(std::sync::atomic::Ordering::Relaxed));
-        assert!(flush_count >= 3, "flushed {flush_count} times");
-        // One wake per flush, plus the final one that observes `done`.
-        assert!(wakes.load(Ordering::Relaxed) >= flush_count.min(3));
     }
 
     #[test]

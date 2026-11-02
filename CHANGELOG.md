@@ -198,6 +198,33 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Removed
 
+- **Breaking.** The `--etw-flush-ms` option and the periodic ETW flush. The
+  supervisor no longer sends `EVENT_TRACE_CONTROL_FLUSH`, and it no longer
+  wakes the parser after a flush. A service binary path that still has
+  `--etw-flush-ms` fails command-line parsing, and the service does not start.
+  Remove the option from the binary path before you start this build. This
+  changes the public contract under the local policy, so it increases `y`.
+  The `capture stats` and `capture stopped` lines lose the `etw_flushes`,
+  `etw_flush_errors`, and `etw_flush_max_us` counters. The `capture started`
+  line loses the `etw_flush_ms` field. The `ETW session flush failed` and
+  `ETW session flush took N ms` warnings are gone. The reason is the buffer
+  wake in commit `dde7188`. The parser drains each ETW delivery while it
+  arrives. With the buffer-wake build, all defaults, and no flush, the lab
+  measured 0 ring loss at 1,000 and 5,000 QPS and 0.32% at 10,000 QPS. It
+  measured 0 ring drops at 50,000 QPS with a small `etw_lost`. See
+  [the validation record](docs/history/buffer-wake-validation.md).
+  `--etw-flush-seconds` stays (default 1, range 1 to 60). The high-rate
+  guidance changes from
+  `--etw-flush-ms 50 --etw-max-buffers 256 --etw-buffer-kib 64` to
+  `--etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536`. The low-rate
+  warning names the new settings. In the lab, the new combination lost no
+  events inside ETW in any run, and the channel dropped no events up to about
+  44,000 QPS. At about 49,400 QPS, one of two runs filled the 65,536-event
+  channel and dropped 0.28%. With this build and all defaults, the channel
+  dropped 0.28 to 0.58% at about 10,000 QPS, 12 to 17% at about 30,000 QPS,
+  and 0.34 to 4.39% at about 50,000 QPS, with `etw_lost` about 0.2%. See
+  [the flush removal validation](docs/history/flush-removal-validation.md) and
+  [High-rate settings](docs/guide/configuration.md#high-rate-settings).
 - The per-event TDH fallback reader. Every captured event is now decoded by a
   plan compiled from the manifest schema. A DNS Server schema that does not
   compile is no longer decoded through `TdhGetPropertySize` and `TdhGetProperty`.
