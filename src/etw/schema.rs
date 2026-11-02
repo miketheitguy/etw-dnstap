@@ -267,17 +267,12 @@ fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema>
     let array_offset = offset_of!(TRACE_EVENT_INFO, EventPropertyInfoArray);
     let count = info.TopLevelPropertyCount as usize;
     validate_property_array(info.PropertyCount as usize, count, size as usize)?;
-    // SAFETY: The offset has native struct alignment, and the count fits the
+    // SAFETY: array_offset lies inside the allocation: size covers at least the
+    // fixed TRACE_EVENT_INFO header, which ends with the property array.
+    let array = unsafe { storage.as_ptr().byte_add(array_offset) }.cast::<EVENT_PROPERTY_INFO>();
+    // SAFETY: The array has native struct alignment, and count entries fit the
     // initialized TDH allocation as checked above.
-    let properties = unsafe {
-        std::slice::from_raw_parts(
-            storage
-                .as_ptr()
-                .byte_add(array_offset)
-                .cast::<EVENT_PROPERTY_INFO>(),
-            count,
-        )
-    };
+    let properties = unsafe { std::slice::from_raw_parts(array, count) };
     // SAFETY: The successful TDH result initialized size bytes inside storage.
     let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), size as usize) };
     compile_schema(properties, bytes, peer_name)
@@ -355,22 +350,22 @@ fn normalize_fields(
             });
             continue;
         }
-        // SAFETY: The flags exclude struct/custom union layouts. Count and length
-        // arms are selected independently according to their discriminating flags.
-        let (native, count, length) = unsafe {
-            (
-                prop.Anonymous1.nonStructType,
-                if prop.Flags & PropertyParamCount != 0 {
-                    prop.Anonymous2.countPropertyIndex
-                } else {
-                    prop.Anonymous2.count
-                },
-                if prop.Flags & PropertyParamLength != 0 {
-                    prop.Anonymous3.lengthPropertyIndex
-                } else {
-                    prop.Anonymous3.length
-                },
-            )
+        // SAFETY: The flags exclude PropertyStruct and PropertyHasCustomSchema,
+        // so Anonymous1 holds the nonStructType arm.
+        let native = unsafe { prop.Anonymous1.nonStructType };
+        let count = if prop.Flags & PropertyParamCount != 0 {
+            // SAFETY: PropertyParamCount selects the countPropertyIndex arm.
+            unsafe { prop.Anonymous2.countPropertyIndex }
+        } else {
+            // SAFETY: Without PropertyParamCount, Anonymous2 holds the count arm.
+            unsafe { prop.Anonymous2.count }
+        };
+        let length = if prop.Flags & PropertyParamLength != 0 {
+            // SAFETY: PropertyParamLength selects the lengthPropertyIndex arm.
+            unsafe { prop.Anonymous3.lengthPropertyIndex }
+        } else {
+            // SAFETY: Without PropertyParamLength, Anonymous3 holds the length arm.
+            unsafe { prop.Anonymous3.length }
         };
         fields.push(FieldSpec {
             name,
@@ -428,9 +423,12 @@ fn find_property(
                 prop.Flags & (PropertyStruct | PropertyHasCustomSchema | PropertyParamCount) == 0,
                 "unsupported structured property {name}"
             );
-            // SAFETY: Flags above select the nonStructType and fixed-count
-            // union members in the documented EVENT_PROPERTY_INFO layout.
-            let (native, count) = unsafe { (prop.Anonymous1.nonStructType, prop.Anonymous2.count) };
+            // SAFETY: The flags exclude PropertyStruct and PropertyHasCustomSchema,
+            // so Anonymous1 holds the nonStructType arm.
+            let native = unsafe { prop.Anonymous1.nonStructType };
+            // SAFETY: The flags exclude PropertyParamCount, so Anonymous2 holds
+            // the fixed count arm.
+            let count = unsafe { prop.Anonymous2.count };
             ensure!(count <= 1, "unsupported property array {name}");
             return Ok(PropertyType {
                 input: i32::from(native.InType),

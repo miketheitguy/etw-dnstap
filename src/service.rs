@@ -641,18 +641,13 @@ fn parse_groups(buffer: &TokenBuffer) -> Result<Vec<GroupEntry<'_>>> {
         count <= 1024 && end <= buffer.used,
         "invalid token groups array"
     );
-    // SAFETY: The native-aligned flexible array fits entirely in the initialized
-    // token buffer as validated above; embedded SID pointers are checked below.
-    let entries = unsafe {
-        std::slice::from_raw_parts(
-            buffer
-                .storage
-                .as_ptr()
-                .byte_add(offset)
-                .cast::<SID_AND_ATTRIBUTES>(),
-            count,
-        )
-    };
+    // SAFETY: offset is the Groups field offset, and end <= used (checked above)
+    // places it inside the initialized token buffer.
+    let array = unsafe { buffer.storage.as_ptr().byte_add(offset) }.cast::<SID_AND_ATTRIBUTES>();
+    // SAFETY: The native-aligned flexible array of count entries fits entirely
+    // in the initialized token buffer as validated above; embedded SID pointers
+    // are checked below.
+    let entries = unsafe { std::slice::from_raw_parts(array, count) };
     let mut parsed = Vec::with_capacity(count);
     for entry in entries {
         parsed.push(GroupEntry {
@@ -666,9 +661,12 @@ fn parse_groups(buffer: &TokenBuffer) -> Result<Vec<GroupEntry<'_>>> {
 /// Verifies the process token before any capture initialization.
 fn verify_identity() -> Result<()> {
     let mut raw = null_mut();
-    // SAFETY: GetCurrentProcess returns a borrowed pseudo-handle; OpenProcessToken
-    // creates the separate owned query handle written to raw.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw) } == 0 {
+    // SAFETY: GetCurrentProcess has no preconditions. It returns a borrowed
+    // pseudo-handle that is never closed.
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: The pseudo-handle names this process, and raw is a valid output
+    // location that receives the separate owned query handle.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut raw) } == 0 {
         return Err(last_error("OpenProcessToken"));
     }
     let token = Token(raw);
@@ -738,18 +736,12 @@ fn verify_privileges(token: &Token) -> Result<()> {
         count <= 64 && end <= buffer.used,
         "invalid token privileges array"
     );
+    // SAFETY: offset is the Privileges field offset, and end <= used (checked
+    // above) places it inside the initialized token buffer.
+    let array = unsafe { buffer.storage.as_ptr().byte_add(offset) }.cast::<LUID_AND_ATTRIBUTES>();
     // SAFETY: The native-aligned array of `count` entries fits entirely in the
     // initialized token buffer, as checked above.
-    let entries = unsafe {
-        std::slice::from_raw_parts(
-            buffer
-                .storage
-                .as_ptr()
-                .byte_add(offset)
-                .cast::<LUID_AND_ATTRIBUTES>(),
-            count,
-        )
-    };
+    let entries = unsafe { std::slice::from_raw_parts(array, count) };
     let parsed: Vec<PrivilegeEntry> = entries
         .iter()
         .map(|entry| PrivilegeEntry {
