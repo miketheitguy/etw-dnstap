@@ -35,11 +35,32 @@ pub(crate) const MAX_JUMBO_CAPACITY: u16 = 256;
 /// item `i` occupies the `i`th 16-byte cell counted from the end, so the cells
 /// need no count to find. This keeps the 384 bytes of per-item tables out of
 /// every slot header, where this provider (which sends no extended data)
-/// never used them. `copy_record` asks `acquire` for room for the payload, its
-/// alignment padding, and the cells, so the two regions cannot overlap.
+/// never used them. The pool owns the layout: [`reservation`] is the only place
+/// that adds the payload, its alignment padding, and the cells, `acquire` picks
+/// the slot class from it, and `items` records how many cells the current lease
+/// reserved, so `set_item`, `item`, and `offset` cannot touch a cell outside the
+/// reservation and the cells cannot overlap the payload.
 struct Slot {
     bytes: Box<[u64]>,
     jumbo: bool,
+    /// Cells reserved by the current lease; set by `acquire`.
+    items: u8,
+}
+
+/// Bytes a lease needs for `length` payload bytes (user data, extended data,
+/// and the padding between them) and `items` extended-data cells: the payload
+/// rounded up to 8 followed by one `ITEM_TABLE_BYTES` cell per item, or just
+/// the payload when there are no items. `None` for more than
+/// `MAX_EXTENDED_ITEMS` items or an overflowing size.
+pub(super) fn reservation(length: usize, items: usize) -> Option<usize> {
+    if items > MAX_EXTENDED_ITEMS {
+        return None;
+    }
+    if items == 0 {
+        return Some(length);
+    }
+    let aligned = length.checked_add(7)? & !7;
+    aligned.checked_add(items * ITEM_TABLE_BYTES)
 }
 
 /// The four `u16` fields of an item that precede `DataPtr`, packed little-endian.
@@ -146,24 +167,41 @@ impl PoolManager {
         self.recycle(Box::new(Slot {
             bytes: bytes.into_boxed_slice(),
             jumbo,
+            items: 0,
         }));
         Ok(())
     }
 
-    pub(super) fn acquire(&'static self, length: usize) -> Option<PooledBuffer> {
+    /// Leases a slot with room for `length` payload bytes and `items` extended
+    /// data cells (see [`reservation`]); the slot class follows from the total.
+    /// `None` when that class is exhausted or the request exceeds a jumbo slot.
+    pub(super) fn acquire_with_items(
+        &'static self,
+        length: usize,
+        items: usize,
+    ) -> Option<PooledBuffer> {
+        let needed = reservation(length, items)?;
         // Regular events do not consume the jumbo reserve. Pool exhaustion is
         // explicit; neither branch allocates, waits, or grows a free list.
-        let slot = if length <= REGULAR_BYTES {
+        let mut slot = if needed <= REGULAR_BYTES {
             self.regular.pop()
-        } else if length <= JUMBO_BYTES {
+        } else if needed <= JUMBO_BYTES {
             self.jumbo.as_ref()?.pop()
         } else {
             None
         }?;
+        // `reservation` rejected more than MAX_EXTENDED_ITEMS (16), so this fits.
+        slot.items = u8::try_from(items).unwrap_or(u8::MAX);
         Some(PooledBuffer {
             slot: Some(slot),
             pool: self,
         })
+    }
+
+    /// A lease without extended-data cells, for tests of the plain payload path.
+    #[cfg(test)]
+    pub(super) fn acquire(&'static self, length: usize) -> Option<PooledBuffer> {
+        self.acquire_with_items(length, 0)
     }
 
     fn recycle(&self, slot: Box<Slot>) {
@@ -211,16 +249,18 @@ impl PooledBuffer {
     }
     /// Index of the header word of item `index` in the slot's words; its offset
     /// word follows. Counted from the end, see [`Slot`]. Aborts for an index at
-    /// or beyond `MAX_EXTENDED_ITEMS`, which no caller passes.
+    /// or beyond the cells this lease reserved (`acquire_with_items`), so a
+    /// cell is never read or written inside the payload region.
     fn cell(&self, index: usize) -> usize {
-        if index >= MAX_EXTENDED_ITEMS {
+        if index >= usize::from(self.slot().items) {
             std::process::abort();
         }
         self.slot().bytes.len() - 2 * (index + 1)
     }
 
     /// Stores item `index` and the payload offset of its data in the table at the
-    /// end of the slot. The caller reserved the cell through `acquire`.
+    /// end of the slot. Aborts for an index beyond the cells reserved by
+    /// `acquire_with_items`.
     pub(super) fn set_item(
         &mut self,
         index: usize,
@@ -340,7 +380,11 @@ mod tests {
     fn item_cells_round_trip_at_the_end_of_the_slot() {
         let pool = PoolManager::new(1, 1).expect("bounded test pool");
         for length in [REGULAR_BYTES, JUMBO_BYTES] {
-            let mut lease = pool.acquire(length).expect("slot");
+            // Payload room that, with all 16 cells, fills the slot exactly.
+            let payload = length - ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS;
+            let mut lease = pool
+                .acquire_with_items(payload, MAX_EXTENDED_ITEMS)
+                .expect("slot");
             for index in 0..MAX_EXTENDED_ITEMS {
                 let value = u16::try_from(index).expect("small index");
                 let mut item = EVENT_HEADER_EXTENDED_DATA_ITEM {
@@ -365,12 +409,57 @@ mod tests {
             }
             // The cells are the last 16 * MAX_EXTENDED_ITEMS bytes; the rest of
             // the slot is untouched (zero on a fresh slot).
-            let payload = length - ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS;
             // SAFETY: The exclusive lease owns `length` initialized bytes.
             let bytes = unsafe { std::slice::from_raw_parts(lease.bytes(), length) };
             assert!(bytes[..payload].iter().all(|byte| *byte == 0));
             assert!(bytes[payload..].iter().any(|byte| *byte != 0));
         }
+    }
+
+    #[test]
+    fn the_reservation_covers_payload_padding_and_cells() {
+        assert_eq!(reservation(0, 0), Some(0));
+        assert_eq!(reservation(13, 0), Some(13), "no cells, no padding");
+        assert_eq!(reservation(13, 1), Some(16 + ITEM_TABLE_BYTES));
+        assert_eq!(reservation(16, 3), Some(16 + 3 * ITEM_TABLE_BYTES));
+        assert_eq!(
+            reservation(0, MAX_EXTENDED_ITEMS),
+            Some(MAX_EXTENDED_ITEMS * ITEM_TABLE_BYTES)
+        );
+        assert_eq!(reservation(1, MAX_EXTENDED_ITEMS + 1), None);
+        assert_eq!(reservation(usize::MAX, 1), None);
+        assert_eq!(reservation(usize::MAX - 3, 1), None);
+    }
+
+    #[test]
+    fn a_payload_reaching_into_the_cells_takes_the_next_slot_class() {
+        let pool = PoolManager::new(1, 1).expect("bounded test pool");
+        // 2,040 payload bytes plus one cell would overlap the end of a regular
+        // slot: the lease is a jumbo slot, and regular slots stay free.
+        let lease = pool
+            .acquire_with_items(REGULAR_BYTES - 8, 1)
+            .expect("jumbo lease");
+        assert!(pool.acquire_with_items(REGULAR_BYTES - 8, 1).is_none());
+        let regular: Vec<_> = (0..3)
+            .map(|_| pool.acquire(1).expect("regular slots untouched"))
+            .collect();
+        drop((lease, regular));
+        // The same payload fits a regular slot when it has no cells, and one
+        // cell fits when the payload leaves room for it.
+        assert!(pool.acquire_with_items(REGULAR_BYTES, 0).is_some());
+        assert!(
+            pool.acquire_with_items(REGULAR_BYTES - ITEM_TABLE_BYTES, 1)
+                .is_some()
+        );
+        // Beyond a jumbo slot nothing is leased.
+        assert!(pool.acquire_with_items(JUMBO_BYTES, 1).is_none());
+        // Without a jumbo class the overlapping request is refused.
+        let regular_only = PoolManager::new(1, 0).expect("bounded test pool");
+        assert!(
+            regular_only
+                .acquire_with_items(REGULAR_BYTES - 8, 1)
+                .is_none()
+        );
     }
 
     /// Allocates with `interval` and returns how often progress was reported.

@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 
 use super::{
     CaptureCounters, MAX_EXTENDED_ITEMS, PoolManager, dns_provider,
-    pool::{ITEM_TABLE_BYTES, PooledBuffer, REGULAR_BYTES},
+    pool::{PooledBuffer, REGULAR_BYTES, reservation},
     supported,
 };
 
@@ -297,19 +297,15 @@ pub(super) unsafe fn copy_record(
         length = length.checked_add(size).ok_or_else(invalid)?;
         items[index] = item;
     }
-    // The item cells sit at the end of the slot (see `pool::Slot`), after the
-    // last payload byte rounded up to 8. Reserve them now, so the slot class
-    // and the capacity check cover payload, padding, and cells together.
-    let needed = if count == 0 {
-        length
-    } else {
-        align_payload(length)
-            .and_then(|aligned| aligned.checked_add(count * ITEM_TABLE_BYTES))
-            .ok_or_else(invalid)?
-    };
-    let mut buffer = pool.acquire(needed).ok_or(CopyError::Exhausted {
-        jumbo: needed > REGULAR_BYTES,
-    })?;
+    // The pool reserves the payload, its padding, and the item cells at the end
+    // of the slot (`pool::reservation`), picks the slot class from the total, and
+    // refuses to read or write a cell outside the reservation.
+    let needed = reservation(length, count).ok_or_else(invalid)?;
+    let mut buffer = pool
+        .acquire_with_items(length, count)
+        .ok_or(CopyError::Exhausted {
+            jumbo: needed > REGULAR_BYTES,
+        })?;
     if data_length != 0 {
         // SAFETY: The validated nonempty source is readable by caller contract.
         // The exclusive pool slot has at least length >= data_length bytes;
@@ -326,9 +322,10 @@ pub(super) unsafe fn copy_record(
         let mut item = items[index];
         let size = usize::from(item.DataSize);
         if size != 0 {
-            // SAFETY: Preflight checked offset + size <= length, and the slot has
-            // at least length + the item cells (`needed`) bytes, so the 8-aligned
-            // offset stays inside the exclusive slot, clear of the cells.
+            // SAFETY: Preflight checked offset + size <= length, and the lease
+            // reserved `reservation(length, count)` >= length bytes with the
+            // item cells after the payload, so the 8-aligned offset stays inside
+            // the exclusive slot, clear of the cells.
             let destination = unsafe { buffer.bytes_mut().add(offsets[index]) };
             // SAFETY: The caller guarantees size readable bytes at DataPtr, and
             // the slot has size bytes of room at destination (checked above).
