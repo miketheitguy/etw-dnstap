@@ -70,6 +70,13 @@ debug = 0
 strip = "symbols"
 overflow-checks = true
 panic = "abort"
+# Whole-program optimization of the hot path (decode, encode, pool) across crates:
+# 10% faster parse and encode, 7.7% smaller image, release builds about 50% slower
+# (datasets/baselines/code-review-2026-11-01/README.md, Phase 2 results).
+# scripts/ci/verify-pe.ps1 and scripts/ci/verify-link-exceptions.ps1 must pass
+# after any change here: LTO changes the final link.
+lto = "fat"
+codegen-units = 1
 trim-paths = "all"
 
 [profile.asan]
