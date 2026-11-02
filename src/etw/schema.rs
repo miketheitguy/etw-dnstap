@@ -17,10 +17,11 @@ use windows_sys::Win32::{
     Foundation::ERROR_INSUFFICIENT_BUFFER,
     System::Diagnostics::Etw::{
         DecodingSourceXMLFile, EVENT_HEADER, EVENT_PROPERTY_INFO, EVENT_RECORD,
-        PropertyHasCustomSchema, PropertyParamCount, PropertyParamLength, PropertyStruct,
-        TDH_INTYPE_ANSISTRING, TDH_INTYPE_BOOLEAN, TDH_INTYPE_UINT8, TDH_INTYPE_UINT16,
-        TDH_INTYPE_UINT32, TDH_INTYPE_UNICODESTRING, TDH_OUTTYPE_IPV4, TDH_OUTTYPE_IPV6,
-        TDH_OUTTYPE_PORT, TRACE_EVENT_INFO, TdhGetEventInformation,
+        PropertyHasCustomSchema, PropertyParamCount, PropertyParamFixedCount,
+        PropertyParamFixedLength, PropertyParamLength, PropertyStruct, TDH_INTYPE_ANSISTRING,
+        TDH_INTYPE_BOOLEAN, TDH_INTYPE_UINT8, TDH_INTYPE_UINT16, TDH_INTYPE_UINT32,
+        TDH_INTYPE_UNICODESTRING, TDH_OUTTYPE_IPV4, TDH_OUTTYPE_IPV6, TDH_OUTTYPE_PORT,
+        TRACE_EVENT_INFO, TdhGetEventInformation,
     },
 };
 
@@ -33,6 +34,13 @@ use crate::event::{DecodedDnsEvent, DnsEventMetadata, Transport};
 
 /// Schemas cached per parser; the cache is cleared when it fills.
 const MAX_CACHED_SCHEMAS: usize = 8;
+/// The `EVENT_PROPERTY_INFO.Flags` bits (`PROPERTY_FLAGS` in `tdh.h`) the
+/// single-pass compiler interprets: the length and count arms, fixed or by
+/// index. A property with any other bit set is kept as an opaque name.
+const SUPPORTED_PROPERTY_FLAGS: u32 =
+    (PropertyParamLength | PropertyParamCount | PropertyParamFixedLength | PropertyParamFixedCount)
+        .cast_unsigned();
+const _: () = assert!(SUPPORTED_PROPERTY_FLAGS == 0x36);
 
 #[cfg(test)]
 #[path = "schema_tests.rs"]
@@ -335,7 +343,7 @@ fn normalize_fields(
         }
         let name = property_name(bytes, offset)?;
         if prop.Flags & (PropertyStruct | PropertyHasCustomSchema) != 0
-            || prop.Flags.cast_unsigned() & !0x36 != 0
+            || prop.Flags.cast_unsigned() & !SUPPORTED_PROPERTY_FLAGS != 0
         {
             // Keep the name and unsupported flags so the compiler can check
             // duplicate targets while ignoring layouts strictly after its prefix.

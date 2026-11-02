@@ -54,6 +54,10 @@ const SUBSCRIPTION_LEVEL: u8 = 0xFF;
 /// 10 s shutdown watchdog, so the parser join and Frame Streams FINISH keep the
 /// rest.
 const WORKER_EXIT_WAIT: Duration = Duration::from_secs(5);
+/// `EnableTraceEx2` `Timeout`, in milliseconds: how long the call waits for the
+/// provider's enable callback to complete before it returns `ERROR_TIMEOUT`
+/// (0 would return without waiting; `INFINITE` would wait forever).
+const ENABLE_TIMEOUT_MS: u32 = 5000;
 
 #[cfg(test)]
 #[path = "session_tests.rs"]
@@ -644,7 +648,7 @@ impl Capture {
                 SUBSCRIPTION_LEVEL,
                 keywords.match_any,
                 keywords.match_all,
-                5000,
+                ENABLE_TIMEOUT_MS,
                 &raw const parameters,
             )
         };
