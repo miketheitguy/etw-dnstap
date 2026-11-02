@@ -679,20 +679,26 @@ Against the Phase 0 table: `two_thread/query_256` 231.5 to 197.4 ns (-14.7%),
 153.0 to 127.1 ns (-16.9%). The `before` run of this session reproduces the
 Phase 0 means within 1% (`two_thread/query_256` 233.9 ns against 231.5).
 
-### Verification that could not run as written
+### Verification after the measurements
 
-The tool that launched every command in this session refused each invocation of
-`pwsh` or `powershell.exe` (a worktree-isolated agent could not show that a
-PowerShell command stays inside its worktree). Consequences:
+The tool that launched every command in the measurement session refused each
+invocation of `pwsh` or `powershell.exe` (a worktree-isolated agent could not
+show that a PowerShell command stays inside its worktree), so the two CI scripts
+did not run there. They were run later on the build host, after the measurements,
+on a fresh `cargo build --locked --release` of the branch at `ded1faa` (image
+2,210,304 bytes):
 
-- `scripts/ci/verify-pe.ps1` and `scripts/ci/verify-link-exceptions.ps1` were not
-  run. Instead, a throwaway port of `verify-pe.ps1`'s 21 checks (same dumpbin
-  switches, patterns, and masks) ran against the final release image: 21
-  checks, 0 failed. The `LNK2047` object set was extracted from the captured
-  release build log with the script's own rule (library name without its hash
-  plus object name) and compared with `scripts/ci/link-exceptions.txt`: equal, 8
-  and 8. CI must run the real scripts.
-- The lab comparison of `scripts/performance/README.md` (needs Windows
-  PowerShell 5.1 and PowerShell Direct to the guest) was not run. Items 10 and
-  11 are therefore not yet validated with the lab's real thread contention, the
-  one place where item 10's predicted contended-atomic saving could appear.
+- `scripts/ci/verify-link-exceptions.ps1`: 6 checks, 0 failed (8 `LNK2047` lines,
+  8 distinct objects, all allowlisted, no `LNK2046`).
+- `scripts/ci/verify-pe.ps1`: 21 checks, 0 failed.
+
+During the measurement session, a throwaway port of the 21 `verify-pe.ps1`
+checks (same dumpbin switches, patterns, and masks) and a comparison of the
+`LNK2047` object set in the captured build log with
+`scripts/ci/link-exceptions.txt` (equal, 8 and 8) had already given the same
+answers.
+
+The lab comparison of `scripts/performance/README.md` (needs Windows PowerShell
+5.1 and PowerShell Direct to the guest) has not been run. Items 10 and 11 are
+therefore not yet validated with the lab's real thread contention, the one place
+where item 10's predicted contended-atomic saving could appear.
