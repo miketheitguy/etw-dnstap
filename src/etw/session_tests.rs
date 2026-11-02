@@ -585,7 +585,7 @@ fn event_id_filter_payload_bytes_are_exact() {
 #[test]
 fn event_id_filter_contains_exactly_the_supported_ids() {
     let payload = EventIdFilterPayload::new();
-    assert!(payload.filter_in);
+    assert_eq!(payload.filter_in, 1);
     assert_eq!(usize::from(payload.count), 3);
     assert_eq!(payload.events, [256, 257, 258]);
     assert_eq!(SUPPORTED_EVENT_IDS, [256, 257, 258]);

@@ -712,9 +712,12 @@ impl Capture {
         let mut failure = None;
         let mut session_stopped = false;
         if let Some(session) = self.session.take() {
-            let mut properties = SessionProperties::new(&SessionConfig::default(), GUID::default());
+            // STOP is an output call like QUERY: ETW fills the properties and
+            // writes both names, so the buffer needs both name offsets set.
+            let mut properties = QueryProperties::new();
             // SAFETY: Only the handle successfully created above is stopped; null
-            // name forces handle lookup. The output buffer is aligned and sized.
+            // name forces handle lookup. The output buffer is aligned and sized
+            // (Wnode.BufferSize and both name offsets set).
             let status = unsafe {
                 ControlTraceW(
                     session,
@@ -789,7 +792,9 @@ impl Drop for Capture {
 /// definition declares a one-element flexible array.
 #[repr(C)]
 struct EventIdFilterPayload {
-    filter_in: bool,
+    /// The C `BOOLEAN` (one byte) `FilterIn`: 1 includes the listed events, 0
+    /// excludes them.
+    filter_in: u8,
     reserved: u8,
     count: u16,
     events: [u16; SUPPORTED_EVENT_IDS.len()],
@@ -816,7 +821,7 @@ impl EventIdFilterPayload {
     /// Builds an include-only filter for [`SUPPORTED_EVENT_IDS`].
     const fn new() -> Self {
         Self {
-            filter_in: true,
+            filter_in: 1,
             reserved: 0,
             #[expect(
                 clippy::cast_possible_truncation,
