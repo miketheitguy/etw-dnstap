@@ -664,6 +664,75 @@ impl Write for DeadlineTcp {
     }
 }
 
+/// Socket-write entry point for `benches/hot_path.rs` (feature `bench`).
+#[cfg(feature = "bench")]
+pub(crate) mod bench {
+    use std::{
+        io::{Read, Write},
+        net::{Shutdown, TcpListener, TcpStream},
+        thread::{self, JoinHandle},
+    };
+
+    use super::{DeadlineTcp, IO_TIMEOUT};
+
+    /// A `DeadlineTcp` connected over loopback to a thread that reads and
+    /// discards everything, so a write costs the deadline logic, the
+    /// `set_write_timeout` call (when it runs), and the loopback send.
+    pub struct SocketWriter {
+        writer: DeadlineTcp,
+        receiver: Option<JoinHandle<()>>,
+    }
+
+    impl SocketWriter {
+        /// # Panics
+        /// Panics if the loopback connection cannot be made.
+        #[must_use]
+        pub fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+            let address = listener.local_addr().expect("the listener has an address");
+            let receiver = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("the writer connects");
+                let mut sink = vec![0_u8; 256 * 1024];
+                while stream.read(&mut sink).is_ok_and(|read| read != 0) {}
+            });
+            let stream = TcpStream::connect(address).expect("connect to the loopback listener");
+            Self {
+                writer: DeadlineTcp::new(stream, IO_TIMEOUT),
+                receiver: Some(receiver),
+            }
+        }
+
+        /// One socket write in a fresh deadline window, as the frame writer
+        /// makes one per buffered flush. Returns the bytes the socket took.
+        ///
+        /// # Panics
+        /// Panics if the write fails.
+        #[inline(never)]
+        pub fn write_window(&mut self, bytes: &[u8]) -> usize {
+            self.writer.rearm();
+            self.writer
+                .write(bytes)
+                .expect("the loopback write succeeds")
+        }
+    }
+
+    impl Default for SocketWriter {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Drop for SocketWriter {
+        fn drop(&mut self) {
+            // The receiver thread ends when the connection closes.
+            let _ = self.writer.stream.shutdown(Shutdown::Both);
+            if let Some(receiver) = self.receiver.take() {
+                let _ = receiver.join();
+            }
+        }
+    }
+}
+
 fn invalid_control(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

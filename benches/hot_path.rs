@@ -23,7 +23,9 @@ use std::{hint::black_box, thread, time::Duration, time::Instant};
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use crossbeam_channel::bounded;
-use etw_dnstap::bench::{Copied, Pipeline, Plan, Pool, Record, copy_record, private_bytes};
+use etw_dnstap::bench::{
+    Copied, Pipeline, Plan, Pool, Record, SocketWriter, copy_record, private_bytes,
+};
 
 /// Leases outstanding at once in the batched groups. The benchmark pool holds
 /// 2,048 regular slots, so a batch never exhausts it.
@@ -146,6 +148,24 @@ fn two_thread_group(c: &mut Criterion, pool: Pool) {
     group.finish();
 }
 
+/// One socket write in a fresh deadline window on a loopback connection that a
+/// second thread drains: 64 KiB is what the frame writer's buffer flushes (the
+/// service makes one such write per 600 or so events), 103 bytes is one frame.
+/// The difference between runs is the per-write cost of the deadline logic and
+/// the `set_write_timeout` call.
+fn socket_write_group(c: &mut Criterion) {
+    let mut writer = SocketWriter::new();
+    let mut group = c.benchmark_group("socket_write");
+    for (name, length) in [("flush_64k", 64 * 1024), ("frame_103", 103)] {
+        let buffer = vec![0x5a_u8; length];
+        group.throughput(Throughput::Bytes(bytes(&buffer)));
+        group.bench_function(name, |b| {
+            b.iter(|| writer.write_window(black_box(&buffer)));
+        });
+    }
+    group.finish();
+}
+
 /// `DecodePlan::decode` with the plan compiled from the saved template.
 fn decode_group(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode");
@@ -241,6 +261,7 @@ criterion_group! {
     targets =
         copy_record_group,
         cold_pool_groups,
+        socket_write_group,
         decode_group,
         encode_group,
         parse_and_encode_group,
