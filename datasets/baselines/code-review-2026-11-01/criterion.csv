@@ -1,0 +1,10 @@
+group,benchmark,mean_ns,mean_ci95_low_ns,mean_ci95_high_ns,median_ns,median_ci95_low_ns,median_ci95_high_ns,std_dev_ns,throughput_kind,throughput_per_iter
+copy_record,jumbo_response_257,72.35,71.99,72.67,72.90,72.63,73.12,1.74,Bytes,4303
+copy_record,regular_query_256,45.94,45.64,46.18,46.14,45.97,46.33,1.42,Bytes,217
+copy_record,regular_response_257,48.80,48.39,49.17,49.45,49.24,49.66,2.01,Bytes,307
+decode,query_256,43.48,42.73,44.14,44.39,43.89,44.69,3.64,Bytes,217
+decode,response_257,59.01,58.13,59.80,59.94,59.17,60.58,4.28,Bytes,307
+encode,query_256,89.67,88.68,90.50,90.78,90.23,91.65,4.68,Elements,1
+encode,response_257,91.32,90.86,91.75,91.71,91.09,92.52,2.30,Elements,1
+parse_and_encode,query_256,225.73,219.65,231.41,231.82,226.75,240.47,30.11,Elements,1
+parse_and_encode,response_257,259.66,254.32,264.45,268.26,265.57,270.96,26.03,Elements,1
