@@ -946,23 +946,23 @@ struct DiagLevers {
     _timer: Option<TimerResolution>,
 }
 
-#[cfg_attr(
-    not(feature = "diag-timing"),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "Starting the diagnostic timer can fail; the normal build has no timer."
-    )
-)]
+#[cfg(feature = "diag-timing")]
 fn begin_diag_levers(diag: DiagContext) -> Result<DiagLevers> {
-    #[cfg(not(feature = "diag-timing"))]
-    let _ = diag;
     Ok(DiagLevers {
-        #[cfg(feature = "diag-timing")]
         _timer: diag
             .timer_resolution_ms
             .map(TimerResolution::begin)
             .transpose()?,
     })
+}
+
+#[cfg(not(feature = "diag-timing"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Starting the diagnostic timer can fail; the normal build has no timer."
+)]
+const fn begin_diag_levers(_diag: DiagContext) -> Result<DiagLevers> {
+    Ok(DiagLevers {})
 }
 
 /// Records which diagnostic levers a run applied.

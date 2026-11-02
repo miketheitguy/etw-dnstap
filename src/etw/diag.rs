@@ -10,7 +10,7 @@ pub(crate) enum ThreadPriority {
 }
 
 impl ThreadPriority {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::AboveNormal => "above-normal",
             Self::Highest => "highest",
@@ -28,9 +28,12 @@ pub(crate) fn set_current_thread_priority(priority: ThreadPriority) {
         ThreadPriority::AboveNormal => THREAD_PRIORITY_ABOVE_NORMAL,
         ThreadPriority::Highest => THREAD_PRIORITY_HIGHEST,
     };
-    // SAFETY: GetCurrentThread returns a pseudo-handle valid only for the
-    // calling thread, which is the thread being adjusted; it needs no closing.
-    let succeeded = unsafe { SetThreadPriority(GetCurrentThread(), native) } != 0;
+    // SAFETY: GetCurrentThread has no preconditions. It returns a pseudo-handle
+    // valid only for the calling thread, which needs no closing.
+    let thread = unsafe { GetCurrentThread() };
+    // SAFETY: The pseudo-handle names the calling thread, which is the thread
+    // being adjusted, and the priority is a documented THREAD_PRIORITY value.
+    let succeeded = unsafe { SetThreadPriority(thread, native) } != 0;
     if !succeeded {
         // SAFETY: GetLastError is read immediately after the failing API call.
         let error = unsafe { GetLastError() };
