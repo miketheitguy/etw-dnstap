@@ -203,11 +203,67 @@ window is `--stats-interval-seconds`, or 60 seconds when snapshots are disabled.
 The warning repeats while the rate stays high. It tells you to restart with
 `--etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536`.
 
+### Settings for 200,000 queries per second
+
+For 200,000 queries per second, use:
+
+```text
+--etw-buffer-kib 128 --etw-max-buffers 32 --capacity 24576
+```
+
+Each value is a small margin above the largest value that the lab observed at
+200,000 queries per second:
+
+| Setting | Largest observed | Recommended |
+| --- | --- | --- |
+| ETW buffer size (`--etw-buffer-kib`) | 128 KiB, no loss. About 373 events in each buffer. | 128 |
+| Maximum ETW buffers (`--etw-max-buffers`) | 29 allocated (3.6 MiB). At most 7 in use at the same time. | 32 (4 MiB) |
+| Minimum ETW buffers | 7 in use of ETW's minimum of 12 (2 per logical processor on the 6-vCPU VM) | ETW's minimum. The service has no option for it. |
+| Channel (`--capacity`) | Peak queue 21,622 | 24,576 |
+
+The lab ran this load twice for 50 seconds each, on the same VM as the other
+results and with a plaintext receiver. The runs used `--etw-max-buffers 256`
+and `--capacity 262144`. Both runs had 0 ring drops, 0 `etw_lost`, and 0 lost
+ETW buffers. Every encoded frame reached the receiver. The service used about
+0.34 of one CPU. The DNS server used about 2.9 CPUs.
+
+Why these values:
+
+- **Maximum buffers.** 32 is 3 buffers above the peak of 29. ETW allocates
+  buffers only on demand, so the maximum limits how far ETW can grow. On a host
+  with more logical processors, ETW's minimum is higher. ETW raises the maximum
+  to at least that minimum.
+- **Minimum buffers.** ETW gave one buffer in use per logical processor, plus
+  at most one buffer that waited for delivery. Its minimum of 2 per logical
+  processor was enough.
+- **Channel.** 24,576 is 14% above the peak queue of 21,622. The parser samples
+  the queue depth, so the true peak can be slightly higher. The margin covers
+  that difference.
+
+Costs:
+
+- Counted storage with `--capacity 24576` and the default 64 jumbo slots is
+  71,932,240 bytes (68.60 MiB). The service allocates it at startup. With
+  `--capacity 262144`, the counted storage is 654.04 MiB, and the measured
+  private bytes were about 684 MiB.
+- The startup deadline at this capacity is 12 seconds.
+- ETW buffer memory is at most 4 MiB with 32 buffers of 128 KiB.
+
+The lab did not run these exact values. It also did not measure 128 KiB
+buffers at 30,000 to 50,000 queries per second. In that range ETW delivered
+events in batches in earlier runs. After you apply these settings, monitor
+`ring_dropped` and `etw_lost`. If either is not 0, raise `--capacity` or
+`--etw-max-buffers`.
+
+See [200,000 QPS validation](../history/200k-qps-validation.md).
+
 ## Storage
 
 Counted storage at the defaults is 28.22 MiB. With the high-rate
 `--capacity 65536` and the default 64 jumbo slots, it is 169.54 MiB. With
-`--capacity 131072` and 64 jumbo slots, it is 331.04 MiB. At the
+`--capacity 131072` and 64 jumbo slots, it is 331.04 MiB. With
+`--capacity 24576` and 64 jumbo slots, it is 68.60 MiB. With
+`--capacity 262144` and 64 jumbo slots, it is 654.04 MiB. At the
 maximum (262,144 events and 256 jumbo slots) it is 678.14 MiB. These are
 calculated payload, slot, free-list, and channel totals. They exclude the allocator, native ETW buffers, TDH caches,
 protobuf data, and output buffers. They are not measured process-memory limits.
