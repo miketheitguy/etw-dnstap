@@ -11,10 +11,12 @@ is historical.
 
 ## Which events are decoded
 
-- The parser decodes only events 256 and 257 from the DNS Server provider. All
-  other events are not captured.
-- For event 256, the peer address is the `Source` property. For event 257, it is
-  the `Destination` property.
+- The parser decodes only events 256 (query received), 257 (response success),
+  and 258 (response failure) from the DNS Server provider. All other events are
+  not captured.
+- For event 256, the peer address is the `Source` property. For events 257 and
+  258, it is the `Destination` property. Event 258 has a `Reason` string before
+  the peer. The plan walks it and does not keep it.
 - The parser caches at most 8 schemas. Each schema is keyed by event ID and
   version. When the cache is full, the parser clears it.
 
@@ -111,8 +113,8 @@ The parser applies these checks after the fields are read:
   the endpoint is absent.
 - The timestamp must convert to a time at or after the Unix epoch.
 - The packet length must be 12 through 65,535 bytes. The encoder checks this.
-- The DNS QR bit must match the event: a query for 256, a response for 257. The
-  encoder checks this.
+- The DNS QR bit must match the event: a query for 256, a response for 257 and
+  258. The encoder checks this.
 
 ## Bounds
 
@@ -140,7 +142,7 @@ The parser applies these checks after the fields are read:
 
 The local tests check:
 
-- Both recorded event layouts (256 and 257), with golden protobuf output.
+- The recorded event layouts (256, 257, and 258), with golden protobuf output.
 - Malformed payloads, which are rejected under a plan without TDH calls.
 - Unsupported layouts, which are rejected and counted.
 - A process-local manifest: a plan compiled from real TDH metadata produces the

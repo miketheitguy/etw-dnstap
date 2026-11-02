@@ -56,7 +56,7 @@ struct Schema {
 /// Reuses initialized text storage on the parser thread.
 pub(crate) struct Parser {
     // Owned plans permit borrowing cache hits without allocation or refcount work.
-    // Only events 256 and 257 reach this cache, usually with one version each, so a
+    // Only events 256, 257, and 258 reach this cache, usually with one version each, so a
     // linear scan over at most MAX_CACHED_SCHEMAS entries beats hashing.
     schemas: Vec<((u16, u8), Schema)>,
     // At most 255 nonterminating UTF-16 units, each requiring at most 3 UTF-8 bytes.
@@ -117,10 +117,8 @@ impl Parser {
         if !dns_provider(&header.ProviderId) || !supported(id) {
             return Ok(None);
         }
-        let peer_name = if id == 256 {
-            PropertyName::Source
-        } else {
-            PropertyName::Destination
+        let Some(peer_name) = peer_property(id) else {
+            return Ok(None);
         };
         let key = (id, header.EventDescriptor.Version);
         if let Some((_, schema)) = self.schemas.iter().find(|(cached, _)| *cached == key) {
@@ -154,6 +152,16 @@ impl Parser {
             .map(|(_, schema)| schema)
             .context("missing cached DNS schema")?;
         parse_fast(schema, event.header(), event.payload(), &mut self.text).map(Some)
+    }
+}
+
+/// The property that holds the peer address: event 256 names it `Source`;
+/// 257 and 258 name it `Destination`.
+fn peer_property(id: u16) -> Option<PropertyName> {
+    match id {
+        256 => Some(PropertyName::Source),
+        257 | 258 => Some(PropertyName::Destination),
+        _ => None,
     }
 }
 

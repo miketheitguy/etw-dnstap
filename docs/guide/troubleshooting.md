@@ -186,8 +186,8 @@ shutdown. A restart resets every counter. The loss categories are:
 `ring_dropped` and the pool fields are parts of `intake_dropped`, not additional
 losses. The `etw_lost` counter reports events lost inside ETW. It uses a
 different unit from buffer loss (`etw_buffers_lost`), and the two are not added
-together. `rejected` counts events the parser rejected. Excluded event IDs (258,
-260, 261) are never counted. The full list and the identities are in
+together. `rejected` counts events the parser rejected. Excluded event IDs (259,
+260, 261, and the others) are never counted. The full list and the identities are in
 [Counter relationships](configuration.md#counter-relationships).
 
 Compare your collector's record count with the client's count, and treat any
@@ -252,7 +252,7 @@ Check the layers in order.
    (Event ID 2). The lack of one means the service did not reach capture. In
    the latest `output stats` line, `receiver_connected` should be `true`.
 2. **Does the DNS Server write the events?** Check that the events are
-   generated. Event IDs 256 and 257 come from `Microsoft-Windows-DNSServer`.
+   generated. Event IDs 256, 257, and 258 come from `Microsoft-Windows-DNSServer`.
    Recursive traffic does not produce client records.
 3. **Is the DNS process still the one being filtered?** A DNS restart leaves a
    gap until EtwDnstap restarts. A rising `foreign_pid_rejected` shows records

@@ -17,9 +17,9 @@ use windows_sys::Win32::System::Diagnostics::Etw::EVENT_DESCRIPTOR;
 use windows_sys::core::GUID;
 
 #[test]
-fn supported_accepts_only_event_ids_256_and_257() {
+fn supported_accepts_only_event_ids_256_257_and_258() {
     for id in 0..=u16::MAX {
-        assert_eq!(supported(id), id == 256 || id == 257, "event id {id}");
+        assert_eq!(supported(id), matches!(id, 256..=258), "event id {id}");
     }
 }
 
@@ -472,17 +472,17 @@ fn assert_no_intake_activity(fixture: &Fixture) {
 }
 
 #[test]
-fn callback_accepts_only_client_query_and_successful_response() {
-    let mut fixture = Fixture::new(2, 0);
-    for id in [256, 257] {
+fn callback_accepts_only_client_query_and_responses() {
+    let mut fixture = Fixture::new(3, 0);
+    for id in [256, 257, 258] {
         fixture.record.EventHeader.EventDescriptor.Id = id;
         assert_no_allocations(|| fixture.invoke());
     }
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         let event = fixture.receive.try_recv().expect("accepted client event");
         assert_eq!(event.header.EventDescriptor.Id, id);
     }
-    assert_eq!(fixture.context.counters.received.load(Ordering::Relaxed), 2);
+    assert_eq!(fixture.context.counters.received.load(Ordering::Relaxed), 3);
 }
 
 #[test]

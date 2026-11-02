@@ -240,7 +240,7 @@ fn cached_supported_parser_has_zero_tdh_calls_and_no_allocations() -> Result<()>
     let pool = PoolManager::new(1, 0)?;
     let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"test")?;
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         let mut fixture = decode::tests::fixture(id, true, true, 2);
         let schema = cached_fixture_schema(
             &fixture.fields,
@@ -424,11 +424,50 @@ fn schema_that_does_not_compile_is_rejected_not_decoded_through_tdh() -> Result<
 }
 
 #[test]
+fn every_supported_event_id_has_a_peer_property_and_encodes() -> Result<()> {
+    // A new ID in the allowlist that the schema or the encoder does not handle
+    // would otherwise count silently as `ignored`.
+    let pool = PoolManager::new(1, 0)?;
+    let mut parser = Parser::new();
+    let mut encoder = Encoder::new(b"supported ids")?;
+    for id in crate::etw::SUPPORTED_EVENT_IDS {
+        let peer = peer_property(id).expect("supported ID has a peer property");
+        let mut fixture = decode::tests::fixture(id, false, false, 0);
+        parser
+            .schemas
+            .push(((id, 0), cached_fixture_schema(&fixture.fields, peer.name())));
+        let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+        assert!(
+            parser.parse_encode(event, &mut encoder)?.is_some(),
+            "event {id}"
+        );
+    }
+    for id in [0, 255, 259, u16::MAX] {
+        assert!(peer_property(id).is_none(), "event {id}");
+    }
+    Ok(())
+}
+
+#[test]
+fn failure_event_schema_compiles_with_the_destination_peer() -> Result<()> {
+    let fixture = decode::tests::fixture(258, false, true, 3);
+    let (properties, bytes) = native_properties(&fixture.fields)?;
+    let schema = compile_schema(&properties, &bytes, PropertyName::Destination)?;
+    let decoded = schema.plan.decode(&fixture.payload)?;
+    assert_eq!(decoded.peer, &fixture.payload[fixture.peer.clone()]);
+    assert_eq!(decoded.local, &fixture.payload[fixture.local.clone()]);
+    assert_eq!(decoded.packet, &fixture.payload[fixture.packet.clone()]);
+    // Event 258 has no Source property.
+    assert!(compile_schema(&properties, &bytes, PropertyName::Source).is_err());
+    Ok(())
+}
+
+#[test]
 fn cached_parser_rejects_semantic_mutations_and_recovers_without_tdh() -> Result<()> {
     let pool = PoolManager::new(1, 0)?;
     let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"mutation recovery")?;
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         let mut valid = decode::tests::fixture(id, false, false, 0);
         let peer = if id == 256 { "Source" } else { "Destination" };
         parser
@@ -514,7 +553,7 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
             cached_fixture_schema(&fixture.fields, "Source"),
         ));
     }
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         for (ipv6, tcp, variant) in [(false, false, 0), (true, true, 2), (false, true, 1)] {
             let mut fixture = decode::tests::fixture(id, ipv6, tcp, variant);
             let event = pooled_fixture(&mut fixture.payload, id, 250, &pool);
@@ -708,7 +747,7 @@ fn mixed_ipv4_ipv6_endpoints_are_rejected_and_recovered_from() -> Result<()> {
     let pool = PoolManager::new(1, 0)?;
     let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"mixed families")?;
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         let peer = if id == 256 { "Source" } else { "Destination" };
         let mut valid = decode::tests::fixture(id, false, false, 0);
         parser
@@ -750,7 +789,7 @@ fn parse_encode_benchmark() -> Result<()> {
     let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"benchmark")?;
     let mut fixtures = Vec::new();
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         let mut fixture = decode::tests::fixture(id, false, false, 0);
         let peer = if id == 256 { "Source" } else { "Destination" };
         parser
@@ -761,7 +800,7 @@ fn parse_encode_benchmark() -> Result<()> {
     let mut bytes = 0usize;
     let start = std::time::Instant::now();
     for index in 0..iterations {
-        let event = &fixtures[(index & 1) as usize];
+        let event = &fixtures[(index % 3) as usize];
         let decoded = parser.parse(event)?.expect("supported fixture");
         bytes += std::hint::black_box(encoder.encode(&decoded)?).len();
     }

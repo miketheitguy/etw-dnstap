@@ -9,14 +9,32 @@ fn keyword_list(entries: &[(&str, u64)]) -> Vec<(String, u64)> {
         .collect()
 }
 
+/// Asserts the partial narrowing: the mask omits `RESPONSE_FAILURE`.
+fn assert_without_failure(choice: &KeywordChoice, expected_mask: u64, expected_reason: &str) {
+    match choice {
+        KeywordChoice::NarrowedWithoutFailure { match_any, reason } => {
+            assert_eq!(*match_any, expected_mask);
+            assert!(reason.contains(expected_reason), "reason: {reason}");
+        }
+        other => panic!("expected narrowing without failure, got {other:?}"),
+    }
+    assert_eq!(
+        choice.selection(),
+        KeywordSelection {
+            match_any: expected_mask,
+            match_all: 0,
+            fallback: false,
+            failed_responses: false,
+        }
+    );
+}
+
 fn assert_fallback(choice: &KeywordChoice, expected_reason: &str) {
     match choice {
         KeywordChoice::Fallback { reason } => {
             assert!(reason.contains(expected_reason), "reason: {reason}");
         }
-        KeywordChoice::Narrowed { match_any } => {
-            panic!("expected fallback, got narrowed {match_any:#x}")
-        }
+        other => panic!("expected fallback, got {other:?}"),
     }
     assert_eq!(
         choice.selection(),
@@ -24,57 +42,129 @@ fn assert_fallback(choice: &KeywordChoice, expected_reason: &str) {
             match_any: 0x8000_0000_0000_0000,
             match_all: 0,
             fallback: true,
+            failed_responses: true,
         }
     );
 }
 
 #[test]
-fn select_keywords_narrows_two_single_bits() {
+fn select_keywords_narrows_three_single_bits() {
     let keywords = keyword_list(&[
         ("RECURSE_QUERY_OUT", 0x10),
+        ("RESPONSE_FAILURE", 0x4),
         ("RESPONSE_SUCCESS", 0x2),
         ("QUERY_RECEIVED", 0x1),
         ("HIGH_PROVIDER_BIT", 0x0000_8000_0000_0000),
     ]);
     let choice = select_keywords(Ok(&keywords));
-    assert_eq!(choice, KeywordChoice::Narrowed { match_any: 0x3 });
+    assert_eq!(choice, KeywordChoice::Narrowed { match_any: 0x7 });
     assert_eq!(
         choice.selection(),
         KeywordSelection {
-            match_any: 0x3,
+            match_any: 0x7,
             match_all: 0,
             fallback: false,
+            failed_responses: true,
         }
     );
 
     let keywords = keyword_list(&[
         ("QUERY_RECEIVED", 0x0000_8000_0000_0000),
         ("RESPONSE_SUCCESS", 0x4),
+        ("RESPONSE_FAILURE", 0x20),
     ]);
     assert_eq!(
         select_keywords(Ok(&keywords)),
         KeywordChoice::Narrowed {
-            match_any: 0x0000_8000_0000_0004
+            match_any: 0x0000_8000_0000_0024
         }
     );
 }
 
 #[test]
 fn select_keywords_falls_back_on_missing_name() {
-    let keywords = keyword_list(&[("QUERY_RECEIVED", 0x1), ("query_received", 0x2)]);
+    let keywords = keyword_list(&[
+        ("QUERY_RECEIVED", 0x1),
+        ("query_received", 0x2),
+        ("RESPONSE_FAILURE", 0x4),
+    ]);
     assert_fallback(
         &select_keywords(Ok(&keywords)),
         "RESPONSE_SUCCESS is not defined",
     );
     assert_fallback(&select_keywords(Ok(&[])), "QUERY_RECEIVED is not defined");
+    // A missing query or success name falls back. A missing failure name only
+    // drops failed responses from the mask.
+    let all = [
+        ("QUERY_RECEIVED", 0x1),
+        ("RESPONSE_SUCCESS", 0x2),
+        ("RESPONSE_FAILURE", 0x4),
+    ];
+    for missing in 0..all.len() {
+        let keywords: Vec<_> = all
+            .iter()
+            .enumerate()
+            .filter(|&(index, _)| index != missing)
+            .map(|(_, &entry)| entry)
+            .collect();
+        let expected = format!("{} is not defined", all[missing].0);
+        let choice = select_keywords(Ok(&keyword_list(&keywords)));
+        if missing == 2 {
+            assert_without_failure(&choice, 0x3, &expected);
+        } else {
+            assert_fallback(&choice, &expected);
+        }
+    }
+}
+
+#[test]
+fn select_keywords_narrows_without_failure_when_only_failure_is_unusable() {
+    let base = [("QUERY_RECEIVED", 0x1), ("RESPONSE_SUCCESS", 0x2)];
+    let cases: [(&[(&str, u64)], &str); 5] = [
+        (&[], "RESPONSE_FAILURE is not defined"),
+        (&[("RESPONSE_FAILURE", 0)], "not a single bit"),
+        (&[("RESPONSE_FAILURE", 0x6)], "not a single bit"),
+        (
+            &[("RESPONSE_FAILURE", 0x8000_0000_0000_0000)],
+            "provider-defined range",
+        ),
+        (
+            &[("RESPONSE_FAILURE", 0x4), ("RESPONSE_FAILURE", 0x8)],
+            "conflicting values",
+        ),
+    ];
+    for (extra, reason) in cases {
+        let mut entries = base.to_vec();
+        entries.extend_from_slice(extra);
+        let choice = select_keywords(Ok(&keyword_list(&entries)));
+        assert_without_failure(&choice, 0x3, reason);
+    }
 }
 
 #[test]
 fn select_keywords_falls_back_on_multi_bit_or_zero_value() {
-    let keywords = keyword_list(&[("QUERY_RECEIVED", 0x1), ("RESPONSE_SUCCESS", 0x6)]);
+    let keywords = keyword_list(&[
+        ("QUERY_RECEIVED", 0x1),
+        ("RESPONSE_SUCCESS", 0x6),
+        ("RESPONSE_FAILURE", 0x8),
+    ]);
     assert_fallback(&select_keywords(Ok(&keywords)), "not a single bit");
-    let keywords = keyword_list(&[("QUERY_RECEIVED", 0), ("RESPONSE_SUCCESS", 0x2)]);
+    let keywords = keyword_list(&[
+        ("QUERY_RECEIVED", 0),
+        ("RESPONSE_SUCCESS", 0x2),
+        ("RESPONSE_FAILURE", 0x4),
+    ]);
     assert_fallback(&select_keywords(Ok(&keywords)), "not a single bit");
+    let keywords = keyword_list(&[
+        ("QUERY_RECEIVED", 0x1),
+        ("RESPONSE_SUCCESS", 0x2),
+        ("RESPONSE_FAILURE", 0x6),
+    ]);
+    assert_without_failure(
+        &select_keywords(Ok(&keywords)),
+        0x3,
+        "RESPONSE_FAILURE value 0x6 is not a single bit",
+    );
 }
 
 #[test]
@@ -84,19 +174,59 @@ fn select_keywords_falls_back_on_reserved_range_value() {
         0x8000_0000_0000_0000,
         0x0001_0000_0000_0000,
     ] {
-        let keywords = keyword_list(&[("QUERY_RECEIVED", value), ("RESPONSE_SUCCESS", 0x2)]);
+        let keywords = keyword_list(&[
+            ("QUERY_RECEIVED", value),
+            ("RESPONSE_SUCCESS", 0x2),
+            ("RESPONSE_FAILURE", 0x4),
+        ]);
         assert_fallback(&select_keywords(Ok(&keywords)), "provider-defined range");
+        let keywords = keyword_list(&[
+            ("QUERY_RECEIVED", 0x1),
+            ("RESPONSE_SUCCESS", 0x2),
+            ("RESPONSE_FAILURE", value),
+        ]);
+        assert_without_failure(
+            &select_keywords(Ok(&keywords)),
+            0x3,
+            "provider-defined range",
+        );
     }
 }
 
 #[test]
 fn select_keywords_falls_back_on_duplicate_bits_or_names() {
-    let keywords = keyword_list(&[("QUERY_RECEIVED", 0x2), ("RESPONSE_SUCCESS", 0x2)]);
-    assert_fallback(&select_keywords(Ok(&keywords)), "share bit 0x2");
+    let keywords = keyword_list(&[
+        ("QUERY_RECEIVED", 0x2),
+        ("RESPONSE_SUCCESS", 0x2),
+        ("RESPONSE_FAILURE", 0x4),
+    ]);
+    assert_fallback(
+        &select_keywords(Ok(&keywords)),
+        "QUERY_RECEIVED and RESPONSE_SUCCESS share bit 0x2",
+    );
+    let keywords = keyword_list(&[
+        ("QUERY_RECEIVED", 0x1),
+        ("RESPONSE_SUCCESS", 0x2),
+        ("RESPONSE_FAILURE", 0x1),
+    ]);
+    assert_fallback(
+        &select_keywords(Ok(&keywords)),
+        "QUERY_RECEIVED and RESPONSE_FAILURE share bit 0x1",
+    );
+    let keywords = keyword_list(&[
+        ("QUERY_RECEIVED", 0x1),
+        ("RESPONSE_SUCCESS", 0x4),
+        ("RESPONSE_FAILURE", 0x4),
+    ]);
+    assert_fallback(
+        &select_keywords(Ok(&keywords)),
+        "RESPONSE_SUCCESS and RESPONSE_FAILURE share bit 0x4",
+    );
     let keywords = keyword_list(&[
         ("QUERY_RECEIVED", 0x1),
         ("QUERY_RECEIVED", 0x4),
         ("RESPONSE_SUCCESS", 0x2),
+        ("RESPONSE_FAILURE", 0x8),
     ]);
     assert_fallback(&select_keywords(Ok(&keywords)), "conflicting values");
     // The same name repeated with the same value is not ambiguous.
@@ -104,10 +234,11 @@ fn select_keywords_falls_back_on_duplicate_bits_or_names() {
         ("QUERY_RECEIVED", 0x1),
         ("QUERY_RECEIVED", 0x1),
         ("RESPONSE_SUCCESS", 0x2),
+        ("RESPONSE_FAILURE", 0x4),
     ]);
     assert_eq!(
         select_keywords(Ok(&keywords)),
-        KeywordChoice::Narrowed { match_any: 0x3 }
+        KeywordChoice::Narrowed { match_any: 0x7 }
     );
 }
 

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline.rs`), the Windows performance counter provider (new in this build, not yet tested in the lab), and the new defaults `--etw-max-buffers 64` and `--capacity 24576` (not lab-tested as a set) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline.rs`), the Windows performance counter provider (new in this build, not yet tested in the lab), and the new defaults `--etw-max-buffers 64` and `--capacity 24576` (not lab-tested as a set), and response failure capture (event 258, subscription keywords and level; not yet tested in the lab) · **Reviewed:** 2026-11-01
 
 Every option is set in the service binary path, not in `sc.exe start`. Install
 and provisioning steps are in [install.md](install.md). Symptoms are in
@@ -339,29 +339,53 @@ See [pooled-intake.md](../design/pooled-intake.md) for the budget.
 
 ## Subscription
 
-The service enables the `Microsoft-Windows-DNSServer` provider at level 4 in its
-own real-time session. It does not enable the Analytical event log. At startup
-it resolves the `QUERY_RECEIVED` and `RESPONSE_SUCCESS` keyword bits by name and
-sets `MatchAnyKeyword` to them. If the lookup fails, it logs one warning and
-uses `0x8000000000000000` instead, the bit associated with the Analytical
-channel. The `capture started` line shows the masks in use and whether the
-fallback applied.
+The service enables the `Microsoft-Windows-DNSServer` provider at level `0xFF`
+in its own real-time session. The level is a maximum, so `0xFF` passes every
+level: there is no level filter. It does not enable the Analytical event log. At
+startup it resolves the `QUERY_RECEIVED`, `RESPONSE_SUCCESS`, and
+`RESPONSE_FAILURE` keyword bits by name and sets `MatchAnyKeyword` to them. On
+the lab VM they are `0x1`, `0x2`, and `0x4`, so the mask is `0x7`. If the lookup
+fails, if `QUERY_RECEIVED` or `RESPONSE_SUCCESS` is missing or malformed, or if
+any two of the three names share a bit, it logs one warning and uses
+`0x8000000000000000` instead, the bit associated with the Analytical channel. A
+shared bit means the metadata cannot be trusted.
 
-Only event IDs 256 (query received) and 257 (response success) are accepted,
-which produce `CLIENT_QUERY` and `CLIENT_RESPONSE`. Event IDs 258, 260, and 261
-are excluded, and excluded events do not increment any counter. See
+If only `RESPONSE_FAILURE` is missing or malformed, the mask is narrowed to
+`QUERY_RECEIVED | RESPONSE_SUCCESS` and failed responses are not captured. The
+service logs one warning: "RESPONSE_FAILURE keyword is not available (reason);
+failed responses are not captured".
+
+The `capture started` line shows the masks in use, whether the fallback applied
+(`keyword_fallback`), and whether failed responses are captured
+(`failed_responses_captured`). It is `false` only in the partial case above. In
+the full-channel fallback, event 258 passes the keyword mask, so it is `true`.
+
+Only event IDs 256 (query received), 257 (response success), and 258 (response
+failure) are accepted. Event 256 produces `CLIENT_QUERY`. Events 257 and 258
+produce `CLIENT_RESPONSE`. Event 258 is a failed response, for example SERVFAIL.
+Its packet was observed to be the response sent to the client for SERVFAIL
+(Reason `System`) and for a policy REFUSED (Reason `Policy`). A 258 whose packet
+is not a response (QR bit clear) is rejected and counted in `rejected`.
+NXDOMAIN is a successful response and arrives as event 257. Event IDs 259, 260,
+and 261 are excluded, and excluded events do not increment any counter. An
+IGNORE policy produces event 259 (`IGNORED_QUERY`) with no packet and no
+response on the wire, so it is correctly not captured. The query itself is still
+captured as 256. See
 [README.md](../../README.md#what-is-captured) for the message mapping.
 
-Two more facts from the subscription code:
+More facts from the subscription code:
 
 - The subscription sets `EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0`, so an event
   with keyword 0 does not match.
-- ETW also filters event IDs 256 and 257 before events reach the session
+- ETW also filters event IDs 256, 257, and 258 before events reach the session
   buffers. This reduces buffer use and callback dispatch. It does not reduce
   the DNS Server's cost to generate events that pass the keyword mask.
-- Events 284, 287, 597, and 598 share the narrowed keyword bits on Windows
-  Server 2025 build 26100. The event-ID check therefore stays in the callback
-  as defense in depth.
+- The three keywords also enable events that the event-ID filter excludes. They
+  include the EDNS variants 284, 285, and 287, `DNSSEC_VALIDATION_FAILURE` (288), and DNS
+  over HTTPS (597 to 599). ETW applies the ID filter after the provider builds
+  the event, so these events cost `dns.exe` CPU when they occur, but they never
+  reach the service.
+- The event-ID check stays in the callback as defense in depth.
 
 ### DNS process filter
 
@@ -549,7 +573,7 @@ with the same fields, even when periodic snapshots are disabled.
 buffer size, the requested minimum and maximum buffers (`etw_min_buffers` and
 `etw_max_buffers`), flush seconds, the keyword masks
 as `match_any_keyword` and `match_all_keyword` in hexadecimal, and
-`keyword_fallback`.
+`keyword_fallback`, and `failed_responses_captured`.
 
 `ETW buffers applied` follows `capture started` once. It records the minimum and
 maximum buffer counts and the allocated buffer count that ETW reported after the
@@ -563,7 +587,7 @@ These fields appear on `capture stats` and `capture stopped`.
 
 | Counter | Meaning |
 | --- | --- |
-| `received` | Records of event IDs 256 and 257 that the callback accepted after the process check. Includes records later dropped or rejected. |
+| `received` | Records of event IDs 256, 257, and 258 that the callback accepted after the process check. Includes records later dropped or rejected. Event 258 is counted here since the response failure change. |
 | `dequeued` | Records the parser took from the channel. |
 | `encoded` | Records the parser encoded and handed to the sink. Includes frames the sink later discarded while disconnected, so it is not a delivery count. |
 | `ignored` | Dequeued records the parser did not capture because they are not a supported DNS event. |

@@ -40,9 +40,9 @@ pub(crate) enum EncodeError {
 
 /// Reusable metadata and final wire storage for one parser thread.
 ///
-/// Client query (256) and successful client response (257) events map to
-/// `CLIENT_QUERY` and `CLIENT_RESPONSE` messages; every other event ID is
-/// rejected. Unknown endpoints remain absent.
+/// Client query (256) events map to `CLIENT_QUERY`. Successful (257) and failed
+/// (258) client response events map to `CLIENT_RESPONSE`. Every other event ID
+/// is rejected. Unknown endpoints remain absent.
 /// Storage requests are bounded to 1,024 identity bytes, 16 bytes per address,
 /// and 70 KiB of output. `reserve_exact` avoids geometric output growth; the
 /// allocator may internally round its allocation beyond the requested size.
@@ -135,7 +135,7 @@ impl Encoder {
         self.message = DnsMessage::default();
         let (message_type, is_response) = match event.event_id {
             256 => (MessageType::ClientQuery, false),
-            257 => (MessageType::ClientResponse, true),
+            257 | 258 => (MessageType::ClientResponse, true),
             other => return Err(EncodeError::UnsupportedEvent(other).into()),
         };
         if !(DNS_HEADER_LENGTH..=MAX_DNS_MESSAGE_LENGTH).contains(&packet_length) {
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn only_client_query_and_response_ids_encode() {
         let mut encoder = Encoder::new(b"").expect("identity");
-        for id in [0, 255, 258, 259, 260, 261, 262, u16::MAX] {
+        for id in [0, 255, 259, 260, 261, 262, u16::MAX] {
             let (fixture, packet) = event(id);
             let error = encoder
                 .encode_with(fixture, packet.len(), |destination| {
@@ -349,9 +349,45 @@ mod tests {
     }
 
     #[test]
+    fn failed_response_encodes_as_client_response_and_checks_direction() {
+        let mut encoder = Encoder::new(b"").expect("identity");
+        let (metadata, packet) = event(258);
+        assert_eq!(packet[2] & 0x80, 0x80);
+        let bytes = encoder
+            .encode_with(metadata, packet.len(), |destination| {
+                destination.copy_from_slice(&packet);
+                Ok(())
+            })
+            .expect("failed response encodes")
+            .to_vec();
+        assert_eq!(bytes, test_oracle::reference_bytes(metadata, &packet, b""));
+        let tap = test_oracle::ReferenceTap::decode(bytes.as_slice()).expect("protobuf decodes");
+        let message = tap.message.expect("DNS message");
+        assert_eq!(message.kind, 6);
+        assert_eq!(message.response_packet.as_deref(), Some(packet.as_slice()));
+        assert_eq!(message.query_packet, None);
+        assert_eq!(message.query_seconds, None);
+        assert_eq!(message.response_seconds, Some(1_700_000_000));
+        // A clear QR bit is a query, not a response.
+        let (metadata, mut packet) = event(258);
+        packet[2] &= 0x7f;
+        let error = encoder
+            .encode_with(metadata, packet.len(), |destination| {
+                destination.copy_from_slice(&packet);
+                Ok(())
+            })
+            .expect_err("QR clear on event 258");
+        assert!(matches!(
+            error.downcast_ref::<EncodeError>(),
+            Some(EncodeError::IncorrectDirection(258))
+        ));
+        assert_eq!(encoder.output, [] as [u8; 0]);
+    }
+
+    #[test]
     fn decoded_view_encodes_to_the_same_bytes_as_encode_with() {
         let mut encoder = Encoder::new(b"view").expect("identity");
-        for id in [256, 257] {
+        for id in [256, 257, 258] {
             let (metadata, packet) = event(id);
             let expected = test_oracle::reference_bytes(metadata, &packet, b"view");
             let decoded = DecodedDnsEvent {
@@ -365,8 +401,12 @@ mod tests {
     fn event(event_id: u16) -> (DnsEventMetadata, Vec<u8>) {
         let mut packet = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
         packet.extend_from_slice(b"\x07example\0\0\x01\0\x01");
-        if event_id == 257 {
+        if event_id == 257 || event_id == 258 {
             packet[2] |= 0x80;
+        }
+        if event_id == 258 {
+            // RCODE SERVFAIL.
+            packet[3] |= 2;
         }
         (
             DnsEventMetadata {
@@ -392,7 +432,7 @@ mod tests {
     fn mixed_reuse_matches_independent_baseline_and_preserves_source_packet() {
         for identity in [b"".as_slice(), b"dns-server".as_slice()] {
             let mut encoder = Encoder::new(identity).expect("valid identity");
-            for (index, id) in [256, 257, 256, 257, 256, 257, 256, 257]
+            for (index, id) in [256, 257, 258, 256, 258, 257, 256, 257, 258]
                 .into_iter()
                 .enumerate()
             {
@@ -433,7 +473,7 @@ mod tests {
                     (!identity.is_empty()).then_some(identity)
                 );
                 let message = tap.message.expect("DNS message");
-                let response = id == 257;
+                let response = id != 256;
                 assert_eq!(
                     message.kind,
                     match id {

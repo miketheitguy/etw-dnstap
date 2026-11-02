@@ -32,9 +32,10 @@ const SUBSCRIPTION_MATCH_ALL_KEYWORD: u64 = 0;
 /// Provider-defined keyword bits; bits 48-63 are reserved for channels and
 /// Microsoft.
 const PROVIDER_KEYWORD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-/// Manifest keyword names whose bits select events 256 and 257.
+/// Manifest keyword names whose bits select events 256, 257, and 258.
 const KEYWORD_QUERY_RECEIVED: &str = "QUERY_RECEIVED";
 const KEYWORD_RESPONSE_SUCCESS: &str = "RESPONSE_SUCCESS";
+const KEYWORD_RESPONSE_FAILURE: &str = "RESPONSE_FAILURE";
 
 /// The `MatchAnyKeyword` and `MatchAllKeyword` masks a session enables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,13 +45,26 @@ pub(crate) struct KeywordSelection {
     /// True when keyword metadata could not be resolved and the full channel
     /// mask is in use.
     pub(crate) fallback: bool,
+    /// False when the `RESPONSE_FAILURE` keyword could not be resolved, so the
+    /// mask omits it and failed responses (event 258) are not delivered.
+    pub(crate) failed_responses: bool,
 }
 
 /// The outcome of resolving the provider's keywords by name.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum KeywordChoice {
-    Narrowed { match_any: u64 },
-    Fallback { reason: String },
+    Narrowed {
+        match_any: u64,
+    },
+    /// `QUERY_RECEIVED` and `RESPONSE_SUCCESS` resolved but `RESPONSE_FAILURE`
+    /// did not, so failed responses are not captured.
+    NarrowedWithoutFailure {
+        match_any: u64,
+        reason: String,
+    },
+    Fallback {
+        reason: String,
+    },
 }
 
 impl KeywordChoice {
@@ -60,11 +74,19 @@ impl KeywordChoice {
                 match_any: *match_any,
                 match_all: SUBSCRIPTION_MATCH_ALL_KEYWORD,
                 fallback: false,
+                failed_responses: true,
+            },
+            Self::NarrowedWithoutFailure { match_any, .. } => KeywordSelection {
+                match_any: *match_any,
+                match_all: SUBSCRIPTION_MATCH_ALL_KEYWORD,
+                fallback: false,
+                failed_responses: false,
             },
             Self::Fallback { .. } => KeywordSelection {
                 match_any: SUBSCRIPTION_MATCH_ANY_KEYWORD,
                 match_all: SUBSCRIPTION_MATCH_ALL_KEYWORD,
                 fallback: true,
+                failed_responses: true,
             },
         }
     }
@@ -95,8 +117,11 @@ fn keyword_bit(keywords: &[(String, u64)], name: &str) -> Result<u64, String> {
     Ok(value)
 }
 
-/// Chooses the narrowed mask from resolved keywords, or the fallback when the
-/// lookup failed or the two keywords are missing, malformed, or share a bit.
+/// Chooses the narrowed mask from resolved keywords. The fallback applies when
+/// the lookup failed, when `QUERY_RECEIVED` or `RESPONSE_SUCCESS` is missing or
+/// malformed, or when any two of the three share a bit. When only
+/// `RESPONSE_FAILURE` is missing or malformed, the mask is narrowed to the other
+/// two and failed responses are not captured.
 fn select_keywords(lookup: Result<&[(String, u64)], &anyhow::Error>) -> KeywordChoice {
     let keywords = match lookup {
         Ok(keywords) => keywords,
@@ -106,18 +131,36 @@ fn select_keywords(lookup: Result<&[(String, u64)], &anyhow::Error>) -> KeywordC
             };
         }
     };
-    let bits = keyword_bit(keywords, KEYWORD_QUERY_RECEIVED)
-        .and_then(|query| Ok((query, keyword_bit(keywords, KEYWORD_RESPONSE_SUCCESS)?)));
-    match bits {
-        Ok((query, response)) if query == response => KeywordChoice::Fallback {
+    let (query, success) = match keyword_bit(keywords, KEYWORD_QUERY_RECEIVED)
+        .and_then(|query| Ok((query, keyword_bit(keywords, KEYWORD_RESPONSE_SUCCESS)?)))
+    {
+        Ok(bits) => bits,
+        Err(reason) => return KeywordChoice::Fallback { reason },
+    };
+    if query == success {
+        return KeywordChoice::Fallback {
             reason: format!(
                 "{KEYWORD_QUERY_RECEIVED} and {KEYWORD_RESPONSE_SUCCESS} share bit {query:#x}"
             ),
+        };
+    }
+    let match_any = query | success;
+    match keyword_bit(keywords, KEYWORD_RESPONSE_FAILURE) {
+        // A shared bit means the metadata cannot be trusted.
+        Ok(failure) if failure == query => KeywordChoice::Fallback {
+            reason: format!(
+                "{KEYWORD_QUERY_RECEIVED} and {KEYWORD_RESPONSE_FAILURE} share bit {failure:#x}"
+            ),
         },
-        Ok((query, response)) => KeywordChoice::Narrowed {
-            match_any: query | response,
+        Ok(failure) if failure == success => KeywordChoice::Fallback {
+            reason: format!(
+                "{KEYWORD_RESPONSE_SUCCESS} and {KEYWORD_RESPONSE_FAILURE} share bit {failure:#x}"
+            ),
         },
-        Err(reason) => KeywordChoice::Fallback { reason },
+        Ok(failure) => KeywordChoice::Narrowed {
+            match_any: match_any | failure,
+        },
+        Err(reason) => KeywordChoice::NarrowedWithoutFailure { match_any, reason },
     }
 }
 

@@ -30,7 +30,7 @@ fn fixture(id: u16, endpoints: usize, tcp: bool) -> DnsEventMetadata {
 
 fn packet(id: u16, length: usize) -> Vec<u8> {
     let mut bytes = vec![0x5a; length];
-    bytes[2] = if id == 257 { 0x81 } else { 0x01 };
+    bytes[2] = if id == 256 { 0x01 } else { 0x81 };
     bytes
 }
 
@@ -64,7 +64,7 @@ fn direct_bytes_match_independent_prost_across_event_and_packet_boundaries() {
         vec![0x55; 1_024],
     ] {
         let mut encoder = Encoder::new(&identity).expect("valid identity");
-        for id in [256, 257] {
+        for id in [256, 257, 258] {
             for endpoints in 0..5 {
                 for tcp in [false, true] {
                     for length in [12, 126, 127, 128, 129, 16_383, 16_384, 65_535] {
@@ -83,7 +83,7 @@ fn direct_bytes_match_independent_prost_across_event_and_packet_boundaries() {
 
 #[test]
 fn enclosing_message_lengths_cross_both_varint_boundaries() {
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         for endpoints in 0..5 {
             let event = fixture(id, endpoints, true);
             let mut encoder = Encoder::new(&[0x66; 128]).expect("identity");
@@ -134,7 +134,14 @@ fn length_field(mut input: &[u8], tag: u64) -> &[u8] {
 #[test]
 fn fill_destination_is_initialized_and_is_the_final_packet_location() {
     let mut encoder = Encoder::new(b"direct").expect("identity");
-    for (id, length) in [(256, 65_535), (257, 128), (257, 16_384), (256, 12)] {
+    for (id, length) in [
+        (256, 65_535),
+        (257, 128),
+        (257, 16_384),
+        (258, 128),
+        (258, 65_535),
+        (256, 12),
+    ] {
         let bytes = packet(id, length);
         let mut calls = 0;
         let mut destination_pointer = std::ptr::null();
@@ -152,7 +159,7 @@ fn fill_destination_is_initialized_and_is_the_final_packet_location() {
             })
             .expect("encoding");
         let message = length_field(output, 14);
-        let wire_packet = length_field(message, if id == 257 { 14 } else { 10 });
+        let wire_packet = length_field(message, if id == 256 { 10 } else { 14 });
         assert_eq!(calls, 1);
         assert_eq!(wire_packet, bytes);
         assert_eq!(
@@ -234,7 +241,7 @@ fn invalid_metadata_and_sizes_never_invoke_fill_and_clear_previous_output() {
 #[test]
 fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
     let mut encoder = Encoder::new(b"").expect("identity");
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         compare(&mut encoder, fixture(id, 1, true), &packet(id, 128), b"");
         let mut calls = 0;
         let error = encoder
@@ -255,7 +262,7 @@ fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
         );
         assert!(format!("{error:#}").contains("synthetic packet extraction"));
         assert_eq!(encoder.output, [] as [u8; 0]);
-        let wrong_direction = packet(if id == 257 { 256 } else { 257 }, 12);
+        let wrong_direction = packet(if id == 256 { 257 } else { 256 }, 12);
         let error = encoder
             .encode_with(fixture(id, 2, true), 12, |destination| {
                 calls += 1;
@@ -279,7 +286,7 @@ fn warmed_direct_encoding_reuses_all_storage_without_heap_operations() {
     let mut encoder = Encoder::new(&[0x77; 1_024]).expect("identity");
     let query = packet(256, 65_535);
     let response = packet(257, 65_535);
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         encoder
             .encode_with(fixture(id, 1, true), query.len(), |destination| {
                 destination.copy_from_slice(if id == 256 { &query } else { &response });
@@ -292,8 +299,8 @@ fn warmed_direct_encoding_reuses_all_storage_without_heap_operations() {
     let mut all_succeeded = true;
     crate::etw::assert_no_allocations(|| {
         for index in 0..30 {
-            let id = [256, 257][index % 2];
-            let bytes = if id == 257 { &response } else { &query };
+            let id = [256, 257, 258][index % 3];
+            let bytes = if id == 256 { &query } else { &response };
             let length = [12, 128, 16_384, 65_535][index % 4];
             all_succeeded &= encoder
                 .encode_with(

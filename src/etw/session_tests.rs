@@ -571,7 +571,7 @@ fn stop_outcome_classifies_statuses() {
 #[test]
 fn event_id_filter_payload_bytes_are_exact() {
     let payload = EventIdFilterPayload::new();
-    // SAFETY: The payload is an 8-byte repr(C) struct without padding, so
+    // SAFETY: The payload is a 10-byte repr(C) struct without padding, so
     // every byte is initialized.
     let bytes = unsafe {
         std::slice::from_raw_parts(
@@ -579,7 +579,21 @@ fn event_id_filter_payload_bytes_are_exact() {
             size_of::<EventIdFilterPayload>(),
         )
     };
-    assert_eq!(bytes, [1, 0, 2, 0, 0x00, 0x01, 0x01, 0x01]);
+    assert_eq!(bytes, [1, 0, 3, 0, 0x00, 0x01, 0x01, 0x01, 0x02, 0x01]);
+}
+
+#[test]
+fn event_id_filter_contains_exactly_the_supported_ids() {
+    let payload = EventIdFilterPayload::new();
+    assert!(payload.filter_in);
+    assert_eq!(usize::from(payload.count), 3);
+    assert_eq!(payload.events, [256, 257, 258]);
+    assert_eq!(SUPPORTED_EVENT_IDS, [256, 257, 258]);
+}
+
+#[test]
+fn subscription_level_passes_every_level() {
+    assert_eq!(SUBSCRIPTION_LEVEL, 0xFF);
 }
 
 #[test]
@@ -587,7 +601,7 @@ fn event_id_descriptor_and_parameters_describe_payload() {
     let payload = EventIdFilterPayload::new();
     let mut descriptor = event_id_descriptor(&payload);
     assert_eq!(descriptor.Type, EVENT_FILTER_TYPE_EVENT_ID);
-    assert_eq!(descriptor.Size, 8);
+    assert_eq!(descriptor.Size, 10);
     assert_eq!(descriptor.Ptr, std::ptr::from_ref(&payload) as u64);
 
     let descriptor_ptr = &raw mut descriptor;

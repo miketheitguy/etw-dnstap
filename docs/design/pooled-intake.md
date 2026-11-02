@@ -1,6 +1,6 @@
 # Pooled ETW intake
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush and the 24,576-event default capacity (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush and the 24,576-event default capacity (pooled intake present by `2c62a9f`), and response failure capture (event 258, not yet tested in the lab) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-01
 
 This reference helps maintainers review the ownership, memory budget, and loss
 accounting of the pooled Event Tracing for Windows (ETW) intake. It describes the
@@ -11,22 +11,26 @@ or replace validation of the installed service.
 
 The session enables the DNS provider with these settings:
 
-- Level 4 (informational). Level 4 includes more severe events. It is not an
-  exact-level match.
-- `MatchAnyKeyword` set to the resolved `QUERY_RECEIVED | RESPONSE_SUCCESS`
-  bits, or to `0x8000000000000000` when the keyword lookup fails.
+- Level `0xFF`. The level is a maximum, so this passes every level and there is
+  no level filter.
+- `MatchAnyKeyword` set to the resolved `QUERY_RECEIVED | RESPONSE_SUCCESS |
+  RESPONSE_FAILURE` bits, or to `0x8000000000000000` when the keyword lookup
+  fails or any of the three names is missing, malformed, or shares a bit.
 - `MatchAllKeyword` set to zero.
 - `EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0`, which keeps keyword-zero events out.
-- An ETW event-ID filter that admits only 256 and 257.
+- An ETW event-ID filter that admits only 256, 257, and 258.
 - A second ETW filter that admits only events from the DNS Server service
   process ID that startup resolved.
 
 The provider and event-ID checks in the callback are therefore defense in depth.
+The keywords also enable events that include 284, 285, 287, 288, and 597 to 599.
+The event-ID filter excludes them after the provider builds them, so they cost `dns.exe` CPU
+but never reach the service.
 
 Immediately after the check for a null record, the callback accepts only event
-256 (client query) and 257 (successful client response). It excludes all other
-event IDs, including 258 (failed client response), 260 (recursive query), and
-261 (recursive response). This check comes before context access, counters,
+256 (client query), 257 (successful client response), and 258 (failed client
+response, for example SERVFAIL). It excludes all other event IDs, including 260
+(recursive query) and 261 (recursive response). This check comes before context access, counters,
 TLS, pool acquisition, payload copy, queue admission, and TDH parsing. Excluded records do not count
 as received records, overload drops, or errors. After context access, the
 callback also rejects a record whose `EventHeader.ProcessId` is not that DNS

@@ -290,33 +290,56 @@ pub(super) fn template_field(name: &str, input: i32) -> FieldSpec {
     }
 }
 
-/// The saved v0 DNS Server manifest field order for event 256 (`response ==
-/// false`) or 257, from `TCP` through `PacketData`. The packet length comes from
-/// the preceding `BufferSize` property. Trailing metadata is not included.
+/// The saved v0 DNS Server manifest field order for event 256, 257, or 258,
+/// from `TCP` through `PacketData`. The packet length comes from the preceding
+/// `BufferSize` property. Trailing metadata is not included.
+///
+/// # Panics
+/// Panics for any other event ID.
 #[cfg(any(test, feature = "fuzzing"))]
-pub(super) fn saved_template(response: bool) -> Vec<FieldSpec> {
+pub(super) fn saved_template(id: u16) -> Vec<FieldSpec> {
+    assert!(matches!(id, 256..=258), "no saved template for {id}");
     let u8_field = |name| template_field(name, TDH_INTYPE_UINT8);
     let u32_field = |name| template_field(name, TDH_INTYPE_UINT32);
     let text = |name| template_field(name, TDH_INTYPE_ANSISTRING);
     let wide = |name| template_field(name, TDH_INTYPE_UNICODESTRING);
-    let mut fields = vec![
-        u8_field("TCP"),
-        text("InterfaceIP"),
-        text(if response { "Destination" } else { "Source" }),
-    ];
-    if response {
-        fields.extend([u8_field("AA"), u8_field("AD")]);
+    let response = id == 257;
+    let mut fields = if id == 258 {
+        vec![
+            u8_field("TCP"),
+            text("InterfaceIP"),
+            wide("Reason"),
+            text("Destination"),
+            text("QNAME"),
+            u32_field("QTYPE"),
+            u32_field("XID"),
+            u32_field("RCODE"),
+            u32_field("Port"),
+            u32_field("Flags"),
+            wide("Zone"),
+            wide("PolicyName"),
+        ]
     } else {
-        fields.push(u8_field("RD"));
-    }
-    fields.extend([text("QNAME"), u32_field("QTYPE"), u32_field("XID")]);
-    if response {
-        fields.extend([u8_field("DNSSEC"), u32_field("RCODE")]);
-    }
-    fields.extend([u32_field("Port"), u32_field("Flags")]);
-    if response {
-        fields.extend([wide("Scope"), wide("Zone"), wide("PolicyName")]);
-    }
+        let mut fields = vec![
+            u8_field("TCP"),
+            text("InterfaceIP"),
+            text(if response { "Destination" } else { "Source" }),
+        ];
+        if response {
+            fields.extend([u8_field("AA"), u8_field("AD")]);
+        } else {
+            fields.push(u8_field("RD"));
+        }
+        fields.extend([text("QNAME"), u32_field("QTYPE"), u32_field("XID")]);
+        if response {
+            fields.extend([u8_field("DNSSEC"), u32_field("RCODE")]);
+        }
+        fields.extend([u32_field("Port"), u32_field("Flags")]);
+        if response {
+            fields.extend([wide("Scope"), wide("Zone"), wide("PolicyName")]);
+        }
+        fields
+    };
     let dependency = fields.len();
     fields.push(u32_field("BufferSize"));
     let mut packet = template_field("PacketData", TDH_INTYPE_BINARY);

@@ -67,7 +67,7 @@ pub(crate) use test_support::assert_no_allocations;
 
 const PROVIDER: GUID = GUID::from_u128(0xeb79061a_a566_4698_9119_3ed2807060e7);
 /// Event IDs the ETW runtime event-ID filter admits and the callback accepts.
-const SUPPORTED_EVENT_IDS: [u16; 2] = [256, 257];
+const SUPPORTED_EVENT_IDS: [u16; 3] = [256, 257, 258];
 // Windows defines fewer than 20 extended-data item types, each at most once per
 // event, and this session enables no optional enable properties that add
 // extended data. Records with more items are rejected as malformed.

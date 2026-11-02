@@ -5,6 +5,7 @@
       <events>
         <event value="256" version="250" template="Query" symbol="Query"/>
         <event value="257" version="250" template="Response" symbol="Response"/>
+        <event value="258" version="250" template="ResponseFailure" symbol="ResponseFailure"/>
       </events>
       <templates>
 <template tid="Query">
@@ -45,6 +46,26 @@
   <data name="ElapsedTime" inType="win:UInt32" outType="xs:unsignedInt"/>
   <data name="GUID" inType="win:UnicodeString" outType="xs:string"/>
   <data name="StaleRecordsPresent" inType="win:UnicodeString" outType="xs:string"/>
+</template>
+
+<template tid="ResponseFailure">
+  <data name="TCP" inType="win:UInt8" outType="xs:unsignedByte"/>
+  <data name="InterfaceIP" inType="win:AnsiString" outType="xs:string"/>
+  <data name="Reason" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="Destination" inType="win:AnsiString" outType="xs:string"/>
+  <data name="QNAME" inType="win:AnsiString" outType="xs:string"/>
+  <data name="QTYPE" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="XID" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="RCODE" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Port" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Flags" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="Zone" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="PolicyName" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="BufferSize" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="PacketData" inType="win:Binary" outType="xs:hexBinary" length="BufferSize"/>
+  <data name="AdditionalInfo" inType="win:UnicodeString" outType="xs:string"/>
+  <data name="ElapsedTime" inType="win:UInt32" outType="xs:unsignedInt"/>
+  <data name="GUID" inType="win:UnicodeString" outType="xs:string"/>
 </template>
 
       </templates>

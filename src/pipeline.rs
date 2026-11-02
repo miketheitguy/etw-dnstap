@@ -981,6 +981,7 @@ fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
         match_any_keyword = format_args!("{:#x}", keywords.match_any),
         match_all_keyword = format_args!("{:#x}", keywords.match_all),
         keyword_fallback = keywords.fallback,
+        failed_responses_captured = keywords.failed_responses,
         "capture started"
     );
 }
@@ -1538,6 +1539,7 @@ mod tests {
                 match_any: 0,
                 match_all: 0,
                 fallback: true,
+                failed_responses: true,
             }
         }
 
@@ -1762,6 +1764,7 @@ mod tests {
                 match_any: 0,
                 match_all: 0,
                 fallback: true,
+                failed_responses: true,
             }
         }
 
@@ -2335,6 +2338,7 @@ mod tests {
                 match_any: 0,
                 match_all: 0,
                 fallback: true,
+                failed_responses: true,
             }
         }
 
@@ -2433,6 +2437,7 @@ mod tests {
                 match_any: 0,
                 match_all: 0,
                 fallback: true,
+                failed_responses: true,
             }
         }
 

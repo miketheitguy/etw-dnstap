@@ -142,7 +142,7 @@ The lab scripts have their own documentation at
 
 ## Plans
 
-These documents are in `plans/`. Each status block gives its execution state. The parallel parser workers plan is partly executed. The performance counter plan is implemented and lab-validated. The ETW minimum buffers plan is implemented and lab-validated. The others have no recorded execution.
+These documents are in `plans/`. Each status block gives its execution state. The parallel parser workers plan is partly executed. The performance counter plan is implemented and lab-validated. The ETW minimum buffers plan is implemented and lab-validated. The response failure capture plan is implemented and lab-validated. The others have no recorded execution.
 
 | Document | Status | Evidence date | Commit | Summary |
 | --- | --- | --- | --- | --- |
@@ -151,6 +151,7 @@ These documents are in `plans/`. Each status block gives its execution state. Th
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed (P0 and diagnostic runs recorded Oct 31, 2026, P1a next, P4 deferred) | Oct 31, 2026 | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. Its idle-park stages predate the per-buffer wake in `dde7188`. |
 | [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | Windows Performance Counters V2 provider for the `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. It replaces the earlier nine-counter proposal. |
 | [ETW minimum buffers plan](plans/etw-min-buffers-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | The `--etw-min-buffers` option for the ETW session's `MinimumBuffers`. The default `0` lets ETW choose. It also logs the buffer counts that ETW applied. |
+| [Response failure capture plan](plans/response-failure-capture-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `335e501` | Captures DNS Server event 258 (`RESPONSE_FAILURE`, for example SERVFAIL) as `CLIENT_RESPONSE`. Adds the `RESPONSE_FAILURE` keyword, removes the level filter, and extends the event-ID filter to 256, 257, and 258. |
 
 ## History
 

@@ -113,17 +113,25 @@ pub fn compile_and_decode(fields: &[FuzzField], response: bool, payload: &[u8]) 
     true
 }
 
-/// Decodes `payload` with the saved v0 DNS Server template for event 256
-/// (`response == false`) or 257.
+/// Decodes `payload` with the saved v0 DNS Server template for `event_id`
+/// (256, 257, or 258). Returns false for any other ID or a payload that does
+/// not decode.
 ///
 /// # Panics
 /// Panics if the built-in template stops compiling or a decoded field escapes
 /// `payload`.
 #[must_use]
-pub fn decode_reference(response: bool, payload: &[u8]) -> bool {
-    let fields = saved_template(response);
-    let plan = DecodePlan::compile(&fields, if response { "Destination" } else { "Source" })
-        .expect("the saved template must compile");
+pub fn decode_reference(event_id: u16, payload: &[u8]) -> bool {
+    if !matches!(event_id, 256..=258) {
+        return false;
+    }
+    let fields = saved_template(event_id);
+    let peer = if event_id == 256 {
+        "Source"
+    } else {
+        "Destination"
+    };
+    let plan = DecodePlan::compile(&fields, peer).expect("the saved template must compile");
     match plan.decode(payload) {
         Ok(decoded) => {
             check_borrows(&decoded, payload);

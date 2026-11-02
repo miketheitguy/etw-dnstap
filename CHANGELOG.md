@@ -47,6 +47,36 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- **Breaking.** Failed responses are captured. DNS Server event 258
+  (`RESPONSE_FAILURE`, for example SERVFAIL) is sent to the receiver as a
+  `CLIENT_RESPONSE` message, with the packet in `response_message`. The packet was observed to be the
+  response sent to the client for SERVFAIL (Reason `System`) and for a policy
+  REFUSED (Reason `Policy`). A 258 whose packet is not a response is rejected
+  and counted in `rejected`.
+  `MatchAnyKeyword` now includes the `RESPONSE_FAILURE` bit, resolved by name
+  with the other two. The keyword lookup falls back to the full channel as before if
+  `QUERY_RECEIVED` or `RESPONSE_SUCCESS` is missing or malformed, or if any two
+  of the three share a bit. If only `RESPONSE_FAILURE` is missing or
+  malformed, the mask is narrowed to the other two, the service logs one
+  warning, and `capture started` shows `failed_responses_captured=false`; that
+  field is new. The subscription
+  level changes from 4 to `0xFF`, so there is no level filter. The ETW
+  event-ID filter and the callback allowlist admit 256, 257, and 258. This is
+  Breaking because the dnstap output is part of the contract, the receiver now
+  gets messages it did not get before, and no option restores the old set. A
+  receiver that treats every `CLIENT_RESPONSE` as a successful answer must now
+  read the RCODE in the packet. The counters `received` and `encoded`, and the
+  performance counters Events Received and Frames Sent, now include event 258,
+  so their meaning changes. The message format is unchanged. Event 258 has
+  level Error, which level 4 already passed, so the level change does not add
+  captured events. NXDOMAIN is a successful response (257) and was already captured. The
+  keywords also enable events that include 284, 285, 287, 288, and 597 to
+  599, which the event-ID filter excludes. Event 259 (`IGNORED_QUERY`) stays
+  excluded: an IGNORE policy produces it with no packet and no response on the
+  wire, and the query itself is still captured as 256. They cost `dns.exe` CPU when they occur but never
+  reach the service. See
+  [the plan](docs/plans/response-failure-capture-plan.md) and
+  [configuration.md](docs/guide/configuration.md#subscription).
 - `--etw-min-buffers N` sets the requested minimum ETW buffer count, 0 to 4,096
   and at most `--etw-max-buffers`. ETW reserves the minimum when the session
   starts, so a known peak does not need on-demand buffer allocation. `0` lets

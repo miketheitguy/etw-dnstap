@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change and response failure capture (event 258, not yet tested in the lab) · **Reviewed:** 2026-11-01
 >
 > **Validation status:** the LocalService profile with a restricted service SID
 > (`NT AUTHORITY\LocalService`, `sc.exe sidtype EtwDnstap restricted`) was
@@ -74,10 +74,23 @@ Run `--help` for the options. Their defaults and ranges are in the
 | --- | --- |
 | 256, query received | `CLIENT_QUERY` |
 | 257, response success | `CLIENT_RESPONSE` |
+| 258, response failure | `CLIENT_RESPONSE` |
 
-Events 258 (response failure), 260 and 261 (recursive query and response), and all
-other event IDs are excluded. The service emits no resolver records. Excluded
-events do not increment any counter.
+Event 258 is a failed response, for example SERVFAIL. Its packet was observed to
+be the response sent to the client for SERVFAIL (Reason `System`) and for a
+policy REFUSED (Reason `Policy`). A 258 whose packet is not a response is
+rejected and counted in `rejected`. NXDOMAIN is a successful response (257).
+Event 259 (`IGNORED_QUERY`) is excluded: an IGNORE policy produces it with no
+packet and no response on the wire, and the query itself is still captured as
+256. Events 260 and 261 (recursive query and response) and all other event IDs
+are excluded. The service emits no resolver records. Excluded events
+do not increment any counter.
+
+The subscription uses the `QUERY_RECEIVED`, `RESPONSE_SUCCESS`, and
+`RESPONSE_FAILURE` keywords, no level filter, and an event-ID filter for 256,
+257, and 258. The keywords also enable events that include 284, 285, 287, 288, and 597 to
+599. The event-ID filter excludes them, so they cost `dns.exe` CPU but never
+reach the service.
 
 - Authoritative and forwarder roles are not distinguished automatically.
 - Client and peer endpoint fields keep their initiator and responder meaning in
@@ -86,7 +99,7 @@ events do not increment any counter.
 - DNS message bytes are preserved verbatim. A malformed or missing packet is
   rejected, never reconstructed from a query name.
 
-Event 256 and 257 selection, the keyword masks, and the callback check are in
+Event 256, 257, and 258 selection, the keyword masks, and the callback check are in
 [configuration.md](docs/guide/configuration.md#subscription).
 
 ## Build and verification

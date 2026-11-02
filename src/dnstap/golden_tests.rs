@@ -111,7 +111,7 @@ fn octets(ip: IpAddr) -> Vec<u8> {
 /// Hand-assembled dnstap bytes in ascending field order, as the encoder and
 /// the reference C implementation emit them.
 fn golden(event: &DnsEventMetadata, packet: &[u8], identity: &[u8]) -> Vec<u8> {
-    let response = event.event_id == 257;
+    let response = matches!(event.event_id, 257 | 258);
     let elapsed = event
         .timestamp
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -218,6 +218,33 @@ fn query_matches_a_literal_byte_vector() {
 }
 
 #[test]
+fn failed_response_matches_a_literal_byte_vector() {
+    // SERVFAIL response header: QR set, RCODE 2.
+    let header = [
+        0x12, 0x34, 0x81, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let mut encoder = Encoder::new(b"ab").expect("identity");
+    let bytes = encode(&mut encoder, metadata(258), &header).expect("encodes");
+    let mut expected = vec![0x0a, 0x02, b'a', b'b', 0x72, 0x2d];
+    expected.extend_from_slice(&[
+        0x08, 0x06, // type = CLIENT_RESPONSE
+        0x10, 0x01, // socket_family = INET
+        0x18, 0x01, // socket_protocol = UDP
+        0x22, 0x04, 192, 0, 2, 1, // query_address
+        0x2a, 0x04, 192, 0, 2, 53, // response_address
+        0x30, 0x88, 0x9e, 0x03, // query_port = 53000
+        0x38, 0x35, // response_port = 53
+        0x60, 0x01, // response_time_sec = 1
+        0x6d, 0xf4, 0x01, 0x00, 0x00, // response_time_nsec = 500 (fixed32 LE)
+        0x72, 0x0c, // response_message, 12 bytes
+    ]);
+    expected.extend_from_slice(&header);
+    expected.extend_from_slice(&[0x78, 0x01]); // type = MESSAGE
+    assert_eq!(bytes, expected);
+    assert_eq!(bytes, golden(&metadata(258), &header, b"ab"));
+}
+
+#[test]
 fn response_uses_response_fields_and_ipv6_round_trips_exactly() {
     let peer: Ipv6Addr = "2001:db8::1".parse().expect("literal");
     let local: Ipv6Addr = "2001:db8:ffff::53".parse().expect("literal");
@@ -252,14 +279,14 @@ fn varint_width_transitions_match_hand_encoded_bytes() {
     // Packet lengths straddle one/two-byte (127/128) and two/three-byte
     // (16383/16384) varints for the packet field; the enclosing message length
     // crosses the same limits a few bytes later. 65535 is the DNS maximum.
-    for id in [256_u16, 257] {
+    for id in [256_u16, 257, 258] {
         let event = metadata(id);
         let mut encoder = Encoder::new(b"id").expect("identity");
         for length in [
             12, 100, 126, 127, 128, 129, 150, 16_300, 16_340, 16_350, 16_383, 16_384, 16_385,
             65_535,
         ] {
-            let payload = packet(id == 257, length);
+            let payload = packet(id != 256, length);
             let wire = encode(&mut encoder, event, &payload).expect("encodes");
             assert_eq!(
                 wire,
@@ -321,7 +348,7 @@ type Case = (DnsEventMetadata, usize, Vec<u8>);
 
 fn arbitrary_event() -> impl Strategy<Value = Case> {
     (
-        prop::sample::select(vec![256_u16, 257]),
+        prop::sample::select(vec![256_u16, 257, 258]),
         (any::<bool>(), any::<bool>(), any::<bool>()),
         (0_u64..=4_000_000_000, 0_u32..1_000_000_000),
         (
@@ -379,7 +406,7 @@ proptest! {
     fn encoded_events_decode_with_the_upstream_schema_and_preserve_every_field(
         (event, length, identity) in arbitrary_event(),
     ) {
-        let response = event.event_id == 257;
+        let response = event.event_id != 256;
         let bytes = packet(response, length);
         let mut encoder = Encoder::new(&identity).expect("identity within bounds");
         let encoded = encode(&mut encoder, event, &bytes);

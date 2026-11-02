@@ -107,4 +107,4 @@ pub(crate) fn assert_no_allocations(operation: impl FnOnce()) {
 }
 
 /// Event IDs the callback and parser must ignore.
-pub(super) const EXCLUDED_EVENT_IDS: [u16; 9] = [0, 1, 255, 258, 259, 260, 261, 262, u16::MAX];
+pub(super) const EXCLUDED_EVENT_IDS: [u16; 8] = [0, 1, 255, 259, 260, 261, 262, u16::MAX];

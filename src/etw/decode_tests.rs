@@ -3,7 +3,7 @@ use crate::etw::test_support::utf16_nul_bytes;
 use std::ops::Range;
 use windows_sys::Win32::System::Diagnostics::Etw::*;
 
-// These fixtures independently encode the saved 256/257 v0 manifest field order.
+// These fixtures independently encode the saved 256/257/258 v0 manifest field order.
 // Their offsets are recorded while emitting bytes, never obtained from DecodePlan.
 pub(in crate::etw) struct Fixture {
     pub(in crate::etw) fields: Vec<FieldSpec>,
@@ -30,7 +30,7 @@ fn unicode(payload: &mut Vec<u8>, text: &str) {
 fn append_trailing_metadata(fields: &mut Vec<FieldSpec>, payload: &mut Vec<u8>, id: u16) {
     fields.push(field("AdditionalInfo", TDH_INTYPE_UNICODESTRING));
     unicode(payload, "trailing data is not DNS");
-    if id == 257 {
+    if id != 256 {
         fields.push(field("ElapsedTime", TDH_INTYPE_UINT32));
         payload.extend_from_slice(&37_u32.to_le_bytes());
     }
@@ -42,18 +42,18 @@ fn append_trailing_metadata(fields: &mut Vec<FieldSpec>, payload: &mut Vec<u8>, 
     }
 }
 
-fn append_response_scope(payload: &mut Vec<u8>, variant: usize) {
-    // Scope, Zone, PolicyName.
-    for _ in 0..3 {
+fn append_unicode_strings(payload: &mut Vec<u8>, variant: usize, count: usize) {
+    // 257: Scope, Zone, PolicyName. 258: Zone, PolicyName.
+    for _ in 0..count {
         unicode(payload, &"aĀ🦀".repeat(variant));
     }
 }
 
 pub(in crate::etw) fn fixture(id: u16, ipv6: bool, tcp: bool, variant: usize) -> Fixture {
-    assert!(matches!(id, 256 | 257));
+    assert!(matches!(id, 256..=258));
     // The field list is the shared saved template; the payload below is encoded
     // independently, recording offsets as it goes.
-    let mut fields = saved_template(id == 257);
+    let mut fields = saved_template(id);
     let mut payload = Vec::new();
     let tcp = append(&mut payload, &[u8::from(tcp)]);
     let local = append(
@@ -64,6 +64,10 @@ pub(in crate::etw) fn fixture(id: u16, ipv6: bool, tcp: bool, variant: usize) ->
             b"192.0.2.53\0"
         },
     );
+    if id == 258 {
+        // Reason precedes the peer and is walked but never kept.
+        unicode(&mut payload, &"aĀ🦀".repeat(variant));
+    }
     let peer = append(
         &mut payload,
         if ipv6 {
@@ -72,23 +76,30 @@ pub(in crate::etw) fn fixture(id: u16, ipv6: bool, tcp: bool, variant: usize) ->
             b"198.51.100.42\0"
         },
     );
-    if id == 256 {
-        payload.push(1);
-    } else {
-        payload.extend_from_slice(&[1, 0]);
+    match id {
+        256 => payload.push(1),
+        257 => payload.extend_from_slice(&[1, 0]),
+        _ => {}
     }
     payload.extend(std::iter::repeat_n(b'q', variant));
     payload.push(0);
     payload.extend_from_slice(&28_u32.to_le_bytes());
     payload.extend_from_slice(&0x1234_u32.to_le_bytes());
-    if id == 257 {
-        payload.push(1);
-        payload.extend_from_slice(&0_u32.to_le_bytes());
+    match id {
+        257 => {
+            payload.push(1);
+            payload.extend_from_slice(&0_u32.to_le_bytes());
+        }
+        // RCODE 2 (SERVFAIL).
+        258 => payload.extend_from_slice(&2_u32.to_le_bytes()),
+        _ => {}
     }
     let port = append(&mut payload, &53000_u32.to_le_bytes());
     payload.extend_from_slice(&0x8100_u32.to_le_bytes());
-    if id == 257 {
-        append_response_scope(&mut payload, variant);
+    match id {
+        257 => append_unicode_strings(&mut payload, variant, 3),
+        258 => append_unicode_strings(&mut payload, variant, 2),
+        _ => {}
     }
     let length_offset = payload.len();
     payload.extend_from_slice(&17_u32.to_le_bytes());
@@ -97,8 +108,8 @@ pub(in crate::etw) fn fixture(id: u16, ipv6: bool, tcp: bool, variant: usize) ->
         &[
             0x12,
             0x34,
-            if id == 257 { 0x81 } else { 1 },
-            0,
+            if id == 256 { 1 } else { 0x81 },
+            if id == 258 { 2 } else { 0 },
             0,
             1,
             0,
@@ -142,7 +153,7 @@ fn compile(fixture: &Fixture) -> DecodePlan {
 
 #[test]
 fn saved_templates_decode_borrowed_fields_across_variable_prefixes() {
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         for ipv6 in [false, true] {
             for tcp in [false, true] {
                 for variant in [0, 1, 2, 31, 257] {
@@ -175,7 +186,7 @@ fn saved_templates_decode_borrowed_fields_across_variable_prefixes() {
 
 #[test]
 fn every_truncation_before_packet_end_is_rejected() {
-    for id in [256, 257] {
+    for id in [256, 257, 258] {
         let fixture = fixture(id, false, true, 2);
         let plan = compile(&fixture);
         for end in 0..fixture.packet.end {
@@ -191,18 +202,46 @@ fn every_truncation_before_packet_end_is_rejected() {
 
 #[test]
 fn unterminated_and_odd_length_text_is_rejected() {
-    let fixture = fixture(257, false, false, 0);
-    let plan = compile(&fixture);
-    let mut ansi = fixture.payload[..fixture.local.end - 1].to_vec();
-    ansi.resize(ansi.len() + 64, b'x');
-    assert!(plan.decode(&ansi).is_err());
-    // The first response UTF-16 field follows Flags and precedes BufferSize.
-    let scope_start = fixture.port.end + 4;
-    for tail in [vec![], vec![1], vec![1, 0], vec![1, 0, 0]] {
-        let mut payload = fixture.payload[..scope_start].to_vec();
-        payload.extend_from_slice(&tail);
-        assert!(plan.decode(&payload).is_err());
+    for id in [257, 258] {
+        let fixture = fixture(id, false, false, 0);
+        let plan = compile(&fixture);
+        let mut ansi = fixture.payload[..fixture.local.end - 1].to_vec();
+        ansi.resize(ansi.len() + 64, b'x');
+        assert!(plan.decode(&ansi).is_err());
+        // The first response UTF-16 field follows Flags and precedes BufferSize.
+        let scope_start = fixture.port.end + 4;
+        for tail in [vec![], vec![1], vec![1, 0], vec![1, 0, 0]] {
+            let mut payload = fixture.payload[..scope_start].to_vec();
+            payload.extend_from_slice(&tail);
+            assert!(plan.decode(&payload).is_err());
+        }
     }
+}
+
+#[test]
+fn failure_reason_is_walked_but_not_kept() {
+    // Empty, short, and long Reason strings all leave the peer and packet intact.
+    for variant in [0, 1, 257] {
+        let fixture = fixture(258, false, true, variant);
+        let plan = compile(&fixture);
+        let decoded = plan.decode(&fixture.payload).expect("valid event 258");
+        assert_eq!(decoded.peer, b"198.51.100.42\0");
+        assert_eq!(decoded.local, b"192.0.2.53\0");
+        assert_eq!(decoded.port, 53000_u32.to_le_bytes());
+        assert_eq!(decoded.packet, &fixture.payload[fixture.packet.clone()]);
+        // QR set and RCODE 2 in the response packet.
+        assert_eq!(decoded.packet[2] & 0x80, 0x80);
+        assert_eq!(decoded.packet[3] & 0x0f, 2);
+        // Reason lies between InterfaceIP and Destination and belongs to neither.
+        let reason_bytes = (variant * "aĀ🦀".encode_utf16().count() + 1) * 2;
+        assert_eq!(fixture.peer.start - fixture.local.end, reason_bytes);
+    }
+    // An unterminated Reason is rejected, not read past the payload.
+    let fixture = fixture(258, false, false, 1);
+    let plan = compile(&fixture);
+    let mut payload = fixture.payload[..fixture.local.end].to_vec();
+    payload.extend_from_slice(&[b'x', 0, b'y', 0, b'z']);
+    assert!(plan.decode(&payload).is_err());
 }
 
 #[test]
@@ -263,6 +302,56 @@ fn unsupported_schema_shapes_and_ambiguous_targets_reject_compilation() {
     assert!(
         DecodePlan::compile(&fixture.fields, "Destination").is_none(),
         "fixed empty string is not terminated"
+    );
+}
+
+#[test]
+fn failure_reason_at_an_odd_payload_offset_is_scanned_from_its_own_start() {
+    // TCP (1 byte) plus a 10-byte local address put Reason at offset 11. A
+    // terminator scan aligned to the start of the payload would see the high
+    // byte of one unit and the low byte of the next as a false terminator.
+    let local = b"10.0.0.10\0";
+    assert_eq!((1 + local.len()) % 2, 1);
+    for variant in [1, 2, 31, 257] {
+        let mut fixture = fixture(258, false, true, variant);
+        let packet = fixture.payload[fixture.packet.clone()].to_vec();
+        let port = fixture.payload[fixture.port.clone()].to_vec();
+        fixture
+            .payload
+            .splice(fixture.local.clone(), local.iter().copied());
+        let plan = compile(&fixture);
+        let decoded = plan.decode(&fixture.payload).expect("odd Reason offset");
+        assert_eq!(decoded.local, local);
+        assert_eq!(decoded.peer, b"198.51.100.42\0");
+        assert_eq!(decoded.port, port);
+        assert_eq!(decoded.packet, packet);
+        // The unit pairs of the Reason text cross the payload's even boundaries.
+        let reason_start = 1 + local.len();
+        let reason_bytes = (variant * "aĀ🦀".encode_utf16().count() + 1) * 2;
+        assert!(fixture.payload[reason_start + reason_bytes..].starts_with(b"198.51.100.42\0"));
+        // The shorter local address moved everything after it back by one byte.
+        let packet_end = fixture.packet.end - 1;
+        for end in 0..packet_end {
+            assert!(plan.decode(&fixture.payload[..end]).is_err(), "end {end}");
+        }
+        assert!(plan.decode(&fixture.payload[..packet_end]).is_ok());
+    }
+}
+
+#[test]
+fn failure_event_reason_layout_must_compile() {
+    // Reason (index 2) precedes the peer, so its layout must be walkable.
+    let mut fixture = fixture(258, false, false, 0);
+    fixture.fields[2].flags = PropertyParamFixedLength.cast_unsigned();
+    assert!(
+        DecodePlan::compile(&fixture.fields, "Destination").is_none(),
+        "fixed Reason is not terminated"
+    );
+    fixture.fields[2].flags = 0;
+    assert!(DecodePlan::compile(&fixture.fields, "Destination").is_some());
+    assert!(
+        DecodePlan::compile(&fixture.fields, "Source").is_none(),
+        "event 258 has no Source property"
     );
 }
 
@@ -408,7 +497,7 @@ fn warmed_decode_does_not_allocate_and_reuses_changed_payload() {
 /// Every saved template shape: event ID, address family, transport, and string
 /// length variants that move all later offsets.
 fn all_fixtures() -> impl Iterator<Item = Fixture> {
-    [256_u16, 257].into_iter().flat_map(|id| {
+    [256_u16, 257, 258].into_iter().flat_map(|id| {
         [false, true].into_iter().flat_map(move |ipv6| {
             [false, true].into_iter().flat_map(move |tcp| {
                 [0_usize, 1, 2, 31, 257]
@@ -485,7 +574,7 @@ fn zero_length_packet_decodes_as_empty_without_consuming_the_tail() {
 
 #[test]
 fn maximum_dns_packet_is_framed_exactly_and_one_more_byte_is_not_invented() {
-    for id in [256_u16, 257] {
+    for id in [256_u16, 257, 258] {
         for size in [65_535_usize, 65_536] {
             let mut fixture = fixture(id, true, false, 3);
             let plan = compile(&fixture);
@@ -548,7 +637,7 @@ mod properties {
 
     fn params() -> impl Strategy<Value = (u16, bool, bool, usize)> {
         (
-            prop::sample::select(vec![256_u16, 257]),
+            prop::sample::select(vec![256_u16, 257, 258]),
             any::<bool>(),
             any::<bool>(),
             0_usize..300,

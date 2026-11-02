@@ -45,7 +45,9 @@ use super::{
 #[cfg(feature = "diag-timing")]
 use super::{ThreadPriority, set_current_thread_priority};
 
-const SUBSCRIPTION_LEVEL: u8 = 4;
+/// `EnableTraceEx2` level. It is a maximum: an event passes when its level is at
+/// most this value, so `0xFF` passes every level and there is no level filter.
+const SUBSCRIPTION_LEVEL: u8 = 0xFF;
 /// How long `Capture::stop` waits for `ProcessTrace` to return on its own after
 /// the session stops, before `CloseTrace` forces it. Half of the pipeline's
 /// 10 s shutdown watchdog, so the parser join and Frame Streams FINISH keep the
@@ -546,11 +548,15 @@ impl Capture {
         name.push(0);
         // Metadata problems select the fallback; they never stop capture.
         let choice = resolve_keywords();
-        if let KeywordChoice::Fallback { reason } = &choice {
-            tracing::warn!(
+        match &choice {
+            KeywordChoice::Fallback { reason } => tracing::warn!(
                 reason = %reason,
                 "ETW keyword narrowing unavailable; subscribing to the full Analytical channel"
-            );
+            ),
+            KeywordChoice::NarrowedWithoutFailure { reason, .. } => tracing::warn!(
+                "RESPONSE_FAILURE keyword is not available ({reason}); failed responses are not captured"
+            ),
+            KeywordChoice::Narrowed { .. } => {}
         }
         let guid = session_guid(display_name)?;
         let (mut status, mut session) = start_session(&name, guid, &config);
@@ -803,7 +809,7 @@ const _: () = {
             == offset_of!(EVENT_FILTER_EVENT_ID, Events)
                 + SUPPORTED_EVENT_IDS.len() * size_of::<u16>()
     );
-    assert!(size_of::<EventIdFilterPayload>() == 8);
+    assert!(size_of::<EventIdFilterPayload>() == 10);
 };
 
 impl EventIdFilterPayload {
@@ -814,7 +820,7 @@ impl EventIdFilterPayload {
             reserved: 0,
             #[expect(
                 clippy::cast_possible_truncation,
-                reason = "the supported ID list has two entries"
+                reason = "the supported ID list has three entries"
             )]
             count: SUPPORTED_EVENT_IDS.len() as u16,
             events: SUPPORTED_EVENT_IDS,
@@ -828,7 +834,7 @@ fn event_id_descriptor(payload: &EventIdFilterPayload) -> EVENT_FILTER_DESCRIPTO
         Ptr: std::ptr::from_ref(payload) as u64,
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "the payload is 8 bytes, asserted at compile time"
+            reason = "the payload is 10 bytes, asserted at compile time"
         )]
         Size: size_of::<EventIdFilterPayload>() as u32,
         Type: EVENT_FILTER_TYPE_EVENT_ID,

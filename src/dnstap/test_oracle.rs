@@ -59,7 +59,7 @@ pub(super) fn address(ip: IpAddr) -> Vec<u8> {
 }
 
 pub(super) fn reference(event: DnsEventMetadata, bytes: &[u8], identity: &[u8]) -> ReferenceTap {
-    let response = event.event_id == 257;
+    let response = matches!(event.event_id, 257 | 258);
     let (query_ip, response_ip, query_port, response_port) = (
         event.peer_address,
         event.local_address,
@@ -73,7 +73,7 @@ pub(super) fn reference(event: DnsEventMetadata, bytes: &[u8], identity: &[u8]) 
     let mut message = ReferenceMessage {
         kind: match event.event_id {
             256 => 5,
-            257 => 6,
+            257 | 258 => 6,
             _ => panic!("unsupported fixture event"),
         },
         family: event
