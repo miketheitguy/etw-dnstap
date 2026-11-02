@@ -593,12 +593,36 @@ mod backpressure_tests;
 #[path = "network/tls_tests.rs"]
 mod tls_tests;
 
+/// The longest a socket timeout may exceed the time left to the deadline before
+/// `DeadlineTcp` sets it again (the shorter of this and `timeout / 32`).
+const TIMEOUT_SLACK: Duration = Duration::from_millis(5);
+
+/// Whether the socket timeout must be set again to `wanted`. The timeout last
+/// applied is kept when it is at least `wanted` (so a stalled call is never cut
+/// short of the deadline) and exceeds it by at most `slack` (so it cannot run
+/// past the deadline by more than that). Within one operation the time left only
+/// shrinks, so a timeout applied once is kept for the first `slack` of the
+/// window and the operation's later calls skip the socket option; across
+/// operations the applied value tracks the largest `wanted` seen.
+fn timeout_needs_update(applied: Option<Duration>, wanted: Duration, slack: Duration) -> bool {
+    !applied.is_some_and(|applied| {
+        applied
+            .checked_sub(wanted)
+            .is_some_and(|excess| excess <= slack)
+    })
+}
+
 struct DeadlineTcp {
     stream: TcpStream,
     deadline: Instant,
     timeout: Duration,
     /// False until the first I/O of an operation, which then starts the clock.
     armed: bool,
+    /// The socket read and write timeouts last set, so that a call whose time
+    /// left is within `slack` of them skips the `setsockopt` system call.
+    read_applied: Option<Duration>,
+    write_applied: Option<Duration>,
+    slack: Duration,
     stats: Option<Arc<SinkStats>>,
 }
 
@@ -609,6 +633,9 @@ impl DeadlineTcp {
             deadline: Instant::now() + timeout,
             timeout,
             armed: true,
+            read_applied: None,
+            write_applied: None,
+            slack: (timeout / 32).min(TIMEOUT_SLACK),
             stats: None,
         }
     }
@@ -643,7 +670,10 @@ impl DeadlineTcp {
 impl Read for DeadlineTcp {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let remaining = self.remaining()?;
-        self.stream.set_read_timeout(Some(remaining))?;
+        if timeout_needs_update(self.read_applied, remaining, self.slack) {
+            self.stream.set_read_timeout(Some(remaining))?;
+            self.read_applied = Some(remaining);
+        }
         self.stream.read(bytes)
     }
 }
@@ -651,7 +681,10 @@ impl Read for DeadlineTcp {
 impl Write for DeadlineTcp {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let remaining = self.remaining()?;
-        self.stream.set_write_timeout(Some(remaining))?;
+        if timeout_needs_update(self.write_applied, remaining, self.slack) {
+            self.stream.set_write_timeout(Some(remaining))?;
+            self.write_applied = Some(remaining);
+        }
         let started = Instant::now();
         let written = self.stream.write(bytes);
         self.record_write(started.elapsed());
