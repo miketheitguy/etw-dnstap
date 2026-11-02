@@ -1,0 +1,20 @@
+# Objects that the MSVC linker is allowed to report as LNK2047 (no EH
+# continuation metadata) when the release image is linked with
+# /GUARD:EHCONT and /FORCE:GUARDEHCONT. See .cargo/config.toml.
+#
+# One entry per line: <archive>(<object>), with the rustc metadata hash
+# removed from the archive name. scripts/ci/verify-link-exceptions.ps1 fails
+# when the linker reports an object that is not listed here, and when a
+# listed object is no longer reported. Edit this file only together with a
+# review of the new or removed object.
+#
+# ring (the rustls crypto provider) ships its x86_64 assembly as prebuilt
+# NASM objects. Approved 2026-11-01.
+libring.rlib(aesni-x86_64-nasm.o)
+libring.rlib(chacha-x86_64-nasm.o)
+libring.rlib(p256-x86_64-asm-nasm.o)
+libring.rlib(sha256-x86_64-nasm.o)
+libring.rlib(sha512-x86_64-nasm.o)
+libring.rlib(vpaes-x86_64-nasm.o)
+libring.rlib(x86_64-mont-nasm.o)
+libring.rlib(x86_64-mont5-nasm.o)

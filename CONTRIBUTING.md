@@ -46,7 +46,12 @@ Notes:
   - Clippy with `-D warnings`, for the default, `diag-timing`, and `fuzzing`
     feature sets.
   - Tests, for the default and `diag-timing` feature sets.
-  - A release build.
+  - A release build, with its output captured to `release-build.log`.
+  - `scripts/ci/verify-link-exceptions.ps1` on that log. It compares the
+    linker's LNK2047 objects (ring's prebuilt NASM objects, which lack
+    EH-continuation metadata) with `scripts/ci/link-exceptions.txt`. It
+    fails when an object is reported that is not listed, and when a listed
+    object is no longer reported. See the comment in `.cargo/config.toml`.
   - `scripts/ci/verify-pe.ps1` on the release executable. It checks the
     hardening flags, the absence of a PDB entry, and the absence of ASan and
     dynamic CRT imports.
