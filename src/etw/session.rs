@@ -257,7 +257,7 @@ enum StopOutcome {
     Failed,
 }
 
-fn stop_outcome(status: u32) -> StopOutcome {
+const fn stop_outcome(status: u32) -> StopOutcome {
     match status {
         // MORE_DATA means ETW stopped the session but the properties buffer was
         // too small for everything it wanted to return.
@@ -276,7 +276,7 @@ enum QueryOutcome {
     Failed,
 }
 
-fn query_outcome(status: u32) -> QueryOutcome {
+const fn query_outcome(status: u32) -> QueryOutcome {
     match status {
         ERROR_SUCCESS => QueryOutcome::Inspect,
         ERROR_WMI_INSTANCE_NOT_FOUND => QueryOutcome::Vanished,
@@ -346,13 +346,13 @@ fn reclaim_decision(
     stop: impl FnOnce(&mut QueryProperties) -> u32,
 ) -> Result<()> {
     let mut queried = QueryProperties::new();
-    let status = query(&mut queried);
-    match query_outcome(status) {
+    let query_status = query(&mut queried);
+    match query_outcome(query_status) {
         QueryOutcome::Inspect => {}
         QueryOutcome::Vanished => return Ok(()),
         QueryOutcome::Failed => bail!(
-            "query existing ETW session '{display_name}' failed: {} (code {status})",
-            std::io::Error::from_raw_os_error(status.cast_signed())
+            "query existing ETW session '{display_name}' failed: {} (code {query_status})",
+            std::io::Error::from_raw_os_error(query_status.cast_signed())
         ),
     }
     ensure!(
@@ -370,13 +370,13 @@ fn reclaim_decision(
         );
     }
     let mut stopping = QueryProperties::new();
-    let status = stop(&mut stopping);
+    let stop_status = stop(&mut stopping);
     ensure!(
-        stop_outcome(status) == StopOutcome::Stopped,
-        "stopping stale ETW session '{display_name}' failed: {} (code {status})",
-        std::io::Error::from_raw_os_error(status.cast_signed())
+        stop_outcome(stop_status) == StopOutcome::Stopped,
+        "stopping stale ETW session '{display_name}' failed: {} (code {stop_status})",
+        std::io::Error::from_raw_os_error(stop_status.cast_signed())
     );
-    if status == ERROR_WMI_INSTANCE_NOT_FOUND {
+    if stop_status == ERROR_WMI_INSTANCE_NOT_FOUND {
         // The session vanished between QUERY and STOP; the retry can proceed.
         return Ok(());
     }
@@ -447,7 +447,7 @@ impl fmt::Display for TargetChange {
 
 /// What the supervisor concluded from re-reading the DNS service process ID.
 /// `observed` is `None` when the query itself failed, which proves nothing.
-fn classify_target(expected: u32, observed: Option<u32>) -> Option<TargetChange> {
+const fn classify_target(expected: u32, observed: Option<u32>) -> Option<TargetChange> {
     match observed {
         None => None,
         Some(pid) if pid == expected => None,
@@ -477,14 +477,14 @@ fn wait_until(mut done: impl FnMut() -> bool, budget: Duration, poll: Duration) 
 /// `CloseTrace` statuses that are not failures. After a successful STOP the
 /// consumer handle may already be invalid because `ProcessTrace` returned and
 /// released it.
-fn close_trace_benign(status: u32, session_stopped: bool) -> bool {
+const fn close_trace_benign(status: u32, session_stopped: bool) -> bool {
     matches!(status, ERROR_SUCCESS | ERROR_CTX_CLOSE_PENDING)
         || (session_stopped && status == ERROR_INVALID_HANDLE)
 }
 
 /// `ProcessTrace` return statuses that are not failures; see
 /// [`close_trace_benign`] for `ERROR_INVALID_HANDLE`.
-fn process_trace_benign(status: u32, session_stopped: bool) -> bool {
+const fn process_trace_benign(status: u32, session_stopped: bool) -> bool {
     matches!(status, ERROR_SUCCESS | ERROR_CANCELLED)
         || (session_stopped && status == ERROR_INVALID_HANDLE)
 }
@@ -605,13 +605,13 @@ impl Capture {
             KeywordChoice::Narrowed { .. } => {}
         }
         let guid = session_guid(display_name)?;
-        let (mut status, mut session) = start_session(&name, guid, &config);
-        if status == ERROR_ALREADY_EXISTS {
+        let (mut start_status, mut session) = start_session(&name, guid, &config);
+        if start_status == ERROR_ALREADY_EXISTS {
             // One reclaim and one retry; a second failure is a startup error.
             reclaim_stale_session(&name, display_name, &counters, &config, &guid)?;
-            (status, session) = start_session(&name, guid, &config);
+            (start_status, session) = start_session(&name, guid, &config);
         }
-        check_start_status(status, display_name, &format_guid(&guid))?;
+        check_start_status(start_status, display_name, &format_guid(&guid))?;
         let keywords = choice.selection();
         let mut capture = Self {
             session: Some(session),
@@ -636,7 +636,7 @@ impl Capture {
         // array, whose entries point at `filter_payload` and `pid_payload`; all of
         // them are stack locals that remain alive and unmoved for this synchronous
         // call, and ETW copies them before returning.
-        let status = unsafe {
+        let enable_status = unsafe {
             EnableTraceEx2(
                 session,
                 &PROVIDER,
@@ -648,7 +648,7 @@ impl Capture {
                 &raw const parameters,
             )
         };
-        check_enable_status(status)?;
+        check_enable_status(enable_status)?;
 
         let mut context = Box::new(CallbackContext::new(
             Arc::clone(&pool),
@@ -702,7 +702,7 @@ impl Capture {
     }
 
     /// The keyword masks this session enabled and whether they are the fallback.
-    pub(crate) fn keywords(&self) -> KeywordSelection {
+    pub(crate) const fn keywords(&self) -> KeywordSelection {
         self.keywords
     }
 

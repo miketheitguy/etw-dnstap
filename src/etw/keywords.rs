@@ -68,7 +68,7 @@ pub(super) enum KeywordChoice {
 }
 
 impl KeywordChoice {
-    pub(super) fn selection(&self) -> KeywordSelection {
+    pub(super) const fn selection(&self) -> KeywordSelection {
         match self {
             Self::Narrowed { match_any } => KeywordSelection {
                 match_any: *match_any,
@@ -198,7 +198,7 @@ fn query_provider_keywords(provider: &GUID) -> Result<Vec<(String, u64)>> {
     let mut storage = vec![0u64; (size as usize).div_ceil(8)];
     let capacity = size;
     // SAFETY: storage is aligned, initialized, and at least size bytes long.
-    let status = unsafe {
+    let fill_status = unsafe {
         TdhEnumerateProviderFieldInformation(
             provider,
             EventKeywordInformation,
@@ -206,7 +206,7 @@ fn query_provider_keywords(provider: &GUID) -> Result<Vec<(String, u64)>> {
             &raw mut size,
         )
     };
-    check_status(status, "TdhEnumerateProviderFieldInformation")?;
+    check_status(fill_status, "TdhEnumerateProviderFieldInformation")?;
     ensure!(
         size <= capacity && size as usize >= header,
         "invalid TDH keyword result size"

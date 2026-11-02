@@ -91,7 +91,7 @@ impl Parser {
 
     /// Events rejected because their (event id, version) schema failed to load or
     /// did not compile into a single-pass plan.
-    pub(crate) fn schema_rejected_events(&self) -> u64 {
+    pub(crate) const fn schema_rejected_events(&self) -> u64 {
         self.rejected_events
     }
 
@@ -131,7 +131,7 @@ impl Parser {
                 key.1
             );
         }
-        let schema = match event.with_record(|record| load_schema(record, peer_name)) {
+        let loaded = match event.with_record(|record| load_schema(record, peer_name)) {
             Ok(schema) => schema,
             Err(error) => {
                 self.remember_rejected(key);
@@ -145,19 +145,19 @@ impl Parser {
                 return Err(error.context(format!("DNS event {id} version {} schema", key.1)));
             }
         };
-        self.insert_schema(key, schema);
-        let schema = self
+        self.insert_schema(key, loaded);
+        let cached = self
             .schemas
             .last()
             .map(|(_, schema)| schema)
             .context("missing cached DNS schema")?;
-        parse_fast(schema, event.header(), event.payload(), &mut self.text).map(Some)
+        parse_fast(cached, event.header(), event.payload(), &mut self.text).map(Some)
     }
 }
 
 /// The property that holds the peer address: event 256 names it `Source`;
 /// 257 and 258 name it `Destination`.
-fn peer_property(id: u16) -> Option<PropertyName> {
+const fn peer_property(id: u16) -> Option<PropertyName> {
     match id {
         256 => Some(PropertyName::Source),
         257 | 258 => Some(PropertyName::Destination),
@@ -235,7 +235,7 @@ fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema>
     #[cfg(test)]
     tdh_tick();
     // SAFETY: storage is aligned, initialized, and at least size bytes long.
-    let status = unsafe {
+    let fill_status = unsafe {
         TdhGetEventInformation(
             record,
             0,
@@ -244,7 +244,7 @@ fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema>
             &raw mut size,
         )
     };
-    check_status(status, "TdhGetEventInformation")?;
+    check_status(fill_status, "TdhGetEventInformation")?;
     ensure!(
         size <= capacity && size as usize >= size_of::<TRACE_EVENT_INFO>(),
         "invalid TDH metadata result size"
@@ -450,7 +450,7 @@ enum PropertyName {
 }
 
 impl PropertyName {
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
             Self::Tcp => "TCP",
             Self::Port => "Port",

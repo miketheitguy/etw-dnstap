@@ -190,7 +190,7 @@ impl DecodePlan {
     }
 }
 
-fn is_unsigned(input: i32) -> bool {
+const fn is_unsigned(input: i32) -> bool {
     matches!(
         input,
         TDH_INTYPE_UINT8 | TDH_INTYPE_UINT16 | TDH_INTYPE_UINT32
@@ -242,7 +242,7 @@ fn compile_layout(field: &FieldSpec, index: usize, fields: &[FieldSpec]) -> Opti
     }
 }
 
-fn valid_target(target: usize, field: &FieldSpec, layout: Layout) -> bool {
+const fn valid_target(target: usize, field: &FieldSpec, layout: Layout) -> bool {
     match target {
         0 | 1 => {
             (is_unsigned(field.input) || field.input == TDH_INTYPE_BOOLEAN)

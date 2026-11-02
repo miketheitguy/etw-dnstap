@@ -48,7 +48,7 @@ impl CallbackContext {
     /// Requires `EventHeader.ProcessId == expected_pid` on every accepted record;
     /// there is no way to build a context without that filter. Callers box the
     /// context so the address handed to `OpenTraceW` stays stable.
-    pub(super) fn new(
+    pub(super) const fn new(
         pool: Arc<PoolManager>,
         counters: Arc<CaptureCounters>,
         expected_pid: u32,
@@ -62,7 +62,7 @@ impl CallbackContext {
 }
 
 /// True when a record from `actual` may be accepted given the expected emitter.
-fn pid_allowed(expected: u32, actual: u32) -> bool {
+const fn pid_allowed(expected: u32, actual: u32) -> bool {
     expected == actual
 }
 
@@ -339,13 +339,13 @@ pub(super) unsafe fn copy_record(
 
 impl RawEtwEvent {
     /// The native event header copied at intake.
-    pub(super) fn header(&self) -> &EVENT_HEADER {
+    pub(super) const fn header(&self) -> &EVENT_HEADER {
         &self.header
     }
 
     /// Mutable header access so schema tests can corrupt a copied event.
     #[cfg(test)]
-    pub(super) fn header_mut(&mut self) -> &mut EVENT_HEADER {
+    pub(super) const fn header_mut(&mut self) -> &mut EVENT_HEADER {
         &mut self.header
     }
 

@@ -188,13 +188,13 @@ impl Connection {
             Some(tls) => {
                 let connection =
                     ClientConnection::new(tls.client, tls.server_name).map_err(io::Error::other)?;
-                let mut stream = StreamOwned::new(connection, tcp);
-                complete_tls_handshake(&mut stream)?;
+                let mut tls_stream = StreamOwned::new(connection, tcp);
+                complete_tls_handshake(&mut tls_stream)?;
                 tracing::debug!(
-                    version = ?stream.conn.protocol_version(),
+                    version = ?tls_stream.conn.protocol_version(),
                     "TLS handshake complete"
                 );
-                Transport::Tls(Box::new(stream))
+                Transport::Tls(Box::new(tls_stream))
             }
         };
         write_control(&mut transport, CONTROL_READY, true)?;
@@ -262,7 +262,7 @@ struct Backoff {
 }
 
 impl Backoff {
-    fn new(policy: BackoffPolicy, seed: u64) -> Self {
+    const fn new(policy: BackoffPolicy, seed: u64) -> Self {
         Self {
             policy,
             current: policy.initial,
@@ -290,7 +290,7 @@ impl Backoff {
         delay
     }
 
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.current = self.policy.initial;
     }
 }
@@ -301,7 +301,7 @@ fn jittered(base: Duration, random: u32) -> Duration {
     half + half.mul_f64(f64::from(random) / 4_294_967_296.0)
 }
 
-fn splitmix64(seed: u64) -> u64 {
+const fn splitmix64(seed: u64) -> u64 {
     let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -485,7 +485,7 @@ impl NetworkSink {
         }
     }
 
-    fn is_connected(&self) -> bool {
+    const fn is_connected(&self) -> bool {
         matches!(self.state, State::Connected(_))
     }
 }
@@ -614,7 +614,7 @@ impl DeadlineTcp {
     }
 
     /// Starts a new operation: the deadline restarts at its first socket call.
-    fn rearm(&mut self) {
+    const fn rearm(&mut self) {
         self.armed = false;
     }
 

@@ -57,7 +57,7 @@ impl<W: Write> FrameStreamWriter<W> {
     }
 
     /// Access the transport to set an operation deadline before writing.
-    pub(crate) fn get_mut(&mut self) -> &mut W {
+    pub(crate) const fn get_mut(&mut self) -> &mut W {
         &mut self.writer
     }
 

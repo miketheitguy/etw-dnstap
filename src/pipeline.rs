@@ -778,7 +778,7 @@ struct RateMonitor {
 }
 
 impl RateMonitor {
-    fn new(window: Duration, now: Instant, received: u64) -> Self {
+    const fn new(window: Duration, now: Instant, received: u64) -> Self {
         Self {
             window,
             window_start: now,
@@ -1028,7 +1028,7 @@ fn log_diag_settings(diag: DiagContext) {
 }
 
 #[cfg(not(feature = "diag-timing"))]
-fn log_diag_settings(_diag: DiagContext) {}
+const fn log_diag_settings(_diag: DiagContext) {}
 
 /// Applies the configured diagnostic priority to the calling thread.
 #[cfg(feature = "diag-timing")]
@@ -1039,7 +1039,7 @@ fn apply_thread_priority(diag: DiagContext) {
 }
 
 #[cfg(not(feature = "diag-timing"))]
-fn apply_thread_priority(_diag: DiagContext) {}
+const fn apply_thread_priority(_diag: DiagContext) {}
 
 fn spawn_parser<S>(
     queue: Receiver<RawEtwEvent>,

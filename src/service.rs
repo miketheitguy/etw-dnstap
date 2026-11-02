@@ -89,7 +89,7 @@ pub(crate) fn run(args: Result<CaptureArgs, String>) -> Result<()> {
             .lock()
             .map_err(|_| anyhow!("service arguments lock poisoned"))?
             .as_ref()
-            .and_then(|args| args.as_ref().err().cloned());
+            .and_then(|stored| stored.as_ref().err().cloned());
         if let Some(text) = invalid {
             return Err(anyhow!("{text}"));
         }
@@ -209,7 +209,7 @@ fn handle_control(control: u32, stop: &AtomicBool) -> u32 {
     }
 }
 
-fn is_pending(state: u32) -> bool {
+const fn is_pending(state: u32) -> bool {
     matches!(state, SERVICE_START_PENDING | SERVICE_STOP_PENDING)
 }
 
@@ -509,7 +509,7 @@ impl TokenBuffer {
         })
     }
 
-    fn bytes(&self) -> &[u8] {
+    const fn bytes(&self) -> &[u8] {
         // SAFETY: GetTokenInformation initialized used bytes in this allocation,
         // and read verified used does not exceed its initialized capacity.
         unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast(), self.used) }
@@ -558,7 +558,7 @@ struct GroupEntry<'a> {
 }
 
 /// True for a group that is enabled and not restricted to deny-only use.
-fn group_enabled(group: &GroupEntry<'_>) -> bool {
+const fn group_enabled(group: &GroupEntry<'_>) -> bool {
     let mask = (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY).cast_unsigned();
     group.attributes & mask == SE_GROUP_ENABLED.cast_unsigned()
 }
