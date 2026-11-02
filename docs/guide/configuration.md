@@ -490,10 +490,20 @@ handshake. That is a protocol failure, as described below.
   the TLS record layer.
 - **Verification.** The receiver certificate is verified by Windows CryptoAPI
   through `rustls-platform-verifier`. It uses the machine store: Trusted Root
-  Certification Authorities and intermediates, roots pushed by Group Policy, and
-  revocation checking. The certificate must match `--tls-server-name`, or the
-  receiver IP as an `iPAddress` SAN when that flag is not set. The same name is
-  sent as SNI.
+  Certification Authorities and intermediates, and roots pushed by Group
+  Policy. The certificate must match `--tls-server-name`, or the receiver IP
+  as an `iPAddress` SAN when that flag is not set. The same name is sent as
+  SNI.
+- **Revocation.** The verifier checks revocation for the receiver (end-entity)
+  certificate only. It does not check the intermediates. The check is best
+  effort. If the status cannot be obtained, the connection proceeds. One
+  cause is an unreachable Online Certificate Status Protocol (OCSP) responder
+  or certificate revocation list (CRL) distribution point. A certificate that
+  the store reports as revoked is rejected. The verifier gives revocation
+  network retrieval a cumulative 10-second limit. The 2-second connect
+  deadline does not bound that time. See
+  [Deadlines](#message-and-transport-limits). Hard-fail revocation is not
+  provided.
 - **Failure class.** A certificate that does not verify is a protocol failure,
   not a network failure. At the first connection it is fatal: the service stops
   with an error (Event ID 1). On a reconnect it is a counted failed attempt, and

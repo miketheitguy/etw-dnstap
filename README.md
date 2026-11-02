@@ -24,7 +24,9 @@ Server Analytical event log.
 
 **Security first.** The transport is **TLS 1.2 or 1.3 by default** (rustls).
 The service verifies the receiver certificate with the Windows machine
-certificate store. `--plaintext` turns TLS off. DNS payloads can contain private
+certificate store. Revocation is checked for the receiver certificate only,
+and the connection proceeds when the revocation status cannot be obtained.
+`--plaintext` turns TLS off. DNS payloads can contain private
 names and addresses, so use `--plaintext` only on a trusted network. Read
 [SECURITY.md](SECURITY.md) and the
 [TLS section](docs/guide/configuration.md#tls) before deploying.
