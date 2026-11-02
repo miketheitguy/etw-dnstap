@@ -75,6 +75,8 @@ identity) are parameters, never baked in.
    Ubuntu `ubuntu-parser-ramp-upstream.py` / `ubuntu-parser-ramp-control.py`, one
    `windows-parser-stage.ps1` per stage, then `windows-parser-campaign.ps1 -Action Restore`/`Fetch`,
    `windows-final-proof.ps1`, and the verify/reconcile/report scripts below.
+   Optional, any time the service is Running or Stopped: `windows-startup-capacity.ps1 -WhatIf`, then without `-WhatIf` to
+   check that the service reaches Running at `--capacity 262144`.
 6. **Per-run helpers:** `windows-run-client.ps1` (load), `windows-capture.ps1` (counters/WPR/clock).
 7. **Analysis (host, offline):** `analyze-host.py`, `analyze-windows.py`, `summarize-pooled-broad.py`, `summarize-pooled-native.py`,
    `summarize-pooled-stacks.py`, `summarize-pooled-stage.py`, `summarize-pooled-trace-gates.py`, `export-cpu-precise.ps1`,
@@ -98,6 +100,7 @@ cleanup/evidence actions still work. Also archived (Python): the service-stop to
 | `ubuntu-performance-data-disk.ps1` | Creates/attaches a VHDX, or detaches it (VHDX is kept) | `SupportsShouldProcess` (`-WhatIf`/`-Confirm`, `ConfirmImpact High`). GUID, OS-disk and free-space checks |
 | zone removal (`Remove-LabOwnedZone`) | `Remove-DnsServerZone -Force` | Only for zones listed in the campaign's `owned-zones.txt` (legacy `owned-rec-forwarder.txt`/`owned-forwarder.txt` still honoured). Anything else is refused |
 | `windows-*campaign*.ps1` Deploy/Restore | Replaces the installed service binary / SCM command line | Hash and ACL checks. Backup refuses to reuse a campaign ID |
+| `windows-startup-capacity.ps1` | Changes the installed service's SCM command line (`--capacity`) and optionally the installed binary for the duration of the check, starts and stops the service | `SupportsShouldProcess` (`-WhatIf` runs the preflight only). Hash and ACL (SDDL) checks. Restore in `finally`, compared against the preflight |
 | `setup-ubuntu-workload.sh` | Edits the collector config, installs units and an nft table | Root only, refuses if a backup/drop-in/log already exists |
 
 Always run the Python destructive scripts without `--apply` first and read the plan.
@@ -127,6 +130,7 @@ change. Those files are still hash-verified.
 | `windows-final-proof.ps1` | Prove service/zones/answers are back to normal | `-EvidenceRoot` | `final-query-proof.json` |
 | `windows-capture.ps1` | Counter collector, bounded WPR, clock bounds | `-Action`, `-RunId`, `-EvidenceRoot` | `<EvidenceRoot>/<RunId>/*` |
 | `windows-run-client.ps1` | Run `dns-stress` and sample it | `-Mode`, `-RunId`, `-Qps`, `-Duration` | `invocation.json`, `host-process.csv`, `exit.json` |
+| `windows-startup-capacity.ps1` | Startup check at the maximum `--capacity`. Temporarily appends `--capacity` to the installed service's `PathName`, optionally replaces the installed binary (`-CandidatePath`, `-ExpectedHash`), starts the service, samples the SCM status (state, checkpoint, wait hint) until `RUNNING`, stops it, and restores the path, binary, hash and SDDL in a `finally` block. Supports `-WhatIf` (preflight only, nothing on the guest changes). The receiver is not needed. It is the only script under `scripts/performance/` that changes the SCM command line and supports `-WhatIf`. Unlike the campaign scripts it needs no campaign ID | `-Capacity`, `-CandidatePath`, `-ExpectedHash`, `-ProofName`, `-EvidenceRoot` | `<EvidenceRoot>/<ProofName>.json` |
 | `windows-parser-campaign.ps1` | Parser-ramp Backup/Deploy/Prepare/Start/Stop/Restore/Fetch | `-Action`, `-CampaignId`, `-ExpectedHash`, `-CandidatePath`, `-UpstreamAddress` | receipts + fetched files under `target/performance/<id>/windows` |
 | `windows-parser-stage.ps1` | One isolated parser stage with guards | `-Mode`, `-CampaignId`, `-RunId`, `-Qps`, `-Duration`, `-ReceiverReadyReceipt`, `-ExpectedHash`, `-MatrixApproved` | `target/performance/<id>/stages/<run>` |
 | `ubuntu-performance-data-disk.ps1` | Attach/detach the temporary VHDX | `-Action`, `-CampaignId` | `temporary-data-disk-host.json` / `-detached.json` |

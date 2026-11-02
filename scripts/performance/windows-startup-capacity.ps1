@@ -58,7 +58,12 @@ $guestBase = "$($config.windows_vm.data_dir)/startup-capacity"
 $budgetSeconds = 10 + [math]::Ceiling($Capacity / 16384)
 if ($CandidatePath) {
     if (-not $ExpectedHash) { throw 'ExpectedHash is required with CandidatePath' }
-    if ((Get-FileHash -LiteralPath $CandidatePath -Algorithm SHA256).Hash -ne $ExpectedHash) { throw "Candidate hash mismatch: $CandidatePath" }
+    # Get-FileHash returns nothing under -WhatIf in Windows PowerShell 5.1, so hash with .NET (read-only).
+    $candidateFull = (Resolve-Path -LiteralPath $CandidatePath).ProviderPath
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($candidateFull)
+    try { $candidateHash = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('X2') }) } finally { $stream.Dispose(); $sha.Dispose() }
+    if ($candidateHash -ne $ExpectedHash) { throw "Candidate hash mismatch: $CandidatePath" }
 }
 $vm = Get-LabVm -RequireRunning
 $session = Get-LabSession -Vm $vm
@@ -106,17 +111,31 @@ try {
     if ($CandidatePath) {
         Invoke-Command -Session $session -ErrorAction Stop -ArgumentList $guestBase -ScriptBlock { param($base) $ErrorActionPreference = 'Stop'; New-Item -ItemType Directory -Path $base -Force | Out-Null }
         Copy-Item -LiteralPath $CandidatePath -Destination "$guestBase/candidate.exe" -ToSession $session -Force
-        Invoke-Command -Session $session -ErrorAction Stop -ArgumentList $guestBase, $installed, $ExpectedHash, $pre.binary_sha256, $pre.executable_sddl -ScriptBlock {
-            param($base, $installed, $expected, $originalHash, $sddl)
+        # Step 1: verify the guest copy and take the backup. Nothing installed has changed yet.
+        Invoke-Command -Session $session -ErrorAction Stop -ArgumentList $guestBase, $installed, $ExpectedHash, $pre.binary_sha256 -ScriptBlock {
+            param($base, $installed, $expected, $originalHash)
             $ErrorActionPreference = 'Stop'
             if ((Get-FileHash -LiteralPath "$base/candidate.exe" -Algorithm SHA256).Hash -ne $expected) { throw 'Guest candidate hash mismatch' }
-            Copy-Item -LiteralPath $installed -Destination "$base/original.exe" -Force
+            if (Test-Path -LiteralPath "$base/original.exe") {
+                # A backup left by an earlier run is kept only if it is the executable the preflight saw.
+                if ((Get-FileHash -LiteralPath "$base/original.exe" -Algorithm SHA256).Hash -ne $originalHash) { throw "Refusing to overwrite an existing backup that differs from the installed executable: $base/original.exe" }
+            } else {
+                Copy-Item -LiteralPath $installed -Destination "$base/original.exe"
+            }
             if ((Get-FileHash -LiteralPath "$base/original.exe" -Algorithm SHA256).Hash -ne $originalHash) { throw 'Backup of the installed executable failed' }
+        }
+        # Step 2: overwrite the installed executable. The flag is set BEFORE the call that mutates, so
+        # a failure inside it (including the hash/ACL check after the copy) still reaches the restore.
+        $deployed = $true
+        Invoke-Command -Session $session -ErrorAction Stop -ArgumentList $guestBase, $installed, $ExpectedHash, $pre.executable_sddl -ScriptBlock {
+            param($base, $installed, $expected, $sddl)
+            $ErrorActionPreference = 'Stop'
             Copy-Item -LiteralPath "$base/candidate.exe" -Destination $installed -Force
             if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $expected -or (Get-Acl -LiteralPath $installed).Sddl -ne $sddl) { throw 'Deployment hash/ACL mismatch' }
         }
-        $deployed = $true
     }
+    # Set before the call: Change may take effect even when the remote call then throws. The restore is idempotent.
+    $pathChanged = $true
     Invoke-Command -Session $session -ErrorAction Stop -ArgumentList $serviceName, $newPath -ScriptBlock {
         param($serviceName, $path)
         $ErrorActionPreference = 'Stop'
@@ -124,7 +143,6 @@ try {
         $change = Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ PathName = $path }
         if ($change.ReturnValue) { throw "Change PathName returned $($change.ReturnValue)" }
     }
-    $pathChanged = $true
     $run = Invoke-Command -Session $session -ErrorAction Stop -ArgumentList $serviceName, $budgetSeconds -ScriptBlock {
         param($serviceName, $budgetSeconds)
         $ErrorActionPreference = 'Stop'
@@ -200,7 +218,11 @@ try {
                         if ($change.ReturnValue) { throw "Restore PathName returned $($change.ReturnValue)" }
                     }
                     if ($restoreBinary) {
-                        Copy-Item -LiteralPath "$base/original.exe" -Destination $installed -Force
+                        # Idempotent: copy the original back only if the backup exists. Without a backup the
+                        # installed executable was never replaced, and the check below still has to match.
+                        if (Test-Path -LiteralPath "$base/original.exe") {
+                            Copy-Item -LiteralPath "$base/original.exe" -Destination $installed -Force
+                        }
                         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash -or (Get-Acl -LiteralPath $installed).Sddl -ne $sddl) { throw 'Restore of the installed executable failed' }
                         Remove-Item -LiteralPath "$base/candidate.exe", "$base/original.exe" -Force -ErrorAction SilentlyContinue
                     }
