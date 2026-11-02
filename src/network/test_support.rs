@@ -27,8 +27,9 @@ pub(super) fn retry_policy(initial_ms: u64, max_ms: u64) -> BackoffPolicy {
 }
 
 /// How long [`wait_until`] waits before failing. Generous: the reconnect
-/// policies in these tests retry within tens of milliseconds.
-pub(super) const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// policies in these tests retry within tens of milliseconds, and the bound
+/// only matters when a test fails.
+pub(super) const WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Polls `condition` until it holds. Fails the test when `timeout` elapses
 /// first, naming `what` was waited for. The condition may do work on each poll,

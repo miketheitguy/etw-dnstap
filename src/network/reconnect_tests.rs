@@ -71,12 +71,20 @@ fn reconnects_with_a_fresh_handshake_and_never_resends() {
     // notices the outage and the finished reconnect only on a write or flush.
     let mut sequence = 1000u32;
     let mut first_after_reconnect = sequence;
+    let mut reconnected_by_last_flush = false;
     wait_until(WAIT_TIMEOUT, "the sink to reconnect", || {
         first_after_reconnect = sequence;
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
+        // This frame went out on the new session only if the reconnect had
+        // finished before or during the write. A reconnect that finishes inside
+        // flush() below dropped the frame, so it is acted on by the next
+        // iteration, whose write goes out on the new session.
+        let on_new_session =
+            reconnected_by_last_flush || stats.reconnects.load(Ordering::Relaxed) >= 1;
         sink.flush().expect("flush");
+        reconnected_by_last_flush = stats.reconnects.load(Ordering::Relaxed) >= 1;
         sequence += 1;
-        stats.reconnects.load(Ordering::Relaxed) >= 1
+        on_new_session
     });
     for sequence in 100..103u32 {
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
@@ -184,8 +192,14 @@ fn deadline_clock_starts_at_the_first_io_of_each_operation() {
         transport.remaining().is_err()
     });
     transport.rearm();
-    // The old deadline has passed, but idle time before an operation's first
-    // I/O does not count against it: the clock restarts at this call.
-    assert!(transport.remaining().is_ok());
+    // This sleep is the scenario, not a wait for a condition: the operation
+    // sits idle for longer than the 50 ms window before its first I/O. Idle
+    // time does not count against the deadline; the clock starts at the first
+    // remaining() call below, so nearly the whole window is still left.
+    thread::sleep(Duration::from_millis(80));
+    let remaining = transport
+        .remaining()
+        .expect("the clock starts at the first I/O");
+    assert!(remaining > Duration::from_millis(40), "{remaining:?} left");
     assert!(transport.armed);
 }

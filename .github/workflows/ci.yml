@@ -266,7 +266,10 @@ jobs:
   miri:
     name: Miri on the pure-Rust modules (advisory)
     runs-on: windows-latest
-    timeout-minutes: 45
+    # The hosted run time is unmeasured (56 tests took about 9 minutes on a
+    # 24-core workstation, and the runner has 4 cores). Tighten this after the
+    # first run.
+    timeout-minutes: 60
     # Advisory until it has passed on hosted runners. Miri interprets only the
     # modules without FFI: the ETW decoder, Frame Streams, the dnstap encoder,
     # and the keyword-array parser. The name filters in the last step leave out
@@ -293,9 +296,9 @@ jobs:
       # cargo rebuilds std through the Miri driver, and the link arguments are
       # never used because nothing is linked.
       - name: Build the Miri sysroot
+        working-directory: ${{ runner.temp }}
         run: |
-          cp rust-toolchain.toml "$RUNNER_TEMP/"
-          cd "$RUNNER_TEMP"
+          cp "$GITHUB_WORKSPACE/rust-toolchain.toml" .
           cargo miri setup
       # The property tests honor PROPTEST_CASES; Miri runs them at 8 cases
       # instead of 256, and the failure-persistence file is off because
@@ -309,11 +312,14 @@ jobs:
           MIRIFLAGS: -Zmiri-env-forward=PROPTEST_CASES -Zmiri-env-forward=PROPTEST_DISABLE_FAILURE_PERSISTENCE
           PROPTEST_CASES: "8"
           PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
-        run: >-
-          cargo miri test --locked --
-          etw::decode::tests framestream:: dnstap::
-          etw::keywords::tests::parse_keyword_array
-          etw::keywords::tests::select_keywords
-          --skip truncation_sweep_covers
-          --skip failure_reason_at_an_odd
-          --skip direct_bytes_match_independent
+        run: |
+          cargo miri test --locked --             etw::decode::tests framestream:: dnstap::             etw::keywords::tests::parse_keyword_array             etw::keywords::tests::select_keywords             --skip truncation_sweep_covers             --skip failure_reason_at_an_odd             --skip direct_bytes_match_independent | tee miri.log
+          # A filter that matches nothing still exits 0 ("running 0 tests"),
+          # so require a floor on the passed count (56 tests ran when this
+          # was written; the margin absorbs small test churn).
+          passed=$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($i == "passed;") total += $(i - 1) } END { print total + 0 }' miri.log)
+          echo "Miri passed $passed tests"
+          if [ "$passed" -lt 50 ]; then
+            echo "::error::Miri ran only $passed tests; expected at least 50."
+            exit 1
+          fi
