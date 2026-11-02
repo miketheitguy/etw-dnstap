@@ -13,6 +13,14 @@ use std::{
 use anyhow::{Context, Result};
 use crossbeam_channel::Receiver;
 
+#[cfg(feature = "diag-timing")]
+#[path = "parser/timing_on.rs"]
+mod timing;
+#[cfg(not(feature = "diag-timing"))]
+#[path = "parser/timing_off.rs"]
+mod timing;
+
+use self::timing::{DiagTiming, Stamp};
 use super::config::DiagContext;
 use crate::{
     dnstap::Encoder,
@@ -34,88 +42,8 @@ pub(crate) struct ParseCounters {
     /// Deepest the event channel was seen: sampled by the parser on the first
     /// event after each idle wake and every 256 events, so a lower bound.
     pub(crate) queue_depth_max: AtomicU64,
-    #[cfg(feature = "diag-timing")]
+    /// Wait attribution; empty unless `diag-timing` is enabled.
     pub(super) timing: DiagTiming,
-}
-
-/// Parser-thread wait attribution, compiled only for the diagnostic build. Only
-/// the parser thread writes these; the final report reads them after the join.
-#[cfg(feature = "diag-timing")]
-#[derive(Default)]
-pub(super) struct DiagTiming {
-    parks: AtomicU64,
-    backoff_parks: AtomicU64,
-    park_ns: AtomicU64,
-    wake_len_max: AtomicU64,
-    wake_len_0: AtomicU64,
-    wake_len_lt_1k: AtomicU64,
-    wake_len_lt_4k: AtomicU64,
-    wake_len_lt_8k: AtomicU64,
-    wake_len_ge_8k_or_full: AtomicU64,
-    max_run: AtomicU64,
-    write_ns: AtomicU64,
-    writes_over_1ms: AtomicU64,
-    flush_ns: AtomicU64,
-    flushes_over_1ms: AtomicU64,
-}
-
-#[cfg(feature = "diag-timing")]
-impl DiagTiming {
-    const SLOW_CALL: Duration = Duration::from_millis(1);
-
-    fn nanos(elapsed: Duration) -> u64 {
-        u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-    }
-
-    fn record_park(&self, elapsed: Duration, requested: Duration) {
-        self.parks.fetch_add(1, Ordering::Relaxed);
-        if requested > IDLE_POLL_MIN {
-            self.backoff_parks.fetch_add(1, Ordering::Relaxed);
-        }
-        self.park_ns
-            .fetch_add(Self::nanos(elapsed), Ordering::Relaxed);
-    }
-
-    /// Records the queue length first seen after a park. "Full" is `len >=
-    /// capacity` for a bounded queue.
-    fn record_wake(&self, len: usize, capacity: Option<usize>) {
-        let len = u64::try_from(len).unwrap_or(u64::MAX);
-        self.wake_len_max.fetch_max(len, Ordering::Relaxed);
-        let full =
-            capacity.is_some_and(|capacity| len >= u64::try_from(capacity).unwrap_or(u64::MAX));
-        let bucket = if len == 0 {
-            &self.wake_len_0
-        } else if len >= 8192 || full {
-            &self.wake_len_ge_8k_or_full
-        } else if len < 1024 {
-            &self.wake_len_lt_1k
-        } else if len < 4096 {
-            &self.wake_len_lt_4k
-        } else {
-            &self.wake_len_lt_8k
-        };
-        bucket.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn record_run(&self, events: u64) {
-        self.max_run.fetch_max(events, Ordering::Relaxed);
-    }
-
-    fn record_write(&self, elapsed: Duration) {
-        self.write_ns
-            .fetch_add(Self::nanos(elapsed), Ordering::Relaxed);
-        if elapsed > Self::SLOW_CALL {
-            self.writes_over_1ms.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn record_flush(&self, elapsed: Duration) {
-        self.flush_ns
-            .fetch_add(Self::nanos(elapsed), Ordering::Relaxed);
-        if elapsed > Self::SLOW_CALL {
-            self.flushes_over_1ms.fetch_add(1, Ordering::Relaxed);
-        }
-    }
 }
 
 /// Applies the configured diagnostic priority to the calling thread.
@@ -194,10 +122,8 @@ fn parse_loop<S: FrameSink>(
             }
             match result {
                 Ok(Some(payload)) => {
-                    #[cfg(feature = "diag-timing")]
-                    let write_started = Instant::now();
+                    let write_started = Stamp::now();
                     let sent = writer.write_frame(payload);
-                    #[cfg(feature = "diag-timing")]
                     counters.timing.record_write(write_started.elapsed());
                     sent.context("send dnstap packet").inspect_err(|_error| {
                         counters
@@ -235,10 +161,8 @@ fn parse_loop<S: FrameSink>(
             }
         };
         if flush_due {
-            #[cfg(feature = "diag-timing")]
-            let flush_started = Instant::now();
+            let flush_started = Stamp::now();
             let flushed = writer.flush();
-            #[cfg(feature = "diag-timing")]
             counters.timing.record_flush(flush_started.elapsed());
             flushed
                 .context("flush dnstap TCP sender")
@@ -250,10 +174,7 @@ fn parse_loop<S: FrameSink>(
         }
         Ok(())
     };
-    #[cfg(not(feature = "diag-timing"))]
-    drain_queue(queue, producer_done, consume)?;
-    #[cfg(feature = "diag-timing")]
-    drain_queue_inner(queue, producer_done, Some(&counters.timing), consume)?;
+    drain_queue(queue, producer_done, &counters.timing, consume)?;
     writer
         .finish()
         .context("finish dnstap STOP/FINISH exchange")
@@ -315,28 +236,13 @@ fn idle_poll_after(received: bool, current: Duration) -> Duration {
 
 // The completion flag is separate from the queue: after observing completion,
 // retry receive so a final send between the previous receive and flag load drains.
-#[cfg(any(test, not(feature = "diag-timing")))]
 fn drain_queue<T>(
     queue: &Receiver<T>,
     producer_done: &AtomicBool,
-    consume: impl FnMut(Option<T>) -> Result<()>,
-) -> Result<()> {
-    #[cfg(feature = "diag-timing")]
-    {
-        drain_queue_inner(queue, producer_done, None, consume)
-    }
-    #[cfg(not(feature = "diag-timing"))]
-    {
-        drain_queue_inner(queue, producer_done, consume)
-    }
-}
-
-fn drain_queue_inner<T>(
-    queue: &Receiver<T>,
-    producer_done: &AtomicBool,
-    #[cfg(feature = "diag-timing")] diag: Option<&DiagTiming>,
+    timing: &DiagTiming,
     mut consume: impl FnMut(Option<T>) -> Result<()>,
 ) -> Result<()> {
+    let mut drain = timing.drain();
     let mut idle_poll = IDLE_POLL_MIN;
     // True after an event was consumed since the last park or linger.
     let mut had_data = false;
@@ -345,36 +251,19 @@ fn drain_queue_inner<T>(
     // than the linger window (high, steady rates), the parser then parks between
     // buffers instead of spinning through most of each gap.
     let mut linger_armed = true;
-    #[cfg(feature = "diag-timing")]
-    let (mut run, mut just_parked) = (0_u64, false);
     loop {
-        #[cfg(feature = "diag-timing")]
-        if let Some(diag) = diag
-            && just_parked
-        {
-            just_parked = false;
-            diag.record_wake(queue.len(), queue.capacity());
-        }
+        drain.wake(queue);
         if let Ok(event) = queue.try_recv() {
             idle_poll = idle_poll_after(true, idle_poll);
             had_data = true;
-            #[cfg(feature = "diag-timing")]
-            {
-                run += 1;
-            }
+            drain.event();
             consume(Some(event))?;
         } else if producer_done.load(Ordering::Acquire) {
             while let Ok(event) = queue.try_recv() {
-                #[cfg(feature = "diag-timing")]
-                {
-                    run += 1;
-                }
+                drain.event();
                 consume(Some(event))?;
             }
-            #[cfg(feature = "diag-timing")]
-            if let Some(diag) = diag {
-                diag.record_run(run);
-            }
+            drain.finish();
             return Ok(());
         } else {
             consume(None)?;
@@ -397,47 +286,16 @@ fn drain_queue_inner<T>(
                 linger_armed = false;
             }
             had_data = false;
-            #[cfg(feature = "diag-timing")]
-            let parked = Instant::now();
+            let parked = Stamp::now();
             thread::park_timeout(idle_poll);
             if queue.is_empty() {
                 // A quiet period (or a spurious wake): the next burst may linger.
                 linger_armed = true;
             }
-            #[cfg(feature = "diag-timing")]
-            if let Some(diag) = diag {
-                diag.record_park(parked.elapsed(), idle_poll);
-                diag.record_run(run);
-                run = 0;
-                just_parked = true;
-            }
+            drain.parked(parked, idle_poll);
             idle_poll = idle_poll_after(false, idle_poll);
         }
     }
-}
-
-#[cfg(feature = "diag-timing")]
-pub(super) fn report_timing(timing: &DiagTiming) {
-    let parks = timing.parks.load(Ordering::Relaxed);
-    let park_ns = timing.park_ns.load(Ordering::Relaxed);
-    tracing::info!(
-        parks,
-        backoff_parks = timing.backoff_parks.load(Ordering::Relaxed),
-        park_ns,
-        mean_park_ns = park_ns.checked_div(parks).unwrap_or(0),
-        wake_len_max = timing.wake_len_max.load(Ordering::Relaxed),
-        wake_len_0 = timing.wake_len_0.load(Ordering::Relaxed),
-        wake_len_lt_1k = timing.wake_len_lt_1k.load(Ordering::Relaxed),
-        wake_len_lt_4k = timing.wake_len_lt_4k.load(Ordering::Relaxed),
-        wake_len_lt_8k = timing.wake_len_lt_8k.load(Ordering::Relaxed),
-        wake_len_ge_8k_or_full = timing.wake_len_ge_8k_or_full.load(Ordering::Relaxed),
-        max_run = timing.max_run.load(Ordering::Relaxed),
-        write_ns = timing.write_ns.load(Ordering::Relaxed),
-        writes_over_1ms = timing.writes_over_1ms.load(Ordering::Relaxed),
-        flush_ns = timing.flush_ns.load(Ordering::Relaxed),
-        flushes_over_1ms = timing.flushes_over_1ms.load(Ordering::Relaxed),
-        "parser timing"
-    );
 }
 
 #[cfg(test)]

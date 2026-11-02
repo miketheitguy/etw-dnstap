@@ -649,8 +649,7 @@ fn report_snapshot(capture: &CaptureCounters, parser: &ParseCounters, sink: &Sin
 
 fn report_counts(capture: &CaptureCounters, parser: &ParseCounters, sink: &SinkStats) {
     emit_counts!("capture stopped", "output stopped", capture, parser, sink);
-    #[cfg(feature = "diag-timing")]
-    super::parser::report_timing(&parser.timing);
+    parser.timing.report();
 }
 
 #[cfg(test)]

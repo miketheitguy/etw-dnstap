@@ -348,6 +348,11 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - Internal: `src/pipeline.rs` is split into `src/pipeline/config.rs` (command
   line and validation), `watchdog.rs`, `supervisor.rs`, and `parser.rs`, with
   the tests beside each module. No behavior change.
+- Internal: a `DiagTiming` type replaces the per-line `diag-timing` feature
+  attributes in the parser loops. It is the timing collector with the feature
+  on and a zero-sized type with empty inline methods with it off, and the
+  argument-hiding `drain_queue` wrapper is gone. The feature-on log output is
+  unchanged and the normal release image is the same size.
 
 ### Removed
 
