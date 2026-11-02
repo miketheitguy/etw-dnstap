@@ -34,6 +34,11 @@ diag-timing = ["windows-sys/Win32_Media"]
 # Fuzzing only: exposes `#[doc(hidden)] etw_dnstap::fuzzing` entry points used by
 # the separate `fuzz/` crate. Never enable it in a shipped build.
 fuzzing = []
+# Benchmark only: exposes `#[doc(hidden)] etw_dnstap::bench` entry points used by
+# `benches/hot_path.rs`. It implies `fuzzing` because the records are built from
+# the saved DNS Server template that feature compiles in. Never enable it in a
+# shipped build.
+bench = ["fuzzing"]
 
 [build-dependencies]
 # Compiles packaging/perfcounters/etw-dnstap-perf.rc (counter names) into the exe.
@@ -43,6 +48,17 @@ embed-resource = "3.0.12"
 # Generates a throwaway CA and server certificate for the TLS transport tests.
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
+# Hot-path benchmark (`benches/hot_path.rs`). No rayon or plotters: the analysis
+# runs single-threaded and reports text only, which keeps the dependency graph
+# and its licenses small.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+# Built and run only with `cargo bench --locked --features bench`. Without the
+# feature, `cargo bench` and `cargo clippy --all-targets` skip the target.
+[[bench]]
+name = "hot_path"
+harness = false
+required-features = ["bench"]
 
 [profile.dev]
 debug = 2

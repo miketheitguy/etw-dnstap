@@ -74,6 +74,21 @@ Notes:
   Visual Studio AddressSanitizer runtime. See the
   [install guide](docs/guide/install.md#optional-address-sanitizer-builds).
 
+The criterion benchmark in `benches/hot_path.rs` measures the per-event hot
+path on deterministic DNS records. It covers the deep copy into a pooled slot,
+decode, encode, and `parse_and_encode`. It needs the `bench` feature, which
+exposes benchmark entry points. That feature is never enabled in a shipped
+build. Run it with the alias from `.cargo/config.toml`, which builds the
+standard library for unwinding as `cargo test-release` does:
+
+```powershell
+cargo bench-hot-path
+```
+
+Criterion writes its reports under `target\criterion\`, a local artifact that
+is not in a clone. Compare a change against an earlier run with
+`-- --save-baseline <name>` and `-- --baseline <name>`.
+
 The `tools/dns-stress` load generator is a separate Cargo project. Build and
 test it from its own directory:
 

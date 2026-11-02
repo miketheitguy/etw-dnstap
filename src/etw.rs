@@ -12,6 +12,7 @@
 //! - `session_guid`: the per-run session GUID.
 //! - `diag` (feature `diag-timing`): timer and thread-priority diagnostics.
 //! - `fuzzing` (feature `fuzzing`): entry points for the fuzz targets.
+//! - `bench` (feature `bench`): entry points for the criterion benchmark.
 //!
 //! Only the modules that call native APIs allow `unsafe` code.
 
@@ -20,6 +21,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use anyhow::{Result, bail};
 use windows_sys::{Win32::Foundation::ERROR_SUCCESS, core::GUID};
 
+#[cfg(feature = "bench")]
+#[allow(unsafe_code)]
+pub(crate) mod bench;
 mod decode;
 #[cfg(feature = "diag-timing")]
 #[allow(unsafe_code)]
