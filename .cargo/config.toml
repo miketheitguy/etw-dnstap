@@ -39,6 +39,13 @@ rustflags = [
 test-release = [
     "test", "--locked", "--release", "--config", 'profile.release.panic="unwind"',
 ]
+# Runs the criterion benchmark (benches/hot_path.rs, see CONTRIBUTING.md). The
+# bench profile inherits panic = "abort", but Cargo builds bench targets for
+# unwinding, so the standard library is built the same way, as for test-release.
+bench-hot-path = [
+    "bench", "--locked", "--features", "bench", "--bench", "hot_path",
+    "--config", 'profile.release.panic="unwind"',
+]
 # ASan is for testing. These arrays merge with the target settings above;
 # build.rustflags would be ignored because target.rustflags takes precedence.
 # rustdocflags also instrument documentation tests.

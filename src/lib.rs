@@ -31,6 +31,15 @@ pub mod fuzzing {
     }
 }
 
+/// Entry points for `benches/hot_path.rs`. Not part of the supported interface.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench {
+    pub use crate::etw::bench::{
+        Copied, Decoded, Pipeline, Plan, Pool, Record, copy_record, private_bytes,
+    };
+}
+
 /// Runs capture through the Windows Service Control Manager dispatcher.
 ///
 /// Help and version output print to stdout and succeed without starting the

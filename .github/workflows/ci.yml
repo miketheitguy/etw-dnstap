@@ -67,6 +67,12 @@ jobs:
       - name: clippy (fuzzing entry points)
         run: cargo clippy --locked --all-targets --features fuzzing -- -D warnings
 
+      - name: clippy (benchmark entry points)
+        run: cargo clippy --locked --all-targets --features bench -- -D warnings
+
+      - name: test (benchmark entry points)
+        run: cargo test --locked --features bench
+
       - name: test
         run: cargo test --locked
 
