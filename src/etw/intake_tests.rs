@@ -40,7 +40,7 @@ fn allocator_fixtures() -> Vec<(&'static str, AllocCounts)> {
     results.push(("success", measured(|| fixture.invoke())));
     results.push(("channel_full", measured(|| fixture.invoke())));
     let event = fixture.receive.try_recv().expect("accepted event");
-    let pool = Arc::clone(&fixture.context.pool);
+    let pool = fixture.context.pool;
     let recycled = thread::spawn(move || measured(|| drop(event)))
         .join()
         .expect("recycler joined");
@@ -120,7 +120,7 @@ fn scoped_native_record_empty_view_is_null_and_keeps_lease_exclusive() {
     ];
     let source = EVENT_RECORD::default();
     // SAFETY: The empty record advertises no borrowed storage.
-    let event = unsafe { copy_record(&source, &pool) }.expect("empty event");
+    let event = unsafe { copy_record(&source, pool) }.expect("empty event");
     let counts = measured(|| {
         event.with_record(|record| {
             assert_eq!(record.ExtendedDataCount, 0);
@@ -249,7 +249,7 @@ fn scoped_native_record_repairs_all_items_and_clears_stale_reused_slot() {
         source.BufferContext.LoggerId = 0x5678;
         source.BufferContext.Anonymous.ProcessorIndex = 0x1234;
         // SAFETY: Live payloads and typed descriptors back every native range.
-        let event = unsafe { copy_record(&source, &pool) }.expect("copied event");
+        let event = unsafe { copy_record(&source, pool) }.expect("copied event");
         payload.fill(0);
         for bytes in &mut extra {
             bytes.fill(0);
@@ -333,7 +333,7 @@ fn scoped_native_record_repairs_all_items_and_clears_stale_reused_slot() {
     // Two guard leases force the next record to reuse exactly the same slot.
     let source = EVENT_RECORD::default();
     // SAFETY: Empty source has no advertised native ranges.
-    let empty = unsafe { copy_record(&source, &pool) }.expect("reused empty event");
+    let empty = unsafe { copy_record(&source, pool) }.expect("reused empty event");
     assert_eq!(empty.buffer.bytes() as usize, base);
     empty.with_record(|record| {
         assert_eq!(record.UserDataLength, 0);
@@ -374,7 +374,7 @@ fn copies_payload_and_extended_data_before_callback_returns() -> Result<()> {
         };
         // SAFETY: These live Rust allocations back every pointer/length
         // pair for the duration of the synchronous deep copy.
-        let owned = unsafe { copy_record(&record, &pool) }
+        let owned = unsafe { copy_record(&record, pool) }
             .map_err(|error| anyhow!("deep copy failed: {error:?}"))?;
         payload.fill(0);
         extra.fill(0);
@@ -408,11 +408,7 @@ struct Fixture {
 impl Fixture {
     fn new(capacity: usize, jumbo: usize) -> Self {
         let pool = PoolManager::new(capacity, jumbo).expect("test pool initializes");
-        let mut context = Box::new(CallbackContext::new(
-            Arc::clone(&pool),
-            Arc::default(),
-            TEST_PID,
-        ));
+        let mut context = Box::new(CallbackContext::new(pool, Arc::default(), TEST_PID));
         let (sender, receive) = crossbeam_channel::bounded(capacity);
         install_producer(&context, sender, pool, std::thread::current());
         let record = EVENT_RECORD {
@@ -558,7 +554,7 @@ fn callback_drops_new_record_when_ring_is_full() {
 #[test]
 fn pool_exhaustion_is_counted_and_cross_thread_recycle_survives_owner_exit() {
     let mut fixture = Fixture::new(1, 0);
-    let pool = Arc::clone(&fixture.context.pool);
+    let pool = fixture.context.pool;
     let first = pool.acquire(1).expect("first slot");
     let second = pool.acquire(1).expect("second slot");
     let third = pool.acquire(1).expect("third slot");
@@ -573,7 +569,6 @@ fn pool_exhaustion_is_counted_and_cross_thread_recycle_survives_owner_exit() {
     );
     assert_eq!(fixture.context.counters.dropped.load(Ordering::Relaxed), 0);
     drop(fixture);
-    drop(pool);
     thread::spawn(move || {
         drop(first);
         drop(second);
@@ -655,12 +650,8 @@ fn queued_records_survive_native_owner_exit_and_drain_after_disconnect() {
     fixture.invoke();
     payload.fill(0);
     let receive = fixture.receive.clone();
-    let weak = Arc::downgrade(&fixture.context.pool);
+    let pool = fixture.context.pool;
     drop(fixture);
-    assert!(
-        weak.upgrade().is_some(),
-        "queued leases retain pool after native owner exits"
-    );
     let drained = thread::spawn(move || {
         let mut count = 0;
         while let Ok(event) = receive.try_recv() {
@@ -683,10 +674,12 @@ fn queued_records_survive_native_owner_exit_and_drain_after_disconnect() {
     .join()
     .expect("drain after native completion");
     assert_eq!(drained, 2);
-    assert!(
-        weak.upgrade().is_none(),
-        "final lease releases the pool after shutdown"
-    );
+    // The pool is not freed (it lives for the process); every slot is back in it.
+    let slots: Vec<_> = (0..4)
+        .map(|_| pool.acquire(1).expect("every slot returned"))
+        .collect();
+    assert!(pool.acquire(1).is_none());
+    drop(slots);
 }
 
 #[test]
@@ -716,7 +709,7 @@ fn largest_record_and_all_extended_descriptors_fit_and_recycle() {
         ..Default::default()
     };
     // SAFETY: All advertised native ranges are backed by live allocations.
-    let owned = unsafe { copy_record(&record, &pool) }.expect("maximum record fits jumbo");
+    let owned = unsafe { copy_record(&record, pool) }.expect("maximum record fits jumbo");
     assert!(
         pool.acquire(pool::REGULAR_BYTES + 1).is_none(),
         "jumbo lease remains exclusive"
@@ -742,7 +735,7 @@ fn largest_record_and_all_extended_descriptors_fit_and_recycle() {
     };
     assert!(matches!(
         // SAFETY: The preflight rejects aggregate bounds before reading payloads.
-        unsafe { copy_record(&malformed, &pool) },
+        unsafe { copy_record(&malformed, pool) },
         Err(CopyError::Malformed)
     ));
 }
@@ -950,7 +943,7 @@ mod copy_record_properties {
             // SAFETY: Every nonnull advertised pointer is backed by a live Vec of
             // at least the advertised length; null pointers are paired with
             // nonzero lengths only to exercise rejection before any read.
-            let result = unsafe { copy_record(&record, &pool) };
+            let result = unsafe { copy_record(&record, pool) };
             if admissible(&data, null_data, &items) {
                 let owned = result.expect("admissible record is copied");
                 prop_assert_eq!(owned.payload(), &data[..]);

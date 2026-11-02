@@ -38,7 +38,8 @@ pub(crate) struct RawEtwEvent {
 
 /// State the native callback reaches through `EVENT_RECORD::UserContext`.
 pub(super) struct CallbackContext {
-    pool: Arc<PoolManager>,
+    /// The process-lifetime pool; see [`PoolManager`].
+    pool: &'static PoolManager,
     counters: Arc<CaptureCounters>,
     /// The only process allowed to emit accepted records (the DNS Server service).
     expected_pid: u32,
@@ -49,7 +50,7 @@ impl CallbackContext {
     /// there is no way to build a context without that filter. Callers box the
     /// context so the address handed to `OpenTraceW` stays stable.
     pub(super) const fn new(
-        pool: Arc<PoolManager>,
+        pool: &'static PoolManager,
         counters: Arc<CaptureCounters>,
         expected_pid: u32,
     ) -> Self {
@@ -69,7 +70,7 @@ const fn pid_allowed(expected: u32, actual: u32) -> bool {
 struct CallbackProducer {
     context: usize,
     sender: Sender<RawEtwEvent>,
-    pool: Arc<PoolManager>,
+    pool: &'static PoolManager,
     counters: Arc<CaptureCounters>,
     /// The parser thread, woken at most once per delivered ETW buffer.
     parser: Thread,
@@ -89,7 +90,7 @@ thread_local! {
 pub(super) fn install_producer(
     context: &CallbackContext,
     sender: Sender<RawEtwEvent>,
-    pool: Arc<PoolManager>,
+    pool: &'static PoolManager,
     parser: Thread,
 ) {
     let context_address = std::ptr::from_ref(context) as usize;
@@ -179,13 +180,13 @@ pub(super) unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECO
                 return false;
             };
             if producer.context != record.UserContext as usize
-                || !Arc::ptr_eq(&producer.pool, &context.pool)
+                || !std::ptr::eq(producer.pool, context.pool)
             {
                 return false;
             }
             // SAFETY: ETW owns the readable native record and each advertised
             // pointer/length pair for this call. The pool is an independent allocation.
-            let owned = match unsafe { copy_record(record, &producer.pool) } {
+            let owned = match unsafe { copy_record(record, producer.pool) } {
                 Ok(owned) => owned,
                 Err(CopyError::Malformed) => return false,
                 Err(CopyError::Exhausted { jumbo }) => {
@@ -260,7 +261,7 @@ fn align_payload(length: usize) -> Option<usize> {
 /// these native input lifetimes; size/null checks cannot validate arbitrary pointers.
 pub(super) unsafe fn copy_record(
     record: &EVENT_RECORD,
-    pool: &Arc<PoolManager>,
+    pool: &'static PoolManager,
 ) -> std::result::Result<RawEtwEvent, CopyError> {
     let invalid = || CopyError::Malformed;
     let data_length = usize::from(record.UserDataLength);

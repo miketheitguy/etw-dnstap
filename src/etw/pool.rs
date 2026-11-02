@@ -1,7 +1,5 @@
 //! Bounded, eagerly allocated aligned storage with cross-thread lease recycling.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result, ensure};
 use crossbeam_queue::ArrayQueue;
 use windows_sys::Win32::System::Diagnostics::Etw::EVENT_HEADER_EXTENDED_DATA_ITEM;
@@ -32,6 +30,13 @@ struct Slot {
 }
 
 /// Allocated before callbacks; slots move between exactly one free list and lease.
+///
+/// A pool is never freed. [`PoolManager::with_progress`] leaks it once, at
+/// startup, and returns a `&'static` reference: the pool lives for the process
+/// (the service exits after the pipeline ends), and a lease then needs no
+/// reference count, which would cost two atomic read-modify-writes per event on
+/// a cache line shared by the ETW and parser threads. A test that builds a pool
+/// leaks it; the test pools are a few slots each.
 pub(crate) struct PoolManager {
     regular: ArrayQueue<Box<Slot>>,
     jumbo: Option<ArrayQueue<Box<Slot>>>,
@@ -46,18 +51,20 @@ impl PoolManager {
     /// Allocates a pool without progress reports. The pipeline always reports
     /// progress, so this constructor serves the tests.
     #[cfg(test)]
-    pub(crate) fn new(capacity: usize, jumbo_capacity: usize) -> Result<Arc<Self>> {
+    pub(crate) fn new(capacity: usize, jumbo_capacity: usize) -> Result<&'static Self> {
         Self::with_progress(capacity, jumbo_capacity, || Ok(()))
     }
 
     /// Allocates and touches every slot before any callback can run, calling
     /// `progress` after each [`Self::PROGRESS_INTERVAL`] slots (regular and jumbo
-    /// counted together). An error from `progress` stops the allocation.
+    /// counted together). An error from `progress` stops the allocation and frees
+    /// the slots allocated so far. On success the pool is leaked and lives for the
+    /// rest of the process; call this once per pipeline run.
     pub(crate) fn with_progress(
         capacity: usize,
         jumbo_capacity: usize,
         progress: impl FnMut() -> Result<()>,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<&'static Self> {
         Self::with_progress_interval(capacity, jumbo_capacity, Self::PROGRESS_INTERVAL, progress)
     }
 
@@ -66,7 +73,7 @@ impl PoolManager {
         jumbo_capacity: usize,
         interval: usize,
         mut progress: impl FnMut() -> Result<()>,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<&'static Self> {
         ensure!(
             (1..=MAX_CAPACITY).contains(&capacity),
             "invalid channel capacity"
@@ -76,10 +83,10 @@ impl PoolManager {
             "invalid jumbo capacity"
         );
         ensure!(interval != 0, "invalid progress interval");
-        let pool = Arc::new(Self {
+        let pool = Self {
             regular: ArrayQueue::new(capacity + 2),
             jumbo: (jumbo_capacity != 0).then(|| ArrayQueue::new(jumbo_capacity)),
-        });
+        };
         let regular = (0..capacity + 2).map(|_| (REGULAR_BYTES, false));
         let jumbo = (0..jumbo_capacity).map(|_| (JUMBO_BYTES, true));
         for (allocated, (size, is_jumbo)) in (1..).zip(regular.chain(jumbo)) {
@@ -88,7 +95,8 @@ impl PoolManager {
                 progress()?;
             }
         }
-        Ok(pool)
+        // Leaked only after every slot is allocated, so a failed start frees them.
+        Ok(Box::leak(Box::new(pool)))
     }
 
     fn add_slot(&self, size: usize, jumbo: bool) -> Result<()> {
@@ -107,7 +115,7 @@ impl PoolManager {
         Ok(())
     }
 
-    pub(super) fn acquire(self: &Arc<Self>, length: usize) -> Option<PooledBuffer> {
+    pub(super) fn acquire(&'static self, length: usize) -> Option<PooledBuffer> {
         // Regular events do not consume the jumbo reserve. Pool exhaustion is
         // explicit; neither branch allocates, waits, or grows a free list.
         let slot = if length <= REGULAR_BYTES {
@@ -119,7 +127,7 @@ impl PoolManager {
         }?;
         Some(PooledBuffer {
             slot: Some(slot),
-            pool: Arc::clone(self),
+            pool: self,
         })
     }
 
@@ -142,7 +150,7 @@ impl PoolManager {
 /// Owns a unique slot; no ETW pointer or lifetime extension is stored here.
 pub(super) struct PooledBuffer {
     slot: Option<Box<Slot>>,
-    pool: Arc<PoolManager>,
+    pool: &'static PoolManager,
 }
 
 impl PooledBuffer {
@@ -193,7 +201,11 @@ impl Drop for PooledBuffer {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, sync::Mutex, thread};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+        thread,
+    };
 
     use super::*;
 
@@ -209,7 +221,6 @@ mod tests {
         let active = Arc::new(Mutex::new(HashSet::new()));
         let workers: Vec<_> = (0..4u8)
             .map(|worker| {
-                let pool = Arc::clone(&pool);
                 let active = Arc::clone(&active);
                 thread::spawn(move || {
                     let mut acquired = 0;

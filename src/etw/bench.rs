@@ -20,7 +20,7 @@
 //! crate, and a profile change such as fat LTO must not move the measured
 //! boundary.
 
-use std::{os::windows::ffi::OsStrExt, path::PathBuf, sync::Arc, sync::OnceLock};
+use std::{os::windows::ffi::OsStrExt, path::PathBuf, sync::OnceLock};
 
 use windows_sys::Win32::System::{
     Diagnostics::Etw::{EVENT_DESCRIPTOR, EVENT_HEADER, EVENT_RECORD, TdhLoadManifest},
@@ -342,10 +342,11 @@ fn jumbo_packet() -> Vec<u8> {
     packet
 }
 
-/// A record pool. Clones share the pool, so a producer thread can lease from it
-/// while another thread recycles.
-#[derive(Clone)]
-pub struct Pool(Arc<PoolManager>);
+/// A record pool. Copies share the pool, so a producer thread can lease from it
+/// while another thread recycles. Like the service's pool, it is leaked and
+/// lives for the process, so each `Pool` the benchmark builds stays allocated.
+#[derive(Clone, Copy)]
+pub struct Pool(&'static PoolManager);
 
 impl Pool {
     /// A pool of 2,048 regular slots and 64 jumbo slots, small enough to stay
@@ -426,7 +427,7 @@ pub fn copy_record(pool: &Pool, record: &Record) -> Copied {
     // is its length, the record advertises no extended data, and the pool slots
     // are separate allocations that cannot overlap the payload.
     #[allow(unsafe_code)]
-    let copied = unsafe { intake::copy_record(&record.native, &pool.0) };
+    let copied = unsafe { intake::copy_record(&record.native, pool.0) };
     Copied(copied.expect("the pool has a free slot"))
 }
 
@@ -674,10 +675,9 @@ mod tests {
     #[test]
     fn a_larger_pool_holds_more_private_bytes() {
         let before = private_bytes();
-        let pool = Pool::with_capacity(4_096, 0);
+        let _pool = Pool::with_capacity(4_096, 0);
         let after = private_bytes();
         // 4,098 slots of 2,048 bytes; allow for allocator and OS rounding.
         assert!(after - before >= 4_098 * 2_048 / 2, "{before} -> {after}");
-        drop(pool);
     }
 }

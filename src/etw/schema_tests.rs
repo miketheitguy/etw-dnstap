@@ -7,7 +7,6 @@ use crate::{
         test_support::{EXCLUDED_EVENT_IDS, assert_no_allocations, utf16_nul_bytes},
     },
 };
-use std::sync::Arc;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::Diagnostics::Etw::{EVENT_DESCRIPTOR, TDH_INTYPE_BINARY};
 
@@ -165,7 +164,7 @@ fn parser_excludes_other_ids_before_tdh_and_recycles_storage() -> Result<()> {
             ..Default::default()
         };
         // SAFETY: The empty event advertises no native input ranges.
-        let event = unsafe { copy_record(&source, &pool) }.expect("empty excluded event");
+        let event = unsafe { copy_record(&source, pool) }.expect("empty excluded event");
         assert_no_allocations(|| {
             assert!(
                 parser
@@ -214,7 +213,7 @@ fn pooled_fixture(
     payload: &mut [u8],
     id: u16,
     version: u8,
-    pool: &Arc<PoolManager>,
+    pool: &'static PoolManager,
 ) -> RawEtwEvent {
     let source = EVENT_RECORD {
         EventHeader: EVENT_HEADER {
@@ -248,11 +247,11 @@ fn cached_supported_parser_has_zero_tdh_calls_and_no_allocations() -> Result<()>
         );
         parser.schemas.push(((id, 0), schema));
         // Warm final encoder capacity; subsequent pooled-buffer reuse is measured.
-        let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+        let event = pooled_fixture(&mut fixture.payload, id, 0, pool);
         assert!(parser.parse_encode(event, &mut encoder)?.is_some());
         TDH_CALLS.with(|calls| calls.set(0));
         for _ in 0..4 {
-            let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+            let event = pooled_fixture(&mut fixture.payload, id, 0, pool);
             assert_no_allocations(|| {
                 assert!(
                     parser
@@ -292,7 +291,7 @@ fn full_schema_cache_hits_alternate_ids_and_versions_without_tdh() -> Result<()>
             parser
                 .schemas
                 .push(((id, version), cached_fixture_schema(&fixture.fields, peer)));
-            let event = pooled_fixture(&mut fixture.payload, id, version, &pool);
+            let event = pooled_fixture(&mut fixture.payload, id, version, pool);
             expected.push(
                 parser
                     .parse_encode(event, &mut encoder)?
@@ -308,7 +307,7 @@ fn full_schema_cache_hits_alternate_ids_and_versions_without_tdh() -> Result<()>
     // wrong TCP width or packet direction.
     for index in (0..4).flat_map(|version| [version, version + 4]) {
         let (id, version, fixture) = &mut fixtures[index];
-        let event = pooled_fixture(&mut fixture.payload, *id, *version, &pool);
+        let event = pooled_fixture(&mut fixture.payload, *id, *version, pool);
         assert_no_allocations(|| {
             assert_eq!(
                 parser
@@ -322,7 +321,7 @@ fn full_schema_cache_hits_alternate_ids_and_versions_without_tdh() -> Result<()>
     }
     assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
     let mut fixture = decode::tests::fixture(256, false, false, 0);
-    let event = pooled_fixture(&mut fixture.payload, 256, 249, &pool);
+    let event = pooled_fixture(&mut fixture.payload, 256, 249, pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
     assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 1);
     assert_eq!(parser.schemas.len(), MAX_CACHED_SCHEMAS);
@@ -331,7 +330,7 @@ fn full_schema_cache_hits_alternate_ids_and_versions_without_tdh() -> Result<()>
         assert!(cached_schema(&parser, (*id, *version)).is_some());
     }
     let (id, version, fixture) = &mut fixtures[0];
-    let event = pooled_fixture(&mut fixture.payload, *id, *version, &pool);
+    let event = pooled_fixture(&mut fixture.payload, *id, *version, pool);
     TDH_CALLS.with(|calls| calls.set(0));
     assert_eq!(
         parser.parse_encode(event, &mut encoder)?.expect("recovery"),
@@ -368,11 +367,11 @@ fn supported_malformed_payload_is_rejected_without_tdh() -> Result<()> {
     parser
         .schemas
         .push(((256, 0), cached_fixture_schema(&fixture.fields, "Source")));
-    let event = pooled_fixture(&mut fixture.payload, 256, 0, &pool);
+    let event = pooled_fixture(&mut fixture.payload, 256, 0, pool);
     assert!(parser.parse_encode(event, &mut encoder)?.is_some());
     fixture.payload.truncate(fixture.packet.end - 1);
     TDH_CALLS.with(|calls| calls.set(0));
-    let event = pooled_fixture(&mut fixture.payload, 256, 0, &pool);
+    let event = pooled_fixture(&mut fixture.payload, 256, 0, pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
     assert_eq!(TDH_CALLS.with(std::cell::Cell::get), 0);
     Ok(())
@@ -436,7 +435,7 @@ fn every_supported_event_id_has_a_peer_property_and_encodes() -> Result<()> {
         parser
             .schemas
             .push(((id, 0), cached_fixture_schema(&fixture.fields, peer.name())));
-        let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+        let event = pooled_fixture(&mut fixture.payload, id, 0, pool);
         assert!(
             parser.parse_encode(event, &mut encoder)?.is_some(),
             "event {id}"
@@ -473,7 +472,7 @@ fn cached_parser_rejects_semantic_mutations_and_recovers_without_tdh() -> Result
         parser
             .schemas
             .push(((id, 0), cached_fixture_schema(&valid.fields, peer)));
-        let event = pooled_fixture(&mut valid.payload, id, 0, &pool);
+        let event = pooled_fixture(&mut valid.payload, id, 0, pool);
         let expected = parser
             .parse_encode(event, &mut encoder)?
             .expect("valid fixture")
@@ -496,7 +495,7 @@ fn cached_parser_rejects_semantic_mutations_and_recovers_without_tdh() -> Result
                 5 => fixture.payload[fixture.packet.start + 2] ^= 0x80,
                 _ => {}
             }
-            let mut event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+            let mut event = pooled_fixture(&mut fixture.payload, id, 0, pool);
             if mutation == 6 {
                 event.header_mut().TimeStamp = 0;
             }
@@ -510,7 +509,7 @@ fn cached_parser_rejects_semantic_mutations_and_recovers_without_tdh() -> Result
                 .map(|_| pool.acquire(1).expect("rejected lease recycled"))
                 .collect();
             drop(leases);
-            let event = pooled_fixture(&mut valid.payload, id, 0, &pool);
+            let event = pooled_fixture(&mut valid.payload, id, 0, pool);
             assert_eq!(
                 parser
                     .parse_encode(event, &mut encoder)?
@@ -556,7 +555,7 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
     for id in [256, 257, 258] {
         for (ipv6, tcp, variant) in [(false, false, 0), (true, true, 2), (false, true, 1)] {
             let mut fixture = decode::tests::fixture(id, ipv6, tcp, variant);
-            let event = pooled_fixture(&mut fixture.payload, id, 250, &pool);
+            let event = pooled_fixture(&mut fixture.payload, id, 250, pool);
             let was_missing = cached_schema(&parser, (id, 250)).is_none();
             let was_full = parser.schemas.len() == MAX_CACHED_SCHEMAS;
             TDH_CALLS.with(|calls| calls.set(0));
@@ -579,7 +578,7 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
             reference
                 .schemas
                 .push(((id, 0), cached_fixture_schema(&fixture.fields, peer)));
-            let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+            let event = pooled_fixture(&mut fixture.payload, id, 0, pool);
             assert_eq!(
                 reference
                     .parse_encode(event, &mut encoder)?
@@ -587,7 +586,7 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
                 fast
             );
             TDH_CALLS.with(|calls| calls.set(0));
-            let event = pooled_fixture(&mut fixture.payload, id, 250, &pool);
+            let event = pooled_fixture(&mut fixture.payload, id, 250, pool);
             assert_no_allocations(|| {
                 assert_eq!(
                     parser
@@ -703,14 +702,14 @@ fn failed_schema_load_is_cached_and_not_retried() -> Result<()> {
     TDH_CALLS.with(|calls| calls.set(0));
     // No manifest exists for this provider version in the test process, so the
     // first load fails.
-    let event = pooled_fixture(&mut fixture.payload, 256, 77, &pool);
+    let event = pooled_fixture(&mut fixture.payload, 256, 77, pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
     let after_first = TDH_CALLS.with(std::cell::Cell::get);
     assert!(after_first > 0, "first load calls TDH");
     assert_eq!(parser.schema_rejected_events(), 1);
     assert!(parser.schemas.is_empty());
     for _ in 0..3 {
-        let event = pooled_fixture(&mut fixture.payload, 256, 77, &pool);
+        let event = pooled_fixture(&mut fixture.payload, 256, 77, pool);
         let error = parser
             .parse_encode(event, &mut encoder)
             .expect_err("rejected key stays rejected");
@@ -723,7 +722,7 @@ fn failed_schema_load_is_cached_and_not_retried() -> Result<()> {
     );
     assert_eq!(parser.schema_rejected_events(), 4);
     // Another version is a different key and still reaches TDH once.
-    let event = pooled_fixture(&mut fixture.payload, 256, 78, &pool);
+    let event = pooled_fixture(&mut fixture.payload, 256, 78, pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
     assert_ne!(TDH_CALLS.with(std::cell::Cell::get), after_first);
     assert_eq!(parser.rejected_keys.len(), 2);
@@ -761,7 +760,7 @@ fn mixed_ipv4_ipv6_endpoints_are_rejected_and_recovered_from() -> Result<()> {
             fixture
                 .payload
                 .splice(fixture.peer.clone(), peer_text.iter().copied());
-            let event = pooled_fixture(&mut fixture.payload, id, 0, &pool);
+            let event = pooled_fixture(&mut fixture.payload, id, 0, pool);
             let error = parser
                 .parse_encode(event, &mut encoder)
                 .expect_err("mixed address families are not a DNS exchange");
@@ -770,7 +769,7 @@ fn mixed_ipv4_ipv6_endpoints_are_rejected_and_recovered_from() -> Result<()> {
                 "event {id}: {error:#}"
             );
         }
-        let event = pooled_fixture(&mut valid.payload, id, 0, &pool);
+        let event = pooled_fixture(&mut valid.payload, id, 0, pool);
         assert!(parser.parse_encode(event, &mut encoder)?.is_some());
     }
     Ok(())
@@ -795,7 +794,7 @@ fn parse_encode_benchmark() -> Result<()> {
         parser
             .schemas
             .push(((id, 0), cached_fixture_schema(&fixture.fields, peer)));
-        fixtures.push(pooled_fixture(&mut fixture.payload, id, 0, &pool));
+        fixtures.push(pooled_fixture(&mut fixture.payload, id, 0, pool));
     }
     let mut bytes = 0usize;
     let start = std::time::Instant::now();

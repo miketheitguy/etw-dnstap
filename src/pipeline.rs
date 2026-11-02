@@ -539,7 +539,7 @@ struct ProducerStart<'a> {
     /// Bounded channel to the parser thread; the producer owns the only sender,
     /// so dropping it ends the stream.
     pub(crate) sender: crossbeam_channel::Sender<RawEtwEvent>,
-    pub(crate) pool: Arc<PoolManager>,
+    pub(crate) pool: &'static PoolManager,
     pub(crate) counters: Arc<CaptureCounters>,
     pub(crate) session: SessionConfig,
     /// The parser thread. The ETW producer wakes it once per delivered buffer
