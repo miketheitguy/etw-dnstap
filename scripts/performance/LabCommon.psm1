@@ -184,12 +184,20 @@ function Invoke-LabGuest {
     [CmdletBinding()]
     param([Parameter(Mandatory)][Management.Automation.Runspaces.PSSession]$Session,
           [Parameter(Mandatory)][scriptblock]$ScriptBlock, [object[]]$ArgumentList = @())
+    # The inner arguments travel as ONE array element of the outer list. After the CLIXML round trip
+    # the wrapper re-splats that array, so the inner script block receives separate positional
+    # parameters. @($innerArguments) keeps a single deserialized value from collapsing the splat.
     $wrapper = {
         param($prelude, $inner, $innerArguments)
         . ([scriptblock]::Create($prelude))
-        & ([scriptblock]::Create($inner)) @innerArguments
+        $innerList = @($innerArguments)
+        & ([scriptblock]::Create($inner)) @innerList
     }
-    Invoke-Command -Session $Session -ScriptBlock $wrapper -ArgumentList (Get-LabGuestPrelude), $ScriptBlock.ToString(), (, $ArgumentList) -ErrorAction Stop
+    $outer = [object[]]::new(3)
+    $outer[0] = Get-LabGuestPrelude
+    $outer[1] = $ScriptBlock.ToString()
+    $outer[2] = $ArgumentList
+    Invoke-Command -Session $Session -ScriptBlock $wrapper -ArgumentList $outer -ErrorAction Stop
 }
 
 function Receive-LabFile {
