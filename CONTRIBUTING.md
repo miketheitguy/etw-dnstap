@@ -43,9 +43,9 @@ Notes:
 - Continuous integration (`.github/workflows/ci.yml`, `windows-latest`) runs
   these checks:
   - `cargo fmt --check`.
-  - Clippy with `-D warnings`, for the default, `diag-timing`, and `fuzzing`
-    feature sets.
-  - Tests, for the default and `diag-timing` feature sets.
+  - Clippy with `-D warnings`, for the default, `diag-timing`, `fuzzing`, and
+    `bench` feature sets.
+  - Tests, for the default, `diag-timing`, and `bench` feature sets.
   - A release build.
   - `scripts/ci/verify-pe.ps1` on the release executable. It checks the
     hardening flags, the absence of a PDB entry, and the absence of ASan and
@@ -75,19 +75,28 @@ Notes:
   [install guide](docs/guide/install.md#optional-address-sanitizer-builds).
 
 The criterion benchmark in `benches/hot_path.rs` measures the per-event hot
-path on deterministic DNS records. It covers the deep copy into a pooled slot,
-decode, encode, and `parse_and_encode`. It needs the `bench` feature, which
+path on deterministic DNS records: the deep copy into a pooled slot (also on a
+production-sized pool), decode, encode, `parse_and_encode`, its parts, and a
+two-thread producer and consumer run. It needs the `bench` feature, which
 exposes benchmark entry points. That feature is never enabled in a shipped
-build. Run it with the alias from `.cargo/config.toml`, which builds the
-standard library for unwinding as `cargo test-release` does:
+build. `cargo bench` without `--features bench` builds and runs nothing, with no
+error, because the target declares `required-features`. Run it with the alias
+from `.cargo/config.toml`, which adds the feature and builds the standard
+library for unwinding as `cargo test-release` does:
 
 ```powershell
 cargo bench-hot-path
 ```
 
-Criterion writes its reports under `target\criterion\`, a local artifact that
-is not in a clone. Compare a change against an earlier run with
-`-- --save-baseline <name>` and `-- --baseline <name>`.
+The bench binary is built with `panic = "unwind"` (Cargo builds bench targets
+for unwinding), while the shipped build aborts, so the code is close to but not
+identical to what ships. Criterion writes its reports under `target\criterion\`,
+a local artifact that is not in a clone. Between sessions the same host drifts
+by several percent, more than a run's confidence interval, so judge a change
+with an A/B run in one session, as described in
+[the baseline record](datasets/baselines/code-review-2026-11-01/README.md#comparing-a-change-with-the-baseline):
+`cargo bench-hot-path -- --save-baseline pre`, make the change, then
+`cargo bench-hot-path -- --baseline pre`.
 
 The `tools/dns-stress` load generator is a separate Cargo project. Build and
 test it from its own directory:
