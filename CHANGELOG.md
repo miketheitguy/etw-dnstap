@@ -47,6 +47,10 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- A lab check, `scripts/performance/windows-startup-capacity.ps1`, that starts the
+  service at the maximum `--capacity` and confirms the SCM reports Running. It
+  reconfigures the installed service temporarily and restores the binary path,
+  executable hash, and SDDL in `finally`; `-WhatIf` runs the preflight only.
 - **Breaking.** Failed responses are captured. DNS Server event 258
   (`RESPONSE_FAILURE`, for example SERVFAIL) is sent to the receiver as a
   `CLIENT_RESPONSE` message, with the packet in `response_message`. The packet was observed to be the
@@ -98,8 +102,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   [configuration.md](docs/guide/configuration.md#performance-counters).
 - TLS to the dnstap receiver, on by default. The connection uses TLS 1.2 or 1.3
   through rustls with the `ring` provider. The receiver certificate is verified
-  with the Windows machine certificate store, including revocation, through
-  `rustls-platform-verifier`. `--tls-server-name NAME` sets the name the
+  with the Windows machine certificate store through `rustls-platform-verifier`.
+  Revocation is checked for the receiver certificate only, and the connection
+  proceeds when the status cannot be obtained. `--tls-server-name NAME` sets the name the
   certificate must match and the SNI. The default is the receiver IP as an
   `iPAddress` SAN. `--plaintext` disables TLS and cannot be combined with
   `--tls-server-name`. A certificate that does not verify is a protocol failure:
@@ -157,6 +162,27 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- The service reports `SERVICE_START_PENDING` progress to the SCM once per 16,384
+  allocated pool slots, and the start and stop wait hints equal the startup
+  budget (10 s plus 1 s per 16,384 slots) and the 10 s shutdown deadline instead
+  of a fixed 15 s. The checkpoint sequence is unchanged in shape.
+- The `--receiver` help text, README.md, SECURITY.md, and the configuration and
+  install guides state the TLS revocation check precisely: `rustls-platform-verifier`
+  checks revocation for the receiver (end-entity) certificate only; a status that
+  cannot be obtained does not fail the connection; a certificate that Windows
+  CryptoAPI reports as revoked (from a CRL, an OCSP responder, or a stapled OCSP
+  response) is rejected; intermediates are not checked and hard-fail revocation is
+  not provided. Time in the verifier counts against the 2 s handshake deadline. The
+  `--help` output changes; the behavior does not.
+- Internal cleanups with no behavior change: each `unsafe` block holds one
+  operation with its own `SAFETY` comment; `ControlTrace(STOP)` uses the same
+  `QueryProperties` buffer as the session query; the event-ID filter's `FilterIn`
+  is a `u8` like the C `BOOLEAN`; the session query returns a typed `Win32Status`
+  and a DNS Server stop or restart is a typed `TargetChange` with the old and new
+  process IDs (log text unchanged); the protobuf tag bytes, the TDH property-flag
+  mask, and the `EnableTraceEx2` timeout are named constants; `EventProducer` is
+  implemented directly on `Capture`; eligible functions are `const fn`; shadowed
+  FFI status bindings have distinct names; short error messages start lowercase.
 - **Breaking.** The default ETW minimum buffer request changes from a fixed 4 to
   0, the default of the new `--etw-min-buffers`. ETW raises the request to at
   least 2 buffers per logical processor. On a host with 1 logical processor, ETW
@@ -335,6 +361,10 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Fixed
 
+- `Invoke-LabGuest` in `scripts/performance/LabCommon.psm1` passed a multi-element
+  argument list to the guest as one nested array, so callers with several
+  arguments received them all in the first parameter. Arguments now arrive as
+  separate positional parameters; single-argument callers are unchanged.
 - The identity check reported `truncated token groups` for an unrestricted
   token instead of `the process token is not restricted`. An unrestricted token
   returns `TokenRestrictedSids` as a bare zero count.

@@ -208,3 +208,6 @@ result, and any deviation from the plan.
 
 | Step | Commit | Gate | Notes |
 | --- | --- | --- | --- |
+| 1.2 Revocation wording | `b7c0614` | fmt, clippy, linkcheck pass | security-auditor review: no-ship until five wording fixes; applied by technical-writer, committed at integration. Also corrected the install guide, `src/network.rs` doc comment, `Cargo.toml` comment, and the existing CHANGELOG entry. |
+| 1.1 SCM start progress | `dbaf472` | full gate pass, 267 tests | surgeon-reviewer: Rust change sound; lab script restore-flag ordering fixed and re-run on the WS2025 guest (RUNNING at 417 ms, configuration restored). Pre-existing `Invoke-LabGuest` argument bug fixed (not in the plan). `PoolManager::new` is now test-only; `with_progress` is the production constructor. |
+| 1.4 Code cleanups | `ee40d02` | full gate pass, 268 tests; production hits for the three Phase 4 lints: 0 | surgeon-reviewer: ship. `EventProducer` moved to `src/etw/session.rs` (one conflict with 1.1 near `run_capture`, resolved by keeping `Lifecycle` and dropping the old trait block). Item 8 touched four messages. |
