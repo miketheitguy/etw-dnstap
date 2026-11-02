@@ -122,12 +122,14 @@ and [README.md](README.md).
   with the machine certificate store. Revocation is checked for the receiver
   (end-entity) certificate only. When the revocation status cannot be obtained,
   for example because the revocation endpoint is unreachable, the connection
-  proceeds. A certificate that the store reports as revoked is rejected.
-  Hard-fail revocation and revocation checks on intermediate certificates are
-  not provided. The certificate must match the receiver IP, or the name given
-  in `--tls-server-name`. The service sends no client certificate, so the
-  receiver does not authenticate the service. A certificate that does not
-  verify stops the service at startup. See
+  proceeds. A certificate that names no OCSP responder and no CRL distribution
+  point is not checked for revocation. A certificate that Windows CryptoAPI
+  reports as revoked, from a CRL, an OCSP responder, or an OCSP response
+  stapled by the receiver, is rejected. Hard-fail revocation and revocation
+  checks on intermediate certificates are not provided. The certificate must
+  match the receiver IP, or the name given in `--tls-server-name`. The service
+  sends no client certificate, so the receiver does not authenticate the
+  service. A certificate that does not verify stops the service at startup. See
   [docs/guide/configuration.md](docs/guide/configuration.md#tls).
 - **`--plaintext` disables TLS.** Frame Streams over plaintext TCP has no peer
   authentication. Anyone on the path can read or alter DNS payloads and client

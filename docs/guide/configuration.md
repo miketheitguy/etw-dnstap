@@ -418,8 +418,9 @@ and is not counted in `received`.
   deadline shared across partial socket calls. A peer cannot extend a deadline
   by trickling bytes. The TLS handshake shares the 2-second connect and
   handshake deadline with READY and ACCEPT. Time spent inside the
-  Windows certificate verifier, for example a slow revocation check, is not
-  socket time. That deadline does not bound it.
+  Windows certificate verifier, for example a revocation check, is not
+  interrupted by the deadline, but it is charged to it. A verifier that takes
+  longer than the remaining deadline fails the handshake with a timeout.
 - **Socket send buffer:** the connection asks the kernel for a 1 MiB send
   buffer (`SO_SNDBUF`), so a briefly slow receiver stalls the parser less. If
   the request fails, the connection proceeds with the default buffer.
@@ -496,12 +497,17 @@ handshake. That is a protocol failure, as described below.
   SNI.
 - **Revocation.** The verifier checks revocation for the receiver (end-entity)
   certificate only. It does not check the intermediates. The check is best
-  effort. If the status cannot be obtained, the connection proceeds. One
-  cause is an unreachable Online Certificate Status Protocol (OCSP) responder
-  or certificate revocation list (CRL) distribution point. A certificate that
-  the store reports as revoked is rejected. The verifier gives revocation
-  network retrieval a cumulative 10-second limit. The 2-second connect
-  deadline does not bound that time. See
+  effort. If the status cannot be obtained, the connection proceeds. One cause
+  is an unreachable Online Certificate Status Protocol (OCSP) responder or
+  certificate revocation list (CRL) distribution point. A certificate that
+  names no OCSP responder and no CRL distribution point is not checked for
+  revocation. A certificate that Windows CryptoAPI reports as revoked, from a CRL, an
+  OCSP responder, or an OCSP response stapled by the receiver, is rejected. The
+  verifier gives revocation network retrieval a cumulative 10-second limit. The
+  2-second handshake deadline does not interrupt the verifier, but the time it
+  takes counts against the deadline. If the verifier returns after the deadline
+  has passed, the next socket write fails the handshake with a timeout. That is
+  a network failure, and the service retries it. See
   [Deadlines](#message-and-transport-limits). Hard-fail revocation is not
   provided.
 - **Failure class.** A certificate that does not verify is a protocol failure,
