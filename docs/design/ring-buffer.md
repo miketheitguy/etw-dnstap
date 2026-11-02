@@ -88,7 +88,7 @@ of a core when idle.
 ### Pools and memory budget
 
 The regular pool has `capacity + 2` slots with 2048 payload bytes each. The jumbo
-pool has 131,184-byte slots. `--jumbo-capacity` accepts 0–256, and its default is
+pool has 131,448-byte slots. `--jumbo-capacity` accepts 0–256, and its default is
 64. The two classes have independent admission limits. Only 64 simultaneous jumbo
 leases fit at the defaults, even if the channel has spare entries. Slot return
 uses class-specific `ArrayQueue` free lists. No pool grows during capture.
@@ -98,8 +98,8 @@ the channel elements. Its totals are:
 
 | Configuration | Bytes | MiB |
 | --- | --- | --- |
-| Defaults (24,576 events, 64 jumbo slots) | 71,932,240 | 68.60 |
-| Maximum (262,144 events, 256 jumbo slots) | 711,076,688 | 678.14 |
+| Defaults (24,576 events, 64 jumbo slots) | 62,486,608 | 59.59 |
+| Maximum (262,144 events, 256 jumbo slots) | 610,381,904 | 582.11 |
 
 These totals exclude allocator overhead, native ETW buffers, stacks, TDH caches,
 protobuf data, and output buffers. See [Pooled ETW intake](pooled-intake.md) for

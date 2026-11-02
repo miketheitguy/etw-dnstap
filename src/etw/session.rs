@@ -603,7 +603,7 @@ impl Capture {
     pub(crate) fn start(
         name: &str,
         sender: Sender<RawEtwEvent>,
-        pool: Arc<PoolManager>,
+        pool: &'static PoolManager,
         counters: Arc<CaptureCounters>,
         config: SessionConfig,
         parser: thread::Thread,
@@ -681,7 +681,7 @@ impl Capture {
         check_enable_status(enable_status)?;
 
         let mut context = Box::new(CallbackContext::new(
-            Arc::clone(&pool),
+            pool,
             Arc::clone(&capture.counters),
             dns_pid,
         ));
@@ -712,7 +712,6 @@ impl Capture {
                 .spawn(move || {
                     // Keep the callback's pointee alive through the entire native call.
                     intake::install_producer(&context, sender, pool, parser);
-                    let _context = context;
                     #[cfg(feature = "diag-timing")]
                     if let Some(priority) = consumer_priority {
                         set_current_thread_priority(priority);
@@ -724,6 +723,7 @@ impl Capture {
                     // the final sender closes the channel. The supervisor publishes
                     // completion and unparks the polling parser after joining us.
                     intake::clear_producer();
+                    drop(context);
                     status
                 })
                 .context("spawn ETW consumer")?,

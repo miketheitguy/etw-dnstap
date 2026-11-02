@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 
 use super::{
     CaptureCounters, MAX_EXTENDED_ITEMS, PoolManager, dns_provider,
-    pool::{PooledBuffer, REGULAR_BYTES},
+    pool::{PooledBuffer, REGULAR_BYTES, reservation},
     supported,
 };
 
@@ -38,7 +38,8 @@ pub(crate) struct RawEtwEvent {
 
 /// State the native callback reaches through `EVENT_RECORD::UserContext`.
 pub(super) struct CallbackContext {
-    pool: Arc<PoolManager>,
+    /// The process-lifetime pool; see [`PoolManager`].
+    pool: &'static PoolManager,
     counters: Arc<CaptureCounters>,
     /// The only process allowed to emit accepted records (the DNS Server service).
     expected_pid: u32,
@@ -49,7 +50,7 @@ impl CallbackContext {
     /// there is no way to build a context without that filter. Callers box the
     /// context so the address handed to `OpenTraceW` stays stable.
     pub(super) const fn new(
-        pool: Arc<PoolManager>,
+        pool: &'static PoolManager,
         counters: Arc<CaptureCounters>,
         expected_pid: u32,
     ) -> Self {
@@ -69,7 +70,7 @@ const fn pid_allowed(expected: u32, actual: u32) -> bool {
 struct CallbackProducer {
     context: usize,
     sender: Sender<RawEtwEvent>,
-    pool: Arc<PoolManager>,
+    pool: &'static PoolManager,
     counters: Arc<CaptureCounters>,
     /// The parser thread, woken at most once per delivered ETW buffer.
     parser: Thread,
@@ -89,7 +90,7 @@ thread_local! {
 pub(super) fn install_producer(
     context: &CallbackContext,
     sender: Sender<RawEtwEvent>,
-    pool: Arc<PoolManager>,
+    pool: &'static PoolManager,
     parser: Thread,
 ) {
     let context_address = std::ptr::from_ref(context) as usize;
@@ -179,13 +180,13 @@ pub(super) unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECO
                 return false;
             };
             if producer.context != record.UserContext as usize
-                || !Arc::ptr_eq(&producer.pool, &context.pool)
+                || !std::ptr::eq(producer.pool, context.pool)
             {
                 return false;
             }
             // SAFETY: ETW owns the readable native record and each advertised
             // pointer/length pair for this call. The pool is an independent allocation.
-            let owned = match unsafe { copy_record(record, &producer.pool) } {
+            let owned = match unsafe { copy_record(record, producer.pool) } {
                 Ok(owned) => owned,
                 Err(CopyError::Malformed) => return false,
                 Err(CopyError::Exhausted { jumbo }) => {
@@ -260,7 +261,7 @@ fn align_payload(length: usize) -> Option<usize> {
 /// these native input lifetimes; size/null checks cannot validate arbitrary pointers.
 pub(super) unsafe fn copy_record(
     record: &EVENT_RECORD,
-    pool: &Arc<PoolManager>,
+    pool: &'static PoolManager,
 ) -> std::result::Result<RawEtwEvent, CopyError> {
     let invalid = || CopyError::Malformed;
     let data_length = usize::from(record.UserDataLength);
@@ -296,9 +297,15 @@ pub(super) unsafe fn copy_record(
         length = length.checked_add(size).ok_or_else(invalid)?;
         items[index] = item;
     }
-    let mut buffer = pool.acquire(length).ok_or(CopyError::Exhausted {
-        jumbo: length > REGULAR_BYTES,
-    })?;
+    // The pool reserves the payload, its padding, and the item cells at the end
+    // of the slot (`pool::reservation`), picks the slot class from the total, and
+    // refuses to read or write a cell outside the reservation.
+    let needed = reservation(length, count).ok_or_else(invalid)?;
+    let mut buffer = pool
+        .acquire_with_items(length, count)
+        .ok_or(CopyError::Exhausted {
+            jumbo: needed > REGULAR_BYTES,
+        })?;
     if data_length != 0 {
         // SAFETY: The validated nonempty source is readable by caller contract.
         // The exclusive pool slot has at least length >= data_length bytes;
@@ -315,8 +322,10 @@ pub(super) unsafe fn copy_record(
         let mut item = items[index];
         let size = usize::from(item.DataSize);
         if size != 0 {
-            // SAFETY: Preflight checked offset + size <= acquired capacity, so
-            // the 8-aligned offset stays inside the exclusive slot.
+            // SAFETY: Preflight checked offset + size <= length, and the lease
+            // reserved `reservation(length, count)` >= length bytes with the
+            // item cells after the payload, so the 8-aligned offset stays inside
+            // the exclusive slot, clear of the cells.
             let destination = unsafe { buffer.bytes_mut().add(offsets[index]) };
             // SAFETY: The caller guarantees size readable bytes at DataPtr, and
             // the slot has size bytes of room at destination (checked above).
@@ -326,7 +335,7 @@ pub(super) unsafe fn copy_record(
             }
         }
         item.DataPtr = 0;
-        buffer.set_item(index, item, offsets[index]);
+        buffer.set_item(index, &item, offsets[index]);
     }
     Ok(RawEtwEvent {
         header: record.EventHeader,
@@ -360,8 +369,9 @@ impl RawEtwEvent {
     /// The record and repaired raw pointers are valid only during `operation`.
     pub(super) fn with_record<T>(&self, operation: impl FnOnce(&EVENT_RECORD) -> T) -> T {
         let count = usize::from(self.extended_count);
-        let mut extended = *self.buffer.items();
+        let mut extended = [EVENT_HEADER_EXTENDED_DATA_ITEM::default(); MAX_EXTENDED_ITEMS];
         for (index, item) in extended.iter_mut().take(count).enumerate() {
+            *item = self.buffer.item(index);
             item.DataPtr = if item.DataSize == 0 {
                 0
             } else {

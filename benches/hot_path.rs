@@ -23,7 +23,9 @@ use std::{hint::black_box, thread, time::Duration, time::Instant};
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use crossbeam_channel::bounded;
-use etw_dnstap::bench::{Copied, Pipeline, Plan, Pool, Record, copy_record, private_bytes};
+use etw_dnstap::bench::{
+    Copied, Pipeline, Plan, Pool, Record, SocketWriter, copy_record, private_bytes,
+};
 
 /// Leases outstanding at once in the batched groups. The benchmark pool holds
 /// 2,048 regular slots, so a batch never exhausts it.
@@ -81,14 +83,14 @@ fn cold_pool_groups(c: &mut Criterion) {
         COLD_POOL_CAPACITY + 2,
         after - before,
     );
-    copy_record_cold_group(c, &pool);
-    two_thread_group(c, &pool);
+    copy_record_cold_group(c, pool);
+    two_thread_group(c, pool);
 }
 
 /// `copy_record` on a pool larger than the last-level cache. The free list is
 /// FIFO, so each iteration leases a slot last touched 65,000 events ago, as the
 /// service does at its tested capacity.
-fn copy_record_cold_group(c: &mut Criterion, pool: &Pool) {
+fn copy_record_cold_group(c: &mut Criterion, pool: Pool) {
     let mut group = c.benchmark_group("copy_record_cold");
     for (name, record) in [
         ("regular_query_256", Record::query()),
@@ -96,7 +98,7 @@ fn copy_record_cold_group(c: &mut Criterion, pool: &Pool) {
     ] {
         group.throughput(Throughput::Bytes(bytes(record.payload())));
         group.bench_function(name, |b| {
-            b.iter(|| copy_record(black_box(pool), black_box(&record)));
+            b.iter(|| copy_record(black_box(&pool), black_box(&record)));
         });
     }
     group.finish();
@@ -110,7 +112,7 @@ fn copy_record_cold_group(c: &mut Criterion, pool: &Pool) {
 /// count, the free-list ends, and the record bytes all cross cores here. The
 /// producer blocks on a full channel (the service drops instead) so that every
 /// run moves exactly `iters` events.
-fn two_thread_group(c: &mut Criterion, pool: &Pool) {
+fn two_thread_group(c: &mut Criterion, pool: Pool) {
     let mut group = c.benchmark_group("two_thread");
     group.throughput(Throughput::Elements(1));
     for (name, make) in [
@@ -119,7 +121,7 @@ fn two_thread_group(c: &mut Criterion, pool: &Pool) {
     ] {
         let mut pipeline = Pipeline::new();
         // Fill the schema cache, so every measured parse is a hit.
-        pipeline.parse_and_encode(copy_record(pool, &make()));
+        pipeline.parse_and_encode(copy_record(&pool, &make()));
         group.bench_function(name, |b| {
             b.iter_custom(|iters| {
                 let (sender, receiver) = bounded::<Copied>(CHANNEL_CAPACITY);
@@ -130,7 +132,7 @@ fn two_thread_group(c: &mut Criterion, pool: &Pool) {
                         let record = make();
                         for _ in 0..iters {
                             sender
-                                .send(copy_record(pool, &record))
+                                .send(copy_record(&pool, &record))
                                 .expect("the consumer outlives the producer");
                         }
                     });
@@ -141,6 +143,24 @@ fn two_thread_group(c: &mut Criterion, pool: &Pool) {
                 });
                 start.elapsed()
             });
+        });
+    }
+    group.finish();
+}
+
+/// One socket write in a fresh deadline window on a loopback connection that a
+/// second thread drains: 64 KiB is what the frame writer's buffer flushes (the
+/// service makes one such write per 600 or so events), 103 bytes is one frame.
+/// The difference between runs is the per-write cost of the deadline logic and
+/// the `set_write_timeout` call.
+fn socket_write_group(c: &mut Criterion) {
+    let mut writer = SocketWriter::new();
+    let mut group = c.benchmark_group("socket_write");
+    for (name, length) in [("flush_64k", 64 * 1024), ("frame_103", 103)] {
+        let buffer = vec![0x5a_u8; length];
+        group.throughput(Throughput::Bytes(bytes(&buffer)));
+        group.bench_function(name, |b| {
+            b.iter(|| writer.write_window(black_box(&buffer)));
         });
     }
     group.finish();
@@ -241,6 +261,7 @@ criterion_group! {
     targets =
         copy_record_group,
         cold_pool_groups,
+        socket_write_group,
         decode_group,
         encode_group,
         parse_and_encode_group,

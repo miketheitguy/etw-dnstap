@@ -361,3 +361,344 @@ spelled `'profile.release.panic="unwind"'` for Cargo's own parser.)
 | `criterion.csv` | The criterion numbers, one row per benchmark: median of the three recorded sessions, spreads, and the median session's confidence interval |
 | `criterion-sessions.csv` | The criterion numbers of every benchmark in every session, s1 to s8 |
 | `manual-benchmarks.txt` | Raw output of the two manual benchmarks, one run per session |
+
+## Phase 2 results
+
+Appended 2026-11-02. The Phase 0 numbers above are unchanged. Phase 2 of
+[docs/plans/code-review-remediation-plan.md](../../../docs/plans/code-review-remediation-plan.md)
+ran four experiments, one commit each, in the plan's order: item 9 (fat LTO and
+one codegen unit), item 10 (a leaked `&'static PoolManager` instead of an
+`Arc`), item 11 (the extended-data item tables out of the slot header), and
+item 12 (cache the socket timeouts). All four were kept. A preparatory commit
+adds a `socket_write` benchmark group, because no existing group could see
+item 12.
+
+### Method
+
+- Host and toolchain as in the Phase 0 sections above. Every experiment was
+  measured inside one session with the A/B/A protocol: the criterion binary of the
+  base commit (`before`), then the binary with the change (`after`), then the base
+  binary again (`before again`). Each binary was built once, copied aside, and run
+  with `--save-baseline`; the tables compare the saved means. A session takes
+  about 20 minutes.
+- Each run was started with `start /wait /high /affinity 50`, which requests
+  High priority and logical processors 4 and 6 (mask `0x50`), as the Phase 0
+  protocol does. The pin was requested; it was not read back in this session.
+- The host was quiet. The processes `cargo`, `rustc`, `link`, `cl`, and `miri` were
+  listed before and after each run, and none was present. No build ran during a
+  measurement.
+- `Change` is `after` against the mean of the two `before` runs. `Drift` is
+  `before again` against `before`: what the host did between the two `before`
+  runs. A change counts as a gain only if it exceeds that drift and the Phase 0
+  bound for its group (about 5% warm, 20% cold and two-thread) in the expected
+  direction.
+- The criterion binary is built with `panic = "unwind"`; the shipped binary uses
+  `panic = "abort"`. The numbers are close to, not identical to, what ships.
+
+### Item 9: `lto = "fat"` and `codegen-units = 1` (kept)
+
+Commit `e396871`. Two lines in `[profile.release]`, and a comment.
+
+| Measure | Without LTO (this base commit) | With LTO | Change |
+| --- | ---: | ---: | ---: |
+| Release image, `cargo build --locked --release` | 2,396,672 bytes | 2,211,840 bytes | -7.7% |
+| Release image at the Phase 0 commit | 2,455,552 bytes | 2,211,840 bytes | -9.9% |
+| Cold release build (standard library and 61 crates) | 20 s | 31 s | +52% |
+| `cargo test --release` build with `panic = "unwind"` | 26 s | 49 s | +88% |
+| `LNK2047` lines in the link output | 8 | 8 | same set |
+
+The `LNK2047` object set of the LTO link equals `scripts/ci/link-exceptions.txt`
+(the eight ring NASM objects `aesni`, `chacha`, `p256-x86_64-asm`, `sha256`,
+`sha512`, `vpaes`, `x86_64-mont`, and `x86_64-mont5`), so the allowlist needs no
+change.
+
+Criterion, before = no LTO, after = LTO, all groups:
+
+| Benchmark | before (ns) | after (ns) | before again (ns) | Change | Drift |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `copy_record/jumbo_response_257` | 48.01 | 48.70 | 48.01 | +1.4% | +0.0% |
+| `copy_record/regular_query_256` | 35.43 | 34.30 | 34.41 | -1.8% | -2.9% |
+| `copy_record/regular_response_257` | 35.57 | 33.94 | 35.40 | -4.3% | -0.5% |
+| `copy_record_cold/regular_query_256` | 62.92 | 59.45 | 61.15 | -4.2% | -2.8% |
+| `copy_record_cold/regular_response_257` | 80.62 | 77.51 | 79.46 | -3.2% | -1.4% |
+| `decode/failure_258` | 31.58 | 30.84 | 31.41 | -2.1% | -0.5% |
+| `decode/query_256` | 22.86 | 24.45 | 22.78 | +7.2% | -0.3% |
+| `decode/query_256_ipv6` | 23.56 | 24.72 | 23.59 | +4.9% | +0.1% |
+| `decode/response_257` | 32.51 | 32.49 | 32.44 | +0.0% | -0.2% |
+| `decompose/parse_encode_retained/failure_258` | 150.16 | 136.43 | 149.80 | -9.0% | -0.2% |
+| `decompose/parse_encode_retained/query_256` | 142.40 | 128.41 | 141.75 | -9.6% | -0.5% |
+| `decompose/parse_encode_retained/query_256_ipv6` | 190.50 | 169.09 | 191.00 | -11.4% | +0.3% |
+| `decompose/parse_encode_retained/response_257` | 152.77 | 138.90 | 150.43 | -8.4% | -1.5% |
+| `decompose/recycle/query_256` | 10.95 | 10.32 | 11.03 | -6.1% | +0.7% |
+| `decompose/recycle/response_257` | 11.11 | 10.43 | 11.08 | -5.9% | -0.3% |
+| `encode/failure_258` | 67.21 | 57.69 | 66.53 | -13.7% | -1.0% |
+| `encode/query_256` | 66.69 | 57.21 | 66.60 | -14.1% | -0.1% |
+| `encode/query_256_ipv6` | 67.70 | 57.63 | 67.55 | -14.8% | -0.2% |
+| `encode/response_257` | 68.06 | 59.11 | 67.79 | -13.0% | -0.4% |
+| `parse_and_encode/failure_258` | 159.77 | 144.02 | 159.88 | -9.9% | +0.1% |
+| `parse_and_encode/query_256` | 152.79 | 137.08 | 152.81 | -10.3% | +0.0% |
+| `parse_and_encode/query_256_ipv6` | 203.91 | 176.68 | 203.82 | -13.3% | -0.0% |
+| `parse_and_encode/response_257` | 200.02 | 146.96 | 164.38 | -19.3% | -17.8% |
+| `two_thread/query_256` | 248.30 | 223.24 | 251.91 | -10.7% | +1.5% |
+| `two_thread/response_257` | 262.99 | 237.47 | 263.99 | -9.9% | +0.4% |
+
+Reading. LTO gains 9 to 11% on `parse_encode_retained`, 10 to 13% on
+`parse_and_encode`, about 14% on `encode`, 10% on `two_thread`, 6% on the lease
+recycle, and 3 to 4% on the cold copy. `decode` alone is up to 7% slower for
+the query events (its
+wrapper is `#[inline(never)]`, so LTO cannot inline it into the caller; the
+composed path is faster). `parse_and_encode/response_257` shows an 18% drift
+because its first `before` run was disturbed (200.0 ns against 164.4 ns in the
+second); against the second `before` run its change is -10.6%, in line with its
+siblings. The cold and two-thread drift stays inside the 20% bound.
+
+Manual benchmarks (release, `panic = "unwind"`, pinned, alternating):
+
+| Benchmark | Without LTO | With LTO |
+| --- | ---: | ---: |
+| `parse_encode_benchmark`, ns per event, four runs | 235.4, 230.4, 237.6, 230.2 | 126.0, 125.8, 126.3, 126.9 |
+| `synthetic_pooled_intake_benchmark`, ns per offered event, three runs | 57.6, 61.0, 60.4 | 52.5, 51.4, 51.0 |
+
+The synthetic figure moves with how many of the 200,000 offered events are
+accepted (8,826 to 90,524 here), so it is a smoke test. Without LTO,
+`parse_encode_benchmark` at this commit reads 230 to 238 ns, against 139.6 to
+142.0 ns in the Phase 0 record, although criterion's `parse_encode_retained`
+(142.4 ns here) still matches Phase 0 (141.9 ns). Why this test-profile binary
+is 65% slower than Phase 0 without LTO, and 10% faster with it, was not
+established; several Phase 1 commits changed `src/etw/schema.rs` and its tests
+after Phase 0. Criterion is the comparison to trust.
+
+### Item 10: `&'static PoolManager` instead of `Arc<PoolManager>` (kept)
+
+Commit `8d1b172` (and `2ec1796`, which passes the now-`Copy` bench `Pool` by
+value to satisfy clippy). `PoolManager::with_progress` leaks the pool once, after
+every slot is allocated, and returns `&'static PoolManager`; the lease, the
+callback context, the per-thread producer, and `Capture::start` hold the
+reference, and the producer check compares addresses with `ptr::eq`. A failed
+start frees the slots allocated so far. The recycle abort-on-full invariant is
+untouched. A test that builds a pool leaks it (a few slots; the proptest leaks
+about 130 KiB per case).
+
+| Benchmark | before (ns) | after (ns) | before again (ns) | Change | Drift |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `copy_record/jumbo_response_257` | 44.27 | 44.26 | 45.11 | -1.0% | +1.9% |
+| `copy_record/regular_query_256` | 34.77 | 25.08 | 35.10 | -28.2% | +0.9% |
+| `copy_record/regular_response_257` | 34.09 | 26.39 | 34.37 | -22.9% | +0.8% |
+| `copy_record_cold/regular_query_256` | 55.66 | 47.50 | 58.70 | -16.9% | +5.5% |
+| `copy_record_cold/regular_response_257` | 74.18 | 71.61 | 80.39 | -7.3% | +8.4% |
+| `decode/failure_258` | 31.01 | 30.61 | 31.11 | -1.4% | +0.3% |
+| `decode/query_256` | 24.26 | 23.91 | 24.14 | -1.2% | -0.5% |
+| `decode/query_256_ipv6` | 24.72 | 24.40 | 24.68 | -1.2% | -0.2% |
+| `decode/response_257` | 33.02 | 32.20 | 33.21 | -2.8% | +0.6% |
+| `decompose/parse_encode_retained/failure_258` | 136.48 | 138.30 | 136.72 | +1.2% | +0.2% |
+| `decompose/parse_encode_retained/query_256` | 129.28 | 131.07 | 128.69 | +1.6% | -0.5% |
+| `decompose/parse_encode_retained/query_256_ipv6` | 167.72 | 182.54 | 168.40 | +8.6% | +0.4% |
+| `decompose/parse_encode_retained/response_257` | 140.08 | 139.95 | 138.17 | +0.6% | -1.4% |
+| `decompose/recycle/query_256` | 10.32 | 6.09 | 10.34 | -41.0% | +0.2% |
+| `decompose/recycle/response_257` | 10.40 | 6.18 | 10.46 | -40.7% | +0.5% |
+| `encode/failure_258` | 57.28 | 57.05 | 56.91 | -0.1% | -0.6% |
+| `encode/query_256` | 57.77 | 57.11 | 57.64 | -1.0% | -0.2% |
+| `encode/query_256_ipv6` | 57.67 | 57.81 | 57.85 | +0.1% | +0.3% |
+| `encode/response_257` | 58.50 | 59.41 | 58.53 | +1.5% | +0.1% |
+| `parse_and_encode/failure_258` | 143.49 | 142.92 | 145.32 | -1.0% | +1.3% |
+| `parse_and_encode/query_256` | 137.55 | 136.24 | 137.09 | -0.8% | -0.3% |
+| `parse_and_encode/query_256_ipv6` | 176.13 | 185.50 | 177.58 | +4.9% | +0.8% |
+| `parse_and_encode/response_257` | 146.60 | 145.91 | 146.88 | -0.6% | +0.2% |
+| `two_thread/query_256` | 205.41 | 210.57 | 214.59 | +0.3% | +4.5% |
+| `two_thread/response_257` | 217.64 | 222.44 | 225.30 | +0.4% | +3.5% |
+
+Reading.
+
+- Where the change can be seen it is large: `copy_record` -28% (query) and -23%
+  (response), the lease recycle -41% (10.3 to 6.1 ns). That is about 14 ns of CPU
+  per event: 9.7 ns on the ETW thread and 4.2 ns on the parser thread.
+- `two_thread` shows no change (+0.3%, +0.4%) inside a drift of 4.5% and 3.5%.
+  That group is limited by the parser thread, so the 4.2 ns saved there is 2% of
+  210 ns, below what the group resolves. The contended-cache-line cost that the
+  plan predicted for the ETW thread is hidden when the producer waits on a full
+  channel; the lab run is the place to look for it.
+- The cold copy gains 17% (query) and 7% (response), but the drift is 5.5% and
+  8.4%, so only the query result counts, and only with that caveat.
+- The IPv6 query parse is 5 to 9% slower in this binary. A/B/A/B on the four
+  `ipv6` benchmarks reproduces it (`parse_and_encode` 178.5 and 175.7 ns before,
+  187.8 and 189.3 ns after; `parse_encode_retained` 170.0 and 168.9 ns before,
+  182.1 and 184.0 ns after), while the IPv4 parses are unchanged. No code on that
+  path changed, and the effect disappears in the next commit's binary (-7.5%
+  there), so it reads as a code-layout effect of this particular build. It costs
+  about 10 to 14 ns on an IPv6 query only.
+
+### Item 11: item tables at the end of the slot bytes (kept)
+
+Commit `eecc74e`. The `Slot` header goes from 408 to 24 bytes. A record's item
+table (16 bytes per item: a packed header word and the payload offset; `DataPtr`
+is never stored) lives in the last `16 * count` bytes of the slot's own byte
+buffer, item `i` being the `i`-th 16-byte cell counted from the end, so no count
+is needed to find it. `copy_record` keeps its preflight (every offset and the
+aggregate length are checked before any copy), then asks `acquire` for the
+payload, its padding, and the cells, so the two regions cannot overlap. Cost: a
+record with extended data that used to fill a regular slot to within `16 * count`
+bytes now takes a jumbo slot, and `JUMBO_BYTES` grows from 131,184 to 131,448. This provider sends no
+extended data. The budget in `docs/design/pooled-intake.md`,
+`docs/design/ring-buffer.md`, and `docs/guide/configuration.md` is recomputed
+(59.59 MiB at the defaults, was 68.60; 145.53 MiB at `--capacity 65536`, was
+169.54). The `x64_storage_sizes_match_documented_budget` test now asserts a
+24-byte `Slot` and the 131,448-byte jumbo size.
+
+| Benchmark | before (ns) | after (ns) | before again (ns) | Change | Drift |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `copy_record/jumbo_response_257` | 38.66 | 42.51 | 39.03 | +9.5% | +1.0% |
+| `copy_record/regular_query_256` | 24.95 | 25.01 | 25.63 | -1.1% | +2.7% |
+| `copy_record/regular_response_257` | 26.18 | 24.37 | 26.85 | -8.1% | +2.6% |
+| `copy_record_cold/regular_query_256` | 53.84 | 35.07 | 57.34 | -36.9% | +6.5% |
+| `copy_record_cold/regular_response_257` | 71.11 | 58.31 | 74.42 | -19.9% | +4.7% |
+| `decode/failure_258` | 30.50 | 31.55 | 31.34 | +2.0% | +2.8% |
+| `decode/query_256` | 23.76 | 24.26 | 23.93 | +1.7% | +0.8% |
+| `decode/query_256_ipv6` | 24.22 | 24.77 | 24.81 | +1.0% | +2.5% |
+| `decode/response_257` | 32.26 | 33.24 | 33.41 | +1.3% | +3.6% |
+| `decompose/parse_encode_retained/failure_258` | 137.33 | 137.97 | 141.15 | -0.9% | +2.8% |
+| `decompose/parse_encode_retained/query_256` | 131.14 | 128.97 | 136.55 | -3.6% | +4.1% |
+| `decompose/parse_encode_retained/query_256_ipv6` | 182.05 | 170.90 | 183.57 | -6.5% | +0.8% |
+| `decompose/parse_encode_retained/response_257` | 142.58 | 140.69 | 141.14 | -0.8% | -1.0% |
+| `decompose/recycle/query_256` | 6.10 | 6.11 | 6.11 | +0.0% | +0.2% |
+| `decompose/recycle/response_257` | 6.18 | 6.22 | 6.21 | +0.4% | +0.4% |
+| `encode/failure_258` | 56.98 | 57.21 | 57.26 | +0.2% | +0.5% |
+| `encode/query_256` | 56.75 | 57.32 | 58.07 | -0.2% | +2.3% |
+| `encode/query_256_ipv6` | 58.23 | 57.73 | 57.65 | -0.4% | -1.0% |
+| `encode/response_257` | 58.38 | 58.29 | 58.79 | -0.5% | +0.7% |
+| `parse_and_encode/failure_258` | 142.47 | 142.29 | 142.77 | -0.2% | +0.2% |
+| `parse_and_encode/query_256` | 134.61 | 132.55 | 138.39 | -2.9% | +2.8% |
+| `parse_and_encode/query_256_ipv6` | 187.34 | 174.29 | 189.56 | -7.5% | +1.2% |
+| `parse_and_encode/response_257` | 147.55 | 144.67 | 148.29 | -2.2% | +0.5% |
+| `two_thread/query_256` | 213.75 | 199.42 | 211.72 | -6.3% | -1.0% |
+| `two_thread/response_257` | 229.05 | 213.73 | 224.36 | -5.7% | -2.0% |
+
+Pool private bytes (`copy_record_cold`, 65,538 regular and 64 jumbo slots):
+
+| Binary | Private bytes added by the pool |
+| --- | ---: |
+| Before (two runs) | 176,439,296 and 175,861,760 |
+| After | 149,278,720 |
+
+That is -27.0 MB (-15.2%) against the 25.2 MB of header bytes the Phase 0 record
+predicted; the rest is probably heap block rounding (408 to 416 bytes, 24 to 32). The counted storage at this size is now 152,598,608
+bytes and the pool holds 98.0% of it as private bytes.
+
+Reading.
+
+- The cold copy gains 37% (query, 55.6 to 35.1 ns) and 20% (response, 72.8 to
+  58.3 ns), against drifts of 6.5% and 4.7%. A slot header of 24 bytes shares a
+  cache line with its neighbours instead of occupying a line of its own beside
+  the payload, which the cold pool misses on every lease.
+- `two_thread` gains 6.2% (query) and 5.7% (response), a drift of -1.0% and
+  -2.0%.
+- `copy_record/jumbo_response_257` is 9.5% slower (drift 1.0%). Only the jumbo
+  slot size changed (131,184 to 131,448 bytes); it reads as an allocation
+  alignment effect on a 4 KiB copy and affects jumbo records only.
+- The IPv6 parse regression of item 10 is gone in this binary (-6.5% and -7.5%).
+
+### Item 12: cache the socket timeouts (kept)
+
+Commit `50e9298`; the `socket_write` group is in `05941c1`. `DeadlineTcp` keeps
+the last read and write timeout it applied and calls `set_read_timeout` or
+`set_write_timeout` again only when the time left is below the applied value, or
+exceeds it by more than the slack (the smaller of 5 ms and `timeout / 32`). A
+kept timeout is therefore never shorter than the time left, so no call is cut
+short of the deadline, and at most the slack longer, so a blocked call can run
+at most 5 ms past a 2 s deadline. `remaining()` still checks the deadline on
+every call. This is not exact to the nanosecond: the plan asked for "within a few
+milliseconds" and that is the tolerance. Four new tests cover the rule, the
+slack, the once-per-window behavior, and a blocked write ending near its
+deadline with a kept timeout.
+
+The group writes to a loopback connection that a second thread drains, in a
+fresh deadline window per write (as the frame writer does), three A/B pairs:
+
+| Benchmark | Before, runs 1 to 3 (us) | After, runs 1 to 3 (us) | Change of the means |
+| --- | --- | --- | ---: |
+| `socket_write/frame_103` | 9.21 / 9.36 / 9.34 | 8.92 / 8.82 / 8.88 | -4.6% |
+| `socket_write/flush_64k` | 87.18 / 86.56 / 86.07 | 82.14 / 155.24 / 74.02 | +19.9% |
+
+Reading.
+
+- `frame_103` is 4.6% faster (about 0.45 us per write) in all three pairs and
+  outside every confidence interval (for example 9.34 us, 95% CI 9.30 to 9.39,
+  against 8.88 us, CI 8.84 to 8.93). That is the cost of one `setsockopt` call.
+- `flush_64k` cannot resolve it. Its 95% confidence intervals are 8% to 90% wide
+  (one `after` run read 155 us, CI 94 to 237), because the receiving thread and
+  the scheduler dominate a 64 KiB loopback send. The change in the means is not a
+  result.
+- The service makes one 64 KiB write per roughly 600 events, so the saving is
+  about 0.7 ns per event, 0.5% of the 127 ns parse and encode. This is the
+  smallest of the four changes; it is kept because the group designed to see it
+  does, and TLS, which writes several records per window, skips more calls (not
+  measured). A reviewer
+  who prefers no timeout slack can drop this commit alone.
+
+### All four together
+
+Same A/B/A protocol: `before` is the Phase 2 base commit (`e61179d`, the plan
+branch after Phase 1, no LTO), `after` is the final commit.
+
+| Benchmark | before (ns) | after (ns) | before again (ns) | Change | Drift |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `copy_record/jumbo_response_257` | 50.28 | 42.27 | 47.86 | -13.9% | -4.8% |
+| `copy_record/regular_query_256` | 34.74 | 25.12 | 33.83 | -26.8% | -2.6% |
+| `copy_record/regular_response_257` | 34.77 | 25.27 | 35.31 | -27.9% | +1.6% |
+| `copy_record_cold/regular_query_256` | 57.57 | 34.93 | 61.82 | -41.5% | +7.4% |
+| `copy_record_cold/regular_response_257` | 78.77 | 58.81 | 79.84 | -25.8% | +1.3% |
+| `decode/failure_258` | 31.72 | 31.51 | 31.45 | -0.2% | -0.8% |
+| `decode/query_256` | 23.30 | 24.77 | 22.82 | +7.4% | -2.1% |
+| `decode/query_256_ipv6` | 23.79 | 25.02 | 23.69 | +5.4% | -0.4% |
+| `decode/response_257` | 32.69 | 33.76 | 32.17 | +4.1% | -1.6% |
+| `decompose/parse_encode_retained/failure_258` | 152.76 | 133.86 | 151.20 | -11.9% | -1.0% |
+| `decompose/parse_encode_retained/query_256` | 141.79 | 124.35 | 141.42 | -12.2% | -0.3% |
+| `decompose/parse_encode_retained/query_256_ipv6` | 192.69 | 172.34 | 191.66 | -10.3% | -0.5% |
+| `decompose/parse_encode_retained/response_257` | 154.29 | 134.99 | 152.75 | -12.1% | -1.0% |
+| `decompose/recycle/query_256` | 10.96 | 6.07 | 10.94 | -44.6% | -0.2% |
+| `decompose/recycle/response_257` | 11.08 | 6.20 | 11.02 | -43.8% | -0.6% |
+| `encode/failure_258` | 67.10 | 57.70 | 66.41 | -13.6% | -1.0% |
+| `encode/query_256` | 67.81 | 58.14 | 67.00 | -13.7% | -1.2% |
+| `encode/query_256_ipv6` | 67.68 | 58.61 | 67.35 | -13.2% | -0.5% |
+| `encode/response_257` | 68.14 | 59.09 | 67.37 | -12.8% | -1.1% |
+| `parse_and_encode/failure_258` | 162.76 | 136.85 | 160.89 | -15.4% | -1.1% |
+| `parse_and_encode/query_256` | 153.73 | 127.10 | 152.78 | -17.1% | -0.6% |
+| `parse_and_encode/query_256_ipv6` | 205.14 | 176.55 | 200.87 | -13.0% | -2.1% |
+| `parse_and_encode/response_257` | 167.18 | 139.82 | 164.36 | -15.7% | -1.7% |
+| `two_thread/query_256` | 233.89 | 197.39 | 247.22 | -17.9% | +5.7% |
+| `two_thread/response_257` | 242.91 | 205.39 | 259.48 | -18.2% | +6.8% |
+
+| Measure | Phase 2 base | Final |
+| --- | ---: | ---: |
+| Release image | 2,396,672 bytes | 2,210,304 bytes |
+| Pool private bytes (`copy_record_cold` pool) | 177,303,552 and 177,192,960 | 149,606,400 |
+| `synthetic_pooled_intake_benchmark`, ns per offered event (three runs; with LTO, before items 10 and 11 versus after) | 53.2, 53.3, 53.7 | 40.4, 41.9, 42.2 |
+| `parse_encode_benchmark`, ns per event (with LTO, items 10 to 12) | 125.7 to 126.3 | 125.2 to 128.8 |
+
+Against the Phase 0 table: `two_thread/query_256` 231.5 to 197.4 ns (-14.7%),
+`two_thread/response_257` 245.8 to 205.4 ns (-16.4%), `parse_and_encode/query_256`
+153.0 to 127.1 ns (-16.9%). The `before` run of this session reproduces the
+Phase 0 means within 1% (`two_thread/query_256` 233.9 ns against 231.5).
+
+### Verification after the measurements
+
+The tool that launched every command in the measurement session refused each
+invocation of `pwsh` or `powershell.exe` (a worktree-isolated agent could not
+show that a PowerShell command stays inside its worktree), so the two CI scripts
+did not run there. They were run later on the build host, after the measurements,
+on a fresh `cargo build --locked --release` of the branch at `ded1faa` (image
+2,210,304 bytes):
+
+- `scripts/ci/verify-link-exceptions.ps1`: 6 checks, 0 failed (8 `LNK2047` lines,
+  8 distinct objects, all allowlisted, no `LNK2046`).
+- `scripts/ci/verify-pe.ps1`: 21 checks, 0 failed.
+
+During the measurement session, a throwaway port of the 21 `verify-pe.ps1`
+checks (same dumpbin switches, patterns, and masks) and a comparison of the
+`LNK2047` object set in the captured build log with
+`scripts/ci/link-exceptions.txt` (equal, 8 and 8) had already given the same
+answers.
+
+The lab comparison of `scripts/performance/README.md` (needs Windows PowerShell
+5.1 and PowerShell Direct to the guest) has not been run. Items 10 and 11 are
+therefore not yet validated with the lab's real thread contention, the one place
+where item 10's predicted contended-atomic saving could appear.

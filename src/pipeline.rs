@@ -451,7 +451,7 @@ pub(crate) const STARTUP_BASE_BUDGET: Duration = Duration::from_secs(10);
 
 /// Startup budget: the base budget plus one second per
 /// [`PoolManager::PROGRESS_INTERVAL`] channel slots, because allocating and
-/// touching the event pool (about 2.3 KiB per slot, up to roughly 640 MB)
+/// touching the event pool (about 2.1 KiB per slot, up to roughly 560 MB)
 /// dominates startup at large `--capacity`. The pool reports progress once per
 /// interval, so the service refreshes its SCM checkpoint at least once per
 /// budgeted second of allocation.
@@ -539,7 +539,7 @@ struct ProducerStart<'a> {
     /// Bounded channel to the parser thread; the producer owns the only sender,
     /// so dropping it ends the stream.
     pub(crate) sender: crossbeam_channel::Sender<RawEtwEvent>,
-    pub(crate) pool: Arc<PoolManager>,
+    pub(crate) pool: &'static PoolManager,
     pub(crate) counters: Arc<CaptureCounters>,
     pub(crate) session: SessionConfig,
     /// The parser thread. The ETW producer wakes it once per delivered buffer

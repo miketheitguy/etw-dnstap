@@ -593,12 +593,36 @@ mod backpressure_tests;
 #[path = "network/tls_tests.rs"]
 mod tls_tests;
 
+/// The longest a socket timeout may exceed the time left to the deadline before
+/// `DeadlineTcp` sets it again (the shorter of this and `timeout / 32`).
+const TIMEOUT_SLACK: Duration = Duration::from_millis(5);
+
+/// Whether the socket timeout must be set again to `wanted`. The timeout last
+/// applied is kept when it is at least `wanted` (so a stalled call is never cut
+/// short of the deadline) and exceeds it by at most `slack` (so it cannot run
+/// past the deadline by more than that). Within one operation the time left only
+/// shrinks, so a timeout applied once is kept for the first `slack` of the
+/// window and the operation's later calls skip the socket option; across
+/// operations the applied value tracks the largest `wanted` seen.
+fn timeout_needs_update(applied: Option<Duration>, wanted: Duration, slack: Duration) -> bool {
+    !applied.is_some_and(|applied| {
+        applied
+            .checked_sub(wanted)
+            .is_some_and(|excess| excess <= slack)
+    })
+}
+
 struct DeadlineTcp {
     stream: TcpStream,
     deadline: Instant,
     timeout: Duration,
     /// False until the first I/O of an operation, which then starts the clock.
     armed: bool,
+    /// The socket read and write timeouts last set, so that a call whose time
+    /// left is within `slack` of them skips the `setsockopt` system call.
+    read_applied: Option<Duration>,
+    write_applied: Option<Duration>,
+    slack: Duration,
     stats: Option<Arc<SinkStats>>,
 }
 
@@ -609,6 +633,9 @@ impl DeadlineTcp {
             deadline: Instant::now() + timeout,
             timeout,
             armed: true,
+            read_applied: None,
+            write_applied: None,
+            slack: (timeout / 32).min(TIMEOUT_SLACK),
             stats: None,
         }
     }
@@ -643,7 +670,10 @@ impl DeadlineTcp {
 impl Read for DeadlineTcp {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let remaining = self.remaining()?;
-        self.stream.set_read_timeout(Some(remaining))?;
+        if timeout_needs_update(self.read_applied, remaining, self.slack) {
+            self.stream.set_read_timeout(Some(remaining))?;
+            self.read_applied = Some(remaining);
+        }
         self.stream.read(bytes)
     }
 }
@@ -651,7 +681,10 @@ impl Read for DeadlineTcp {
 impl Write for DeadlineTcp {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let remaining = self.remaining()?;
-        self.stream.set_write_timeout(Some(remaining))?;
+        if timeout_needs_update(self.write_applied, remaining, self.slack) {
+            self.stream.set_write_timeout(Some(remaining))?;
+            self.write_applied = Some(remaining);
+        }
         let started = Instant::now();
         let written = self.stream.write(bytes);
         self.record_write(started.elapsed());
@@ -661,6 +694,75 @@ impl Write for DeadlineTcp {
     fn flush(&mut self) -> io::Result<()> {
         self.remaining()?;
         self.stream.flush()
+    }
+}
+
+/// Socket-write entry point for `benches/hot_path.rs` (feature `bench`).
+#[cfg(feature = "bench")]
+pub(crate) mod bench {
+    use std::{
+        io::{Read, Write},
+        net::{Shutdown, TcpListener, TcpStream},
+        thread::{self, JoinHandle},
+    };
+
+    use super::{DeadlineTcp, IO_TIMEOUT};
+
+    /// A `DeadlineTcp` connected over loopback to a thread that reads and
+    /// discards everything, so a write costs the deadline logic, the
+    /// `set_write_timeout` call (when it runs), and the loopback send.
+    pub struct SocketWriter {
+        writer: DeadlineTcp,
+        receiver: Option<JoinHandle<()>>,
+    }
+
+    impl SocketWriter {
+        /// # Panics
+        /// Panics if the loopback connection cannot be made.
+        #[must_use]
+        pub fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+            let address = listener.local_addr().expect("the listener has an address");
+            let receiver = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("the writer connects");
+                let mut sink = vec![0_u8; 256 * 1024];
+                while stream.read(&mut sink).is_ok_and(|read| read != 0) {}
+            });
+            let stream = TcpStream::connect(address).expect("connect to the loopback listener");
+            Self {
+                writer: DeadlineTcp::new(stream, IO_TIMEOUT),
+                receiver: Some(receiver),
+            }
+        }
+
+        /// One socket write in a fresh deadline window, as the frame writer
+        /// makes one per buffered flush. Returns the bytes the socket took.
+        ///
+        /// # Panics
+        /// Panics if the write fails.
+        #[inline(never)]
+        pub fn write_window(&mut self, bytes: &[u8]) -> usize {
+            self.writer.rearm();
+            self.writer
+                .write(bytes)
+                .expect("the loopback write succeeds")
+        }
+    }
+
+    impl Default for SocketWriter {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Drop for SocketWriter {
+        fn drop(&mut self) {
+            // The receiver thread ends when the connection closes.
+            let _ = self.writer.stream.shutdown(Shutdown::Both);
+            if let Some(receiver) = self.receiver.take() {
+                let _ = receiver.join();
+            }
+        }
     }
 }
 

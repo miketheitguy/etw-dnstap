@@ -38,6 +38,7 @@ pub mod bench {
     pub use crate::etw::bench::{
         Copied, Decoded, Pipeline, Plan, Pool, Record, copy_record, private_bytes,
     };
+    pub use crate::network::bench::SocketWriter;
 }
 
 /// Runs capture through the Windows Service Control Manager dispatcher.

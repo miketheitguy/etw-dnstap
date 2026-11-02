@@ -120,8 +120,8 @@ independent classes:
 
 | Class | Payload storage per slot | Slots | Admission |
 | --- | ---: | ---: | --- |
-| Regular | 2,048 bytes | Channel capacity + 2 | Complete padded payload fits 2 KiB |
-| Jumbo | 131,184 bytes | `--jumbo-capacity`, default 64 | Complete padded payload exceeds 2 KiB |
+| Regular | 2,048 bytes | Channel capacity + 2 | Complete padded payload, plus 16 bytes per extended item, fits 2 KiB |
+| Jumbo | 131,448 bytes | `--jumbo-capacity`, default 64 | Complete padded payload, plus 16 bytes per extended item, exceeds 2 KiB |
 
 `--jumbo-capacity` accepts 0 through 256. Zero disables jumbo capture. Regular
 records do not borrow jumbo slots, and jumbo records cannot use regular slots.
@@ -132,47 +132,54 @@ The 65th can be dropped even when the channel has space. Adjust this budget only
 with a measured workload and an explicit memory allowance.
 
 The jumbo size covers the previous accepted maximum of 65,535 user bytes plus
-65,535 aggregate extended bytes and up to 16 seven-byte alignment gaps. Slot
-selection includes alignment padding, rather than only DNS packet length.
+65,535 aggregate extended bytes, up to 16 seven-byte alignment gaps, one more
+gap before the item table, and the table's 16 cells of 16 bytes. Slot selection
+includes alignment padding and the item table, rather than only DNS packet
+length. A record with extended data therefore needs 16 bytes less payload than
+a regular slot holds for each item it carries, or it uses a jumbo slot.
 
-On the configured Windows x64 target, each slot also has a 408-byte
-allocation. It holds the payload pointer, 16 typed extended descriptors, 16
-offsets, and the class metadata. `RawEtwEvent` occupies 104 bytes. With the locked queue versions,
+On the configured Windows x64 target, each slot also has a 24-byte
+allocation. It holds the payload pointer and length and the class flag. The
+extended-data item table is not in it: a record's items (a packed 8-byte header
+word and an 8-byte payload offset each, 16 bytes) are stored in the last bytes
+of the slot's own payload storage, so a slot carries no table when the record
+has no extended data, which is the case for this provider. The allocation was
+408 bytes while the table was in the header. `RawEtwEvent` occupies 104 bytes. With the locked queue versions,
 free-list elements occupy 16 bytes and channel elements occupy 112 bytes. The
 following table counts requested element and payload storage:
 
 | Allocation contents | Default 24,576 / 64 | Maximum 262,144 / 256 |
 | --- | ---: | ---: |
 | Regular payloads | 50,335,744 bytes | 536,875,008 bytes |
-| Jumbo payloads | 8,395,776 bytes | 33,583,104 bytes |
-| Slot metadata allocations | 10,053,936 bytes | 107,060,016 bytes |
+| Jumbo payloads | 8,412,672 bytes | 33,650,688 bytes |
+| Slot metadata allocations | 591,408 bytes | 6,297,648 bytes |
 | Free-list elements | 394,272 bytes | 4,198,432 bytes |
 | Channel elements | 2,752,512 bytes | 29,360,128 bytes |
-| Total counted storage | 71,932,240 bytes (68.60 MiB) | 711,076,688 bytes (678.14 MiB) |
+| Total counted storage | 62,486,608 bytes (59.59 MiB) | 610,381,904 bytes (582.11 MiB) |
 
 The maximum column uses the same per-slot sizes as the default column, with
 262,144 channel slots and 256 jumbo slots:
 
 - Regular payloads: (262,144 + 2) x 2,048 = 536,875,008 bytes.
-- Jumbo payloads: 256 x 131,184 = 33,583,104 bytes.
-- Slot metadata: (262,146 + 256) x 408 = 262,402 x 408 = 107,060,016 bytes.
+- Jumbo payloads: 256 x 131,448 = 33,650,688 bytes.
+- Slot metadata: (262,146 + 256) x 24 = 262,402 x 24 = 6,297,648 bytes.
 - Free-list elements: 262,402 x 16 = 4,198,432 bytes.
 - Channel elements: 262,144 x 112 = 29,360,128 bytes.
-- Total: 536,875,008 + 33,583,104 + 107,060,016 + 4,198,432 + 29,360,128 = 711,076,688 bytes,
-  which is 711,076,688 / 1,048,576 = 678.14 MiB.
+- Total: 536,875,008 + 33,650,688 + 6,297,648 + 4,198,432 + 29,360,128 = 610,381,904 bytes,
+  which is 610,381,904 / 1,048,576 = 582.11 MiB.
 
-The maximum capacity therefore costs about 609.5 MiB more than the default. The previous default of 8,192 counted 29,595,984 bytes (28.22 MiB). The previous maximum of
-65,536 / 256 counted 203,041,616 bytes (193.64 MiB).
+The maximum capacity therefore costs about 522.5 MiB more than the default. The previous default of 8,192 counts 26,441,808 bytes (25.22 MiB). The previous maximum of
+65,536 / 256 counts 177,844,304 bytes (169.61 MiB). (Before the item table left the slot header these four figures were 29,595,984, 203,041,616 bytes, and the totals above were 71,932,240 and 711,076,688.)
 
 The high-rate setting `--capacity 65536` with the default 64 jumbo slots uses
 the same sizes:
 
 - Regular payloads: (65,536 + 2) x 2,048 = 134,221,824 bytes.
-- Jumbo payloads: 64 x 131,184 = 8,395,776 bytes.
-- Slot metadata: (65,538 + 64) x 408 = 65,602 x 408 = 26,765,616 bytes.
+- Jumbo payloads: 64 x 131,448 = 8,412,672 bytes.
+- Slot metadata: (65,538 + 64) x 24 = 65,602 x 24 = 1,574,448 bytes.
 - Free-list elements: 65,602 x 16 = 1,049,632 bytes.
 - Channel elements: 65,536 x 112 = 7,340,032 bytes.
-- Total: 177,772,880 bytes, which is 169.54 MiB.
+- Total: 152,598,608 bytes, which is 145.53 MiB.
 
 On the lab VM, the process private bytes were about 31 MiB with the previous
 defaults (8,192 events) and about 179 MiB with the high-rate settings. The lab has
@@ -184,11 +191,11 @@ sustained rates near 50,000 queries per second. The lab did not test it. With
 the default 64 jumbo slots it uses the same sizes:
 
 - Regular payloads: (131,072 + 2) x 2,048 = 268,439,552 bytes.
-- Jumbo payloads: 64 x 131,184 = 8,395,776 bytes.
-- Slot metadata: (131,074 + 64) x 408 = 131,138 x 408 = 53,504,304 bytes.
+- Jumbo payloads: 64 x 131,448 = 8,412,672 bytes.
+- Slot metadata: (131,074 + 64) x 24 = 131,138 x 24 = 3,147,312 bytes.
 - Free-list elements: 131,138 x 16 = 2,098,208 bytes.
 - Channel elements: 131,072 x 112 = 14,680,064 bytes.
-- Total: 347,117,904 bytes, which is 331.04 MiB.
+- Total: 296,777,808 bytes, which is 283.03 MiB.
 
 The high-rate setting and its lab results are in the
 [configuration reference](../guide/configuration.md#high-rate-settings).

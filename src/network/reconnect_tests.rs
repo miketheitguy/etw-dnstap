@@ -173,6 +173,105 @@ fn loopback_stream() -> TcpStream {
 }
 
 #[test]
+fn a_socket_timeout_is_kept_only_if_it_is_not_short_and_at_most_the_slack_long() {
+    let slack = Duration::from_millis(5);
+    let second = Duration::from_secs(1);
+    // Nothing applied yet.
+    assert!(timeout_needs_update(None, second, slack));
+    // Applied equal, or longer by up to the slack: kept.
+    assert!(!timeout_needs_update(Some(second), second, slack));
+    assert!(!timeout_needs_update(Some(second + slack), second, slack));
+    // Longer than the slack: the call could run past the deadline.
+    assert!(timeout_needs_update(
+        Some(second + slack + Duration::from_nanos(1)),
+        second,
+        slack
+    ));
+    // Shorter: the call could time out before the deadline.
+    assert!(timeout_needs_update(
+        Some(second.saturating_sub(Duration::from_nanos(1))),
+        second,
+        slack
+    ));
+}
+
+#[test]
+fn the_slack_is_the_smaller_of_five_milliseconds_and_a_32nd_of_the_timeout() {
+    let slack = |timeout| DeadlineTcp::new(loopback_stream(), timeout).slack;
+    assert_eq!(slack(IO_TIMEOUT), TIMEOUT_SLACK);
+    assert_eq!(
+        slack(Duration::from_millis(100)),
+        Duration::from_micros(3125)
+    );
+    assert_eq!(
+        slack(Duration::from_millis(50)),
+        Duration::from_nanos(1_562_500)
+    );
+}
+
+#[test]
+fn the_write_timeout_is_set_once_per_window_and_again_when_the_time_left_moves() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let stream = TcpStream::connect(listener.local_addr().expect("address")).expect("connects");
+    let (_peer, _) = listener.accept().expect("accepted");
+    let mut transport = DeadlineTcp::new(stream, Duration::from_secs(3));
+    assert_eq!(transport.write_applied, None);
+    transport.write_all(&[1]).expect("first write");
+    let first = transport
+        .write_applied
+        .expect("the first write sets a timeout");
+    assert!(first <= Duration::from_secs(3) && first > Duration::from_millis(2900));
+    // The time left shrank by microseconds: the timeout is not set again.
+    transport.write_all(&[2]).expect("second write");
+    assert_eq!(transport.write_applied, Some(first));
+    // Well past the slack: it is set again, to the smaller time left.
+    thread::sleep(Duration::from_millis(40));
+    transport.write_all(&[3]).expect("third write");
+    let later = transport.write_applied.expect("still set");
+    assert!(
+        later < first.saturating_sub(Duration::from_millis(30)),
+        "{later:?} {first:?}"
+    );
+    // A new window has nearly the whole timeout left again, which is longer
+    // than the timeout applied, so the timeout is set again.
+    transport.rearm();
+    transport.write_all(&[4]).expect("fourth write");
+    assert!(transport.write_applied.expect("still set") > later);
+    // The read timeout has its own cache.
+    assert_eq!(transport.read_applied, None);
+}
+
+#[test]
+fn the_deadline_still_ends_a_blocked_write_when_the_timeout_was_kept() {
+    // A receiver that never reads fills the socket buffers; the write must
+    // fail near the 150 ms deadline, not run on to a timeout kept from earlier.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let stream = TcpStream::connect(listener.local_addr().expect("address")).expect("connects");
+    let (_peer, _) = listener.accept().expect("accepted");
+    let mut transport = DeadlineTcp::new(stream, Duration::from_millis(150));
+    transport
+        .write_all(&[0])
+        .expect("a small write fits the buffers");
+    transport.rearm();
+    let chunk = vec![0_u8; 1 << 20];
+    let started = Instant::now();
+    let error = loop {
+        match transport.write_all(&chunk) {
+            Ok(()) => assert!(started.elapsed() < Duration::from_secs(5), "never blocked"),
+            Err(error) => break error,
+        }
+    };
+    assert!(
+        matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ),
+        "{error:?}"
+    );
+    assert!(started.elapsed() < Duration::from_millis(150) + Duration::from_secs(2));
+}
+
+#[test]
 fn slow_socket_writes_are_counted_with_their_maximum() {
     let stats = Arc::new(SinkStats::default());
     let mut transport = DeadlineTcp::new(loopback_stream(), Duration::from_secs(1));
