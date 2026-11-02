@@ -631,13 +631,13 @@ mod tests {
             0
         );
         // Before the first successful query every ETW gauge reads zero.
-        let (capture, parse, sink) = counters();
-        let values = snapshot(&capture, &parse, &sink, 1024);
+        let (fresh_capture, fresh_parse, fresh_sink) = counters();
+        let fresh_values = snapshot(&fresh_capture, &fresh_parse, &fresh_sink, 1024);
         assert_eq!(
             (
-                values.etw_buffers_allocated,
-                values.etw_buffers_in_use,
-                values.etw_buffers_maximum
+                fresh_values.etw_buffers_allocated,
+                fresh_values.etw_buffers_in_use,
+                fresh_values.etw_buffers_maximum
             ),
             (0, 0, 0)
         );

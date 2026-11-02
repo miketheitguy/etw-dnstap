@@ -392,11 +392,11 @@ mod tests {
         assert_eq!(message.query_seconds, None);
         assert_eq!(message.response_seconds, Some(1_700_000_000));
         // A clear QR bit is a query, not a response.
-        let (metadata, mut packet) = event(258);
-        packet[2] &= 0x7f;
+        let (query_metadata, mut query_packet) = event(258);
+        query_packet[2] &= 0x7f;
         let error = encoder
-            .encode_with(metadata, packet.len(), |destination| {
-                destination.copy_from_slice(&packet);
+            .encode_with(query_metadata, query_packet.len(), |destination| {
+                destination.copy_from_slice(&query_packet);
                 Ok(())
             })
             .expect_err("QR clear on event 258");
@@ -623,12 +623,12 @@ mod tests {
             ));
             assert_restored(&packet, pointer, capacity, &original);
             assert_eq!(encoder.output, [] as [u8; 0]);
-            let (valid, packet) = event(256);
-            let expected = test_oracle::reference_bytes(valid, &packet, &[1; 1_024]);
+            let (valid, valid_packet) = event(256);
+            let expected = test_oracle::reference_bytes(valid, &valid_packet, &[1; 1_024]);
             assert_eq!(
                 encoder
-                    .encode_with(valid, packet.len(), |destination| {
-                        destination.copy_from_slice(&packet);
+                    .encode_with(valid, valid_packet.len(), |destination| {
+                        destination.copy_from_slice(&valid_packet);
                         Ok(())
                     })
                     .expect("recovery"),
@@ -661,12 +661,12 @@ mod tests {
         assert_eq!(encoder.output, [] as [u8; 0]);
         assert_eq!(encoder.output.capacity(), 0);
         encoder.tap.extra = None;
-        let (fixture, packet) = event(256);
-        let expected = test_oracle::reference_bytes(fixture, &packet, b"");
+        let (recovery, recovery_packet) = event(256);
+        let expected = test_oracle::reference_bytes(recovery, &recovery_packet, b"");
         assert_eq!(
             encoder
-                .encode_with(fixture, packet.len(), |destination| {
-                    destination.copy_from_slice(&packet);
+                .encode_with(recovery, recovery_packet.len(), |destination| {
+                    destination.copy_from_slice(&recovery_packet);
                     Ok(())
                 })
                 .expect("recovery"),

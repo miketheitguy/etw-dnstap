@@ -286,14 +286,13 @@ fn scoped_native_record_repairs_all_items_and_clears_stale_reused_slot() {
                     % std::mem::align_of::<EVENT_HEADER_EXTENDED_DATA_ITEM>(),
                 0
             );
-            // SAFETY: with_record owns a typed, aligned descriptor array and the
-            // lease's initialized user payload throughout this closure.
-            let (payload, items) = unsafe {
-                (
-                    std::slice::from_raw_parts(record.UserData.cast::<u8>(), 37),
-                    std::slice::from_raw_parts(record.ExtendedData, MAX_EXTENDED_ITEMS),
-                )
-            };
+            // SAFETY: with_record owns the lease's initialized user payload
+            // throughout this closure.
+            let payload = unsafe { std::slice::from_raw_parts(record.UserData.cast::<u8>(), 37) };
+            // SAFETY: with_record owns a typed, aligned descriptor array
+            // throughout this closure.
+            let items =
+                unsafe { std::slice::from_raw_parts(record.ExtendedData, MAX_EXTENDED_ITEMS) };
             assert!(payload.iter().all(|byte| *byte == 0x5a));
             for (index, item) in items.iter().enumerate() {
                 let value = u8::try_from(index).expect("bounded index");
@@ -385,17 +384,14 @@ fn copies_payload_and_extended_data_before_callback_returns() -> Result<()> {
         extra.fill(0);
         owned
     };
-    // SAFETY: The lease retains both checked ranges after source destruction.
-    unsafe {
-        assert_eq!(
-            std::slice::from_raw_parts(owned.buffer.bytes(), 3),
-            [1, 2, 3]
-        );
-        assert_eq!(
-            std::slice::from_raw_parts(owned.buffer.bytes().add(owned.buffer.offset(0)), 3),
-            [4, 5, 6]
-        );
-    }
+    // SAFETY: The lease retains the checked payload range after source destruction.
+    let payload = unsafe { std::slice::from_raw_parts(owned.buffer.bytes(), 3) };
+    // SAFETY: The item offset lies inside the lease's slot.
+    let item_start = unsafe { owned.buffer.bytes().add(owned.buffer.offset(0)) };
+    // SAFETY: The lease retains the checked item range after source destruction.
+    let item_bytes = unsafe { std::slice::from_raw_parts(item_start, 3) };
+    assert_eq!(payload, [1, 2, 3]);
+    assert_eq!(item_bytes, [4, 5, 6]);
     assert_eq!(owned.buffer.offset(0) % 8, 0);
     assert_eq!(owned.buffer.item(0).DataPtr, 0);
     assert_eq!(owned.buffer.item(0).DataSize, 3);
@@ -775,13 +771,10 @@ fn largest_record_and_all_extended_descriptors_fit_and_recycle() {
                 <= pool::JUMBO_BYTES - pool::ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS,
             "item data ends before the item cells"
         );
+        // SAFETY: The checked item offset lies inside the retained lease's slot.
+        let start = unsafe { owned.buffer.bytes().add(owned.buffer.offset(index)) };
         // SAFETY: Each checked item range is initialized in the retained lease.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                owned.buffer.bytes().add(owned.buffer.offset(index)),
-                usize::from(item.DataSize),
-            )
-        };
+        let bytes = unsafe { std::slice::from_raw_parts(start, usize::from(item.DataSize)) };
         assert!(bytes.iter().all(|byte| *byte == 0xbb));
     }
     drop(owned);
@@ -1010,10 +1003,10 @@ mod copy_record_properties {
                     prop_assert_eq!(offset % 8, 0);
                     prop_assert_eq!(owned.buffer.item(index).DataPtr, 0);
                     prop_assert_eq!(usize::from(owned.buffer.item(index).DataSize), bytes.len());
+                    // SAFETY: copy_record placed this offset inside the lease's slot.
+                    let start = unsafe { owned.buffer.bytes().add(offset) };
                     // SAFETY: copy_record initialized this in-bounds range in the lease.
-                    let copied = unsafe {
-                        std::slice::from_raw_parts(owned.buffer.bytes().add(offset), bytes.len())
-                    };
+                    let copied = unsafe { std::slice::from_raw_parts(start, bytes.len()) };
                     prop_assert_eq!(copied, &bytes[..]);
                 }
             } else {

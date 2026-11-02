@@ -86,8 +86,9 @@ fn reconnects_with_a_fresh_handshake_and_never_resends() {
         sequence += 1;
         on_new_session
     });
-    for sequence in 100..103u32 {
-        sink.write_frame(&sequence.to_be_bytes()).expect("write");
+    for frame_number in 100..103u32 {
+        sink.write_frame(&frame_number.to_be_bytes())
+            .expect("write");
     }
     sink.finish().expect("clean STOP/FINISH on the new session");
     let (first, second) = receiver.join().expect("receiver assertions pass");

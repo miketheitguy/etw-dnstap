@@ -893,8 +893,8 @@ mod tests {
         // interval (16 at 262,144 + 2 regular and 256 jumbo slots), Running.
         let counter = AtomicU32::new(0);
         let budget = Duration::from_secs(26);
-        let report = |state: u32, budget: Duration| {
-            status_record(state, false, checkpoint_for(&counter, state), budget)
+        let report = |state: u32, wait_budget: Duration| {
+            status_record(state, false, checkpoint_for(&counter, state), wait_budget)
         };
         let base = report(SERVICE_START_PENDING, pipeline::STARTUP_BASE_BUDGET);
         assert_eq!((base.dwCheckPoint, base.dwWaitHint), (1, 10_000));
@@ -1042,15 +1042,15 @@ mod tests {
             group(PERFORMANCE_LOG_USERS, ENABLED),
         ];
         let no_write: [&[u8]; 2] = [&service, EVERYONE];
-        let error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &no_write)
+        let write_error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &no_write)
             .expect_err("missing write restricted")
             .to_string();
-        assert!(error.contains("S-1-5-33"));
+        assert!(write_error.contains("S-1-5-33"));
         let no_service: [&[u8]; 2] = [EVERYONE, WRITE_RESTRICTED];
-        let error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &no_service)
+        let service_error = check_identity_profile(LOCAL_SERVICE, &service, &groups, &no_service)
             .expect_err("missing service SID")
             .to_string();
-        assert!(error.contains("restricting SIDs"));
+        assert!(service_error.contains("restricting SIDs"));
     }
 
     #[test]

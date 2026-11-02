@@ -66,7 +66,7 @@ pub(super) fn reservation(length: usize, items: usize) -> Option<usize> {
 /// The four `u16` fields of an item that precede `DataPtr`, packed little-endian.
 /// `DataPtr` is not stored: `copy_record` zeroes it, and `with_record` repairs it
 /// from the offset.
-fn pack_item(item: &EVENT_HEADER_EXTENDED_DATA_ITEM) -> u64 {
+const fn pack_item(item: &EVENT_HEADER_EXTENDED_DATA_ITEM) -> u64 {
     let [r0, r1] = item.Reserved1.to_le_bytes();
     let [t0, t1] = item.ExtType.to_le_bytes();
     let [b0, b1] = item.Anonymous._bitfield.to_le_bytes();
@@ -487,23 +487,23 @@ mod tests {
 
     #[test]
     fn new_reports_no_progress_below_the_interval_and_once_at_it() {
-        let mut reports = 0;
+        let mut first_reports = 0;
         drop(PoolManager::with_progress(1, 1, || {
-            reports += 1;
+            first_reports += 1;
             Ok(())
         }));
-        assert_eq!(reports, 0);
+        assert_eq!(first_reports, 0);
         // Exactly PROGRESS_INTERVAL slots: capacity + 2 regular, no jumbo.
-        let mut reports = 0;
+        let mut second_reports = 0;
         drop(PoolManager::with_progress(
             PoolManager::PROGRESS_INTERVAL - 2,
             0,
             || {
-                reports += 1;
+                second_reports += 1;
                 Ok(())
             },
         ));
-        assert_eq!(reports, 1);
+        assert_eq!(second_reports, 1);
     }
 
     #[test]

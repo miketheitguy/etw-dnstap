@@ -391,8 +391,8 @@ fn wire_fields(mut input: &[u8]) -> Vec<u64> {
         match key & 7 {
             0 => input = read_varint(input).1,
             2 => {
-                let (length, rest) = read_varint(input);
-                input = &rest[usize::try_from(length).expect("length")..];
+                let (length, after_length) = read_varint(input);
+                input = &after_length[usize::try_from(length).expect("length")..];
             }
             5 => input = &input[4..],
             wire => panic!("unexpected wire type {wire}"),

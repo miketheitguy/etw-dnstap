@@ -117,12 +117,13 @@ fn length_field(mut input: &[u8], tag: u64) -> &[u8] {
         match key & 7 {
             0 => input = read_varint(input).1,
             2 => {
-                let (length, rest) = read_varint(input);
-                let (bytes, rest) = rest.split_at(usize::try_from(length).expect("length"));
+                let (length, after_length) = read_varint(input);
+                let (bytes, remaining) =
+                    after_length.split_at(usize::try_from(length).expect("length"));
                 if key >> 3 == tag {
                     return bytes;
                 }
-                input = rest;
+                input = remaining;
             }
             5 => input = &input[4..],
             wire => panic!("unexpected wire type {wire}"),
@@ -244,7 +245,7 @@ fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
     for id in [256, 257, 258] {
         compare(&mut encoder, fixture(id, 1, true), &packet(id, 128), b"");
         let mut calls = 0;
-        let error = encoder
+        let source_error = encoder
             .encode_with(fixture(id, 0, false), 128, |destination| {
                 calls += 1;
                 destination[..6].fill(0xdd);
@@ -254,16 +255,16 @@ fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
             .expect_err("partial extraction failed");
         assert_eq!(calls, 1);
         assert_eq!(
-            error
+            source_error
                 .downcast_ref::<std::io::Error>()
                 .expect("original source retained")
                 .raw_os_error(),
             Some(42)
         );
-        assert!(format!("{error:#}").contains("synthetic packet extraction"));
+        assert!(format!("{source_error:#}").contains("synthetic packet extraction"));
         assert_eq!(encoder.output, [] as [u8; 0]);
         let wrong_direction = packet(if id == 256 { 257 } else { 256 }, 12);
-        let error = encoder
+        let direction_error = encoder
             .encode_with(fixture(id, 2, true), 12, |destination| {
                 calls += 1;
                 destination.copy_from_slice(&wrong_direction);
@@ -272,7 +273,7 @@ fn partial_fill_error_preserves_source_chain_and_qr_errors_recover() {
             .expect_err("wrong QR");
         assert_eq!(calls, 2);
         assert!(
-            matches!(error.downcast_ref::<EncodeError>(), Some(EncodeError::IncorrectDirection(actual)) if *actual == id)
+            matches!(direction_error.downcast_ref::<EncodeError>(), Some(EncodeError::IncorrectDirection(actual)) if *actual == id)
         );
         assert_eq!(encoder.output, [] as [u8; 0]);
         let mut event = fixture(id, 2, false);
