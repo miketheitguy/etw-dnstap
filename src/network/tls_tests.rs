@@ -2,7 +2,7 @@
 //! handshake deadline. Tests trust a throwaway CA through a `RootCertStore`;
 //! the Windows platform verifier is not used here.
 
-use super::test_support::{handshake_over, retry_policy};
+use super::test_support::{WAIT_TIMEOUT, handshake_over, retry_policy, wait_until};
 use super::*;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::{
@@ -214,13 +214,13 @@ fn tls_reconnects_with_a_fresh_handshake() {
     .expect("connects");
     sink.write_frame(b"one").expect("write");
     sink.flush().expect("flush");
-    let give_up = Instant::now() + Duration::from_secs(20);
-    while stats.reconnects.load(Ordering::Relaxed) == 0 {
-        assert!(Instant::now() < give_up, "sink never reconnected");
+    // The sink notices the outage and the finished reconnect only on a write
+    // or flush, so keep offering frames until it reports the reconnect.
+    wait_until(WAIT_TIMEOUT, "the sink to reconnect over TLS", || {
         sink.write_frame(b"offered").expect("write");
         sink.flush().expect("flush");
-        thread::sleep(Duration::from_millis(5));
-    }
+        stats.reconnects.load(Ordering::Relaxed) >= 1
+    });
     sink.write_frame(b"after").expect("write");
     sink.finish()
         .expect("clean STOP/FINISH on the new TLS session");

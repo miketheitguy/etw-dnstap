@@ -1,4 +1,4 @@
-use super::test_support::{handshake, retry_policy};
+use super::test_support::{WAIT_TIMEOUT, handshake, retry_policy, wait_until};
 use super::*;
 use std::net::TcpListener;
 
@@ -67,21 +67,17 @@ fn reconnects_with_a_fresh_handshake_and_never_resends() {
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
     }
     sink.flush().expect("flush");
-    // Keep offering frames through the outage until the sink is back.
-    let give_up = Instant::now() + Duration::from_secs(20);
+    // Keep offering frames through the outage until the sink is back; the sink
+    // notices the outage and the finished reconnect only on a write or flush.
     let mut sequence = 1000u32;
-    let mut first_after_reconnect;
-    loop {
-        assert!(Instant::now() < give_up, "sink never reconnected");
+    let mut first_after_reconnect = sequence;
+    wait_until(WAIT_TIMEOUT, "the sink to reconnect", || {
         first_after_reconnect = sequence;
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
         sink.flush().expect("flush");
         sequence += 1;
-        if stats.reconnects.load(Ordering::Relaxed) >= 1 {
-            break;
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
+        stats.reconnects.load(Ordering::Relaxed) >= 1
+    });
     for sequence in 100..103u32 {
         sink.write_frame(&sequence.to_be_bytes()).expect("write");
     }
@@ -184,11 +180,12 @@ fn slow_socket_writes_are_counted_with_their_maximum() {
 #[test]
 fn deadline_clock_starts_at_the_first_io_of_each_operation() {
     let mut transport = DeadlineTcp::new(loopback_stream(), Duration::from_millis(50));
-    thread::sleep(Duration::from_millis(80));
-    assert!(transport.remaining().is_err(), "the armed window expired");
+    wait_until(WAIT_TIMEOUT, "the armed window to expire", || {
+        transport.remaining().is_err()
+    });
     transport.rearm();
-    thread::sleep(Duration::from_millis(80));
-    // Idle time before the operation's first I/O does not count against it.
+    // The old deadline has passed, but idle time before an operation's first
+    // I/O does not count against it: the clock restarts at this call.
     assert!(transport.remaining().is_ok());
     assert!(transport.armed);
 }
