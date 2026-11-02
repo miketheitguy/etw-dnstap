@@ -1,0 +1,36 @@
+# Objects that the MSVC linker is allowed to report as LNK2047 (no EH
+# continuation metadata) when the release image is linked with
+# /GUARD:EHCONT and /FORCE:GUARDEHCONT. See .cargo/config.toml.
+#
+# One entry per line: <archive>(<object>), with the rustc metadata hash
+# removed from the archive name. scripts/ci/verify-link-exceptions.ps1 fails
+# when the linker reports an object that is not listed here, and when a
+# listed object is no longer reported.
+#
+# The set is the ring objects that this binary's link pulls in. It changes
+# when ring changes or when the binary's use of ring changes, for example a
+# dependency or feature change that adds a cipher suite. The ring rlib also
+# holds aes-gcm-avx2-x86_64-nasm.o, aesni-gcm-x86_64-nasm.o,
+# ghash-x86_64-nasm.o and chacha20_poly1305_x86_64-nasm.o. They are absent
+# on purpose: the release link does not report them, and listing an object
+# that the link does not report fails the check.
+#
+# To update the list, after review of the change in the linked objects:
+# - The check reports an unexpected object. Confirm why the object now draws
+#   LNK2047, then add its <archive>(<object>) line, copied from the check's
+#   output, in the same change.
+# - The check reports a missing object. The exception is stale: delete its
+#   line. If the list becomes empty, remove the verify step from
+#   .github/workflows/ci.yml, this file, and /FORCE:GUARDEHCONT from
+#   .cargo/config.toml.
+#
+# ring (the rustls crypto provider) ships its x86_64 assembly as prebuilt
+# NASM objects. Approved by the repository maintainer 2026-11-01.
+libring.rlib(aesni-x86_64-nasm.o)
+libring.rlib(chacha-x86_64-nasm.o)
+libring.rlib(p256-x86_64-asm-nasm.o)
+libring.rlib(sha256-x86_64-nasm.o)
+libring.rlib(sha512-x86_64-nasm.o)
+libring.rlib(vpaes-x86_64-nasm.o)
+libring.rlib(x86_64-mont-nasm.o)
+libring.rlib(x86_64-mont5-nasm.o)

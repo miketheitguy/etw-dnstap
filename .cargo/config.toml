@@ -27,9 +27,25 @@ rustflags = [
     # provider) ships its x86_64 assembly as prebuilt NASM objects without
     # EH-continuation metadata, so /GUARD:EHCONT alone rejects them (LNK2047).
     # This flag links anyway: the rest of the image keeps EHCONT metadata and
-    # those routines never unwind (release builds abort on panic). The linker
-    # still prints one LNK2047 line per object as a warning. Remove this flag
-    # when ring, or its replacement, carries the metadata.
+    # no panic or exception unwinds through those routines in the release
+    # profile (panic = "abort", see [profile.release] in Cargo.toml). The linker
+    # still prints one LNK2047 line per object, which rustc forwards as a
+    # "linker stdout" warning. (ring's C objects also draw LNK4291; the
+    # linker generates conservative metadata for those, so they need no
+    # exception.)
+    #
+    # Detector: scripts/ci/link-exceptions.txt lists the objects this
+    # exception covers. CI captures the release build log and runs
+    # scripts/ci/verify-link-exceptions.ps1, which fails when the LNK2047
+    # set differs from that list in either direction. Add an object there
+    # only after review. Remove this flag, and the list, when ring, or its
+    # replacement, carries the metadata.
+    #
+    # Dependency decision: ring is kept as the crypto provider rather than
+    # aws-lc-rs, which needs CMake and NASM on Windows MSVC. RUSTSEC-2025-0007
+    # ("ring is unmaintained", issued 2025-02-21) was withdrawn after the
+    # author gave the rustls team access; its last update (2025-03-06) says
+    # the situation is "back to normal", not security-maintenance-only.
     "-C", "link-arg=/FORCE:GUARDEHCONT",
     "-C", "link-arg=/CETCOMPAT",
     "-C", "link-arg=/LARGEADDRESSAWARE",

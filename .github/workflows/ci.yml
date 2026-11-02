@@ -79,8 +79,22 @@ jobs:
       - name: test (diag-timing)
         run: cargo test --locked --features diag-timing
 
+      # The log keeps the linker's LNK2047 lines (rustc forwards them as
+      # "linker stdout" warnings) for the next step. release-build.log matches
+      # the *.log ignore pattern. pipefail is already on for an explicit bash
+      # shell; it is restated so the build's exit code survives the tee.
       - name: release build
-        run: cargo build --locked --release
+        run: |
+          set -o pipefail
+          cargo build --locked --release 2>&1 | tee release-build.log
+
+      # Fails if the set of objects the linker rejects for missing
+      # EH-continuation metadata differs from scripts/ci/link-exceptions.txt
+      # in either direction (see the /FORCE:GUARDEHCONT comment in
+      # .cargo/config.toml).
+      - name: verify link exceptions
+        shell: pwsh
+        run: ./scripts/ci/verify-link-exceptions.ps1 -LogPath release-build.log
 
       # Inspects the exe that ships, not the source: fails if a hardening flag
       # is missing, a PDB is referenced, or an ASan or dynamic CRT import is
