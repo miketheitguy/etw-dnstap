@@ -146,9 +146,6 @@
         <util:EventSource Log="Application"
                           Name="EtwDnstap"
                           EventMessageFile="[WindowsFolder]Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll"
-                          SupportsErrors="yes"
-                          SupportsInformationals="yes"
-                          SupportsWarnings="yes"
                           KeyPath="yes" />
       </Component>
 
