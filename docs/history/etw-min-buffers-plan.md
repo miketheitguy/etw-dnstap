@@ -1,6 +1,6 @@
 # `--etw-min-buffers` plan
 
-> **Status:** Implemented; lab-validated · **Evidence dated:** 2026-11-01 · **Commit:** planned on top of `7ae60a6` with the performance counter change · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed and lab-validated 2026-11-01) · **Evidence dated:** 2026-11-01 · **Commit:** planned on top of `7ae60a6` with the performance counter change · **Reviewed:** 2026-11-01
 
 This plan adds a command-line option that sets the ETW session's
 `MinimumBuffers`. Today the service always requests a hard-coded 4

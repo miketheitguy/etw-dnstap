@@ -1,264 +1,262 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` for the layout, conventions, file list, and rows that name that commit. Other rows name their own last-checked commit. · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` for the layout, conventions, and file list · **Reviewed:** 2026-11-02
 
-This index lists every document in `docs/`, with its status. Operators should start
-with the [project README](../README.md) and the [guides](#guides). Maintainers can use the
-[design](#design-and-reference) and [performance](#performance) sections.
-Administrators should not use the historical campaign commands as procedures.
+This index lists every document in `docs/`. Each document starts with a status
+block that gives its status, evidence date, commit, and review date. This page
+does not repeat them.
+
+## Where to start
+
+| You are... | Start with |
+| --- | --- |
+| An operator who installs or runs the service | [Project README](../README.md), then the [operator guides](#operator-guides) |
+| A maintainer who changes the code | [Contributing](../CONTRIBUTING.md), then [Design and reference](#design-and-reference) |
+| A reader who checks performance claims | [Performance](#performance) and [Lab and validation records](#lab-and-validation-records) |
 
 ## Layout
 
-Each folder holds one kind of document. The status block at the top of a document
+Each folder holds one kind of document. The status in a document's status block
 decides its folder.
 
-| Folder | Contents | Statuses |
+| Folder | Contents | Status |
 | --- | --- | --- |
-| [`guide/`](guide/) | Operator guides: install, configuration, troubleshooting, shutdown remediation, uninstall | Current |
-| [`design/`](design/) | Architecture and reference: pooled intake, ring and queue, single-pass decoder contract, measurement terms, diagrams | Current |
-| [`performance/`](performance/) | The latest completed native performance record and its graphs, trace analysis, and campaign plan | Current review. Supporting records Historical |
-| [`plans/`](plans/) | Plans and analyses that are not yet executed or implemented | Proposed or Approved. A plan with partial execution says so in its status block |
+| [`guide/`](guide/) | Operator guides | Current |
+| [`design/`](design/) | Architecture and reference | Current |
+| [`performance/`](performance/) | The latest native performance record, its graphs, trace analysis, and campaign plan | Current review. Supporting records are Historical |
+| [`plans/`](plans/) | Plans and analyses that are not yet executed | Proposed. A partly executed plan says so in its status block |
 | [`history/`](history/) | Finished campaigns, reviews, completed plans, and superseded documents | Historical, Superseded |
-| [`assets/performance/`](assets/performance/) | Graph SVGs, CSV copies, and their provenance manifests | Generated |
-| [`assets/loss-solutioning/`](assets/loss-solutioning/) | Animated GIFs of the event-loss causes and fixes shown in the loss-solutioning diagram | Historical |
+| [`assets/performance/`](assets/performance/) | Graph SVGs, CSV copies, and provenance manifests | Generated |
+| [`assets/loss-solutioning/`](assets/loss-solutioning/) | Animated GIFs of the event-loss causes and fixes | Historical |
 
-The graph assets stay at `docs/assets/performance/` because
+The graph assets stay in `docs/assets/performance/` because
 [`plot-pooled-wpr.py`](../scripts/performance/plot-pooled-wpr.py) writes there by
 default. The pooled campaign plan, graphs, and trace analysis stay next to the
 review in `performance/` because
 [`build-pooled-report.py`](../scripts/performance/build-pooled-report.py)
 generates sibling links to them.
 
-Moves keep history with `git mv`. When you move a document, update every relative
-link to it and run a link check over all tracked Markdown files.
-
 Inside the Current folders, each document has one type: procedure, reference,
-diagnosis, or design. Current documents follow a plain-English style based on
-ASD-STE100. Historical records keep their original text. See
-[Document types](../CONTRIBUTING.md#document-types) and
-[Writing style](../CONTRIBUTING.md#writing-style).
+diagnosis, or design. See [Document types](../CONTRIBUTING.md#document-types)
+and [Writing style](../CONTRIBUTING.md#writing-style). To move a document, see
+[Documentation](../CONTRIBUTING.md#documentation).
 
-## Status conventions
-
-Each document starts with a status block. The block gives four facts: the
-status, the date of the evidence, the commit that the document describes, and
-the date of the last review.
+## Status values
 
 | Status | Meaning |
 | --- | --- |
 | **Current** | Describes the code and procedures on `main`. Kept up to date with the code. |
 | **Historical** | A dated campaign, review, or plan. Its results, hashes, and counts apply to its recorded binaries and are not edited. |
-| **Superseded** | Replaced by a later implementation or document. The header links the replacement. |
+| **Superseded** | Replaced by a later implementation or document. The status block links the replacement. |
 | **Proposed** | A design or plan that is not implemented or not yet executed. |
 
-Commit references are given only where the document or the repository history
-identifies them. A record that does not name a commit is marked *not recorded*.
-The repository's history starts with `08254d4` (Initial Buildout), and it has no
-release tags.
+A commit reference appears only where the document or the repository history
+identifies it. Otherwise the record says *not recorded*. The repository history
+starts with `08254d4` (Initial Buildout). The repository has no release tags.
 
-Historical records keep their recorded command text and source paths. Where a
-lab script or source file has moved since, the record has a short note that
-names the new path. It is not rewritten. See the
-[script moves and renames](../scripts/performance/README.md#file-moves-and-renames) for commit
-`6e62b2e`. Commit `dc9d7e0` split the ETW code into `src/etw/` (`session.rs`,
-`keywords.rs`, `intake.rs`, `schema.rs`, and `diag.rs`), next to the older
-`pool.rs` and `decode.rs`. Later commits added `fuzzing.rs`, `session_guid.rs`,
-and `target.rs`. `src/etw.rs` remains as the module root. `src/event.rs` and
-`src/sink.rs` are the seams for the output sink.
+## Operator guides
 
-The service sends capture only to its required TCP receiver. It writes no
-capture, metrics, or log files. Diagnostics go to the event log and to stderr.
+These guides in [`guide/`](guide/) are the source of truth for install,
+configuration, troubleshooting, and removal.
 
-## Guides
+| Task | Document |
+| --- | --- |
+| Build the executable | [Build the executable](guide/build.md) |
+| Install and register the service | [Install and provision](guide/install.md) |
+| Prepare the receiver and its certificate | [Set up the dnstap receiver](guide/receiver.md) |
+| Look up an option, default, or range | [Configuration reference](guide/configuration.md) |
+| Choose settings for a high query rate | [Tune capture for load](guide/tuning.md) |
+| Read the log events and counters | [Log events and counters](guide/monitoring.md) |
+| Fix a failed start, drops, or missing records | [Troubleshooting](guide/troubleshooting.md) |
+| Diagnose receiver resets during service stop | [Service shutdown remediation](guide/service-stop-remediation.md) |
+| Change or upgrade an installed service | [Repair or upgrade](guide/upgrade.md) |
+| Remove the service and its leftovers | [Uninstall](guide/uninstall.md) |
 
-These are the operator guides in `guide/`. They are the source of truth for
-install, configuration, troubleshooting, and removal.
+Policy documents in the repository root:
 
-| Document | Status | Evidence date | Commit | Summary |
-| --- | --- | --- | --- | --- |
-| [Install and provision](guide/install.md) | Current. LocalService restricted-SID profile validated on one lab host (build 26100). Performance counters validated on one lab host on 2026-11-01 | Nov 1, 2026 (lab validation) | `dde7188` | Toolchain, build, LocalService restricted-SID identity, privileges, performance counter registration, SCM recovery, receiver setup, validation checklist |
-| [Configuration reference](guide/configuration.md) | Current. Performance counters validated on one lab host on 2026-11-01. The defaults `--etw-max-buffers 64` and `--capacity 24576` are not lab-tested as a set | Nov 1, 2026 (buffer-wake and flush-removal lab results, measured with the previous defaults) | `dde7188` | Every option and default, the low-rate defaults and the high-rate settings with their lab results, DNS process filter, receiver connection, deadlines, session reclaim, log events and counters, Windows performance counters with the catalog and suggested alerts |
-| [Troubleshooting](guide/troubleshooting.md) | Current | not applicable | `dde7188` | Event log messages, startup failures, receiver outages, DNS restarts, counters, schema rejection with no fallback decoder, watchdog aborts |
-| [Service shutdown remediation](guide/service-stop-remediation.md) | Current (operator guide) | not applicable | not recorded (code claims re-checked at `dde7188`) | Diagnosing receiver resets during STOP/FINISH and the close behavior |
-| [Uninstall](guide/uninstall.md) | Current | not applicable | `dde7188` | Service, group membership, ETW grant removal, event source, ETW session, performance counter unregistration, and directory removal |
-| [Security policy](../SECURITY.md) | Current | not applicable | `dde7188` | Reporting, threat model summary, producer identity, LocalService restricted-SID profile |
-| [Contributing](../CONTRIBUTING.md) | Current | not applicable | `dde7188` | Build, test, lint, documentation status and layout, commit style |
-| [Changelog](../CHANGELOG.md) | Current | not applicable | `dde7188` | Keep a Changelog format. Versioning policy at the top. No tag yet. Commit log through `dde7188` |
+| Document | Contents |
+| --- | --- |
+| [Security policy](../SECURITY.md) | Reporting, threat model summary, producer identity, LocalService restricted-SID profile |
+| [Contributing](../CONTRIBUTING.md) | Build, test, lint, documentation conventions, commit style |
+| [Changelog](../CHANGELOG.md) | Keep a Changelog format and the versioning policy. No tag yet |
 
 ## Design and reference
 
-These documents are in `design/`.
+These documents in [`design/`](design/) help maintainers.
 
-| Document | Status | Evidence date | Commit | Summary |
-| --- | --- | --- | --- | --- |
-| [Pooled ETW intake](design/pooled-intake.md) | Current | not applicable | `dde7188` (pooled intake present by `2c62a9f`) | Ownership, memory budget, buffer-callback parser wake, and loss accounting of the pooled intake |
-| [Ring capacity and shutdown](design/ring-buffer.md) | Current | not applicable (reference) | `dde7188` | Channel bounds, parser wake and linger, ETW delivery batches, the removed periodic flush and its historical results, and shutdown ordering. The low-rate limits link to the configuration reference. The historical capacity experiment is in [Ring capacity experiment](history/ring-capacity-experiment.md). |
-| [Single-pass decoder](design/single-pass-decoder.md) | Current | not applicable (reference, local tests only) | `dde7188` (decoder added in `e59425f`, TDH fallback removed in `69db97d`) | Decoder grammar, schema rejection rule (no per-event TDH reader), bounds, and validation scope |
-| [Measurement terms and result gates](design/measurement-terms.md) | Current | not applicable | `dde7188` | Units, counters, and gates for reading performance reports, and how the live counter names differ from schema 2 |
-| [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Current, partly stale (labels from `54eafae`, box positions from Oct 28, 2026) | Oct 28, 2026 (positions) | `54eafae` (labels) | Editable draw.io diagram. Labels match the module split, DNS process filter, and reconnecting sink. They do not show `etw/decode.rs` or the buffer-callback parser wake. See the [diagram note](#diagram-note). |
-
-The rejected wake-on-enqueue experiment, which explains why the ETW callback stays
-wake-free, is a historical record:
-[history/ring-wakeup.md](history/ring-wakeup.md).
+| Document | Contents |
+| --- | --- |
+| [Pooled ETW intake](design/pooled-intake.md) | Ownership, memory budget, buffer-callback parser wake, and loss accounting |
+| [Ring capacity and shutdown](design/ring-buffer.md) | Channel bounds, parser wake and linger, ETW delivery batches, the removed periodic flush, and shutdown order |
+| [Single-pass decoder](design/single-pass-decoder.md) | Decoder grammar, the schema rejection rule (no per-event TDH reader), bounds, and validation scope |
+| [Measurement terms and result gates](design/measurement-terms.md) | Units, counters, and gates for reading performance reports |
+| [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Editable draw.io diagram. See the [diagram note](#diagram-note). |
 
 ### Diagram note
 
-The architecture diagram's title is "Code architecture." Its labels match `main`
-at `54eafae`. They show these parts:
+The diagram's labels match `main` at `54eafae`: the `src/etw/` module split, the
+bounded crossbeam channel with pooled leases, the DNS process filter, the
+LocalService restricted-token gate, and the reconnecting network sink. Its box
+positions are from the October 28, 2026 layout.
 
-- The `src/etw/` module split.
-- The bounded crossbeam channel with pooled leases.
-- The DNS process filter.
-- The LocalService restricted-token gate.
-- The reconnecting network sink.
-
-The labels do not show two later changes: the
-single-pass decoder (`etw/decode.rs`) and its schema rejection rule (`69db97d`),
-and the ETW buffer callback that wakes the parser (`dde7188`). Its box positions
-are still those of the October 28 layout. Use
+It does not show the single-pass decoder (`etw/decode.rs`) and its schema
+rejection rule (`69db97d`), or the ETW buffer callback that wakes the parser
+(`dde7188`). For the current design, use
 [Pooled ETW intake](design/pooled-intake.md) and
-[Single-pass decoder](design/single-pass-decoder.md) for the current design.
+[Single-pass decoder](design/single-pass-decoder.md).
 
 ## Performance
 
-These documents are in `performance/`. They are the latest completed native
-campaign, `pooled-vm-20261029-0942`.
+These documents in [`performance/`](performance/) record the latest completed
+native campaign, `pooled-vm-20261029-0942`. The campaign ran under LocalSystem,
+not the current LocalService restricted-SID profile.
 
-| Document | Status | Evidence date | Commit | Summary |
-| --- | --- | --- | --- | --- |
-| [Pooled intake VM performance review](performance/pooled-vm-performance-review.md) | Current (latest native results, its binaries are historical) | Oct 29, 2026 (campaign `pooled-vm-20261029-0942`) | `2c62a9f` documents the results | The completed pooled campaign: 22 measured stages, 12 strict passes, 10 strict failures. Run under LocalSystem, not the current LocalService restricted-SID profile. |
-| [Pooled VM CPU and QPS graphs](performance/pooled-vm-performance-graphs.md) | Historical | Oct 29, 2026 | `2c62a9f` | Graphs of the four primary runs |
-| [Pooled VM trace analysis](performance/pooled-vm-trace-analysis.md) | Historical | Oct 29, 2026 | `2c62a9f` | Native WPR evidence |
-| [Pooled intake VM performance plan](performance/pooled-vm-performance-plan.md) | Historical | Oct 29, 2026 | `2c62a9f` | Workload, commands, and approvals of the completed campaign |
+| Document | Contents |
+| --- | --- |
+| [Pooled intake VM performance review](performance/pooled-vm-performance-review.md) | The results: 22 measured stages, 12 strict passes, 10 strict failures. Status Current, with historical binaries |
+| [Pooled VM CPU and QPS graphs](performance/pooled-vm-performance-graphs.md) | Graphs of the four primary runs |
+| [Pooled VM trace analysis](performance/pooled-vm-trace-analysis.md) | Native WPR evidence |
+| [Pooled intake VM performance plan](performance/pooled-vm-performance-plan.md) | Workload, commands, and approvals of the campaign |
 
 The campaign directory `target/performance/pooled-vm-20261029-0942` is a local
-artifact. It is not in a clone. The review is generated by
-[`build-pooled-report.py`](../scripts/performance/build-pooled-report.py), and the
-graphs by [`plot-pooled-wpr.py`](../scripts/performance/plot-pooled-wpr.py).
-Edit the narrative template there, then regenerate. Do not edit the numbers.
-
-The lab scripts have their own documentation at
+artifact. It is not in a clone. [`build-pooled-report.py`](../scripts/performance/build-pooled-report.py)
+generates the review, and [`plot-pooled-wpr.py`](../scripts/performance/plot-pooled-wpr.py)
+generates the graphs. Edit the narrative template in the script, then
+regenerate. Do not edit the numbers. The lab scripts are documented in
 [scripts/performance/README.md](../scripts/performance/README.md).
 
 ## Plans
 
-These documents are in `plans/`. Each status block gives its execution state. The parallel parser workers plan is partly executed. The performance counter plan is implemented and lab-validated. The ETW minimum buffers plan is implemented and lab-validated. The response failure capture plan is implemented and lab-validated. The others have no recorded execution.
+These documents in [`plans/`](plans/) are not yet executed, or only partly. The
+status block of each gives its execution state. A plan moves to `history/` when
+it is executed.
 
-| Document | Status | Evidence date | Commit | Summary |
-| --- | --- | --- | --- | --- |
-| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed (must be regenerated before the next campaign) | Oct 30, 2026 | `3d401cc` and later | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` (service identity, DNS PID filter, reconnect). See the banner in the document. |
-| [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | not recorded | not recorded | Design analysis for parallel parsing and TCP threading. Its fail-fast contract predates `f0b51f4`. Its timed park and fallback decoding predate `69db97d` and `dde7188`. |
-| [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed (P0 and diagnostic runs recorded Oct 31, 2026, P1a next, P4 deferred) | Oct 31, 2026 | not recorded | Plan to diagnose the bottleneck and test parallel workers. Its no-reconnect rows predate `f0b51f4`. Its idle-park stages predate the per-buffer wake in `dde7188`. |
-| [Windows V2 performance counter plan](plans/windows-performance-counters-v2-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | Windows Performance Counters V2 provider for the `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. It replaces the earlier nine-counter proposal. |
-| [ETW minimum buffers plan](plans/etw-min-buffers-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `7ae60a6` | The `--etw-min-buffers` option for the ETW session's `MinimumBuffers`. The default `0` lets ETW choose. It also logs the buffer counts that ETW applied. |
-| [Response failure capture plan](plans/response-failure-capture-plan.md) | Implemented. Lab-validated on 2026-11-01 | Nov 1, 2026 | planned on top of `335e501` | Captures DNS Server event 258 (`RESPONSE_FAILURE`, for example SERVFAIL) as `CLIENT_RESPONSE`. Adds the `RESPONSE_FAILURE` keyword, removes the level filter, and extends the event-ID filter to 256, 257, and 258. |
-| [Code review remediation plan](plans/code-review-remediation-plan.md) | Proposed. Execution in progress on the `plan/code-review-remediation` branch | Nov 1, 2026 | written at `fc983ab` | Findings of the 2026-11-01 Rust code review (performance, error handling, style, security) and the phased remediation: SCM wait hint, revocation wording, LNK2047 detector, cleanups, benchmark, performance experiments, `pipeline.rs` split. |
+| Document | State | Contents |
+| --- | --- | --- |
+| [Code review remediation plan](plans/code-review-remediation-plan.md) | Proposed. In progress on the `plan/code-review-remediation` branch | Findings of the 2026-11-01 Rust code review and the phased remediation |
+| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed. Regenerate before the next campaign | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` |
+| [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | Parallel parsing and TCP threading. Its fail-fast contract, timed park, and fallback decoding are out of date |
+| [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed | Diagnose the bottleneck and test parallel workers. P0 and diagnostic runs recorded Oct 31, 2026. P1a is next. P4 is deferred |
 
 ## History
 
-These documents are in `history/`. They are dated records. Do not use their
-commands as procedures.
+These documents in [`history/`](history/) are dated records. Do not use their
+commands as procedures. They contain recorded VM addresses, fixed directories,
+and state-changing actions. Their status is Historical unless the table says
+otherwise.
 
-### Campaigns and reviews
+### Lab and validation records
 
-| Document | Status | Evidence date | Commit | Summary |
-| --- | --- | --- | --- | --- |
-| [Lab validation](history/lab-validation.md) | Historical | Oct 28, 2026 PDT | not recorded | Initial live receiver and packet-delivery checks |
-| [Live load validation plan](history/live-load-validation-plan.md) | Historical (executed L1-L5, the pending L4 action was not done) | Oct 30-31, 2026 | not recorded | Load checks deferred from the October 30 review, with the Stage L5 comparison. Its premise that counters reach only stderr is out of date. |
-| [LocalService restricted-SID validation](history/localservice-restricted-validation.md) | Historical | Nov 1, 2026 | parent `6718863` | ETW rights the restricted token needs. The 0x20-only grant |
-| [Skills-driven evaluation plan](history/skills-evaluation-plan.md) | Historical (executed Nov 1, 2026) | Nov 1, 2026 | plan `e8560ac`. Execution through `5f610f5` | Evaluation of code, build, CI and service hardening against the installed skills. Results: [lab record](history/skills-evaluation-lab-validation.md) and the commit log. |
-| [Skills evaluation lab validation](history/skills-evaluation-lab-validation.md) | Historical | Nov 1, 2026 | `77d7c47` (with one uncommitted script fix, now in `d721569`) | Lab run of the evaluation changes: mutex removal, reclaim, DNS handle (denied), pinned SDDL, delayed-auto start, backup and restore, SCM recovery with a DNS restart |
-| [Obsolete and legacy code cleanup plan](history/cleanup-plan.md) | Historical (executed Nov 1, 2026) | Nov 1, 2026 | written at `efb47af`. Executed through `0865e19` and later | Removal of dead code, legacy names, duplicate test scaffolding, finished-campaign scripts and stale docs. Results: [validation record](history/cleanup-validation.md) |
-| [Cleanup validation](history/cleanup-validation.md) | Historical | Nov 1, 2026 | `0865e19` (deployed build) | Gates per wave, lab run of the cleaned build, code and security review results, differences from the plan, open problems |
-| [TDH fallback removal](history/tdh-fallback-removal-plan.md) | Historical (executed Nov 1, 2026) | Nov 1, 2026 | written at `21e31c0`. Executed in `69db97d` | Removal of the per-event TDH reader. Local and lab performance results. Live WS2025 schema compiles |
-| [ETW buffer wake validation](history/buffer-wake-validation.md) | Historical | Nov 1, 2026 | `dde7188` (lab build: its working tree on `69db97d`) | Cause of the 1 s burst loss, wake options compared, lab results for the per-buffer wake |
-| [ETW flush removal validation](history/flush-removal-validation.md) | Historical | Nov 1, 2026 | `fcecb56` (lab build: its working tree on `ef46c85`) | Lab results without the explicit flush, for the defaults and the high-rate settings at about 1,000 to 50,000 achieved QPS. Client pacing limit, the fixed-client check, and the open question at about 30,000 QPS |
-| [200,000 QPS validation](history/200k-qps-validation.md) | Historical | Nov 1, 2026 | `fcecb56` | Two runs at 200,000 QPS with 128 KiB buffers and a 262,144-slot channel. ETW buffer and queue use, and the basis for the 200,000 QPS settings |
-| [DNS capture performance review, 2026-10-28](history/performance-review-2026-10-28.md) | Historical | Oct 28, 2026 | not recorded | Original unpaced three-run experiment |
-| [Windows DNS capture performance test plan](history/performance-test-plan.md) | Historical | Oct 28, 2026 | not recorded | Method for the unpaced experiment |
-| [Performance repeat at global 1,000 QPS, plan](history/performance-1000qps-plan.md) | Historical | Oct 29, 2026 UTC | not recorded | Method for the repeat with the original 1,024-entry ring. Results are in [the review](history/performance-1000qps-review.md). |
-| [Performance repeat at global 1,000 QPS, review](history/performance-1000qps-review.md) | Historical | Oct 29, 2026 UTC | not recorded | Results of the repeat |
-| [Ring-buffer capacity fix: plan](history/ring-buffer-fix-plan.md) | Historical | Oct 29, 2026 UTC | not recorded | Capacity-only 8,192 candidate. Validation gates |
-| [Ring-buffer capacity fix: validation](history/ring-buffer-fix-validation.md) | Superseded by [pooled intake](design/pooled-intake.md) | Oct 29, 2026 UTC | not recorded | Results of the allocation-based `ArrayQueue` candidate |
-| [Ring capacity experiment](history/ring-capacity-experiment.md) | Historical | Oct 28-29, 2026 | not recorded | The allocation-based `ArrayQueue` capacity experiment that set the former 8,192 default (now 24,576). Moved from the ring-capacity design page. |
-| [Rejected wake-on-enqueue experiment](history/ring-wakeup.md) | Historical | Oct 29, 2026 UTC | not recorded | Rejected `wake-1024-v1` candidate. It did not rule out a wake once per buffer. |
-| [Pooled ETW intake: validation plan](history/pooled-intake-plan.md) | Historical | Oct 2026 (undated in text) | not recorded | Original pooled validation design and ownership record |
-| [Pooled intake audit and remaining validation plan](history/pooled-intake-audit-plan.md) | Historical | Oct 2026 (undated in text) | not recorded | Audit of the pooled implementation |
-| [Pooled intake measurement review](history/pooled-intake-review-plan.md) | Historical | Oct 2026 (undated in text) | not recorded | Review of the Python analysis and metrics accounting |
-| [Single-pass decoder: four-CPU test results](history/singlepass-four-core-test-results.md) | Historical | Oct 30, 2026 UTC | not recorded (the run predates `e59425f`, which was committed on Oct 31 PDT) | One 100,000 QPS, 60-second authoritative run. Records were 0.43% short. Per-counter attribution and service settings were not recorded. |
-| [Single-pass four-CPU test plan](history/singlepass-four-core-test-plan.md) | Historical | Oct 30, 2026 UTC | not recorded | Plan for the four-CPU run |
-| [Filtered DNS ramp review](history/filtered-ramp-review.md) | Historical (in progress at its date) | Oct 30, 2026 | `3d401cc` (pushed commit cited) | Snapshot of the filtered campaign. It does not establish collector counts or a maximum rate. |
-| [Parser optimization DNS ramp plan](history/parser-ramp-plan.md) | Superseded (aborted, do not resume) | not recorded | not recorded | Ramp plan for the parser and encoder optimization |
-| [Parser optimization DNS ramp review](history/parser-ramp-review.md) | Superseded (aborted, do not resume) | not recorded | not recorded | Partial record of the aborted parser ramp |
+| Document | Contents |
+| --- | --- |
+| [Lab validation](history/lab-validation.md) | Initial live receiver and packet-delivery checks, Oct 28, 2026. The LocalSystem profile |
+| [LocalService restricted-SID validation](history/localservice-restricted-validation.md) | ETW rights the restricted token needs. The 0x20-only grant |
+| [Skills evaluation lab validation](history/skills-evaluation-lab-validation.md) | Mutex removal, reclaim, DNS handle (denied), pinned SDDL, delayed-auto start, backup and restore, SCM recovery with a DNS restart |
+| [Cleanup validation](history/cleanup-validation.md) | Gates per wave, lab run of the cleaned build, review results, open problems |
+| [ETW buffer wake validation](history/buffer-wake-validation.md) | Cause of the 1 s burst loss, wake options compared, lab results for the per-buffer wake |
+| [ETW flush removal validation](history/flush-removal-validation.md) | Lab results without the explicit flush at about 1,000 to 50,000 achieved QPS |
+| [200,000 QPS validation](history/200k-qps-validation.md) | Two runs with 128 KiB buffers and a 262,144-slot channel |
+| [Live load validation plan](history/live-load-validation-plan.md) | Stages L1 to L5. The pending L4 action was not done. Its premise that counters reach only stderr is out of date |
 
-### Parser, decoder, and profiling records
+### Performance campaigns
 
-| Document | Status | Evidence date | Commit | Summary |
-| --- | --- | --- | --- | --- |
-| [Parser and decoder performance review](history/parser-decoder-performance-review.md) | Historical | not recorded | not recorded | Candidate changes for the parser and decoder |
-| [Combined parser and writer WPR plan](history/parser-writer-wpr-plan.md) | Historical | not recorded | not recorded | WPR experiment. Its `/DEBUG:NONE` setting is in `.cargo/config.toml` |
-| [Combined parser and writer WPR results](history/parser-writer-wpr-results.md) | Historical | not recorded | not recorded | CPU and blocking results from that experiment |
-| [Schema-cache lookup WPR comparison](history/schema-lookup-wpr-results.md) | Historical | not recorded | not recorded | Schema-cache comparison |
-| [Remove the duplicate schema lookup](history/schema-single-lookup-plan.md) | Historical | not recorded | not recorded | Plan for a single schema lookup |
-| [Symbolized release-optimized WPR: plan](history/symbolized-release-wpr-plan.md) | Historical | not recorded | not recorded | Staged procedure for a symbolized release profile |
-| [Symbolized release-optimized WPR: results](history/symbolized-release-wpr-results.md) | Historical | not recorded | not recorded | Results of the symbolized release profile |
-| [Direct PacketData encoding plan](history/direct-packet-encoding-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md) | not recorded | not recorded | Transition from an intermediate packet vector to direct encoding |
-| [Parser and encoder optimization plan](history/parser-encoder-optimization-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md) | not recorded | not recorded | Earlier reusable packet-vector implementation |
-| [Single-pass decoder: implementation plan](history/single-pass-decoder-plan.md) | Historical (completion record. The current contract is [Single-pass decoder](design/single-pass-decoder.md)) | Oct 30, 2026 | `e59425f` | Staged implementation plan, acceptance gates, and completion record for the fast path |
-| [Packet-flow diagram](history/diagrams/packet-flow.drawio) | Historical | Oct 28, 2026 | not recorded | Editable draw.io diagram of the October 28 design |
-| [Event-loss solutioning timeline](history/diagrams/loss-solutioning.drawio) | Historical | Oct 28 to Nov 1, 2026 | not recorded | Editable draw.io timeline of the event-loss causes and fixes, from the 1,024-slot ring to the per-buffer parser wake. Its animations are in [`assets/loss-solutioning/`](assets/loss-solutioning/). |
+| Document | Contents |
+| --- | --- |
+| [Performance test plan, Oct 28](history/performance-test-plan.md) | Method for the unpaced experiment |
+| [Performance review, Oct 28](history/performance-review-2026-10-28.md) | Results of the unpaced three-run experiment |
+| [Repeat at 1,000 QPS: plan](history/performance-1000qps-plan.md) | Method for the repeat with the original 1,024-entry ring |
+| [Repeat at 1,000 QPS: review](history/performance-1000qps-review.md) | Results of the repeat |
+| [Single-pass four-CPU test plan](history/singlepass-four-core-test-plan.md) | Plan for one 100,000 QPS run |
+| [Single-pass four-CPU test results](history/singlepass-four-core-test-results.md) | Records were 0.43% short. Per-counter attribution was not recorded |
+| [Filtered DNS ramp review](history/filtered-ramp-review.md) | Snapshot of an in-progress campaign. It does not establish a maximum rate |
+| [Parser optimization DNS ramp plan](history/parser-ramp-plan.md) | Superseded. Aborted, do not resume |
+| [Parser optimization DNS ramp review](history/parser-ramp-review.md) | Superseded. Partial record of the aborted ramp |
+
+### Ring, intake, and event-loss work
+
+| Document | Contents |
+| --- | --- |
+| [Ring-buffer capacity fix: plan](history/ring-buffer-fix-plan.md) | The capacity-only 8,192 candidate and its gates |
+| [Ring-buffer capacity fix: validation](history/ring-buffer-fix-validation.md) | Superseded by [pooled intake](design/pooled-intake.md). Results of the `ArrayQueue` candidate |
+| [Ring capacity experiment](history/ring-capacity-experiment.md) | The experiment that set the former 8,192 default (now 24,576) |
+| [Rejected wake-on-enqueue experiment](history/ring-wakeup.md) | The `wake-1024-v1` candidate. It did not rule out a wake once per buffer |
+| [Pooled intake: validation plan](history/pooled-intake-plan.md) | Original validation design and ownership record |
+| [Pooled intake: audit plan](history/pooled-intake-audit-plan.md) | Audit of the pooled implementation |
+| [Pooled intake: measurement review](history/pooled-intake-review-plan.md) | Review of the Python analysis and metrics accounting |
+| [Event-loss solutioning timeline](history/diagrams/loss-solutioning.drawio) | Editable draw.io timeline from the 1,024-slot ring to the per-buffer parser wake. Animations are in [`assets/loss-solutioning/`](assets/loss-solutioning/) |
+| [Packet-flow diagram](history/diagrams/packet-flow.drawio) | Editable draw.io diagram of the October 28 design |
+
+### Parser, decoder, and profiling
+
+| Document | Contents |
+| --- | --- |
+| [Parser and decoder performance review](history/parser-decoder-performance-review.md) | Candidate changes for the parser and decoder |
+| [Parser and encoder optimization plan](history/parser-encoder-optimization-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md). Reusable packet-vector implementation |
+| [Direct PacketData encoding plan](history/direct-packet-encoding-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md). Direct encoding without a packet vector |
+| [Single-pass decoder: implementation plan](history/single-pass-decoder-plan.md) | Staged plan, gates, and completion record. The current contract is [Single-pass decoder](design/single-pass-decoder.md) |
+| [TDH fallback removal](history/tdh-fallback-removal-plan.md) | Removal of the per-event TDH reader, executed in `69db97d` |
+| [Combined parser and writer WPR plan](history/parser-writer-wpr-plan.md) | WPR experiment. Its `/DEBUG:NONE` setting is in `.cargo/config.toml` |
+| [Combined parser and writer WPR results](history/parser-writer-wpr-results.md) | CPU and blocking results |
+| [Schema-cache lookup WPR comparison](history/schema-lookup-wpr-results.md) | Schema-cache comparison |
+| [Remove the duplicate schema lookup](history/schema-single-lookup-plan.md) | Plan for a single schema lookup |
+| [Symbolized release WPR: plan](history/symbolized-release-wpr-plan.md) | Staged procedure for a symbolized release profile |
+| [Symbolized release WPR: results](history/symbolized-release-wpr-results.md) | Results of that profile |
 
 ### Service behavior and source reviews
 
-| Document | Status | Evidence date | Commit | Summary |
-| --- | --- | --- | --- | --- |
-| [ETW subscription and intake filter plan](history/etw-subscription-filter-plan.md) | Historical | not recorded | not recorded | Narrower subscription and accepted event IDs |
-| [ETW keyword narrowing plan](history/etw-keyword-narrowing-plan.md) | Historical | not recorded | not recorded | Keyword narrowing and its provider-metadata checks |
-| [ETW session recovery and event-ID filter plan](history/etw-session-recovery-and-event-filter-plan.md) | Historical | Oct 30, 2026 | not recorded | Stale session reclaim and the event-ID filter |
-| [Source review remediation plan](history/src-review-remediation-plan.md) | Historical | Oct 30, 2026 | not recorded | Remediation of selected findings from the `src` review |
-| [Service shutdown fix plan](history/service-stop-fix-plan.md) | Superseded by [service shutdown remediation](guide/service-stop-remediation.md) | not recorded | not recorded | Recorded STOP/FINISH failure and its implementation boundaries |
-| [Service shutdown validation plan](history/service-stop-validation-plan.md) | Historical | not recorded | not recorded | Bounded receiver-close comparison |
-| [Service shutdown validation results](history/service-stop-validation-results.md) | Historical | not recorded | not recorded | Results of that comparison |
+| Document | Contents |
+| --- | --- |
+| [ETW subscription and intake filter plan](history/etw-subscription-filter-plan.md) | Narrower subscription and accepted event IDs |
+| [ETW keyword narrowing plan](history/etw-keyword-narrowing-plan.md) | Keyword narrowing and its provider-metadata checks |
+| [ETW session recovery and event-ID filter plan](history/etw-session-recovery-and-event-filter-plan.md) | Stale session reclaim and the event-ID filter |
+| [Source review remediation plan](history/src-review-remediation-plan.md) | Remediation of selected findings from the `src` review |
+| [Skills evaluation plan](history/skills-evaluation-plan.md) | Evaluation of code, build, CI, and service hardening. Results are in the [lab record](history/skills-evaluation-lab-validation.md) |
+| [Obsolete and legacy code cleanup plan](history/cleanup-plan.md) | Removal of dead code, legacy names, and stale docs. Results are in the [validation record](history/cleanup-validation.md) |
+| [Service shutdown fix plan](history/service-stop-fix-plan.md) | Superseded by [service shutdown remediation](guide/service-stop-remediation.md) |
+| [Service shutdown validation plan](history/service-stop-validation-plan.md) | Bounded receiver-close comparison |
+| [Service shutdown validation results](history/service-stop-validation-results.md) | Results of that comparison |
 
-## Evidence and supporting material
+### Feature plans, executed
 
-- [DNS workload provenance](../datasets/performance/README.md): recreates the pinned
-  5,000-name test workload.
-- [DNS stress client](../tools/dns-stress/README.md): builds and runs the host
-  load generator, and explains its output.
-- `docs/assets/performance/`: graph derivatives and CSV copies. Their source
-  manifests are in `docs/assets/performance/data/source-manifest.json` and
-  `docs/assets/performance/plot-provenance.json`.
+| Document | Contents |
+| --- | --- |
+| [TLS receiver plan](history/tls-receiver-plan.md) | TLS 1.2 and 1.3 for the receiver connection, with the decisions taken during implementation. Executed 2026-11-01 |
+| [Windows V2 performance counter plan](history/windows-performance-counters-v2-plan.md) | The `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. Lab-validated 2026-11-01 |
+| [ETW minimum buffers plan](history/etw-min-buffers-plan.md) | The `--etw-min-buffers` option. Lab-validated 2026-11-01 |
+| [Response failure capture plan](history/response-failure-capture-plan.md) | Capture of DNS Server event 258 (`RESPONSE_FAILURE`) as `CLIENT_RESPONSE`. Lab-validated 2026-11-01 |
 
-Raw ETLs, receiver archives, build logs, and campaign receipts are under
-`target/`. That path is gitignored. It is a local artifact and is not in a fresh
-clone. A link into `target/` must say that it is a local artifact. A prose
-summary or a generated graph does not replace its source manifest, final ledger,
-or integrity check.
+### Notes on historical records
 
-Campaign commands in the historical records contain recorded VM addresses,
-fixed directories, and state-changing actions. They describe the recorded
-experiment. They are not procedures for the current service. Before another
-campaign, design compatible telemetry, use a fresh backup, unique run IDs,
-verified guest identities, and fixture readiness.
+Records keep their recorded command text and source paths. Where a lab script
+or source file moved, the record has a short note that names the new path. See
+the
+[script moves and renames](../scripts/performance/README.md#file-moves-and-renames)
+for commit `6e62b2e`. Commit `dc9d7e0` split the ETW code into `src/etw/`.
 
 ## Instrumentation compatibility note
 
-The historical campaigns used binaries with a service JSONL metrics writer. That
-writer was removed. The commands, final ledgers, and measured overhead in those
-records apply to the recorded binaries only.
+- **Recorded binaries.** The historical campaigns used binaries with a service
+  JSONL metrics writer. That writer was removed. The commands, ledgers, and
+  overhead in those records apply to the recorded binaries only. The
+  service-metrics harnesses reject new campaigns before any VM, load, or SCM
+  change. Existing evidence and cleanup actions remain available.
+- **Current telemetry.** The service writes its counters to the Application
+  event log every `--stats-interval-seconds` and at shutdown. It also publishes
+  them as [performance counters](guide/monitoring.md#performance-counters). It
+  has no durable metrics export. The historical campaigns did not measure this
+  telemetry. Measuring it needs a separately designed method.
+- **Before another campaign,** design compatible telemetry, use a fresh backup,
+  unique run IDs, verified guest identities, and fixture readiness.
 
-The historical service-metrics harnesses require that legacy instrumentation.
-They reject new campaigns before any VM, load, or SCM change. Existing evidence and
-cleanup actions remain available.
+## Supporting material
 
-The current service writes its diagnostic counters to the Application event log
-every `--stats-interval-seconds` and at shutdown. It has no durable metrics
-export. Its live values are also published as Windows performance counters. See
-[Performance counters](guide/configuration.md#performance-counters). It samples the deepest queue depth as a lower bound (`queue_depth_max`). Its performance has not been measured by
-the historical campaigns. Measuring it needs a separately designed telemetry
-method. Collector output, WPR traces, and host tool artifacts are separate from
-the service.
-
-Use the [project README](../README.md) and the [configuration reference](guide/configuration.md)
-for the supported service options.
+- [DNS workload provenance](../datasets/performance/README.md) recreates the
+  pinned 5,000-name test workload.
+- [DNS stress client](../tools/dns-stress/README.md) builds and runs the host
+  load generator.
+- `docs/assets/performance/` holds graph derivatives and CSV copies. Their
+  source manifests are `data/source-manifest.json` and `plot-provenance.json`.
+- Raw ETLs, receiver archives, build logs, and campaign receipts are under
+  `target/`. That path is gitignored. It is a local artifact and is not in a
+  fresh clone. A prose summary or a generated graph does not replace its source
+  manifest, final ledger, or integrity check.

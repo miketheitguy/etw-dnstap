@@ -1,6 +1,6 @@
 # Measurement terms and result gates
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` (live counter names. The JSONL schemas describe historical binaries.) · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` (live counter names. The JSONL schemas describe historical binaries.) · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-02
 
 This reference helps maintainers and administrators read the service's
 performance reports. It keeps four things separate: DNS responses, captured
@@ -53,11 +53,11 @@ dropped capture record does not prove that the DNS exchange failed.
 ## Historical service loss and final ledgers
 
 The current service writes live counters to the Application event log under the
-names listed in [Log events and counters](../guide/configuration.md#log-events-and-counters).
+names listed in [Log events and counters](../guide/monitoring.md).
 Several names match this section. The live fields are not the schema 2 JSONL
 ledger, however, and some schema 2 fields do not exist in the live log. The identities below
 apply to the historical JSONL binaries. The live identities are in
-[Counter relationships](../guide/configuration.md#counter-relationships).
+[Counter relationships](../guide/monitoring.md#counter-relationships).
 
 The live log differs from schema 2 in these names. It reports ETW loss as
 `etw_lost` and `etw_buffers_lost`, not `etw_events_lost` and

@@ -1,161 +1,52 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the Windows performance counter provider (validated on the same lab host on 2026-11-01), the LocalService restricted-SID profile validated on 2026-11-01, and the default `--capacity 24576` in the service binary path · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the Windows performance counter provider, the LocalService restricted-SID profile, and the default `--capacity 24576` in the service binary path · **Reviewed:** 2026-11-02
 
-> **Validation status:** the LocalService restricted-SID profile was validated
-> on one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
-> [localservice-restricted-validation.md](../history/localservice-restricted-validation.md).
-> Load and other Windows builds were not covered. A later lab run tested the
-> SCM recovery policy and a DNS Server restart. See
-> [the lab record](../history/skills-evaluation-lab-validation.md). On
-> other builds, run the
-> [validation checklist](#validation-checklist-for-the-localservice-restricted-profile)
-> on a disposable host first.
+Use this guide to install the service on a DNS Server host. It covers the
+service identity, the ETW access grant, the SCM registration, recovery, and the
+first start. It assumes you already built the executable.
 
-Use this guide to set up a new host. It covers the toolchain, the build, the
-service identity, and the SCM registration.
+**Validation status.** The LocalService restricted-SID profile was validated on
+one lab DNS Server (Windows Server 2025, build 26100) on 2026-11-01. See
+[localservice-restricted-validation.md](../history/localservice-restricted-validation.md).
+Load and other Windows builds were not covered. A later lab run tested the SCM
+recovery policy and a DNS Server restart. See
+[the lab record](../history/skills-evaluation-lab-validation.md). On other
+builds, run the [validation checklist](#validation-checklist-for-the-localservice-restricted-profile)
+on a disposable host first. Steps 3, 4 and 7 were run on the lab host. The
+performance counter commands in steps 3 and 7 were run there on 2026-11-01, by
+an administrator. The other steps come from the source and the reviewed lab
+procedure.
 
-| Task | Section |
+| Task | Guide |
 | --- | --- |
-| Prepare the host | [Prerequisites](#prerequisites) |
-| Build the executable | [Install the Rust toolchain](#install-the-rust-toolchain), [Build the executable](#build-the-executable) |
-| Install a new service | [Provision the service](#provision-the-service), steps 1 to 8 |
+| Build the executable | [Build the executable](build.md) |
+| Prepare the receiver and its certificate | [Set up the dnstap receiver](receiver.md) |
+| Install a new service | This guide, steps 1 to 8 |
 | Test the profile on a new Windows build | [Validation checklist](#validation-checklist-for-the-localservice-restricted-profile) |
-| Set up the dnstap receiver | [Receiver configuration](#receiver-configuration) |
-| Read the performance counters | [Performance counters](configuration.md#performance-counters) |
-| Change an existing installation | [Repair or upgrade](#repair-or-upgrade) |
-
-The options are in [configuration.md](configuration.md). Diagnostics are in
-[troubleshooting.md](troubleshooting.md). Removal is in [uninstall.md](uninstall.md).
-
-Steps 3, 4 and 7 were run on the lab host recorded above. The other steps come
-from the source and the reviewed lab procedure. The performance counter commands
-in steps 3 and 7 were run on the same host on 2026-11-01, by an administrator.
+| Change an existing installation | [Repair or upgrade](upgrade.md) |
+| Set options | [Configuration reference](configuration.md) |
+| Remove the service | [Uninstall](uninstall.md) |
 
 ## Prerequisites
 
 - Windows x64 with the **DNS Server role** installed, and the `DNS` service
   Running. The service depends on the `DNS` service. It refuses to start while
   the `DNS` service is not running, and it has nothing to capture without it.
-- Visual Studio C++ Build Tools with the Windows SDK, for the MSVC linker.
+- The release executable. See [Build the executable](build.md).
 - A dnstap receiver that accepts Frame Streams over TCP and speaks content type
   `protobuf:dnstap.Dnstap`. The lab used
   [DNS-collector v3.2.3](https://github.com/dmachard/DNS-collector/releases/tag/v3.2.3).
+  For TLS, import the receiver CA first. See
+  [Set up the dnstap receiver](receiver.md).
 - An elevated Windows PowerShell 5.1 session for the provisioning steps.
   `New-EventLog` and `Remove-EventLog` are run from Windows PowerShell.
-
-No Protocol Buffers compiler is required.
-
-## Install the Rust toolchain
-
-The repository pins its toolchain in [rust-toolchain.toml](../../rust-toolchain.toml).
-It is a dated nightly, so a stable toolchain is not enough.
-
-1. Install rustup from <https://rustup.rs> (the `rustup-init.exe` for Windows x64).
-2. From the repository root, run `rustup toolchain install` with no toolchain
-   name. rustup reads `rust-toolchain.toml` and installs the pinned nightly with
-   `clippy`, `rustfmt`, `rust-src`, and the `x86_64-pc-windows-msvc` target. CI
-   uses the same command. Current rustup versions do not install a toolchain
-   from `rustup show`.
-3. Run `rustup show active-toolchain`. Check that the output names the pinned
-   channel.
-
-**Updating the toolchain.** A pinned channel does not follow `rustup update`.
-Change `channel` in `rust-toolchain.toml` in a reviewed commit, then run `rustup
-toolchain install` again. Record the change in the
-[CHANGELOG](../../CHANGELOG.md), because the build output and the measured
-behavior depend on it. Remove an old toolchain with `rustup toolchain uninstall
-<name>` only after the new one builds.
-
-## Build the executable
-
-Run these from the repository root:
-
-```powershell
-cargo fmt --check
-cargo check --locked
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo build --locked --release
-```
-
-The release executable is
-`target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`. `target\` is ignored by
-Git. It is a local build artifact, not part of the clone.
-
-Points to know before you build:
-
-- **The first build is slow.** `.cargo/config.toml` enables `build-std`, so
-  Cargo rebuilds the standard library and `panic_unwind` with the target
-  hardening flags. Later builds reuse that output.
-- **Warnings fail the build.** Under `[lints.rust]`, `Cargo.toml` sets
-  `warnings` to `deny`. Any compiler warning is an error, including in a
-  release build.
-- **The release profile** enables overflow checks and `panic = "abort"`.
-  `.cargo/config.toml` statically links the MSVC C runtime (`+crt-static`) for
-  every build of the target. The clean Server Core deployment does not need the
-  Visual C++ Redistributable.
-- **Hardening flags** (CFG, EH continuation guard, ASLR, high-entropy VA, NX,
-  CET-compatible marker, stack protection (`-Z stack-protector=all`), and
-  `/DEBUG:NONE` for release) come from
-  `.cargo/config.toml`. The CET flag is a compatibility marker. It does not prove
-  that the hardware enforces shadow stacks. After each build, and after any
-  toolchain or flag change, check the release executable:
-
-  ```powershell
-  scripts\ci\verify-pe.ps1 -Path target\x86_64-pc-windows-msvc\release\etw-dnstap.exe
-  ```
-
-  The script fails in each of these conditions:
-
-  - A hardening flag is missing.
-  - The image has a PDB entry.
-  - The image imports an ASan runtime, or the dynamic C or Universal CRT.
-  - The image contains an absolute `C:\Users\` path.
-
-  CI runs the same check on the release build.
-- **Check the binary.** `etw-dnstap.exe --version` prints the package version.
-  `--help` prints the options without starting capture.
-
-### Optional: diagnostic build
-
-The `diag-timing` Cargo feature adds parser wait and socket-write timing to the
-stop report, and enables two diagnostic flags. Build it separately and do not
-deploy it as the production binary:
-
-```powershell
-cargo build --locked --release --features diag-timing
-```
-
-See [configuration.md](configuration.md#diagnostic-flags-diag-timing-builds-only).
-
-### Optional: address-sanitizer builds
-
-`cargo asan` runs the test suite with AddressSanitizer in `target\asan`:
-
-```powershell
-cargo asan
-```
-
-This needs more than the Rust nightly. On MSVC it needs the AddressSanitizer
-runtime from Visual Studio:
-
-1. In the Visual Studio Installer, add the individual component for C++
-   AddressSanitizer (the MSVC x64 ASan runtime). Check its exact name in your
-   installer version.
-2. Put the directory that contains `clang_rt.asan_dynamic-x86_64.dll` on `PATH`.
-   The DLL is not installed in `System32`, so instrumented test binaries cannot
-   find it otherwise.
-
-The alias instruments the Rust test graph and standard library. Windows system
-DLLs and prebuilt CRT code are not instrumented. Reading an ASan result is
-therefore a statement about Rust-compiled code only.
 
 ## Provision the service
 
 Use an elevated Windows PowerShell 5.1 session at the repository root. The steps
 assume the service and the installation directory do not exist yet. For an
-existing installation, see [Repair or upgrade](#repair-or-upgrade) below.
+existing installation, see [Repair or upgrade](upgrade.md).
 
 The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with a
 **restricted** service SID type. Windows calls the resulting token
@@ -249,8 +140,8 @@ Arguments go in the binary path. Arguments passed to `sc.exe start` are not used
 as configuration. The `--capacity 24576` shown here is the default. It is written
 out so the value is visible. Add other options from
 [configuration.md](configuration.md) to the same string. The connection is TLS
-by default, so complete the [receiver certificate step](#receiver-certificate)
-below. To send plaintext to a receiver on a trusted network, add `--plaintext`
+by default, so complete the [receiver certificate step](receiver.md#receiver-certificate)
+first. To send plaintext to a receiver on a trusted network, add `--plaintext`
 to the string instead.
 
 The name `NT SERVICE\EtwDnstap` resolves once the service exists, so the
@@ -271,34 +162,6 @@ profile. The counters were read by an administrator. Reading by a non-admin
 member of Performance Monitor Users has not been tested. Consumers load the
 counter names from `etw-dnstap.exe`, and the step 2 ACL does not grant that group
 read access.
-
-### Receiver certificate
-
-The service connects with TLS and verifies the receiver certificate with the
-Windows machine certificate store. Skip this step only if the binary path
-contains `--plaintext`. The connection fails if any of these conditions is not
-met:
-
-- The receiver certificate chains to a CA in `Cert:\LocalMachine\Root`. The
-  service runs as LocalService and cannot see a user store. A CA in
-  `Cert:\CurrentUser\Root` does not count.
-- The certificate carries the receiver IP as an `iPAddress` SAN, or it carries
-  the name that you pass to `--tls-server-name`.
-
-Revocation endpoints do not need to be reachable. The service checks revocation
-for the receiver certificate only and proceeds when the status cannot be
-obtained. A reachable endpoint that answers slowly can push the handshake past
-its 2-second deadline; see [TLS](configuration.md#tls).
-
-To import a private CA into the machine root store:
-
-```powershell
-Import-Certificate -FilePath '.\receiver-ca.cer' -CertStoreLocation Cert:\LocalMachine\Root
-```
-
-A certificate that does not verify stops the service at startup with Event ID 1.
-A receiver that speaks plaintext while TLS is on has the same effect. See
-[TLS](configuration.md#tls).
 
 ### Create a protected snapshot folder
 
@@ -620,254 +483,12 @@ marked *lab* passed on build 26100. See
   runs. The totals match the `capture stopped` counters, and the instance is gone
   after the service stops.
 
-## Receiver configuration
 
-The service keeps one outbound TCP connection to `--receiver`. It negotiates
-content type `protobuf:dnstap.Dnstap` with READY, ACCEPT, and START, then sends
-data frames. On shutdown it sends STOP and waits for FINISH. After a failure it
-reconnects and negotiates again. Frames lost in the gap are counted, not resent.
-The connection is TLS by default, and the service verifies the receiver
-certificate. It sends no client certificate. With `--plaintext`, the connection
-is plaintext with no peer authentication.
+## Next steps
 
-An example receiver for DNS-collector 3.2.3 listens for dnstap and writes text to
-the console. Replace the placeholders with your collector's address:
-
-```yaml
-global:
-  framestream:
-    content-type: "protobuf:dnstap.Dnstap"
-    handshake-timeout: 5
-    data-frame-max-length: 1048576
-    control-frame-max-length: 4064
-pipelines:
-  - name: tap
-    dnstap:
-      listen-ip: 192.0.2.10   # the collector's listening IP
-      listen-port: 6000        # must match the --receiver port
-      reset-conn: false
-    routing-policy:
-      forward: [console]
-  - name: console
-    stdout:
-      mode: text
-```
-
-The service accepts control payloads up to 512 bytes and content-type fields up
-to 256 bytes. A normal dnstap ACCEPT is well within those limits.
-
-**Transport security.** The example above is a plaintext listener, so the
-service needs `--plaintext` to reach it. Plaintext is suitable only for a
-trusted lab or an independently protected transport. A Hyper-V Default Switch
-is reachable by the host and by other connected guests, so it is not a
-confidentiality boundary. Restrict the listener to the intended guest IP, and
-restrict its firewall to the Windows DNS guest. Do not expose the listener to an
-untrusted network. On any other network, keep the TLS default and give the
-receiver a certificate. See the
-[receiver certificate step](#receiver-certificate) and
-[SECURITY.md](../../SECURITY.md#threat-model-summary).
-
-## Repair or upgrade
-
-For an existing installation, keep the service identity, privileges, executable
-ACLs, and recovery policy as they are. Change only what you need. Take the
-snapshot first. Do not reset a value to a guessed default. Restore the value
-that the snapshot holds.
-
-### Snapshot before a change
-
-First run the functions from
-[Create a protected snapshot folder](#create-a-protected-snapshot-folder).
-
-```powershell
-$installDirectory = 'C:\Program Files\EtwDnstap'
-$backup = New-ProtectedBackupFolder
-foreach ($query in 'qc', 'qsidtype', 'qprivs', 'qfailure', 'qfailureflag', 'sdshow') {
-    sc.exe $query EtwDnstap | Set-Content -Path "$backup\$query.txt" -Encoding ascii
-}
-reg.exe export HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap "$backup\service.reg" /y
-reg.exe export HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security "$backup\wmi-security.reg" /y
-icacls.exe $installDirectory /save "$backup\install.acl" /t
-net localgroup "Performance Log Users" | Set-Content -Path "$backup\plu.txt" -Encoding ascii
-Get-FileHash "$installDirectory\etw-dnstap.exe" -Algorithm SHA256 |
-    Format-List | Out-String | Set-Content -Path "$backup\exe-hash.txt" -Encoding ascii
-Copy-Item "$installDirectory\etw-dnstap.exe" $backup
-```
-
-The folder holds these items:
-
-- The account, the SID type, and the privileges.
-- The recovery policy and the service descriptor.
-- The directory ACLs and the group membership.
-- A copy of the executable.
-
-Only SYSTEM and Administrators can read it. The `.reg`
-files are for reference. Do not restore the service from them (see below).
-When you run the grant script in a repair, add `-BackupPath "$backup\etw"` so
-that its backup is in the same folder.
-
-### Restore from the snapshot
-
-First check the snapshot folder again. Someone may have changed it since you
-made it. Run the functions from
-[Create a protected snapshot folder](#create-a-protected-snapshot-folder), set
-`$backup` to the snapshot folder, and run this check. Stop if it throws, and do
-not use any file from the folder.
-
-```powershell
-$backup = '<snapshot folder>'
-$backupRoot = Join-Path $env:ProgramData 'EtwDnstap\backup'
-if (-not $backup.StartsWith($backupRoot + '\', 'OrdinalIgnoreCase')) { throw 'Not a snapshot folder.' }
-foreach ($dir in (Split-Path -Parent $backupRoot), $backupRoot, $backup) { Test-ProtectedFolder $dir }
-foreach ($file in Get-ChildItem -LiteralPath $backup -Recurse -Force) {
-    if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse point: $($file.FullName)" }
-    $owner = (Get-Acl -LiteralPath $file.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($trustedSids -notcontains $owner) { throw "Unexpected owner $owner on $($file.FullName)" }
-}
-```
-
-Do not use `reg import` for the service key. The SCM keeps the service
-configuration in memory, and a registry import can leave the SCM and the
-registry in disagreement. Use `sc.exe` instead. Read the values from the
-`.txt` files in the snapshot folder. Replace each `<...>` with the value in the
-file.
-
-```powershell
-sc.exe stop EtwDnstap
-cmd.exe /c 'sc.exe config EtwDnstap binPath= "<BINARY_PATH_NAME from qc.txt>" start= <demand|auto|delayed-auto> obj= "<SERVICE_START_NAME from qc.txt>" password= ""'
-sc.exe sidtype EtwDnstap <none|unrestricted|restricted>      # from qsidtype.txt
-sc.exe privs EtwDnstap <privileges from qprivs.txt, separated by />
-sc.exe failure EtwDnstap reset= <seconds> actions= <actions from qfailure.txt>
-sc.exe failureflag EtwDnstap <0|1>                           # from qfailureflag.txt
-$sd = (Get-Content "$backup\sdshow.txt" | Where-Object { $_.Trim() }) -join ''
-cmd.exe /c ('sc.exe sdset EtwDnstap "{0}"' -f $sd)
-icacls.exe 'C:\Program Files' /restore "$backup\install.acl"
-```
-
-Then restore the other parts of the snapshot:
-
-1. Run `net localgroup "Performance Log Users"` and compare it with
-   `plu.txt`. Add or remove `NT SERVICE\EtwDnstap` so that they match.
-2. If a repair ran the grant script, run it with `-Restore "$backup\etw"`.
-   The script checks the folders and `changes.json`, validates every entry
-   before it applies any, and skips a value that changed after the run that saved
-   it. Use `-Force` only after you have looked at the skipped values.
-3. If you replaced the executable, put the saved copy back (see below).
-4. Run `Restart-Computer` if the grant script restored any descriptor. ETW
-   applies descriptors at boot.
-5. Run the checks in [step 6](#6-inspect-the-registered-identity-and-access-controls)
-   and compare the result with the saved `.txt` files.
-
-`icacls /restore` runs on the parent folder, because `/save` stores paths
-relative to the parent.
-
-### Repair cases
-
-- **Upgrading from LocalSystem or the virtual account.** A service still
-  registered as LocalSystem or `NT SERVICE\EtwDnstap` refuses to run with this
-  build. Do all of these, in this order:
-  1. Take the snapshot.
-  2. Set the identity, the SID type, and the privileges with the `sc.exe`
-     lines from
-     [step 4](#4-set-the-service-identity-privileges-etw-access-and-event-source).
-  3. Add `NT SERVICE\EtwDnstap` to Performance Log Users with `net localgroup`.
-     If it is already a member, the command reports an error. That is fine.
-  4. Run `Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` for every session
-     name, with `-WhatIf` first. Then run `Restart-Computer`. Without the
-     grant and the restart, the start fails with `StartTraceW: access denied`.
-  5. Keep the service SID's read and execute grant from
-     [step 3](#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute).
-     Keep the recovery policy from [step 5](#5-configure-scm-recovery).
-  6. Start the service. Confirm the account with `sc.exe qc EtwDnstap`.
-
-  In the lab on build 26100, `obj=` did not clear the SID type or the privilege
-  list. This held for a change to the same account, and for a change to
-  LocalSystem and back. After any `obj=` change, still run
-  `sc.exe sidtype EtwDnstap restricted` and check it with
-  `sc.exe qsidtype EtwDnstap`. The check costs little.
-- **Upgrading from the first version of the grant script** (commit `6718863`).
-  That version granted `0x423` on the default GUID and `0x80` on the DNS
-  provider GUID, and created a descriptor of its own for the provider. Replace
-  the executable, run the current script with `-SessionName`, then restart the
-  computer. The script removes the old grants, deletes the provider
-  descriptor once it matches the default again, and grants on the session GUID.
-  The lab tested this path.
-- **Changing `--session-name`.** The session GUID follows the name. Run the
-  grant script with the new name (and any others still in use), then restart
-  the computer before starting the service.
-- **Upgrading from a build with `--output`, `--max-output-bytes`, or `--metrics`.**
-  Remove those arguments from the binary path before starting the new
-  executable. They now fail command-line parsing. Add `--receiver` with the
-  collector's numeric IP and port.
-- **Changing the binary path.** Use `sc.exe config EtwDnstap binPath= "..."`,
-  keeping the space after `binPath=`.
-
-### Replace the executable
-
-Take the snapshot first. Then:
-
-```powershell
-sc.exe stop EtwDnstap
-sc.exe query EtwDnstap          # wait for STOPPED
-$exe = "$installDirectory\etw-dnstap.exe"
-Get-FileHash $exe -Algorithm SHA256
-Rename-Item $exe 'etw-dnstap.exe.bak'
-Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
-Get-FileHash $exe -Algorithm SHA256
-icacls.exe $exe
-sc.exe start EtwDnstap
-sc.exe query EtwDnstap
-```
-
-- The first hash is the old executable. Compare it with `exe-hash.txt`. The
-  second hash is the new executable. Compare it with the hash of the file you
-  built.
-- `icacls` must show `NT SERVICE\EtwDnstap:(I)(RX)` for the new file. If it does
-  not, the service cannot start. Do not change the other ACLs. Fix only the
-  service SID's read and execute grant from step 3.
-- The service must reach `RUNNING`, and a `capture started` line must appear.
-- If the new release also changes `etw-dnstap.man`, follow
-  [Replace the counter manifest](#replace-the-counter-manifest) between the stop
-  and the start.
-
-To roll back, stop the service, delete the new file, rename the backup back,
-and start the service:
-
-```powershell
-sc.exe stop EtwDnstap
-Remove-Item $exe
-Rename-Item "$exe.bak" 'etw-dnstap.exe'
-sc.exe start EtwDnstap
-```
-
-When the new executable works, delete `etw-dnstap.exe.bak`. The copy in the
-snapshot folder stays until you remove the folder.
-
-### Replace the counter manifest
-
-Do this only when a new release changes `etw-dnstap.man`. Take the snapshot
-first, as for the executable. Run these commands while the service is stopped,
-between `sc.exe stop` and `sc.exe start`.
-
-```powershell
-$installDirectory = 'C:\Program Files\EtwDnstap'
-unlodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man"
-Copy-Item '.\packaging\perfcounters\etw-dnstap.man' $installDirectory
-lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"
-```
-
-- Run `unlodctr` before you replace the file. It removes the registration of
-  the old manifest.
-- Run `lodctr` after the copy. It registers the new manifest.
-- Start the service, and check the counters as in
-  [step 7](#7-start-capture-and-check-that-it-is-running).
-- The snapshot folder does not hold the manifest. Keep a copy of the old
-  `etw-dnstap.man` if you may need to roll back. To roll back, repeat these
-  commands with the old file.
-
-## Related
-
+- [Set up the dnstap receiver](receiver.md)
 - [Configuration reference](configuration.md)
+- [Log events and counters](monitoring.md)
 - [Troubleshooting](troubleshooting.md)
+- [Repair or upgrade](upgrade.md)
 - [Uninstall](uninstall.md)
-- [Pooled ETW intake](../design/pooled-intake.md) for the memory budget

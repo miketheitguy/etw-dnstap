@@ -9,7 +9,7 @@ exposure or privilege.
 Set up the toolchain first. The repository pins it in
 [rust-toolchain.toml](rust-toolchain.toml). See the
 [prerequisites](docs/guide/install.md#prerequisites) for Visual Studio and
-[Install the Rust toolchain](docs/guide/install.md#install-the-rust-toolchain)
+[Install the Rust toolchain](docs/guide/build.md#install-the-rust-toolchain)
 for the rustup steps.
 
 Run these from the repository root before opening a pull request:
@@ -96,7 +96,7 @@ Notes:
 - `cargo test-release` and `cargo asan` are alias commands in `.cargo/config.toml`.
   `cargo asan` writes its build output to `target\asan`. The ASan run needs the
   Visual Studio AddressSanitizer runtime. See the
-  [install guide](docs/guide/install.md#optional-address-sanitizer-builds).
+  [build guide](docs/guide/build.md#optional-address-sanitizer-builds).
 
 The criterion benchmark in `benches/hot_path.rs` measures the per-event hot
 path on deterministic DNS records: the deep copy into a pooled slot (also on a
@@ -164,10 +164,10 @@ The status decides the folder under `docs/`:
 
 | Folder | Put here |
 | --- | --- |
-| `docs/guide/` | Current operator guides (install, configuration, troubleshooting, remediation, uninstall) |
+| `docs/guide/` | Current operator guides (build, install, receiver, configuration, tuning, monitoring, troubleshooting, upgrade, remediation, uninstall) |
 | `docs/design/` | Current architecture and reference documents. Editable diagrams go in `docs/design/diagrams/`. |
 | `docs/performance/` | The current performance record and the records the report generator links beside it |
-| `docs/plans/` | Proposed plans and analyses that are not executed or implemented |
+| `docs/plans/` | Proposed plans and analyses that are not executed. Move a plan to `docs/history/` when it is executed |
 | `docs/history/` | Historical and Superseded records: finished campaigns, reviews, and completed plans |
 | `docs/assets/performance/` | Generated graphs and data copies (the default output of `plot-pooled-wpr.py`) |
 
@@ -196,8 +196,8 @@ matches.
 
 | Type | Job | Documents |
 | --- | --- | --- |
-| Procedure | Tells an operator what to do, in numbered steps, with a check after each step that can fail | [install.md](docs/guide/install.md), [uninstall.md](docs/guide/uninstall.md), [service-stop-remediation.md](docs/guide/service-stop-remediation.md) |
-| Reference | Lists facts to look up: options, defaults, ranges, counters, log events | [configuration.md](docs/guide/configuration.md), [measurement-terms.md](docs/design/measurement-terms.md) |
+| Procedure | Tells an operator what to do, in numbered steps, with a check after each step that can fail | [build.md](docs/guide/build.md), [install.md](docs/guide/install.md), [receiver.md](docs/guide/receiver.md), [upgrade.md](docs/guide/upgrade.md), [uninstall.md](docs/guide/uninstall.md), [service-stop-remediation.md](docs/guide/service-stop-remediation.md) |
+| Reference | Lists facts to look up: options, defaults, ranges, tuned settings, counters, log events | [configuration.md](docs/guide/configuration.md), [tuning.md](docs/guide/tuning.md), [monitoring.md](docs/guide/monitoring.md), [measurement-terms.md](docs/design/measurement-terms.md) |
 | Diagnosis | Starts from a symptom and gives the cause and the corrective action | [troubleshooting.md](docs/guide/troubleshooting.md) |
 | Design | Tells a maintainer how a part of the code works and why | [pooled-intake.md](docs/design/pooled-intake.md), [ring-buffer.md](docs/design/ring-buffer.md), [single-pass-decoder.md](docs/design/single-pass-decoder.md) |
 | Record | Keeps the results of one campaign, review, or plan | `docs/performance/`, `docs/history/` |

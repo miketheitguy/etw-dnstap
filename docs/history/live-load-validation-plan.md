@@ -5,7 +5,7 @@
 > **Note (2026-11-01):** the premise below that loss counters reach only stderr is
 > out of date. The service writes periodic and final counters to the Application
 > event log every `--stats-interval-seconds` (default 60). See
-> [configuration.md](../guide/configuration.md#log-events-and-counters).
+> [monitoring.md](../guide/monitoring.md).
 
 This plan unblocks and runs the load checks deferred by the October 30, 2026
 live validation in the [source review remediation plan](src-review-remediation-plan.md).

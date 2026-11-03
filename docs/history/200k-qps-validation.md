@@ -6,7 +6,7 @@ This record covers two lab runs at 200,000 queries per second (QPS) with the
 largest ETW buffer size and the largest channel. It records how many ETW
 buffers and channel slots the service used. The recommended settings for
 200,000 QPS in the
-[configuration reference](../guide/configuration.md#settings-for-200000-queries-per-second)
+[tuning guide](../guide/tuning.md#settings-for-200000-queries-per-second)
 come from this record.
 
 The raw run data is lab evidence. It is not in the repository.

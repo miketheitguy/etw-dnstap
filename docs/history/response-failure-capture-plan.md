@@ -1,6 +1,6 @@
 # Response failure capture plan
 
-> **Status:** Implemented; lab-validated · **Evidence dated:** 2026-11-01 · **Commit:** planned on top of `335e501` · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed and lab-validated 2026-11-01) · **Evidence dated:** 2026-11-01 · **Commit:** planned on top of `335e501` · **Reviewed:** 2026-11-01
 
 This plan adds the DNS Server `RESPONSE_FAILURE` event (ID 258) to the capture.
 It also removes the level filter from the ETW subscription. DNS over HTTPS events

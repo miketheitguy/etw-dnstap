@@ -43,7 +43,7 @@ and its pinned source links for the evidence and its limits.
 ## Configure a graceful close
 
 Set `reset-conn: false` under the existing `pipelines[].dnstap` stanza. The
-[receiver example in install.md](install.md#receiver-configuration) shows this
+[receiver example in receiver.md](receiver.md#receiver-configuration) shows this
 setting. Keep the existing plain TCP console pipeline and its output mode. This
 setting changes only how the receiver closes the connection.
 

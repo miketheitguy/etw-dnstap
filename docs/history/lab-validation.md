@@ -10,7 +10,7 @@ America/Los_Angeles; evidence timestamps after midnight use October 29 UTC.
 
 The binary hashes, test counts, PIDs, and guest state in this record describe
 that session's cutoff. Later builds and performance work are recorded in the
-[documentation index](../README.md#campaigns-and-reviews) and
+[documentation index](../README.md#lab-and-validation-records) and
 [completed pooled VM review](../performance/pooled-vm-performance-review.md). These small probes
 establish the listed payload and lifecycle observations, not load capacity.
 

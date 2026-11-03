@@ -1,6 +1,6 @@
 # Ring capacity and shutdown
 
-> **Status:** Current (the queue and shutdown reference. Its capacity experiment is historical.) · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush, and the 24,576-event default capacity · **Evidence dated:** October 28-29, 2026 for the experiment · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Evidence dated:** October 28-29, 2026 for the experiment, which is historical · **Reviewed:** 2026-11-02
 
 This note is for maintainers, and for administrators who choose a capture
 capacity. It explains the queue bounds and the shutdown contract. It describes
@@ -10,7 +10,7 @@ loss-free capture at every traffic rate or event size.
 ## Capacity and memory
 
 The defaults, their low-rate limits, and the recommended high-rate settings are
-stated once, in the [configuration reference](../guide/configuration.md#low-rate-defaults).
+stated once, in the [tuning guide](../guide/tuning.md#low-rate-defaults).
 Read that section before you choose `--capacity`, `--etw-flush-seconds`, or the
 ETW buffer options.
 
@@ -59,7 +59,7 @@ query. Keep `--capacity` well above that size. In the lab, the measured peak
 queue was far below that size, because the parser drains during delivery. At
 about 44,000 queries/s the rule gives 88,000 events, and the peak queue was
 30,643. The recommended high-rate settings and their lab results are in the
-[configuration reference](../guide/configuration.md#high-rate-settings). With
+[tuning guide](../guide/tuning.md#high-rate-settings). With
 them, the channel dropped no events up to about 44,000 queries/s. At about
 49,400 queries/s, one of two runs filled the 65,536-event channel. See the
 [flush removal validation](../history/flush-removal-validation.md).

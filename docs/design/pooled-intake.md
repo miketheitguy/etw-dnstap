@@ -1,6 +1,6 @@
 # Pooled ETW intake
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush and the 24,576-event default capacity (pooled intake present by `2c62a9f`), and response failure capture (event 258, not yet tested in the lab) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-02
 
 This reference helps maintainers review the ownership, memory budget, and loss
 accounting of the pooled Event Tracing for Windows (ETW) intake. It describes the
@@ -186,7 +186,7 @@ defaults (8,192 events) and about 179 MiB with the high-rate settings. The lab h
 not measured the current defaults. See the
 [flush removal validation](../history/flush-removal-validation.md).
 
-The configuration reference gives `--capacity 131072` as an example for
+The tuning guide gives `--capacity 131072` as an example for
 sustained rates near 50,000 queries per second. The lab did not test it. With
 the default 64 jumbo slots it uses the same sizes:
 
@@ -198,7 +198,7 @@ the default 64 jumbo slots it uses the same sizes:
 - Total: 296,777,808 bytes, which is 283.03 MiB.
 
 The high-rate setting and its lab results are in the
-[configuration reference](../guide/configuration.md#high-rate-settings).
+[tuning guide](../guide/tuning.md#high-rate-settings).
 
 These totals exclude allocator rounding, allocator metadata, the small queue and
 `Arc` headers, worker stacks, native ETW buffers, TDH caches, protobuf data, and
@@ -320,7 +320,7 @@ loss categories:
 The following counters exist only in the live log of the TCP-only service. They
 are not schema 2 fields and are not part of the identities below. The full live
 list is in
-[Log events and counters](../guide/configuration.md#log-events-and-counters).
+[Log events and counters](../guide/monitoring.md).
 
 | Live counter | Meaning |
 | --- | --- |

@@ -353,7 +353,7 @@ to workers and aggregate outside the hot path where practical. Shared per-record
 atomics, extra channels, cache duplication, and allocator/refcount traffic can
 consume the expected concurrency saving. Specify how evidence is retrieved:
 SCM stderr is not itself a durable, reliable performance export. The
-[Windows V2 counter plan](windows-performance-counters-v2-plan.md) is a separate
+[Windows V2 counter plan](../history/windows-performance-counters-v2-plan.md) is a separate
 proposal, not an implemented prerequisite or part of this work.
 
 ## Test matrix for a candidate

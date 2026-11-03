@@ -1,16 +1,35 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush, and the new default capacity · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-02
 
-Start with the Application event log and the SCM state. The service writes its
-diagnostics to two places:
+Use this guide to find the cause of a failed start, restarts, drops, or missing
+records. Start with the Application event log and the SCM state.
+
+## Find your symptom
+
+| Symptom | Section |
+| --- | --- |
+| The service stops at start, or `sc.exe start` fails | [The service does not reach RUNNING](#the-service-does-not-reach-running) |
+| The collector is down, or the service reports receiver errors | [The receiver is down or unreachable](#the-receiver-is-down-or-unreachable) |
+| The service restarts again and again | [The service keeps restarting](#the-service-keeps-restarting) |
+| Capture stops during a run | [Capture stops during a run](#capture-stops-during-a-run) |
+| A counter such as `ring_dropped` or `etw_lost` is above 0 | [Counters show drops](#counters-show-drops) |
+| The log shows a rate warning | [Rate warning](#rate-warning) |
+| The service runs, but the collector gets nothing | [No records arrive at the collector](#no-records-arrive-at-the-collector) |
+| A leftover ETW session blocks the start | [Stale ETW session blocks startup](#stale-etw-session-blocks-startup) |
+| The service aborts or does not stop | [Watchdog aborts or stop hangs](#watchdog-aborts-or-stop-hangs) |
+| An event log message that you want to look up | [Event log messages](#event-log-messages) |
+
+## Read the diagnostics
+
+The service writes its diagnostics to two places:
 
 - **Application log, source `EtwDnstap`.** Event ID 1 is a fatal service failure.
   Event ID 2 is any information line, including the start and stop counters.
   Event ID 3 is any warning. Event ID 4 is an error that does not by itself stop
   the service. Event ID 5 is a watchdog abort. A log write failure is dropped
   silently and never stops capture. See
-  [Log event IDs](configuration.md#log-event-ids).
+  [Log event IDs](monitoring.md#log-event-ids).
 - **stderr.** Tracing output goes to stderr. Under SCM, stderr is not a durable
   log. Use the event log for evidence.
 
@@ -176,7 +195,7 @@ shutdown. A restart resets every counter. The loss categories are:
 
 | Counter | Meaning | Action |
 | --- | --- | --- |
-| `ring_dropped` | The event channel was full. The newest event was dropped. | Raise `--capacity`. For moderate or high rates, use the [high-rate settings](configuration.md#high-rate-settings). |
+| `ring_dropped` | The event channel was full. The newest event was dropped. | Raise `--capacity`. For moderate or high rates, use the [high-rate settings](tuning.md#high-rate-settings). |
 | `pool_exhausted_regular`, `pool_exhausted_jumbo` | The pool had no free slot of the record's class. | Raise `--jumbo-capacity` if `pool_exhausted_jumbo` rises. With `--jumbo-capacity 0`, every jumbo record is counted here. |
 | `receiver_disconnected` | The channel's parser end was gone. This is the event channel, not TCP. | Check whether the parser stopped. See [restarts](#the-service-keeps-restarting). |
 | `disconnected_dropped` | Frames lost to a TCP outage. | Fix the receiver path. See [the receiver section](#the-receiver-is-down-or-unreachable). |
@@ -190,7 +209,7 @@ losses. The `etw_lost` counter reports events lost inside ETW. It uses a
 different unit from buffer loss (`etw_buffers_lost`), and the two are not added
 together. `rejected` counts events the parser rejected. Excluded event IDs (259,
 260, 261, and the others) are never counted. The full list and the identities are in
-[Counter relationships](configuration.md#counter-relationships).
+[Counter relationships](monitoring.md#counter-relationships).
 
 Compare your collector's record count with the client's count, and treat any
 difference as unexplained until you have read the counters.
@@ -206,7 +225,7 @@ warning does not mean that events were lost.
 Check `ring_dropped` and `etw_lost` in the `capture stats` events, or the
 Channel Full Drops and ETW Events Lost performance counters. If either rises,
 restart with the settings from
-[High-rate settings](configuration.md#high-rate-settings):
+[High-rate settings](tuning.md#high-rate-settings):
 
 ```text
 --etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536
@@ -220,8 +239,8 @@ restart, check that `ring_dropped` and `etw_lost` stop rising. If
 did not test 131,072. The startup deadline is 14 seconds at `--capacity 65536`
 and 18 seconds at 131,072. The defaults were validated at 10,000 queries per
 second. Lab results for the defaults are in
-[Low-rate defaults](configuration.md#low-rate-defaults), and for this
-combination in [High-rate settings](configuration.md#high-rate-settings).
+[Low-rate defaults](tuning.md#low-rate-defaults), and for this
+combination in [High-rate settings](tuning.md#high-rate-settings).
 
 ## ETW consumer and session warnings
 
@@ -264,7 +283,7 @@ Check the layers in order.
    subscription uses `0x8000000000000000`. See
    [configuration.md](configuration.md#subscription).
 5. **Is the collector's filter or pipeline correct?** The example pipeline in
-   [install.md](install.md#receiver-configuration) forwards to the console.
+   [receiver.md](receiver.md#receiver-configuration) forwards to the console.
 
 ## Stale ETW session blocks startup
 
@@ -320,10 +339,10 @@ capture.
 - A removed option (`--output`, `--max-output-bytes`, `--metrics`,
   `--etw-flush-ms`) fails command-line parsing, and the service does not start.
   Remove it from the binary path. To replace `--etw-flush-ms`, use the
-  [high-rate settings](configuration.md#high-rate-settings).
+  [high-rate settings](tuning.md#high-rate-settings).
 - A service still running as LocalSystem or the virtual account refuses to
   start. Follow the upgrade steps in
-  [install.md](install.md#repair-cases). In summary:
+  [upgrade.md](upgrade.md#repair-cases). In summary:
   1. Move it to LocalService with a restricted SID type.
   2. Add the service SID to Performance Log Users.
   3. Run the ETW grant script, then restart the computer.

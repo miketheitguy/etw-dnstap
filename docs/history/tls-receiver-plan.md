@@ -1,6 +1,6 @@
 # TLS 1.2 and 1.3 for the dnstap receiver connection
 
-> **Status:** Current (implemented 2026-11-01; see section 6 for the decisions taken during implementation) · **Evidence dated:** 2026-11-01 · **Commit:** written at `dc28e45` · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed 2026-11-01; see section 6 for the decisions taken during implementation) · **Evidence dated:** 2026-11-01 · **Commit:** written at `dc28e45` · **Reviewed:** 2026-11-01
 
 ## 1. Goal
 

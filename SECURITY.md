@@ -148,7 +148,7 @@ and [README.md](README.md).
 **Not provided**
 
 - No runtime process mitigations beyond the link-time flags listed in
-  [install.md](docs/guide/install.md#build-the-executable) (CFG, EH continuation
+  [build.md](docs/guide/build.md#build-the-executable) (CFG, EH continuation
   guard, ASLR, NX, CET-compatible marker, stack protection).
 - No resend. Frames that are lost while the receiver is disconnected are counted
   in `disconnected_dropped` and are not retried. See

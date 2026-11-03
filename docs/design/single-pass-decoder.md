@@ -1,6 +1,6 @@
 # Single-pass decoder: current contract
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` (decoder added in `e59425f`, TDH fallback removed in `69db97d`) · **Evidence dated:** not applicable (reference, local tests only) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188` (decoder added in `e59425f`, TDH fallback removed in `69db97d`) · **Evidence dated:** not applicable (reference, local tests only) · **Reviewed:** 2026-11-02
 
 This page states the rules that the code enforces today. It covers the fast path
 in `src/etw/decode.rs`, the schema compiler in `src/etw/schema.rs`,

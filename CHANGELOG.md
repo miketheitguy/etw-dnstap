@@ -99,7 +99,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   excluded: an IGNORE policy produces it with no packet and no response on the
   wire, and the query itself is still captured as 256. They cost `dns.exe` CPU when they occur but never
   reach the service. See
-  [the plan](docs/plans/response-failure-capture-plan.md) and
+  [the plan](docs/history/response-failure-capture-plan.md) and
   [configuration.md](docs/guide/configuration.md#subscription).
 - `--etw-min-buffers N` sets the requested minimum ETW buffer count, 0 to 4,096
   and at most `--etw-max-buffers`. ETW reserves the minimum when the session
@@ -108,8 +108,8 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   `capture started` gains `etw_min_buffers`.
   A new information event, `ETW buffers applied`, records the minimum, maximum,
   and allocated counts that ETW reported after the session started. See
-  [the plan](docs/plans/etw-min-buffers-plan.md) and
-  [configuration.md](docs/guide/configuration.md#etw-buffer-minimums).
+  [the plan](docs/history/etw-min-buffers-plan.md) and
+  [tuning.md](docs/guide/tuning.md#etw-buffer-minimums).
 - A Windows performance counter set, `EtwDnstap`, through a Performance
   Counters V2 provider. One instance per service, named after the ETW session.
   It shows throughput rates, loss totals, the channel fill level, and ETW buffer
@@ -119,7 +119,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   it with `lodctr /m:`. Uninstall unregisters it with `unlodctr /m:`. Without a
   registration, the service captures normally but the counter set is not
   visible to consumers. See
-  [configuration.md](docs/guide/configuration.md#performance-counters).
+  [monitoring.md](docs/guide/monitoring.md#performance-counters).
 - TLS to the dnstap receiver, on by default. The connection uses TLS 1.2 or 1.3
   through rustls with the `ring` provider. The receiver certificate is verified
   with the Windows machine certificate store through `rustls-platform-verifier`.
@@ -135,7 +135,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   rest of the image keeps its `/GUARD:EHCONT` metadata; the linker prints one
   `LNK2047` warning per object. The reason and the removal condition are in the
   config comment and in
-  [the plan](docs/plans/tls-receiver-plan.md).
+  [the plan](docs/history/tls-receiver-plan.md).
 - The parser is woken once per delivered ETW buffer that enqueued events
   (`EVENT_TRACE_LOGFILEW.BufferCallback`), and after data it polls for up to
   200 µs before it parks (adaptive: off after an empty linger, on again after an
@@ -188,6 +188,15 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- Documentation restructure. `docs/guide/install.md` and
+  `docs/guide/configuration.md` are split by task. The new guides are
+  `build.md`, `receiver.md`, `upgrade.md`, `tuning.md`, and `monitoring.md`.
+  The sections moved with their content. Links to the old anchors are
+  updated. The root `README.md` and `docs/README.md` are shorter, and the index
+  no longer repeats each document's status block. The four executed feature
+  plans moved from `docs/plans/` to `docs/history/`. The Phase 2 results moved
+  from the baseline record to `datasets/baselines/code-review-2026-11-01/phase-2-results.md`.
+  The troubleshooting guide has a symptom table.
 - Internal: the Clippy lints `multiple_unsafe_ops_per_block`,
   `missing_const_for_fn`, and `shadow_unrelated` are enabled as warnings in
   `Cargo.toml`, so CI fails on them. Three functions became `const fn`, and the
@@ -243,7 +252,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
     costs at most 64 x 16 KiB = 1 MiB.
 
   The lab has not tested the new defaults as a set. The low-rate lab results in
-  [configuration.md](docs/guide/configuration.md#low-rate-defaults) were
+  [tuning.md](docs/guide/tuning.md#low-rate-defaults) were
   measured with the previous defaults. A service that wants the old values must
   pass `--etw-max-buffers 12 --capacity 8192`.
 - **Breaking.** The receiver connection is TLS by default. An existing
@@ -386,7 +395,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   dropped 0.28 to 0.58% at about 10,000 QPS, 12 to 17% at about 30,000 QPS,
   and 0.34 to 4.39% at about 50,000 QPS, with `etw_lost` about 0.2%. See
   [the flush removal validation](docs/history/flush-removal-validation.md) and
-  [High-rate settings](docs/guide/configuration.md#high-rate-settings).
+  [High-rate settings](docs/guide/tuning.md#high-rate-settings).
 - The per-event TDH fallback reader. Every captured event is now decoded by a
   plan compiled from the manifest schema. A DNS Server schema that does not
   compile is no longer decoded through `TdhGetPropertySize` and `TdhGetProperty`.
@@ -407,7 +416,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - The `--output`/`-o`, `--max-output-bytes`, and `--metrics` options and the
   service JSONL metrics writer. Arguments that use them now fail command-line
   parsing. Remove them from the binary path before you start this build. See
-  [install.md](docs/guide/install.md#repair-or-upgrade). The removing commit is
+  [upgrade.md](docs/guide/upgrade.md). The removing commit is
   not identified in this file. See the
   [instrumentation compatibility note](docs/README.md#instrumentation-compatibility-note).
 - Five unreferenced archived lab scripts, `Test-LabAnswer`,

@@ -12,7 +12,7 @@
 > service runs as `NT AUTHORITY\LocalService` with a restricted service SID.
 > `NT SERVICE\EtwDnstap` is the service SID. A receiver outage no longer stops it.
 > See [configuration.md](../guide/configuration.md#subscription)
-> and [configuration.md](../guide/configuration.md#low-rate-defaults).
+> and [tuning.md](../guide/tuning.md#low-rate-defaults).
 >
 > Regenerate the capture contract, the source and executable hashes, and the
 > defaults from the commit you will deploy, and record the commit in the plan,

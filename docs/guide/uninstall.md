@@ -1,6 +1,6 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188`, and the Windows performance counter provider · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `dde7188`, and the Windows performance counter provider · **Reviewed:** 2026-11-02
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.
