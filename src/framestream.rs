@@ -5,9 +5,9 @@
 use std::io::{self, Write};
 
 pub(crate) const CONTENT_TYPE: &[u8] = b"protobuf:dnstap.Dnstap";
-const CONTROL_START: u32 = 2;
-const CONTROL_STOP: u32 = 3;
-const FIELD_CONTENT_TYPE: u32 = 1;
+pub(crate) const CONTROL_START: u32 = 2;
+pub(crate) const CONTROL_STOP: u32 = 3;
+pub(crate) const FIELD_CONTENT_TYPE: u32 = 1;
 /// Resource limit, comfortably above a maximum DNS message plus metadata.
 const MAX_FRAME_LENGTH: usize = 1_048_576;
 
@@ -52,6 +52,18 @@ impl<W: Write> FrameStreamWriter<W> {
         self.failed = true;
         self.writer.write_all(&length.to_be_bytes())?;
         self.writer.write_all(payload)?;
+        self.failed = false;
+        Ok(())
+    }
+
+    /// Write bytes that already hold complete data frames (each a 4-byte
+    /// big-endian length and its payload), as the spool and the queued sink hold
+    /// them. The caller guarantees the framing; this method does not parse it.
+    /// A failure poisons the stream, as in [`Self::write_frame`].
+    pub(crate) fn write_framed(&mut self, framed: &[u8]) -> io::Result<()> {
+        self.check_healthy()?;
+        self.failed = true;
+        self.writer.write_all(framed)?;
         self.failed = false;
         Ok(())
     }
@@ -165,6 +177,31 @@ mod tests {
         let writer = FrameStreamWriter::new(FailingWriter { remaining: 1_000 })
             .expect("START succeeds using short writes");
         assert!(writer.finish().is_err());
+    }
+
+    #[test]
+    fn write_framed_writes_the_bytes_unchanged_and_poisons_on_failure() {
+        let mut writer = FrameStreamWriter::new(Vec::new()).expect("START encodes");
+        let start_length = writer.writer.len();
+        writer
+            .write_framed(&[0, 0, 0, 2, 0x78, 1, 0, 0, 0, 1, 9])
+            .expect("framed bytes write");
+        assert_eq!(
+            &writer.writer[start_length..],
+            &[0, 0, 0, 2, 0x78, 1, 0, 0, 0, 1, 9]
+        );
+        let bytes = writer.finish().expect("STOP and flush succeed");
+        assert_eq!(
+            &bytes[bytes.len() - 12..],
+            &[0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 3]
+        );
+
+        let mut failing = FrameStreamWriter::new(FailingWriter { remaining: 43 })
+            .expect("START succeeds using short writes");
+        assert!(failing.write_framed(&[0, 0, 0, 1, 7]).is_err());
+        assert!(failing.failed);
+        assert!(failing.write_framed(&[0, 0, 0, 1, 7]).is_err());
+        assert!(failing.finish().is_err());
     }
 
     #[test]

@@ -309,3 +309,118 @@ fn default_etw_settings_are_detected() {
 fn default_capacity_matches_the_command_line_default() {
     assert_eq!(config_from(&[]).capacity, DEFAULT_CAPACITY);
 }
+
+#[test]
+fn spool_is_on_by_default_with_the_documented_limits() {
+    let config = config_from(&[]);
+    let spool = config.spool.as_ref().expect("the spool is on by default");
+    assert_eq!((spool.max_mib, spool.min_free_mib), (4096, 2048));
+    assert_eq!(spool.max_bytes(), 4096 * 1024 * 1024);
+    assert_eq!(spool.min_free_bytes(), 2048 * 1024 * 1024);
+    assert!(spool.dir.is_absolute());
+    assert!(spool.dir.ends_with(r"EtwDnstap\spool"));
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn spool_options_reach_the_config() {
+    let config = config_from(&[
+        "--spool-dir",
+        r"D:\Data\Spool",
+        "--spool-max-mib",
+        "128",
+        "--spool-min-free-mib",
+        "0",
+    ]);
+    assert_eq!(
+        config.spool,
+        Some(SpoolSettings {
+            dir: PathBuf::from(r"D:\Data\Spool"),
+            max_mib: 128,
+            min_free_mib: 0,
+        })
+    );
+    assert!(config_from(&["--no-spool"]).spool.is_none());
+}
+
+#[test]
+fn default_spool_dir_comes_from_program_data() {
+    assert_eq!(
+        default_spool_dir(Some(OsString::from(r"D:\ProgramData"))),
+        PathBuf::from(r"D:\ProgramData\EtwDnstap\spool")
+    );
+    // A trailing separator does not double up.
+    assert_eq!(
+        default_spool_dir(Some(OsString::from(r"D:\ProgramData\"))),
+        PathBuf::from(r"D:\ProgramData\EtwDnstap\spool")
+    );
+}
+
+#[test]
+fn default_spool_dir_falls_back_when_program_data_is_missing_or_relative() {
+    let fallback = PathBuf::from(r"C:\ProgramData\EtwDnstap\spool");
+    assert_eq!(default_spool_dir(None), fallback);
+    for bad in ["", "ProgramData", r"..\ProgramData", r"\ProgramData"] {
+        assert_eq!(
+            default_spool_dir(Some(OsString::from(bad))),
+            fallback,
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn validate_repeats_the_spool_bounds() {
+    let mut config = config_from(&[]);
+    let valid = config.spool.clone().expect("spool");
+    for (max_mib, min_free_mib, ok) in [
+        (64, 0, true),
+        (1_048_576, 1_048_576, true),
+        (63, 0, false),
+        (1_048_577, 0, false),
+        (64, 1_048_577, false),
+    ] {
+        config.spool = Some(SpoolSettings {
+            max_mib,
+            min_free_mib,
+            ..valid.clone()
+        });
+        assert_eq!(config.validate().is_ok(), ok, "{max_mib} {min_free_mib}");
+    }
+    config.spool = Some(SpoolSettings {
+        dir: PathBuf::from("relative"),
+        ..valid
+    });
+    assert!(config.validate().is_err());
+    config.spool = None;
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn default_spool_dir_ignores_a_network_or_device_program_data() {
+    let fallback = PathBuf::from(r"C:\ProgramData\EtwDnstap\spool");
+    for bad in [
+        r"\\host\share",
+        r"\\?\UNC\host\share",
+        r"\\.\C:\ProgramData",
+        r"\\?\GLOBALROOT\Device\X",
+        r"C:\ProgramData\..\Other",
+    ] {
+        assert_eq!(
+            default_spool_dir(Some(OsString::from(bad))),
+            fallback,
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn validate_refuses_a_network_spool_folder() {
+    let mut config = config_from(&[]);
+    let valid = config.spool.clone().expect("spool");
+    config.spool = Some(SpoolSettings {
+        dir: PathBuf::from(r"\\host\share\spool"),
+        ..valid
+    });
+    assert!(config.validate().is_err());
+}

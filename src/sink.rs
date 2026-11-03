@@ -9,7 +9,8 @@ use std::{
 /// Transport health and loss counters shared between a sink and the supervisor.
 ///
 /// The sink writes them; the supervisor reads them for periodic and final
-/// reports. Every counter is monotonic except `connected`.
+/// reports. Every counter is monotonic except the gauges (`spool_bytes`,
+/// `spool_segments`) and the flags (`connected`, `spool_available`).
 #[derive(Default)]
 pub(crate) struct SinkStats {
     /// True while a Frame Streams session is established.
@@ -30,6 +31,30 @@ pub(crate) struct SinkStats {
     pub(crate) slow_writes: AtomicU64,
     /// Longest single socket write in microseconds.
     pub(crate) write_max_us: AtomicU64,
+    /// Frames discarded on the parser thread because the send queue was full.
+    pub(crate) queue_dropped: AtomicU64,
+    /// Frames appended to the spool.
+    pub(crate) spooled: AtomicU64,
+    /// Frames read from the spool and handed to the link.
+    pub(crate) replayed: AtomicU64,
+    /// Frames removed from the spool unsent, or refused by it: eviction, corrupt
+    /// or cut-off data, floor suspension, I/O errors.
+    pub(crate) spool_dropped: AtomicU64,
+    /// Bytes of segment files removed or skipped unsent, control frames included:
+    /// from the first unread byte (the start of the file when nothing was read)
+    /// to the end. Leftover segments with an unknown frame count count here only.
+    pub(crate) spool_dropped_bytes: AtomicU64,
+    /// Spool I/O errors.
+    pub(crate) spool_errors: AtomicU64,
+    /// Gauge: bytes in segment files now, including files waiting for a delete
+    /// to succeed.
+    pub(crate) spool_bytes: AtomicU64,
+    /// Gauge: segment files now, including files waiting for a delete to succeed.
+    pub(crate) spool_segments: AtomicU64,
+    /// Flag: true while a spool is in use and accepting data. False with
+    /// `--no-spool`, with an unusable folder, and while the spool is paused by an
+    /// I/O error or by the free-space floor.
+    pub(crate) spool_available: AtomicBool,
 }
 
 /// Destination for encoded dnstap frames.

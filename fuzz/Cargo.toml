@@ -40,3 +40,10 @@ path = "fuzz_targets/plan_compiler.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "spool_segment"
+path = "fuzz_targets/spool_segment.rs"
+test = false
+doc = false
+bench = false

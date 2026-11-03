@@ -13,15 +13,18 @@ mod network;
 #[allow(unsafe_code)]
 mod perfcounters;
 mod pipeline;
+mod sender;
 #[allow(unsafe_code)]
 mod service;
 mod sink;
+mod spool;
 
 /// Entry points for the `fuzz/` crate. Not part of the supported interface.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing {
     pub use crate::etw::fuzzing::{FuzzField, compile_and_decode, decode_reference};
+    pub use crate::spool::fuzzing::spool_segment;
 
     /// Reads one Frame Streams control frame and validates it, as the handshake
     /// does. Returns whether the frame was accepted.

@@ -24,9 +24,12 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Win32_System_Performance: the PerfLib V2 provider API (src/perfcounters.rs).
+# Win32_Storage_FileSystem: GetDiskFreeSpaceExW (spool free space) and the reparse-point
+# attribute constant. Win32_Security_Authorization: GetNamedSecurityInfoW (spool folder owner).
+# Both are used by src/spool/fsinfo.rs.
 # Win32_System_Time looks unused to grep, but windows-sys gates OpenTraceW and
 # EVENT_TRACE_LOGFILEW (src/etw/session.rs) behind it.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Performance"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Cryptography", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Performance"] }
 
 [features]
 # Diagnostic only: times the parser thread idle parks and socket writes.
