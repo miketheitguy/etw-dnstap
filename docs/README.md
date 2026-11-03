@@ -140,7 +140,6 @@ it is executed.
 | [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed. Regenerate before the next campaign | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `b46da39` |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | Parallel parsing and TCP threading. Its fail-fast contract, timed park, and fallback decoding are out of date |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed | Diagnose the bottleneck and test parallel workers. P0 and diagnostic runs recorded Oct 31, 2026. P1a is next. P4 is deferred |
-| [No console output plan](plans/no-console-output-plan.md) | Executed. Merged to `main` in `ef00c76` | Remove every stdout and stderr write from the service; drop `--help` and `--version` |
 
 ## History
 
@@ -225,6 +224,7 @@ otherwise.
 
 | Document | Contents |
 | --- | --- |
+| [No console output plan](history/no-console-output-plan.md) | Removal of every stdout and stderr write from the service, the `--help` and `--version` flags, Event ID 6 for a panic, and the `version` field. Executed and lab-validated 2026-11-03 |
 | [TCP sink spool plan](history/tcp-sink-spool-plan.md) | Disk spool for the TCP sink, with a sender thread: decisions, design, stage records, and the completion record. Executed and lab-validated 2026-11-03 |
 | [TLS receiver plan](history/tls-receiver-plan.md) | TLS 1.2 and 1.3 for the receiver connection, with the decisions taken during implementation. Executed 2026-11-01 |
 | [Windows V2 performance counter plan](history/windows-performance-counters-v2-plan.md) | The `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. Lab-validated 2026-11-01 |
