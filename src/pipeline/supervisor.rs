@@ -14,7 +14,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 use super::{
     config::{CaptureArgs, DEFAULT_CAPACITY, DiagContext, PipelineConfig, SpoolSettings},
@@ -104,7 +103,7 @@ pub(crate) fn run_capture(
     on_stopping: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr.and(crate::service::EventLogWriter))
+        .with_writer(crate::service::EventLogWriter)
         .with_ansi(false)
         .with_max_level(tracing::Level::INFO)
         .with_target(false)
@@ -596,6 +595,7 @@ fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
         match_all_keyword = format_args!("{:#x}", keywords.match_all),
         keyword_fallback = keywords.fallback,
         failed_responses_captured = keywords.failed_responses,
+        version = env!("CARGO_PKG_VERSION"),
         "capture started"
     );
 }

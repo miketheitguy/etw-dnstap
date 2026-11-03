@@ -29,8 +29,9 @@ const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
-    version,
-    about = "Windows service for DNS Server ETW to a dnstap TCP receiver"
+    about = "Windows service for DNS Server ETW to a dnstap TCP receiver",
+    disable_help_flag = true,
+    disable_version_flag = true
 )]
 pub(crate) struct CaptureArgs {
     /// Frame Streams TCP receiver as an IP:PORT. Uses TLS 1.2 or 1.3 unless
@@ -390,7 +391,8 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
 }
 
 /// Parses the process command line without exiting, so the caller decides how
-/// to report help, version, and argument errors.
+/// to report argument errors. The help and version flags are disabled, so they
+/// are unknown arguments like any other.
 pub(crate) fn parse_args() -> Result<CaptureArgs, clap::Error> {
     parse_args_from(std::env::args_os())
 }

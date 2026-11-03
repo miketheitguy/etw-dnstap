@@ -1,6 +1,6 @@
 # Build the executable
 
-> **Status:** Current · **Describes:** `main` at commit `0651f9b` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
 
 Use this guide to build `etw-dnstap.exe` from source and check its hardening.
 It is for the person who prepares the executable. To install the result on a DNS
@@ -83,8 +83,10 @@ Points to know before you build:
   prebuilt `ring` assembly object. `.cargo/config.toml` allows them with
   `/FORCE:GUARDEHCONT`. CI runs `scripts\ci\verify-link-exceptions.ps1` on the
   build log. It fails when the objects differ from `scripts/ci/link-exceptions.txt`.
-- **Check the binary.** `etw-dnstap.exe --version` prints the package version.
-  `--help` prints the options without starting capture.
+- **Check the version.** The binary has no `--version` flag and prints nothing.
+  After you install it, start the service and read the `version` field of the
+  `capture started` event. See
+  [install.md](install.md#7-start-capture-and-check-that-it-is-running).
 
 ### Optional: diagnostic build
 

@@ -1,0 +1,2 @@
+# Test output is captured by the harness; the service runtime must not print.
+allow-print-in-tests = true

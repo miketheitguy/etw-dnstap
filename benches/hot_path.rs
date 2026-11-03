@@ -74,6 +74,10 @@ fn copy_record_group(c: &mut Criterion) {
 
 /// The groups that need a production-sized pool. It is allocated once, and its
 /// private bytes are printed for the baseline record.
+#[allow(
+    clippy::print_stderr,
+    reason = "the benchmark reports the pool size to the person running it"
+)]
 fn cold_pool_groups(c: &mut Criterion) {
     let before = private_bytes();
     let pool = Pool::with_capacity(COLD_POOL_CAPACITY, COLD_POOL_JUMBO);

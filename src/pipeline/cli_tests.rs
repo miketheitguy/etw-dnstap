@@ -177,21 +177,19 @@ fn identity_and_session_name_byte_and_unit_limits() {
 }
 
 #[test]
-fn help_and_version_win_when_they_come_first() {
+fn help_and_version_flags_are_unknown_arguments() {
+    let prefix = ["etw-dnstap", "--receiver", "127.0.0.1:6000", "--plaintext"];
     for flag in ["--help", "-h", "--version", "-V"] {
-        let error = CaptureArgs::try_parse_from(["etw-dnstap", flag]).expect_err("informational");
-        assert!(matches!(
+        let alone = CaptureArgs::try_parse_from(["etw-dnstap", flag]).expect_err("unknown");
+        assert_eq!(alone.kind(), ErrorKind::UnknownArgument, "{flag} alone");
+        let mut after = prefix.to_vec();
+        after.push(flag);
+        let error = CaptureArgs::try_parse_from(after).expect_err("unknown");
+        assert_eq!(
             error.kind(),
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-        ));
-        // Arguments are processed in order: an informational flag that comes
-        // first is reported even when a later receiver is invalid.
-        let error = CaptureArgs::try_parse_from(["etw-dnstap", flag, "--receiver", "bad"])
-            .expect_err("informational");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-        ));
+            ErrorKind::UnknownArgument,
+            "{flag} after other arguments"
+        );
     }
 }
 

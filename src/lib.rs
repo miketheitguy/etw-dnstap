@@ -46,32 +46,22 @@ pub mod bench {
 
 /// Runs capture through the Windows Service Control Manager dispatcher.
 ///
-/// Help and version output print to stdout and succeed without starting the
-/// dispatcher. Other argument errors are passed to the service layer, which
-/// reports them through the Event Log and SCM, or returns them to a console user.
+/// Installs the panic hook first, so a panic is recorded in the Event Log and
+/// not on stderr. The binary has no help or version output; every argument
+/// error is passed to the service layer, which reports it through the Event Log
+/// and SCM, or returns it to a console user.
 ///
 /// # Errors
 /// Returns an error if capture, output, or worker initialization or shutdown fails.
 pub fn run() -> anyhow::Result<()> {
+    service::install_panic_hook();
     match pipeline::parse_args() {
         Ok(args) => service::run(Ok(args)),
-        Err(error) if is_informational(error.kind()) => {
-            error.print()?;
-            Ok(())
-        }
         Err(error) => {
             let rendered = error.render().to_string();
             service::run(Err(strip_clap_error_prefix(&rendered).to_owned()))
         }
     }
-}
-
-/// Help and version requests are successful output, not argument failures.
-const fn is_informational(kind: clap::error::ErrorKind) -> bool {
-    matches!(
-        kind,
-        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-    )
 }
 
 /// Removes clap's leading `error: ` label once, because the service layer adds its
@@ -82,17 +72,7 @@ fn strip_clap_error_prefix(rendered: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use clap::error::ErrorKind;
-
-    use super::{is_informational, strip_clap_error_prefix};
-
-    #[test]
-    fn only_help_and_version_are_informational() {
-        assert!(is_informational(ErrorKind::DisplayHelp));
-        assert!(is_informational(ErrorKind::DisplayVersion));
-        assert!(!is_informational(ErrorKind::MissingRequiredArgument));
-        assert!(!is_informational(ErrorKind::InvalidValue));
-    }
+    use super::strip_clap_error_prefix;
 
     #[test]
     fn strips_only_one_leading_error_label() {

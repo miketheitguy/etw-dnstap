@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
 
 Set every option in the service binary path. The service ignores arguments that
 you give to `sc.exe start`. Install and provisioning steps are in
@@ -33,12 +33,17 @@ rejects a value outside the range at startup.
 | `--spool-max-mib N` | `4096` | 64 to 1,048,576 MiB. Cannot be combined with `--no-spool`. | Cap on the bytes of spool segment files. At the cap, the spool deletes its oldest segments. See [Size limits and eviction](#size-limits-and-eviction). |
 | `--spool-min-free-mib N` | `2048` | 0 to 1,048,576 MiB. Cannot be combined with `--no-spool`. | Free space to keep on the spool volume. Below it, the spool deletes its oldest segments. See [Size limits and eviction](#size-limits-and-eviction). |
 | `--stats-interval-seconds N` | `60` | 0 to 86,400 | Seconds between the `capture stats` and `output stats` log events. `0` disables them. The final `capture stopped` and `output stopped` events are always written. See [Log events and counters](monitoring.md). |
-| `--help`, `-h` | | | Print help and exit. Capture does not start. |
-| `--version`, `-V` | | | Print the package version and exit. Capture does not start. |
+
+The binary has no help or version output, so this page is the option reference.
+The service writes nothing to the console. A console launch exits with code 1 and
+prints nothing, with any arguments. To read the running version, see the
+`version` field of `capture started` in
+[monitoring.md](monitoring.md#periodic-and-final-reports).
 
 ### Removed options
 
-The service does not have `--output`/`-o`, `--max-output-bytes`, or `--metrics`.
+The service does not have `--output`/`-o`, `--max-output-bytes`, `--metrics`,
+`--help`, `-h`, `--version`, or `-V`.
 An argument that uses them fails command-line parsing. The service writes no
 capture or metrics files. The one exception is the spool. It keeps frames that
 the receiver has not accepted yet, in segment files in the spool folder. See

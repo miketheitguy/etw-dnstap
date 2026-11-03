@@ -414,6 +414,40 @@ pub(crate) fn preopen_event_source() {
 /// 2-4 map tracing levels.
 const WATCHDOG_EVENT_ID: u32 = 5;
 
+/// Event ID for a panic; see [`WATCHDOG_EVENT_ID`] for the other reserved IDs.
+const PANIC_EVENT_ID: u32 = 6;
+
+/// Text of the panic event. `location` is `(file, line, column)`.
+pub(crate) fn panic_event_message(message: &str, location: Option<(&str, u32, u32)>) -> String {
+    match location {
+        Some((file, line, column)) => {
+            format!("EtwDnstap panicked: {message} at {file}:{line}:{column}")
+        }
+        None => format!("EtwDnstap panicked: {message}"),
+    }
+}
+
+/// Replaces the default panic hook, which writes to stderr, with one that
+/// reports a single Error event (ID [`PANIC_EVENT_ID`]) to the Event Log. The
+/// hook does not use tracing, so a panic inside the subscriber cannot recurse.
+pub(crate) fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("non-string panic payload");
+        let location = info
+            .location()
+            .map(|place| (place.file(), place.line(), place.column()));
+        let text = event_text(&panic_event_message(message, location));
+        if let Some(source) = event_source() {
+            source.report(EVENTLOG_ERROR_TYPE, PANIC_EVENT_ID, &text);
+        }
+    }));
+}
+
 /// Writes the watchdog abort reason to the Event Log, bounded to one second.
 ///
 /// Uses only the source opened earlier by [`preopen_event_source`]; it never
@@ -1134,6 +1168,44 @@ mod tests {
                 .iter()
                 .all(|&unit| unit == u16::from(b'x'))
         );
+    }
+
+    #[test]
+    fn panic_event_message_includes_the_location_when_known() {
+        assert_eq!(
+            panic_event_message("boom", Some(("src/lib.rs", 12, 5))),
+            "EtwDnstap panicked: boom at src/lib.rs:12:5"
+        );
+    }
+
+    #[test]
+    fn panic_event_message_omits_a_missing_location() {
+        assert_eq!(
+            panic_event_message("boom", None),
+            "EtwDnstap panicked: boom"
+        );
+    }
+
+    #[test]
+    fn panic_event_message_keeps_the_prefix_for_an_empty_message() {
+        assert_eq!(panic_event_message("", None), "EtwDnstap panicked: ");
+        assert_eq!(
+            panic_event_message("", Some(("a.rs", 1, 2))),
+            "EtwDnstap panicked:  at a.rs:1:2"
+        );
+    }
+
+    #[test]
+    fn a_long_panic_message_is_capped_and_terminated_by_event_text() {
+        let message = "m".repeat(MAX_LINE_BYTES * 2);
+        let text = panic_event_message(&message, Some(("a.rs", 1, 2)));
+        assert!(text.len() > MAX_EVENT_UNITS);
+        let units = event_text(&text);
+        assert_eq!(units.len(), MAX_EVENT_UNITS + 1);
+        assert_eq!(units.last(), Some(&0));
+        let prefix: Vec<u16> = "EtwDnstap panicked: ".encode_utf16().collect();
+        assert!(units.starts_with(&prefix));
+        assert!(!units[..MAX_EVENT_UNITS].contains(&0));
     }
 
     #[test]
