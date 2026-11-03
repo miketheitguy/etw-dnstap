@@ -4,6 +4,12 @@
 //! manifest's `applicationIdentity` names. The `.rc` file is generated from
 //! `packaging/perfcounters/etw-dnstap.man` with CTRPP and committed.
 
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "Cargo reads build script directives from stdout and shows stderr"
+)]
+
 const RESOURCE: &str = "packaging/perfcounters/etw-dnstap-perf.rc";
 
 fn main() {

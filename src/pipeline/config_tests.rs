@@ -15,7 +15,7 @@ fn argument_parsing_returns_errors_instead_of_exiting() {
     let help = parse_args_from(["etw-dnstap", "--help"]);
     assert_eq!(
         help.err().map(|error| error.kind()),
-        Some(clap::error::ErrorKind::DisplayHelp)
+        Some(clap::error::ErrorKind::UnknownArgument)
     );
     let valid = parse_args_from(["etw-dnstap", "--receiver", "127.0.0.1:6000"]);
     assert!(valid.is_ok());
