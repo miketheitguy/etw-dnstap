@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` · **Reviewed:** 2026-11-03
 
 Use this guide to install the service on a DNS Server host. It covers the
 service identity, the ETW access grant, the SCM registration, recovery, and the
@@ -22,11 +22,146 @@ procedure.
 | --- | --- |
 | Build the executable | [Build the executable](build.md) |
 | Prepare the receiver and its certificate | [Set up the dnstap receiver](receiver.md) |
-| Install a new service | This guide, steps 1 to 8 |
+| Install with the MSI | [Install with the MSI](#install-with-the-msi) |
+| Install by hand | This guide, steps 1 to 8 |
 | Test the profile on a new Windows build | [Validation checklist](#validation-checklist-for-the-localservice-restricted-profile) |
 | Change an existing installation | [Repair or upgrade](upgrade.md) |
 | Set options | [Configuration reference](configuration.md) |
 | Remove the service | [Uninstall](uninstall.md) |
+
+## Install with the MSI
+
+The MSI does the provisioning that the manual steps below do. It installs the
+files, sets the folder ACLs, registers and configures the service, grants ETW
+access, registers the performance counters and the Application event log
+source, and creates the data folders. It does not start the service. A restart
+starts it.
+
+Use the manual steps on a host where the MSI is not used, or to see what each
+MSI action changes. The manual steps stay the reference.
+
+Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-installer-plan.md).
+The MSI has not yet been run on a lab DNS Server. The steps in this section
+describe the sources.
+
+### MSI prerequisites
+
+- Windows x64 with the **DNS Server role** installed. The MSI stops if the
+  `DNS` service is not registered. It does not check that the service is
+  Running, and the EtwDnstap service depends on `DNS`.
+- A **receiver** address for the `RECEIVER` property: the collector's numeric
+  IPv4 or `[IPv6]` address, a colon, and a port from 1 to 65535. Hostnames are
+  refused. The receiver does not need to run before the install.
+- The **receiver CA** in the Windows machine certificate store, for the default
+  TLS connection. The MSI does not install it. See
+  [Set up the dnstap receiver](receiver.md#receiver-certificate). To send
+  plaintext on a trusted network, pass `SERVICE_ARGS=--plaintext`.
+- An elevated session, and the MSI file `etw-dnstap-<version>-x64.msi`. To build
+  it, see [Build the MSI](build.md#build-the-msi).
+
+### Run the installer
+
+Run the command from the folder that holds the MSI. The log file name is any
+name you can write to.
+
+```powershell
+msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v install.log RECEIVER=192.0.2.10:6000
+```
+
+The MSI has three public properties:
+
+| Property | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `RECEIVER` | Yes, unless a value was remembered | None | The collector's `IP:port`, as in step 1 of the manual steps. It becomes the `--receiver` argument. |
+| `SESSION_NAME` | No | `EtwDnstap` | The ETW session name, which becomes `--session-name`. It takes letters, digits, `_`, `.`, and `-`, up to 128 characters. The install stops on any other value. |
+| `SERVICE_ARGS` | No | Empty | More arguments for the service's binary path, for example `--plaintext`. The MSI does not check them. See the [Configuration reference](configuration.md). |
+
+To set all three, add them to the same command:
+
+```powershell
+msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v install.log `
+    RECEIVER=192.0.2.10:6000 SESSION_NAME=EtwDnstap-Lab SERVICE_ARGS=--plaintext
+```
+
+If a value has spaces, put the whole property in quotes, for example
+`'SERVICE_ARGS="--plaintext --capacity 24576"'`.
+
+The MSI keeps these values in `HKLM\SOFTWARE\EtwDnstap\Installer`. Repair and
+upgrade read them back. See [Upgrade, repair, or change settings with the MSI](upgrade.md#upgrade-repair-or-change-settings-with-the-msi).
+
+### Restart the computer
+
+A successful install exits with code `3010`. That code means the install
+succeeded and a restart is required. `/norestart` stops `msiexec` from
+restarting the computer, so restart it yourself.
+
+Restart the computer. ETW applies the session grant only at boot (step 4 of the
+manual steps). Until the restart, the grant has no effect.
+
+The MSI sets the service to delayed automatic start and does not start it. After
+the restart, Windows starts `EtwDnstap` a short time after boot, once `DNS` is
+running. Do not start it by hand unless it is not `RUNNING` five minutes after the
+restart. If it is not running, see
+[troubleshooting.md](troubleshooting.md#the-service-does-not-reach-running).
+
+If an action fails during a first install, Windows Installer rolls back. It
+runs the uninstall provisioning for the changes the install made, and it
+removes the files. On an upgrade, the rollback restores the previous files and
+service settings, but it does not undo the provisioning steps. Fix the cause
+and run the install again. The provisioning steps can run again.
+
+### Check the result
+
+After the restart, run these in an elevated Windows PowerShell 5.1 session:
+
+```powershell
+sc.exe query EtwDnstap
+sc.exe qc EtwDnstap
+sc.exe qsidtype EtwDnstap
+sc.exe qprivs EtwDnstap
+typeperf -q EtwDnstap
+```
+
+- `sc.exe query` shows `RUNNING` after the delayed start.
+- `sc.exe qc` shows `START_TYPE` as `AUTO_START  (DELAYED)`, `SERVICE_START_NAME`
+  as `NT AUTHORITY\LocalService`, and `DEPENDENCIES` as `DNS`.
+- `sc.exe qsidtype` shows `RESTRICTED`. `sc.exe qprivs` lists only
+  `SeChangeNotifyPrivilege`.
+- `typeperf -q EtwDnstap` lists the counter names.
+- The Application log has Event ID 2, `capture started`. Its `version` field
+  matches the version in the MSI file name.
+- The MSI log, `install.log`, holds the output of the provisioning script. The
+  lines that start with `[EtwDnstap]` say what each step did. A line that starts
+  with `[EtwDnstap] FAILED:` gives the cause.
+
+Then check the service as in [step 6](#6-inspect-the-registered-identity-and-access-controls)
+and [step 7](#7-start-capture-and-check-that-it-is-running), without starting it
+by hand.
+
+### What the MSI does in place of the manual steps
+
+| MSI action | Manual step | What the action does |
+| --- | --- | --- |
+| Launch conditions | Prerequisites | Check 64-bit Windows, the `DNS` service registration, and that `RECEIVER` is set or remembered. |
+| Provisioning, receiver check | Step 1 | Runs the same check as step 1 on `RECEIVER`. A bad value stops the install. |
+| `InstallFolderAcl` component | Step 2 | Creates `C:\Program Files\EtwDnstap\` with SYSTEM and Administrators full control and no inherited ACEs. |
+| `EtwDnstapExe`, `EtwDnstapManifest`, `GrantScript`, `ProvisioningScript` components | Step 3 (copy files) | Copy the executable, the counter manifest, the grant script, and the provisioning script. The service SID gets read and execute on the folder. |
+| `util:PerfCounterManifest` | Step 3 (`lodctr`) | Registers the counter set. Uninstall removes the registration. |
+| `ServiceInstall` | Steps 3 and 4 (`New-Service`, `sc.exe config`, `sc.exe sidtype`, `sc.exe privs`, `sc.exe sdset`) | Creates the service as `NT AUTHORITY\LocalService`, with a restricted SID type, only `SeChangeNotifyPrivilege`, the step 4 descriptor, and the `DNS` dependency. |
+| `ServiceConfig` | Step 5 (failure flag) and the start type | Sets delayed automatic start and the non-crash failure flag. |
+| `ServiceConfigFailureActions` | Step 5 (`sc.exe failure`) | Resets after 86400 seconds. Restarts after 5 seconds, 5 seconds, and 60 seconds. |
+| Provisioning, group step | Step 4 (`net localgroup ... /add`) | Adds `NT SERVICE\EtwDnstap` to Performance Log Users. Skips it if already a member. |
+| Provisioning, grant step | Step 4 (grant script) | Runs `Grant-EtwDnstapEtwAccess.ps1 -SessionName` from the install folder. |
+| `util:EventSource` | Step 4 (`New-EventLog`) | Registers the `EtwDnstap` source in the Application log, with the same message file. |
+| Provisioning, data folders | Create the spool folder, and the `ProgramData` part of the snapshot folder | Creates `C:\ProgramData\EtwDnstap` and `spool` with the rights of the spool section, or accepts them if they exist and pass the checks. An existing folder that fails a check stops the install. |
+| `ScheduleReboot` | Step 4 (`Restart-Computer`) | Schedules the restart, which the install requires. |
+| `RememberedSettings` component | None | Keeps `RECEIVER`, `SESSION_NAME`, and `SERVICE_ARGS` in the registry for repair and upgrade. |
+| No start action | Step 7 (`sc.exe start`) | The service starts after the restart, with delayed automatic start. |
+| No checks | Step 6 | The MSI does not run the step 6 checks. Use [Check the result](#check-the-result). |
+
+The grant script also writes a snapshot of the ETW descriptors under
+`C:\ProgramData\EtwDnstap\backup` when it changes a descriptor. Uninstall
+deletes that folder. See [Uninstall with the MSI](uninstall.md#uninstall-with-the-msi).
 
 ## Prerequisites
 
@@ -43,6 +178,9 @@ procedure.
   Run `New-EventLog` and `Remove-EventLog` from Windows PowerShell.
 
 ## Provision the service
+
+Use these manual steps on a host without the MSI, or to see what each MSI action
+changes. For the MSI, see [Install with the MSI](#install-with-the-msi).
 
 Use an elevated Windows PowerShell 5.1 session at the repository root. The steps
 assume the service and the installation directory do not exist yet. For an
@@ -90,23 +228,44 @@ are by the executable's `--receiver` parser.
 
 ```powershell
 $receiverText = '192.0.2.10:6000'   # replace with your collector's IP:port
-$receiverEndpoint = $null
-if (-not [System.Net.IPEndPoint]::TryParse($receiverText, [ref]$receiverEndpoint)) {
-    throw "Receiver must be a numeric IP address and port, for example 192.0.2.10:6000."
+$addressText = $null
+$portText = $null
+if ($receiverText -match '^\[([^\]]+)\]:(\d{1,5})$') {
+    $addressText = $Matches[1]
+    $portText = $Matches[2]
 }
-$receiverAddress = $receiverEndpoint.Address
+elseif ($receiverText -match '^([0-9.]+):(\d{1,5})$') {
+    $addressText = $Matches[1]
+    $portText = $Matches[2]
+}
+$receiverAddress = $null
+if ($null -eq $addressText -or -not [System.Net.IPAddress]::TryParse($addressText, [ref]$receiverAddress)) {
+    throw 'Receiver must be a numeric IP address and port, for example 192.0.2.10:6000.'
+}
+$receiverPort = [int]$portText
 $firstOctet = if ($receiverAddress.AddressFamily -eq 'InterNetwork') { $receiverAddress.GetAddressBytes()[0] } else { 0 }
-$isMulticast = $receiverAddress.IsIPv6Multicast -or ($firstOctet -ge 224 -and $firstOctet -le 239)
-if ($receiverEndpoint.Port -eq 0 -or
+$isMulticast = ($receiverAddress.AddressFamily -eq 'InterNetworkV6' -and $receiverAddress.IsIPv6Multicast) -or
+    ($firstOctet -ge 224 -and $firstOctet -le 239)
+if ($receiverPort -eq 0 -or $receiverPort -gt 65535 -or
     $receiverAddress.Equals([System.Net.IPAddress]::Any) -or
     $receiverAddress.Equals([System.Net.IPAddress]::IPv6Any) -or
     $isMulticast) {
     throw 'Receiver must have a unicast IP address and a nonzero port.'
 }
-$Receiver = $receiverEndpoint.ToString()   # IPv6 is written as [address]:port
+# IPv6 is written as [address]:port
+$Receiver = if ($receiverAddress.AddressFamily -eq 'InterNetworkV6') {
+    "[$($receiverAddress)]:$receiverPort"
+} else {
+    "$($receiverAddress):$receiverPort"
+}
 ```
 
-This check mirrors `check_receiver` in `src/pipeline/config.rs`. It accepts a numeric IP
+This check mirrors `check_receiver` in `src/pipeline/config.rs`. Windows
+PowerShell 5.1 (.NET Framework) has no `[System.Net.IPEndPoint]::TryParse`, so
+the block splits the endpoint and parses the address with
+`[System.Net.IPAddress]::TryParse`. The logic is the same as `Test-Receiver` in
+[Invoke-EtwDnstapProvisioning.ps1](../../packaging/msi/Invoke-EtwDnstapProvisioning.ps1),
+which the MSI runs. It accepts a numeric IP
 address with a nonzero port that is not unspecified and not multicast. It does not test
 reachability. Test that with a connection test to the collector.
 

@@ -1,9 +1,94 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` · **Reviewed:** 2026-11-03
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.
+
+## Uninstall with the MSI
+
+Use `msiexec /x` to remove an installation that the MSI made. It reverses the
+MSI actions and the provisioning that the install ran. Run it from an elevated
+session. You can name the MSI file or the product code:
+
+```powershell
+msiexec.exe /x etw-dnstap-<version>-x64.msi /qn /norestart /l*v uninstall.log
+```
+
+```powershell
+msiexec.exe /x {<product-code>} /qn /norestart /l*v uninstall.log
+```
+
+To find the product code, open `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`.
+Use the key whose `DisplayName` is `EtwDnstap`. The key name is the product
+code. Each build has its own product code, so use the one for the installed build.
+
+The uninstall exits with code `3010`. Restart the computer. The removal of the
+ETW grants takes effect at boot, as the grants do at install.
+
+Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-installer-plan.md).
+
+### What the uninstall removes
+
+- The `EtwDnstap` ETW session, if one is still running. The uninstall stops the
+  session named by `SESSION_NAME`, from the remembered value. If no value was
+  remembered, it uses `EtwDnstap`.
+- The service. The uninstall stops it and deletes its registration.
+- `NT SERVICE\EtwDnstap` from Performance Log Users.
+- Every ETW grant of the service SID. The uninstall runs
+  `Grant-EtwDnstapEtwAccess.ps1 -Remove`.
+- The performance counter registration, from `etw-dnstap.man`.
+- The install folder, `C:\Program Files\EtwDnstap\`, with its files.
+- The Application event log source `EtwDnstap`. Existing entries stay.
+- `C:\ProgramData\EtwDnstap\spool` and `backup`. Then the `EtwDnstap` folder,
+  if it is empty.
+- The registry key `HKLM\SOFTWARE\EtwDnstap`, which holds the remembered
+  `RECEIVER`, `SESSION_NAME`, and `SERVICE_ARGS`.
+
+> **Warning.** The uninstall deletes the spool. Frames that the collector has
+> not received are lost. Check `spool_segments` in the last `output stopped`
+> line before you uninstall, and see [Spool](configuration.md#spool). The
+> uninstall also deletes the `backup` folder, which holds the grant script's
+> snapshots of the ETW descriptors. After an MSI uninstall, `-Restore` cannot
+> undo the removal. To restore the grants, install the MSI again.
+
+### What the uninstall keeps
+
+- Content in `C:\ProgramData\EtwDnstap` that EtwDnstap did not create. An
+  example is a folder that your own tools made. The uninstall keeps it, logs
+  `KEPT (not created by EtwDnstap)`, and leaves the `EtwDnstap` folder in place.
+- A reparse point (a link or a junction) in `spool` or `backup`, and a reparse
+  point for the `EtwDnstap` folder itself. The uninstall does not follow or
+  delete it. It logs `KEPT`.
+- Entries in the Application event log.
+- Dnstap records that the collector already received. The DNS Server role, its
+  configuration, and its Analytical event log are not changed.
+
+The lines that start with `[EtwDnstap]` in the uninstall log say what each step
+removed or kept.
+
+### Check the result
+
+After the restart, run these in an elevated Windows PowerShell 5.1 session:
+
+```powershell
+sc.exe query EtwDnstap
+net localgroup "Performance Log Users"
+logman query -ets
+typeperf -q EtwDnstap
+Test-Path -LiteralPath "$env:ProgramData\EtwDnstap\spool"
+```
+
+`sc.exe query` reports error 1060, which means the service does not exist. The
+group list does not show `NT SERVICE\EtwDnstap`. The session list does not show
+`EtwDnstap`. `typeperf -q EtwDnstap` lists no counters. `Test-Path` returns
+`False`.
+
+## Remove a hand-provisioned install
+
+Use the steps below for an install that you made by hand, with the manual steps
+in [install.md](install.md). Do not use them on an MSI install. They remove the
+parts by hand, and they leave the Windows Installer record in place.
 
 Run the commands in an elevated Windows PowerShell 5.1 session. The lab tested
 the `-Remove` run of the grant script in step 3. The other commands come from
