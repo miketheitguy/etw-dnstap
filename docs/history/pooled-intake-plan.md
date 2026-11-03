@@ -133,7 +133,7 @@ Run the independent evidence-reader checks with:
 python scripts/performance/pooled-intake-run-test.py
 ```
 
-> **Script path changed (commit `6e62b2e`):** the checks are now `scripts/performance/test_pooled_intake_run.py`. The command above is the
+> **Script path changed (commit `f1475d8`):** the checks are now `scripts/performance/test_pooled_intake_run.py`. The command above is the
 > recorded historical text. See [script moves and renames](../../scripts/performance/README.md#file-moves-and-renames).
 
 After the implementation owner supplies the release test executable, run:
@@ -145,7 +145,7 @@ python scripts/performance/pooled-intake-run.py `
   --events 200000 --repetitions 3 --timeout 120
 ```
 
-> **Script path changed (commit `6e62b2e`):** the runner is now `scripts/performance/pooled_intake_run.py`. The command above is the
+> **Script path changed (commit `f1475d8`):** the runner is now `scripts/performance/pooled_intake_run.py`. The command above is the
 > recorded historical text. See [script moves and renames](../../scripts/performance/README.md#file-moves-and-renames).
 
 Replace `TEST_EXE` with the exact hardened release test executable from the

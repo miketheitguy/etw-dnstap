@@ -73,7 +73,7 @@ pub(crate) struct Encoder {
     output: Vec<u8>,
 }
 
-const MAX_ENCODED_LENGTH: usize = 70 * 1_024;
+pub(crate) const MAX_ENCODED_LENGTH: usize = 70 * 1_024;
 
 impl Encoder {
     /// Copy the identity once, omitting an empty identity.

@@ -1,6 +1,6 @@
 # Set up the dnstap receiver
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
 
 Use this guide to prepare the collector that receives the records. Do this
 before you start the service, although the service also reconnects if the
@@ -11,7 +11,9 @@ receiver starts later.
 The service keeps one outbound TCP connection to `--receiver`. It negotiates
 content type `protobuf:dnstap.Dnstap` with READY, ACCEPT, and START, then sends
 data frames. On shutdown it sends STOP and waits for FINISH. After a failure it
-reconnects and negotiates again. Frames lost in the gap are counted, not resent.
+reconnects and negotiates again. Frames in flight when a connection fails are
+counted and not resent. While the receiver is down, frames go to the spool when one
+is in use, and they are sent after it returns. See [Spool](configuration.md#spool).
 The connection is TLS by default, and the service checks the receiver
 certificate. It sends no client certificate. With `--plaintext`, the connection
 is plaintext with no peer authentication.

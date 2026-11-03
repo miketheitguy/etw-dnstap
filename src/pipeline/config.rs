@@ -1,17 +1,31 @@
 //! Command-line arguments, defaults, and the validated runtime settings.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    ffi::OsString,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Result, bail};
 use clap::Parser;
 
-use crate::etw::SessionConfig;
+use crate::{etw::SessionConfig, spool::fsinfo};
 
 /// Fixed default so a restart finds and reclaims a session leaked by a crash.
 const DEFAULT_SESSION_NAME: &str = "EtwDnstap";
 
 /// Default channel capacity; `CaptureArgs` uses the same value.
 pub(super) const DEFAULT_CAPACITY: usize = 24_576;
+
+/// Where `ProgramData` is when the environment variable is unset or not a plain
+/// absolute path on a local drive letter.
+const FALLBACK_PROGRAM_DATA: &str = r"C:\ProgramData";
+/// Bounds of `--spool-max-mib` and `--spool-min-free-mib`, in MiB. `CaptureArgs`
+/// and [`PipelineConfig::validate`] both use them.
+const SPOOL_MAX_MIB_RANGE: std::ops::RangeInclusive<u64> = 64..=1_048_576;
+const SPOOL_MIN_FREE_MIB_RANGE: std::ops::RangeInclusive<u64> = 0..=1_048_576;
+const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -76,6 +90,28 @@ pub(crate) struct CaptureArgs {
     /// intervals use less CPU and make each delivered batch larger.
     #[arg(long, default_value = "1", value_parser = clap::value_parser!(u32).range(1..=60))]
     etw_flush_seconds: u32,
+
+    /// Spool folder for frames that cannot be sent while the receiver is down.
+    /// Must be an absolute path. Default: `EtwDnstap\spool` under the
+    /// `ProgramData` folder. The service never creates the folder; it uses it
+    /// only when it exists and is trusted, and otherwise runs without a spool.
+    #[arg(long, conflicts_with = "no_spool", value_parser = parse_spool_dir)]
+    spool_dir: Option<PathBuf>,
+
+    /// Run without a spool: frames that arrive while the receiver is down are
+    /// dropped and counted.
+    #[arg(long)]
+    no_spool: bool,
+
+    /// Cap on the bytes of spool segment files, in MiB, 64-1048576. At the cap
+    /// the spool deletes its oldest segment.
+    #[arg(long, default_value = "4096", conflicts_with = "no_spool", value_parser = clap::value_parser!(u64).range(SPOOL_MAX_MIB_RANGE))]
+    spool_max_mib: u64,
+
+    /// Free space to keep on the spool volume, in MiB, 0-1048576. Below it the
+    /// spool deletes its oldest segment.
+    #[arg(long, default_value = "2048", conflicts_with = "no_spool", value_parser = clap::value_parser!(u64).range(SPOOL_MIN_FREE_MIB_RANGE))]
+    spool_min_free_mib: u64,
 
     /// Seconds between counter snapshots in the log (queue depth, drops, ETW loss,
     /// receiver connection state), 0-86400; 0 disables the snapshots. The final
@@ -165,6 +201,75 @@ fn check_identity(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_spool_dir(value: &str) -> Result<PathBuf, String> {
+    let dir = PathBuf::from(value);
+    check_spool_dir_path(&dir)?;
+    Ok(dir)
+}
+
+/// Shared by the command line and [`PipelineConfig::validate`]. The folder must
+/// be an absolute path on a local drive letter with no `.` or `..` component;
+/// network and device paths are refused. Only the shape is checked here; the
+/// startup path checks the folder itself.
+fn check_spool_dir_path(dir: &Path) -> Result<(), String> {
+    fsinfo::check_path_shape(dir).map_err(|reason| format!("spool-dir: {reason}"))
+}
+
+fn check_spool_sizes(max_mib: u64, min_free_mib: u64) -> Result<(), String> {
+    if !SPOOL_MAX_MIB_RANGE.contains(&max_mib) {
+        return Err(format!(
+            "spool-max-mib must be between {} and {}",
+            SPOOL_MAX_MIB_RANGE.start(),
+            SPOOL_MAX_MIB_RANGE.end()
+        ));
+    }
+    if !SPOOL_MIN_FREE_MIB_RANGE.contains(&min_free_mib) {
+        return Err(format!(
+            "spool-min-free-mib must be between {} and {}",
+            SPOOL_MIN_FREE_MIB_RANGE.start(),
+            SPOOL_MIN_FREE_MIB_RANGE.end()
+        ));
+    }
+    Ok(())
+}
+
+/// The default spool folder, `<ProgramData>\EtwDnstap\spool`. `program_data` is
+/// the value of the `ProgramData` environment variable; an unset value, a
+/// relative one, or one that is not a plain path on a local drive letter (a
+/// UNC or device path) falls back to `C:\ProgramData`. Taking the value as a parameter lets
+/// tests check the result without touching the real folder.
+pub(super) fn default_spool_dir(program_data: Option<OsString>) -> PathBuf {
+    program_data
+        .map(PathBuf::from)
+        .filter(|base| fsinfo::check_path_shape(base).is_ok())
+        .unwrap_or_else(|| PathBuf::from(FALLBACK_PROGRAM_DATA))
+        .join("EtwDnstap")
+        .join("spool")
+}
+
+/// The spool settings of a run that uses a spool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SpoolSettings {
+    /// The spool folder; absolute. The startup path checks that it is trusted.
+    pub(crate) dir: PathBuf,
+    /// Cap on segment bytes, in MiB.
+    pub(crate) max_mib: u64,
+    /// Free space to keep on the volume, in MiB.
+    pub(crate) min_free_mib: u64,
+}
+
+impl SpoolSettings {
+    /// The cap in bytes. The range check keeps the product far below `u64::MAX`.
+    pub(crate) const fn max_bytes(&self) -> u64 {
+        self.max_mib.saturating_mul(BYTES_PER_MIB)
+    }
+
+    /// The free-space floor in bytes.
+    pub(crate) const fn min_free_bytes(&self) -> u64 {
+        self.min_free_mib.saturating_mul(BYTES_PER_MIB)
+    }
+}
+
 /// Diagnostic-only settings, folded into one value so the pipeline signatures
 /// carry no per-feature parameters. It is empty unless `diag-timing` is enabled.
 #[derive(Clone, Copy, Debug, Default)]
@@ -196,6 +301,8 @@ pub(crate) struct PipelineConfig {
     pub(crate) session: SessionConfig,
     /// Seconds between counter snapshots; zero disables them.
     pub(crate) stats_interval_seconds: u32,
+    /// `None` runs without a spool (`--no-spool`).
+    pub(crate) spool: Option<SpoolSettings>,
     pub(crate) diag: DiagContext,
 }
 
@@ -217,6 +324,10 @@ impl PipelineConfig {
         check_jumbo_capacity(self.jumbo_capacity).map_err(anyhow::Error::msg)?;
         check_session_name(&self.session_name).map_err(anyhow::Error::msg)?;
         check_identity(&self.identity).map_err(anyhow::Error::msg)?;
+        if let Some(spool) = &self.spool {
+            check_spool_dir_path(&spool.dir).map_err(anyhow::Error::msg)?;
+            check_spool_sizes(spool.max_mib, spool.min_free_mib).map_err(anyhow::Error::msg)?;
+        }
         SessionConfig::new(
             self.session.buffer_kib,
             self.session.minimum_buffers,
@@ -242,6 +353,13 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
     type Error = anyhow::Error;
 
     fn try_from(args: CaptureArgs) -> Result<Self> {
+        let spool = (!args.no_spool).then(|| SpoolSettings {
+            dir: args
+                .spool_dir
+                .unwrap_or_else(|| default_spool_dir(std::env::var_os("ProgramData"))),
+            max_mib: args.spool_max_mib,
+            min_free_mib: args.spool_min_free_mib,
+        });
         let config = Self {
             receiver: args.receiver,
             tls: !args.plaintext,
@@ -258,6 +376,7 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
                 args.etw_flush_seconds,
             )?,
             stats_interval_seconds: args.stats_interval_seconds,
+            spool,
             diag: DiagContext {
                 #[cfg(feature = "diag-timing")]
                 timer_resolution_ms: args.diag_timer_resolution_ms,

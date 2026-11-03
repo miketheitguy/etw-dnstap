@@ -4,6 +4,7 @@
 use std::{
     io,
     net::SocketAddr,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -16,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 use super::{
-    config::{CaptureArgs, DEFAULT_CAPACITY, DiagContext, PipelineConfig},
+    config::{CaptureArgs, DEFAULT_CAPACITY, DiagContext, PipelineConfig, SpoolSettings},
     parser::{ParseCounters, join_parser, spawn_parser},
     watchdog::{SHUTDOWN_TIMEOUT, ShutdownWatchdog},
 };
@@ -27,7 +28,12 @@ use crate::{
     },
     network::{NetworkSink, ReceiverConfig},
     perfcounters::{CounterSink, CounterSources, PerfPublisher, snapshot},
+    sender::QueuedSink,
     sink::{FrameSink, SinkStats},
+    spool::{
+        Spool, SpoolConfig,
+        fsinfo::{self, SpoolDirError},
+    },
 };
 
 /// Schedules a periodic task on the supervisor thread.
@@ -108,7 +114,7 @@ pub(crate) fn run_capture(
     let config = PipelineConfig::try_from(args)?;
     run_pipeline(
         &config,
-        |address, stats| NetworkSink::start(receiver_config(&config, address)?, stats),
+        |address, stats| build_sink(&config, address, stats),
         |start| {
             Capture::start(
                 start.session_name,
@@ -137,6 +143,97 @@ fn receiver_config(config: &PipelineConfig, address: SocketAddr) -> io::Result<R
         ReceiverConfig::system_tls(address, config.tls_server_name.as_deref())
     } else {
         Ok(address.into())
+    }
+}
+
+/// Builds the sink the parser writes to: the receiver link, the optional spool,
+/// and the queued sink that runs the `dnstap-sender` thread over both.
+///
+/// The order is fixed. The link starts first and a protocol failure there is
+/// fatal, as before. The spool comes second and never fails the start: any
+/// problem with it is one warning, and the run continues without a spool.
+fn build_sink(
+    config: &PipelineConfig,
+    address: SocketAddr,
+    stats: Arc<SinkStats>,
+) -> io::Result<QueuedSink> {
+    build_sink_with(
+        config,
+        address,
+        stats,
+        fsinfo::check_spool_dir,
+        fsinfo::available_bytes,
+    )
+}
+
+/// The folder trust check [`open_spool`] runs before it opens the spool.
+type SpoolCheck = fn(&Path) -> Result<(), SpoolDirError>;
+/// The free-space probe the spool uses for its floor.
+type FreeSpace = fn(&Path) -> io::Result<u64>;
+
+/// [`build_sink`] with the folder check and the free-space probe as parameters,
+/// so tests can run the whole wiring on a temp folder. Production passes
+/// [`fsinfo::check_spool_dir`] and [`fsinfo::available_bytes`].
+fn build_sink_with(
+    config: &PipelineConfig,
+    address: SocketAddr,
+    stats: Arc<SinkStats>,
+    check: SpoolCheck,
+    free_space: FreeSpace,
+) -> io::Result<QueuedSink> {
+    let link = NetworkSink::start(receiver_config(config, address)?, Arc::clone(&stats))?;
+    let spool = config
+        .spool
+        .as_ref()
+        .and_then(|settings| open_spool(settings, &stats, check, free_space));
+    QueuedSink::start(link, spool, stats)
+}
+
+/// Checks the spool folder with `check` and opens the spool. Returns `None` after
+/// logging one warning that names the reason, so the caller runs without a
+/// spool. Never logs frame data.
+fn open_spool(
+    settings: &SpoolSettings,
+    stats: &Arc<SinkStats>,
+    check: SpoolCheck,
+    free_space: FreeSpace,
+) -> Option<Spool> {
+    let dir = settings.dir.as_path();
+    if let Err(reason) = check(dir) {
+        tracing::warn!(
+            spool_dir = %dir.display(),
+            %reason,
+            "spool folder is not usable; capture continues without a spool, so frames are \
+             dropped and counted while the receiver is down"
+        );
+        return None;
+    }
+    let config = SpoolConfig {
+        dir: settings.dir.clone(),
+        max_bytes: settings.max_bytes(),
+        min_free_bytes: settings.min_free_bytes(),
+    };
+    match Spool::open(config, Arc::clone(stats), free_space) {
+        Ok(spool) => {
+            tracing::info!(
+                spool_dir = %dir.display(),
+                spool_max_mib = settings.max_mib,
+                spool_min_free_mib = settings.min_free_mib,
+                leftover_segments = stats.spool_segments.load(Ordering::Relaxed),
+                leftover_bytes = stats.spool_bytes.load(Ordering::Relaxed),
+                "spool in use"
+            );
+            Some(spool)
+        }
+        Err(error) => {
+            tracing::warn!(
+                spool_dir = %dir.display(),
+                %error,
+                "spool could not be opened; capture continues without a spool, so frames \
+                 are dropped and counted while the receiver is down"
+            );
+            None
+        }
     }
 }
 
@@ -595,8 +692,24 @@ fn combine_results(capture: Result<()>, parser: Result<()>) -> Result<()> {
 /// Counter relationships: `ring_dropped` (channel full) is a subset of
 /// `intake_dropped`, which also includes pool exhaustion and a closed channel;
 /// never add them. `pool_exhausted_regular + pool_exhausted_jumbo` is likewise
-/// part of `intake_dropped`. `disconnected_dropped` counts frames lost after the
-/// parser, in the sink, and is not part of `intake_dropped`.
+/// part of `intake_dropped`.
+///
+/// The sink counters count frames that left the parser, and they are not part of
+/// `intake_dropped`. Each frame of this run that is lost is in at most one of
+/// three loss counters: `disconnected_dropped` (no spool was configured or
+/// usable while the receiver was down, or the connection failed with the frame
+/// in flight), `spool_dropped` (the spool evicted, refused, or could not read the
+/// frame), and `queue_dropped` (the send queue was full). `replayed` counts
+/// frames handed to the link from the spool, so a frame in a replay batch that
+/// then failed is in both `replayed` and `disconnected_dropped`. `spooled`
+/// counts frames appended to the spool; those not yet replayed or dropped are
+/// still in it. Leftover frames from an earlier run appear in `replayed` and in
+/// `spool_dropped_bytes`, but never in `encoded`, and `spool_dropped_bytes` has
+/// no fixed ratio to `spool_dropped` because a leftover segment's frame count is
+/// unknown. One case is in none of these counters: frames already in the send
+/// queue when the sender thread stops abnormally (the parser counts only the
+/// failed write in `output_failed_events`). `spool_bytes` and `spool_segments`
+/// are gauges, and `spool_available` is a flag.
 macro_rules! emit_counts {
     ($capture_message:literal, $output_message:literal, $capture:expr, $parser:expr, $sink:expr) => {{
         let (capture, parser, sink): (&CaptureCounters, &ParseCounters, &SinkStats) =
@@ -634,6 +747,15 @@ macro_rules! emit_counts {
             receiver_reconnects = sink.reconnects.load(Ordering::Relaxed),
             receiver_reconnect_failures = sink.reconnect_failures.load(Ordering::Relaxed),
             disconnected_dropped = sink.disconnected_dropped.load(Ordering::Relaxed),
+            queue_dropped = sink.queue_dropped.load(Ordering::Relaxed),
+            spooled = sink.spooled.load(Ordering::Relaxed),
+            replayed = sink.replayed.load(Ordering::Relaxed),
+            spool_dropped = sink.spool_dropped.load(Ordering::Relaxed),
+            spool_dropped_bytes = sink.spool_dropped_bytes.load(Ordering::Relaxed),
+            spool_errors = sink.spool_errors.load(Ordering::Relaxed),
+            spool_bytes = sink.spool_bytes.load(Ordering::Relaxed),
+            spool_segments = sink.spool_segments.load(Ordering::Relaxed),
+            spool_available = sink.spool_available.load(Ordering::Relaxed),
             slow_writes = sink.slow_writes.load(Ordering::Relaxed),
             write_max_us = sink.write_max_us.load(Ordering::Relaxed),
             queue_depth_max = parser.queue_depth_max.load(Ordering::Relaxed),

@@ -245,3 +245,120 @@ fn invalid_tls_server_names_are_rejected() {
         assert_eq!(error.kind(), ErrorKind::ValueValidation, "{name:?}");
     }
 }
+
+#[test]
+fn spool_options_have_the_documented_defaults_and_ranges() {
+    let args = parse(&[]).expect("valid");
+    assert!(args.spool_dir.is_none() && !args.no_spool);
+    assert_eq!((args.spool_max_mib, args.spool_min_free_mib), (4096, 2048));
+    for (flag, low, high) in [
+        ("--spool-max-mib", "64", "1048576"),
+        ("--spool-min-free-mib", "0", "1048576"),
+    ] {
+        assert!(parse(&[flag, low]).is_ok(), "{flag} {low}");
+        assert!(parse(&[flag, high]).is_ok(), "{flag} {high}");
+    }
+    for (flag, bad) in [
+        ("--spool-max-mib", "63"),
+        ("--spool-max-mib", "0"),
+        ("--spool-max-mib", "1048577"),
+        ("--spool-max-mib", "-1"),
+        ("--spool-max-mib", "4096.5"),
+        ("--spool-min-free-mib", "1048577"),
+        ("--spool-min-free-mib", "-1"),
+        ("--spool-min-free-mib", ""),
+    ] {
+        // The `=` form keeps a leading `-` from being read as another option.
+        let argument = format!("{flag}={bad}");
+        let error = parse(&[argument.as_str()]).expect_err("out of range");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{flag} {bad:?}");
+    }
+}
+
+#[test]
+fn spool_dir_must_be_absolute() {
+    assert!(parse(&["--spool-dir", r"C:\Spool"]).is_ok());
+    assert!(parse(&["--spool-dir", r"D:\a\b"]).is_ok());
+    for bad in [
+        "",
+        "spool",
+        r"spool\here",
+        r"..\spool",
+        r"\spool",
+        "C:spool",
+        r"C:\..",
+    ] {
+        let argument = format!("--spool-dir={bad}");
+        let error = parse(&[argument.as_str()]).expect_err("not absolute");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{bad:?}");
+    }
+}
+
+#[test]
+fn spool_dir_refuses_dot_components() {
+    for bad in [
+        r"C:\Spool\..\Other",
+        r"C:\Spool\.\Inner",
+        r"C:\..\Spool",
+        "C:/Spool/../Other",
+        r"\\?\C:\Spool\..\Other",
+    ] {
+        let argument = format!("--spool-dir={bad}");
+        let error = parse(&[argument.as_str()]).expect_err("dot component");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{bad:?}");
+    }
+}
+
+#[test]
+fn spool_dir_refuses_network_and_device_paths() {
+    for bad in [
+        r"\\host\share\spool",
+        r"\\?\UNC\host\share\spool",
+        r"\\.\C:\spool",
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\spool",
+    ] {
+        let argument = format!("--spool-dir={bad}");
+        let error = parse(&[argument.as_str()]).expect_err("not a local drive path");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{bad:?}");
+    }
+    // A verbatim path on a drive letter is a local path.
+    assert!(parse(&[r"--spool-dir=\\?\C:\Spool"]).is_ok());
+}
+
+#[test]
+fn no_spool_conflicts_with_the_other_spool_options() {
+    assert!(parse(&["--no-spool"]).is_ok());
+    for other in [
+        &["--spool-dir", r"C:\Spool"][..],
+        &["--spool-max-mib", "128"],
+        &["--spool-min-free-mib", "0"],
+    ] {
+        let mut extra = vec!["--no-spool"];
+        extra.extend_from_slice(other);
+        let error = parse(&extra).expect_err("conflict");
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{other:?}");
+        // The order of the flags does not matter.
+        let mut reversed = other.to_vec();
+        reversed.push("--no-spool");
+        let error = parse(&reversed).expect_err("conflict");
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{other:?}");
+    }
+}
+
+#[test]
+fn repeated_spool_flags_are_errors() {
+    for pair in [
+        ["--spool-dir", r"C:\Spool"],
+        ["--spool-max-mib", "128"],
+        ["--spool-min-free-mib", "0"],
+        ["--no-spool", ""],
+    ] {
+        let mut extra = vec![pair[0]];
+        if !pair[1].is_empty() {
+            extra.push(pair[1]);
+        }
+        extra.extend_from_slice(&extra.clone());
+        let error = parse(&extra).expect_err("repeated flag");
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{pair:?}");
+    }
+}

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
 
 Set every option in the service binary path. The service ignores arguments that
 you give to `sc.exe start`. Install and provisioning steps are in
@@ -28,6 +28,10 @@ rejects a value outside the range at startup.
 | `--etw-min-buffers N` | `0` | 0 to 4,096, at most `--etw-max-buffers` | Requested minimum ETW buffer count, reserved when the session starts. `0` lets ETW choose. ETW raises the value to at least two per logical processor. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
 | `--etw-max-buffers N` | `64` | 4 to 4,096 | Requested maximum ETW buffer count. ETW allocates buffers only on demand, up to this maximum. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
 | `--etw-flush-seconds SECONDS` | `1` | 1 to 60 | ETW real-time flush interval in seconds. ETW delivers real-time events about once per interval, so this value bounds delivery latency. A longer interval uses less CPU and makes each delivered batch larger. See [Low-rate defaults](tuning.md#low-rate-defaults). |
+| `--spool-dir PATH` | `C:\ProgramData\EtwDnstap\spool` | An absolute path that starts with a drive letter, with no `.` or `..` part. Cannot be combined with `--no-spool`. | Folder for frames that wait for the receiver. The service never creates it. It uses the folder only when the folder exists and passes the trust check, which includes a fixed local disk. A failed check logs one warning, and the service runs without a spool. A malformed value fails command-line parsing, and the service does not start. Only the default falls back silently, to `C:\ProgramData`, when the `ProgramData` value is not a plain local path. See [Spool](#spool). |
+| `--no-spool` | off | Flag. Cannot be combined with `--spool-dir`, `--spool-max-mib`, or `--spool-min-free-mib`. | Runs without a spool. Frames that arrive while the receiver is down count in `disconnected_dropped`. Frames that the send queue cannot hold count in `queue_dropped`. |
+| `--spool-max-mib N` | `4096` | 64 to 1,048,576 MiB. Cannot be combined with `--no-spool`. | Cap on the bytes of spool segment files. At the cap, the spool deletes its oldest segments. See [Size limits and eviction](#size-limits-and-eviction). |
+| `--spool-min-free-mib N` | `2048` | 0 to 1,048,576 MiB. Cannot be combined with `--no-spool`. | Free space to keep on the spool volume. Below it, the spool deletes its oldest segments. See [Size limits and eviction](#size-limits-and-eviction). |
 | `--stats-interval-seconds N` | `60` | 0 to 86,400 | Seconds between the `capture stats` and `output stats` log events. `0` disables them. The final `capture stopped` and `output stopped` events are always written. See [Log events and counters](monitoring.md). |
 | `--help`, `-h` | | | Print help and exit. Capture does not start. |
 | `--version`, `-V` | | | Print the package version and exit. Capture does not start. |
@@ -36,7 +40,9 @@ rejects a value outside the range at startup.
 
 The service does not have `--output`/`-o`, `--max-output-bytes`, or `--metrics`.
 An argument that uses them fails command-line parsing. The service writes no
-capture or metrics files.
+capture or metrics files. The one exception is the spool. It keeps frames that
+the receiver has not accepted yet, in segment files in the spool folder. See
+[Spool](#spool).
 
 This build removes `--etw-flush-ms`. The service no longer asks ETW to flush
 the session. A binary path that still has `--etw-flush-ms` fails command-line
@@ -67,7 +73,9 @@ With `--capacity 131072` and 64 jumbo slots, it is 283.03 MiB. With
 (262,144 events and 256 jumbo slots) it is 582.11 MiB. These totals are
 calculated payload, slot, free-list, and channel sizes. They exclude the
 allocator, native ETW buffers, TDH caches, protobuf data, and output buffers.
-They are not measured process-memory limits. See
+They are not measured process-memory limits. The send queue adds about 17.3 MiB,
+which is 130 blocks of 136 KiB allocated at startup, and a replay buffer of about
+0.3 MiB. Neither is in the totals. See
 [pooled-intake.md](../design/pooled-intake.md) for the budget.
 
 ## Subscription
@@ -164,11 +172,13 @@ before it copies the record. The callback counts a mismatch in
 - **Socket send buffer:** the connection asks the kernel for a 1 MiB send
   buffer (`SO_SNDBUF`), so a briefly slow receiver stalls the parser less. If
   the request fails, the connection proceeds with the default buffer.
-- **Flush:** when the parser is idle and output is pending, it flushes if the
-  last flush is 100 ms or older. While busy, it flushes at least once a
-  second. The parser reads the clock every 64 events, so the busy bound is approximate.
-- **Failure:** the sink abandons a failed session and discards its buffered
-  frames. The sink sends no STOP after a partial frame. Capture continues and
+- **Flush:** when the parser is idle and output is pending, it sends its
+  partial block if the last send is 100 ms or older. While busy, it sends at
+  least once a second. The sender thread flushes the socket at least every
+  100 ms while blocks arrive, and at once when the queue is empty. The parser
+  reads the clock every 64 events, so the busy bound is approximate.
+- **Failure:** the sink abandons a failed session and counts the frames in
+  flight. The sink sends no STOP after a partial frame. Capture continues and
   the sink reconnects. See [Receiver connection](#receiver-connection).
 - **Encoded size:** each encoded message is at most 70 KiB.
 - **DNS envelope:** the DNS message must be 12 to 65,535 bytes, and the QR bit must
@@ -200,21 +210,23 @@ are recoverable. Protocol failures at startup are not.
   `protobuf:dnstap.Dnstap` content type, or that sends a malformed control
   frame, stops the service with an error.
 - **Loss.** An established session can fail on a write, a flush, or a
-  deadline. The sink then discards its write buffer and the frame in hand. It
-  logs a warning and starts to reconnect. Capture continues.
+  deadline. The sink then counts the frames in flight in `disconnected_dropped`.
+  It logs a warning and starts to reconnect. Capture continues.
 - **Retry.** Each reconnect attempt runs on a helper thread, so a blackholed
   receiver never blocks the parser. Each wait is uniform between half of a base
   delay and the base. The base starts at 250 ms and doubles up to a 30-second
   cap. A successful reconnect resets the base to 250 ms. Every new session
   repeats READY, ACCEPT, and START.
-- **No resend.** The sink never sends frames that it buffered when a session
-  failed. It also never sends frames that arrive while disconnected. It counts
-  them in `disconnected_dropped`.
+- **No resend.** The sink never sends a frame twice. Frames in flight when a
+  session failed are counted in `disconnected_dropped` and are not resent.
+  Frames that arrive while the receiver is down go to the spool when one is in
+  use. Without a spool, they count in `disconnected_dropped`. See [Spool](#spool).
 - **Incompatible receiver after startup.** A reconnect attempt that receives the
   wrong content type counts as a failed attempt. The service keeps running and
   retries. Only the first connection's protocol failure stops the service.
 - **Shutdown while disconnected.** The sink sends no STOP. The service logs a
-  warning and stops with success. The sink has already counted the frames that
+  warning and stops with success. Frames still in the spool stay on disk for
+  the next start. Without a spool, the sink has already counted the frames that
   it did not deliver.
 - **Shutdown while connected.** The sink sends STOP and waits for FINISH within
   the 2-second deadline. A missing or invalid FINISH is a shutdown failure: the
@@ -266,13 +278,128 @@ The TLS handshake runs under the 2-second handshake deadline. See
 certificate requirements for the receiver are in
 [receiver.md](receiver.md#receiver-certificate).
 
+## Spool
+
+The spool keeps frames on disk while the receiver is down or slow. It is on by
+default. When the receiver connects again, the service sends the stored frames
+first, oldest first. The spool needs a protected folder, and the service does
+not create one. [Create the spool folder](install.md#create-the-spool-folder)
+describes the install step.
+
+**The spool stores DNS data.** Each stored frame is a complete dnstap message,
+with client addresses and query names. The files are not encrypted. The ACL on
+the folder is the only protection. See [SECURITY.md](../../SECURITY.md).
+
+### Requirements
+
+- The default folder is `C:\ProgramData\EtwDnstap\spool`. The service takes the
+  `ProgramData` value from the environment. If that value is not a plain path on
+  a local drive, it uses `C:\ProgramData`.
+- At startup, the service checks the folder once.
+- The folder must exist, and it must be a folder.
+- The folder and its parent must not be reparse points, such as links or
+  junctions. The folder must have a parent folder, so `C:\` is refused.
+- The folder must be on a fixed local disk. Removable, network, and RAM disks
+  fail the check.
+- SYSTEM or Administrators must own the folder.
+- Every allow entry that grants read or write access must name SYSTEM,
+  Administrators, or a service SID. An inherit-only `CREATOR OWNER` entry is also
+  allowed. Deny entries do not count.
+- If a check fails, or the spool cannot open, the service logs one warning and
+  runs without a spool. It does not stop. The warning text is in
+  [troubleshooting.md](troubleshooting.md#spool-warnings).
+- Restarts and reboots keep the files. The service checks the folder only at
+  startup, so the ACL set at install is what keeps other accounts out later.
+
+### Routing
+
+For each block of frames, the sender thread chooses one destination:
+
+- **Spool.** The receiver is down, the spool holds frames that have not been
+  sent, or the send queue holds 96 or more of its 128 blocks. A slow receiver
+  therefore spills to disk before the queue fills.
+- **Receiver.** The receiver is connected, and the spool is empty or not in use.
+- **Dropped.** No spool is in use and the receiver is down. The frames count in
+  `disconnected_dropped`.
+
+If the spool refuses a block, the frames count in `spool_dropped`. The send
+queue is in memory. It absorbs short delays in the sender thread. It does not
+hold an outage, because the sender writes blocks to the spool as soon as the
+receiver is down.
+
+The spool removes most slow-receiver loss, but not all of it. A socket write that
+stalls for longer than the queue lasts still drops frames, and they count in
+`queue_dropped`. With a spool in use, `queue_dropped` means that the sender was
+blocked by a slow socket write or a slow disk.
+
+### Order
+
+While the spool holds frames, every new block goes to the spool, even when the
+receiver is connected. Frames therefore arrive at the receiver in the order
+they were captured. After the receiver reconnects, the sender replays the
+oldest frames first, in batches of up to 256 KiB. Before each batch, it moves
+the queued blocks to the spool, so the queue does not fill during a replay.
+
+Frames left by an earlier run are replayed first, before any frame from the
+current run. The file `cursor.bin` records the read position. Each run writes
+its frames to new segment files. It never appends to a file from an earlier
+run.
+
+### Size limits and eviction
+
+- `--spool-max-mib` (default 4096) caps the bytes of segment files. When a new
+  block would exceed the cap, the spool deletes its oldest segments until the
+  block fits.
+- `--spool-min-free-mib` (default 2048) keeps free space on the volume. When a
+  new segment starts, and free space is below the floor plus one segment, the
+  spool deletes its oldest segments. It stops when a delete does not raise the
+  free space. If only the newest segment is left, the spool refuses blocks for 10
+  seconds, counts them in `spool_dropped`, and checks again.
+- A segment holds up to 64 MiB, or one eighth of the cap when that is smaller.
+- The oldest data goes first. Each deletion counts in `spool_dropped` and
+  `spool_dropped_bytes`. A leftover segment from an earlier run adds only bytes,
+  because its frame count is not known.
+- The spool logs a warning for each eviction, the first four and then every
+  60th. The log line gives the frames and bytes lost. The counters are complete.
+
+Size the cap from the outage you must cover. [Spool sizing](tuning.md#spool-sizing)
+has the figures.
+
+### Delivery is at most once
+
+- A frame is never sent twice. The sender moves the read position in
+  `cursor.bin` before it writes a batch to the socket. A failure after that
+  point loses the batch. The spool does not send it again.
+- A frame in a failed batch counts in `replayed` and in `disconnected_dropped`.
+- The loss is bounded. A failed connection loses the batch in progress, up to
+  256 KiB, or about 2,500 frames at 103 bytes each. The batch counts in
+  `replayed` and in `disconnected_dropped`. It also loses the block or chunk
+  that was being written, up to 64 KiB or about 636 frames at 103 bytes each,
+  and the frames written before it since the last flush. These count in
+  `disconnected_dropped`. The lab saw one 64 KiB block per outage at 1,000 and
+  50,000 queries per second. Data in the socket send buffer, up to 1 MiB, is
+  lost too, and it is not counted.
+- The spool does not flush data to disk. It protects against a receiver
+  outage, not a power loss. A power loss can lose recent frames.
+
+### Shutdown
+
+At shutdown, the sender routes the queued blocks and seals the active segment.
+The read position in `cursor.bin` is already current, because it is saved before
+each batch. Only the segment is sealed. A backlog stays on disk for the next run.
+The service does not send the backlog before it exits, so the shutdown time does
+not depend on the backlog. The service stops writing data to the receiver 1
+second after shutdown starts. A write in progress and the STOP/FINISH exchange
+can take about 4 seconds more.
+
 ## Startup and shutdown deadlines
 
 - **Startup.** The service-level startup deadline is 10 seconds plus 1 second
   per 16,384 channel slots of `--capacity`, rounded up. The default 24,576 gives
   12 seconds, and 262,144 gives 26 seconds. The previous default 8,192 gave
   11 seconds. It covers the identity checks,
-  argument validation, receiver connection, pool allocation, and capture start.
+  argument validation, receiver connection, spool folder check and open, pool
+  allocation, and capture start.
   Capture start has its own inner 10-second deadline.
 - **SCM progress.** The service reports the startup deadline to the SCM as the
   `START_PENDING` wait hint. It advances the checkpoint after every 16,384
@@ -282,8 +409,11 @@ certificate requirements for the receiver are in
 - **Shutdown.** The shutdown deadline is 10 seconds from the stop request to the
   final report. Inside it, ETW waits up to 5 seconds for `ProcessTrace` to
   return on its own after the session stops. Only then does it close the trace
-  handle to force the worker out. The parser then drains and runs STOP/FINISH
-  with its 2-second deadline.
+  handle to force the worker out. The parser then sends its last block. The sender
+  thread routes the queued blocks, seals the spool segment, and runs STOP/FINISH.
+  It stops writing data to the receiver 1 second after shutdown starts. A write
+  in progress and the STOP/FINISH exchange can take about 4 seconds more, so the
+  sink ends in about 5 seconds at most. See [Spool](#spool).
 - **Expiry.** The process writes Event ID 5 to the Application log and aborts,
   so SCM recovery applies. See
   [Watchdog aborts](troubleshooting.md#watchdog-aborts-or-stop-hangs).

@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `907f728`, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136`, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-03
 
 `etw-dnstap` is a Windows service. It captures DNS Server client query and
 response events from Event Tracing for Windows (ETW). It sends them to a
@@ -13,8 +13,10 @@ response events from Event Tracing for Windows (ETW). It sends them to a
   log.
 - **Has no foreground mode.** `--help` and `--version` print information and
   exit without starting capture.
-- **Writes no files.** Diagnostics go to the Application event log, stderr, and
-  Windows performance counters.
+- **Writes files only for the spool.** Diagnostics go to the Application event
+  log, stderr, and Windows performance counters. The spool keeps frames that the
+  receiver has not accepted yet, in `C:\ProgramData\EtwDnstap\spool` by default.
+  See [Spool](docs/guide/configuration.md#spool).
 
 > **Security.** The transport is TLS 1.2 or 1.3 by default (rustls). The service
 > verifies the receiver certificate with the Windows machine certificate store.
@@ -72,10 +74,12 @@ Run it with `--help` for the options.
 ## How it works
 
 An event moves through five stages: the ETW producer, the intake callback, a
-bounded buffer, the parser, and the TCP sink. The animation shows one cycle.
+bounded buffer, the parser, and the sink. The sink queues frames for a sender
+thread, which writes them to the TCP receiver, or to a disk spool while the
+receiver is down or slow. The animation's last stage shows a receiver outage.
 The [data path](docs/design/data-path.md) reference describes each stage.
 
-![Animation of the data path. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, and releases the slot. The TCP sink sends the frame to the receiver.](docs/assets/pipeline/etw-to-tcp-pipeline.gif)
+![Animation of the data path in six stages. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, releases the slot, and packs the frame into a 64 KiB block. The dnstap-sender thread writes the block to the TCP receiver. In the last stage the receiver is down: frames go to the disk spool, and after the reconnect the spool replays them, oldest first, before newer frames.](docs/assets/pipeline/etw-to-tcp-pipeline.gif)
 
 ## What is captured
 
@@ -103,9 +107,12 @@ The keyword masks, the event-ID filter, and the callback check are in
 ## Known limitations
 
 - **Receiver outage.** Capture continues, and the service reconnects with
-  backoff (250 ms to 30 s). Events that arrive while it is disconnected, and
-  frames buffered at the failure, are dropped and counted in
-  `disconnected_dropped`. They are never resent. See
+  backoff (250 ms to 30 s). While the receiver is down, frames go to the spool
+  when one is in use, and they are sent after the receiver returns, oldest
+  first. Without a spool, frames that arrive while the receiver is down are
+  counted in `disconnected_dropped`. Frames in flight when a connection fails are
+  also counted there, and they are never resent. See
+  [Spool](docs/guide/configuration.md#spool) and
   [Receiver connection](docs/guide/configuration.md#receiver-connection).
 - **DNS Server restart.** The service exits when the DNS Server process changes
   or stops. SCM restarts it, and capture of the new process starts after that.

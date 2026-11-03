@@ -8,6 +8,7 @@ use crate::{
 use std::{
     io::{Read, Write},
     net::TcpListener,
+    path::PathBuf,
     sync::atomic::AtomicU64,
 };
 
@@ -104,6 +105,310 @@ fn pipeline_runs_a_fake_producer_against_a_loopback_receiver() -> Result<()> {
     )?;
     receiver.join().expect("receiver completes")?;
     assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
+    Ok(())
+}
+
+/// Runs the pipeline with the production sink factory, [`build_sink`], against a
+/// loopback receiver that completes the handshake and the STOP/FINISH exchange.
+fn run_with_production_sink(extra: &[&str]) -> Result<Arc<SinkStats>> {
+    run_with_sink_checks(extra, fsinfo::check_spool_dir)
+}
+
+/// [`run_with_production_sink`] with the spool folder check replaced.
+fn run_with_sink_checks(extra: &[&str], check: SpoolCheck) -> Result<Arc<SinkStats>> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    let receiver = thread::spawn(move || -> std::io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let mut control = [0; 42];
+        stream.read_exact(&mut control)?;
+        control[8..12].copy_from_slice(&1_u32.to_be_bytes());
+        stream.write_all(&control)?;
+        stream.read_exact(&mut control)?;
+        let mut stop = [0; 12];
+        stream.read_exact(&mut stop)?;
+        stop[8..12].copy_from_slice(&5_u32.to_be_bytes());
+        stream.write_all(&stop)
+    });
+    let address_text = address.to_string();
+    let mut arguments = vec!["etw-dnstap", "--receiver", &address_text, "--plaintext"];
+    arguments.extend_from_slice(extra);
+    let config = PipelineConfig::try_from(parse_args_from(arguments)?)?;
+    let stats = Arc::new(SinkStats::default());
+    let factory_stats = Arc::clone(&stats);
+    // Shutdown is already requested, so the supervisor exits at once.
+    let stop = AtomicBool::new(true);
+    run_pipeline(
+        &config,
+        |target, _stats| {
+            build_sink_with(
+                &config,
+                target,
+                factory_stats,
+                check,
+                fsinfo::available_bytes,
+            )
+        },
+        |_start| {
+            Ok(FakeProducer {
+                stopped: Arc::new(AtomicBool::new(false)),
+            })
+        },
+        &stop,
+        Lifecycle {
+            progress: || Ok(()),
+            running: || Ok(()),
+            stopping: || Ok(()),
+        },
+        |_name, _sources| None,
+    )?;
+    receiver.join().expect("receiver completes")?;
+    Ok(stats)
+}
+
+#[test]
+fn production_sink_runs_and_stops_without_a_spool() -> Result<()> {
+    let stats = run_with_production_sink(&["--no-spool"])?;
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    Ok(())
+}
+
+#[test]
+fn production_sink_continues_without_a_spool_when_the_folder_is_missing() -> Result<()> {
+    let base = crate::spool::test_support::TestDir::new("missing-spool");
+    let missing = base.path().join("absent");
+    let missing_text = missing.to_string_lossy().into_owned();
+    // The start must not fail: the pipeline runs and stops through the queued sink.
+    let stats = run_with_production_sink(&["--spool-dir", &missing_text])?;
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    assert_eq!(stats.spool_segments.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[test]
+fn an_unusable_spool_folder_logs_one_warning_and_returns_no_spool() {
+    let base = crate::spool::test_support::TestDir::new("unusable-spool");
+    let settings = SpoolSettings {
+        dir: base.path().join("absent"),
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let lines = LogLines::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(lines.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+    let spool = tracing::subscriber::with_default(subscriber, || {
+        open_spool(
+            &settings,
+            &stats,
+            fsinfo::check_spool_dir,
+            fsinfo::available_bytes,
+        )
+    });
+    assert!(spool.is_none());
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    let bytes = lines.0.lock().expect("log buffer").clone();
+    let text = String::from_utf8(bytes).expect("log text");
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("WARN"), "{text}");
+    assert!(text.contains("does not exist"), "{text}");
+    assert!(text.contains("without a spool"), "{text}");
+}
+
+#[test]
+fn a_relative_spool_folder_is_refused() {
+    let settings = SpoolSettings {
+        dir: PathBuf::from("relative-spool"),
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    assert!(
+        open_spool(
+            &settings,
+            &stats,
+            fsinfo::check_spool_dir,
+            fsinfo::available_bytes
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn network_and_device_spool_folders_are_refused_by_the_real_check() {
+    let stats = Arc::new(SinkStats::default());
+    for dir in [
+        r"\\host\share\spool",
+        r"\\?\UNC\host\share\spool",
+        r"\\.\C:\spool",
+        r"\\?\GLOBALROOT\Device\Spool",
+    ] {
+        let settings = SpoolSettings {
+            dir: PathBuf::from(dir),
+            max_mib: 64,
+            min_free_mib: 0,
+        };
+        let spool = open_spool(
+            &settings,
+            &stats,
+            fsinfo::check_spool_dir,
+            fsinfo::available_bytes,
+        );
+        assert!(spool.is_none(), "{dir}");
+    }
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the folder check's function pointer type"
+)]
+fn accept_any_folder(_dir: &Path) -> Result<(), SpoolDirError> {
+    Ok(())
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the free-space probe's function pointer type"
+)]
+fn plenty_of_space(_dir: &Path) -> io::Result<u64> {
+    Ok(1 << 40)
+}
+
+#[test]
+fn a_trusted_folder_opens_the_spool_and_reports_leftovers() {
+    use crate::spool::test_support::{TestDir, numbered, start_bytes};
+    let dir = TestDir::new("leftover-spool");
+    let mut segment = start_bytes();
+    segment.extend_from_slice(&numbered(0..3, 10).0);
+    segment.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 3]);
+    std::fs::write(dir.path().join(format!("seg-{:020}.fstrm", 1)), &segment)
+        .expect("leftover is written");
+    let settings = SpoolSettings {
+        dir: dir.path().to_path_buf(),
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let lines = LogLines::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(lines.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+    let spool = tracing::subscriber::with_default(subscriber, || {
+        open_spool(&settings, &stats, accept_any_folder, plenty_of_space)
+    });
+    assert!(spool.is_some_and(|spool| spool.has_backlog()));
+    assert!(stats.spool_available.load(Ordering::Relaxed));
+    assert_eq!(stats.spool_segments.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        stats.spool_bytes.load(Ordering::Relaxed),
+        segment.len() as u64
+    );
+    let bytes = lines.0.lock().expect("log buffer").clone();
+    let text = String::from_utf8(bytes).expect("log text");
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("spool in use"), "{text}");
+    assert!(text.contains("leftover_segments=1"), "{text}");
+}
+
+#[test]
+fn pipeline_runs_with_a_spool_in_use() -> Result<()> {
+    let dir = crate::spool::test_support::TestDir::new("pipeline-spool");
+    let dir_text = dir.path().to_string_lossy().into_owned();
+    let stats = run_with_sink_checks(&["--spool-dir", &dir_text], accept_any_folder)?;
+    assert!(stats.spool_available.load(Ordering::Relaxed));
+    Ok(())
+}
+
+/// A receiver for the loopback tests: accepts one connection, completes the
+/// handshake, collects data frames until STOP, and acknowledges it.
+fn collecting_receiver(listener: TcpListener) -> thread::JoinHandle<std::io::Result<Vec<Vec<u8>>>> {
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(20)))?;
+        let mut control = [0; 42];
+        stream.read_exact(&mut control)?;
+        control[8..12].copy_from_slice(&1_u32.to_be_bytes());
+        stream.write_all(&control)?;
+        stream.read_exact(&mut control)?;
+        let mut frames = Vec::new();
+        loop {
+            let mut length = [0; 4];
+            stream.read_exact(&mut length)?;
+            let length = u32::from_be_bytes(length) as usize;
+            if length == 0 {
+                // A control frame: its length, then its body (STOP here).
+                let mut control_length = [0; 4];
+                stream.read_exact(&mut control_length)?;
+                let mut body = vec![0; u32::from_be_bytes(control_length) as usize];
+                stream.read_exact(&mut body)?;
+                stream.write_all(&[0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 5])?;
+                return Ok(frames);
+            }
+            let mut payload = vec![0; length];
+            stream.read_exact(&mut payload)?;
+            frames.push(payload);
+        }
+    })
+}
+
+#[test]
+fn frames_are_spooled_while_the_receiver_is_down_and_delivered_after() -> Result<()> {
+    let dir = crate::spool::test_support::TestDir::new("outage-spool");
+    let dir_text = dir.path().to_string_lossy().into_owned();
+    // A port that was just released refuses connections.
+    let address = TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let address_text = address.to_string();
+    let config = PipelineConfig::try_from(parse_args_from([
+        "etw-dnstap",
+        "--receiver",
+        &address_text,
+        "--plaintext",
+        "--spool-dir",
+        &dir_text,
+        "--spool-min-free-mib",
+        "0",
+    ])?)?;
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = build_sink_with(
+        &config,
+        address,
+        Arc::clone(&stats),
+        accept_any_folder,
+        plenty_of_space,
+    )?;
+    assert!(stats.spool_available.load(Ordering::Relaxed));
+    let payloads: Vec<Vec<u8>> = (0..3_u8).map(|n| vec![n; 20]).collect();
+    for payload in &payloads {
+        sink.write_frame(payload)?;
+    }
+    sink.flush()?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while stats.spooled.load(Ordering::Relaxed) < 3 {
+        assert!(Instant::now() < deadline, "frames were not spooled");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(stats.disconnected_dropped.load(Ordering::Relaxed), 0);
+
+    // The receiver comes up; the sender reconnects and replays in order.
+    let collector = collecting_receiver(TcpListener::bind(address)?);
+    while stats.replayed.load(Ordering::Relaxed) < 3 {
+        assert!(Instant::now() < deadline, "frames were not replayed");
+        thread::sleep(Duration::from_millis(5));
+    }
+    sink.finish()?;
+    let delivered = collector.join().expect("receiver completes")?;
+    assert_eq!(delivered, payloads);
+    assert_eq!(stats.disconnected_dropped.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.spool_dropped.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.queue_dropped.load(Ordering::Relaxed), 0);
     Ok(())
 }
 

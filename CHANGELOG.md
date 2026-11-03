@@ -47,6 +47,20 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- A disk spool for DNS frames that the receiver has not accepted yet. It is on
+  by default, in `C:\ProgramData\EtwDnstap\spool`. While the receiver is down or
+  slow, frames are written to segment files there. After the receiver
+  reconnects, the service sends them oldest first, before newer frames. Delivery
+  stays at most once. The folder must exist and pass the service's trust check.
+  Without it, the service logs one warning and runs without a spool. The install
+  and upgrade guides have the folder step. The spool holds DNS data unencrypted,
+  so see [SECURITY.md](SECURITY.md). New options are `--spool-dir`,
+  `--no-spool`, `--spool-max-mib` (default 4096), and `--spool-min-free-mib`
+  (default 2048). A `dnstap-sender` thread now owns the receiver connection and
+  the spool. New performance counters 52 to 60 are appended, and the updated
+  manifest must be registered again on upgrade. `disconnected_dropped` now
+  counts only frames lost in the sink, and the help text of counters 2, 11, and
+  18 changed to match. See [configuration.md](docs/guide/configuration.md#spool).
 - A data-path reference, [docs/design/data-path.md](docs/design/data-path.md), with an
   animation of the five stages from an ETW event to a TCP frame. The sources
   that build the GIF are in `scripts/docs/pipeline-animation/`.
@@ -149,20 +163,20 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   wake-free.
   New counters `etw_buffers_delivered` and `parser_wake_requests`. See
   [the validation record](docs/history/buffer-wake-validation.md). Commit
-  `dde7188`.
+  `7f91264`.
 - Receiver reconnect with jittered backoff (250 ms to 30 s). Each new session
-  repeats the Frame Streams handshake. Frames are never resent. Commit `f0b51f4`.
+  repeats the Frame Streams handshake. Frames are never resent. Commit `b46da39`.
 - Periodic counter logs, `capture stats` and `output stats`, every
   `--stats-interval-seconds` (default 60; 0 disables them), and final
-  `capture stopped` and `output stopped` reports. Commit `f0b51f4`.
+  `capture stopped` and `output stopped` reports. Commit `b46da39`.
 - `disconnected_dropped` counter for frames lost while the receiver is down.
 - Low-rate warning when the received rate exceeds about 1,500 events/s under the
-  default ETW settings. Commit `f0b51f4`.
+  default ETW settings. Commit `b46da39`.
 - Watchdog Event ID 5, written before an abort. The startup deadline is 10 s plus
   1 s per 16,384 channel slots.
 - Negative schema cache: an event whose schema fails to load is rejected without
   repeated TDH calls, and counted in `schema_rejected`.
-- Tests, fuzzing, and CI. Commit `12cce7a` added them. Property tests
+- Tests, fuzzing, and CI. Commit `4603bc8` added them. Property tests
   (`proptest`) check Frame Streams framing, event decoding, and the dnstap
   encoder. Golden byte vectors compare the encoder with the upstream
   `dnstap.proto`. Three libFuzzer targets (`decoder`, `control_frame`, and
@@ -171,17 +185,17 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   and a link check. The 60-second fuzz smoke run and coverage are report-only.
   The `lab.yml` workflow runs the ignored tests that need live ETW, on a
   self-hosted runner.
-- A property test for `copy_record` admission and copying. Commit `14d6e6a`.
+- A property test for `copy_record` admission and copying. Commit `abf6538`.
 - Release PE check in CI, `scripts/ci/verify-pe.ps1`. It fails when a hardening
   flag is missing, when the image has a PDB entry, or when it imports an ASan
-  runtime or the dynamic C or Universal CRT. Commit `47206d4`.
-- An advisory CI job runs `cargo test-release` and `cargo asan`. Commit `47206d4`.
+  runtime or the dynamic C or Universal CRT. Commit `f3f134b`.
+- An advisory CI job runs `cargo test-release` and `cargo asan`. Commit `f3f134b`.
 - Dependabot checks each weekly for the root, `fuzz/`, and `tools/dns-stress/`
-  Cargo workspaces, and for the GitHub Actions pins. Commit `47206d4`.
+  Cargo workspaces, and for the GitHub Actions pins. Commit `f3f134b`.
 - `Grant-EtwDnstapEtwAccess.ps1 -BackupPath` saves the original bytes of each ETW
-  descriptor value it changes. `-Restore` writes them back. Commit `700dd62`.
+  descriptor value it changes. `-Restore` writes them back. Commit `39c4337`.
 - The install guide has a snapshot procedure before a repair or upgrade. Commit
-  `700dd62`.
+  `39c4337`.
 - Internal: a `socket_write` criterion group (`benches/hot_path.rs`) that
   measures the Frame Streams write path, and the Phase 2 results of the code
   review remediation plan in
@@ -191,6 +205,16 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The spool is on by default. An upgrade needs the spool folder
+  and the re-registered counter manifest. See
+  [Add the spool folder](docs/guide/upgrade.md#add-the-spool-folder). With a
+  spool in use, frames from a receiver outage go to the spool and are sent
+  later. They are no longer counted in `disconnected_dropped`. `disconnected_dropped`
+  and counter 18 (Receiver Down Drops) now count only frames lost in the sink.
+  The help text of counters 2, 11, and 18 changed. The two receiver warnings
+  changed text. After a restart, the receiver can get frames that an earlier run
+  left in the spool. To keep the earlier loss handling, run with `--no-spool`.
+  The counter meaning changes still apply with `--no-spool`.
 - Documentation restructure. `docs/guide/install.md` and
   `docs/guide/configuration.md` are split by task. The new guides are
   `build.md`, `receiver.md`, `upgrade.md`, `tuning.md`, and `monitoring.md`.
@@ -300,9 +324,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - Connection loss no longer ends capture. A failed session is reconnected, and
   events are dropped and counted until it is. A receiver that is unreachable at
   startup no longer stops the service; only a protocol failure at startup is
-  fatal. Commit `f0b51f4`.
+  fatal. Commit `b46da39`.
 - The service exits for SCM restart when the DNS Server process ID changes or the
-  DNS Server stops, checked every 5 s. Commit `f0b51f4`.
+  DNS Server stops, checked every 5 s. Commit `b46da39`.
 - Session reclaim no longer requires a matching buffer size. A mismatch logs a
   warning, and the session is reclaimed.
 - Shutdown waits up to 5 s for `ProcessTrace` to return before `CloseTrace`. The
@@ -310,46 +334,46 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   The parser wakes after each successful periodic ETW flush.
 - ETW code is split into `src/etw/` (`session`, `keywords`, `intake`, `schema`,
   `diag`), with `src/event.rs` and `src/sink.rs` as seams for the output sink.
-  Commit `dc9d7e0`. Commit `f0b51f4` added `target` and `instance`; commit
-  `9fce762` removed `instance` with the mutex.
+  Commit `dc9d7e0`. Commit `b46da39` added `target` and `instance`; commit
+  `cb0d290` removed `instance` with the mutex.
 - Lab performance scripts are hardened and consolidated under `scripts/`. Commit
-  `6e62b2e`. This commit does not change runtime behavior.
+  `f1475d8`. This commit does not change runtime behavior.
 - Documentation is reorganized into `docs/guide/`, `docs/design/`,
   `docs/performance/`, `docs/plans/`, and `docs/history/` by status. Commit
-  `54eafae`. See the [documentation index](docs/README.md#layout).
+  `a2ae289`. See the [documentation index](docs/README.md#layout).
 - **Breaking.** The service starts with the delayed automatic start type and a
   dependency on `DNS` (`sc.exe config EtwDnstap start= delayed-auto depend= DNS`).
   Existing installs must be reprovisioned. A stop of `DNS` also stops `EtwDnstap`,
   and it stays stopped until it is started again. See the
-  [start type notes](docs/guide/install.md#start-type). Commit `700dd62`.
+  [start type notes](docs/guide/install.md#start-type). Commit `39c4337`.
 - The session reclaim checks the session GUID as well as the name and shape. A
   leaked session with the same name and another GUID is left alone, and startup
-  fails. Commit `9fce762`.
-- ETW cleanup errors are logged through `tracing`. Commit `9fce762`.
+  fails. Commit `cb0d290`.
+- ETW cleanup errors are logged through `tracing`. Commit `cb0d290`.
 - Release builds trim build-host paths from the executable with
-  `trim-paths = "all"`. This needs nightly Cargo. Commit `77d7c47`.
+  `trim-paths = "all"`. This needs nightly Cargo. Commit `72cc41e`.
 - `windows-sys/Win32_Media` is enabled only by the `diag-timing` feature, so the
-  default build does not link it. Commit `77d7c47`.
+  default build does not link it. Commit `72cc41e`.
 - CI pins `cargo-fuzz` to 0.13.2. Dependabot does not update that pin. Commit
-  `47206d4`.
+  `f3f134b`.
 - CI pins `cargo-deny` 0.20.2 and `cargo-llvm-cov` 0.9.1 like `cargo-fuzz`, and
-  checks the formatting of `fuzz/`. Commit `2fcc4a2`.
+  checks the formatting of `fuzz/`. Commit `a691c10`.
 - Finished-campaign lab tools moved to `scripts/performance/archive/`: the
   service-stop config and pcap tools, the ring-fix and JSONL-metrics analyzers
   (with their tests), `count-parser-ramp-diagnostic.py` and
   `windows-control.ps1`. `LabCommon.psm1` no longer exports
   `Get-LabGuestPrelude`, `Get-LabCredential` or `Assert-LabId`. Commits
-  `63dd477` and `015d385`.
+  `18a29a9` and `aa7e199`.
 - Documentation: the single-pass decoder plan, the live-load plan, the
   packet-flow diagram and the ArrayQueue capacity experiment moved to
   `docs/history/`. A current decoder contract is in
-  [single-pass-decoder.md](docs/design/single-pass-decoder.md). Commit `40a6b65`.
+  [single-pass-decoder.md](docs/design/single-pass-decoder.md). Commit `6dac61f`.
 - CI also runs the archived analyzer tests,
-  `scripts/performance/archive/test_archived_analyzers.py`. Commit `21e31c0`.
+  `scripts/performance/archive/test_archived_analyzers.py`. Commit `d538e35`.
 - Documentation: the cleanup validation record is in
   [cleanup-validation.md](docs/history/cleanup-validation.md), and the cleanup
   plan moved to `docs/history/`. The decoder contract now states the `Port`
-  byte order, cache, and epoch rules correctly. Commit `21e31c0`.
+  byte order, cache, and epoch rules correctly. Commit `d538e35`.
 - The release profile uses fat LTO and one codegen unit. Parse and encode are
   about 10% faster, the release image is 7.7% smaller, and release builds take
   about 50% longer. In the lab, the service with all four Phase 2 changes used
@@ -387,7 +411,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   `etw_flush_errors`, and `etw_flush_max_us` counters. The `capture started`
   line loses the `etw_flush_ms` field. The `ETW session flush failed` and
   `ETW session flush took N ms` warnings are gone. The reason is the buffer
-  wake in commit `dde7188`. The parser drains each ETW delivery while it
+  wake in commit `7f91264`. The parser drains each ETW delivery while it
   arrives. With the buffer-wake build, all defaults, and no flush, the lab
   measured 0 ring loss at 1,000 and 5,000 QPS and 0.32% at 10,000 QPS. It
   measured 0 ring drops at 50,000 QPS with a small `etw_lost`. See
@@ -413,14 +437,14 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   schema compiles, so its output does not change. Each parser also drops a
   64 KiB packet buffer and a 512-byte property buffer. See
   [the removal plan](docs/history/tdh-fallback-removal-plan.md). Commit
-  `69db97d`.
+  `ee94de6`.
 - **Breaking.** The single-instance guard, a named mutex
   `Global\EtwDnstap-<session>`. It is removed, and no mutex is created. Only
   the SCM starts one process for the service, and the identity check refuses a
   process that does not run as this service. Existing installs must be
-  reprovisioned. Commit `9fce762`.
+  reprovisioned. Commit `cb0d290`.
 - The `rust-version` field in `Cargo.toml`. The build needs the pinned nightly,
-  so no minimum stable version applies. Commit `47206d4`.
+  so no minimum stable version applies. Commit `f3f134b`.
 - The `--output`/`-o`, `--max-output-bytes`, and `--metrics` options and the
   service JSONL metrics writer. Arguments that use them now fail command-line
   parsing. Remove them from the binary path before you start this build. See
@@ -430,7 +454,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - Five unreferenced archived lab scripts, `Test-LabAnswer`,
   `lab_config.receiver_endpoint()`, the unread `lab.json` key
   `windows_vm.install_dir`, and the PyYAML requirement (only an archived tool
-  used it). Commits `63dd477` and `015d385`. Commit `21e31c0` deleted the
+  used it). Commits `18a29a9` and `aa7e199`. Commit `d538e35` deleted the
   unused `Assert-LabId` function.
 
 ### Fixed
@@ -447,16 +471,16 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   error now run it through `cmd.exe /c`.
 - `Grant-EtwDnstapEtwAccess.ps1 -BackupPath` failed on Windows PowerShell 5.1
   with `Argument types do not match`, before it changed anything. It now writes
-  the backup. Commit `d721569`.
+  the backup. Commit `50fb489`.
 - `ubuntu-parser-ramp-control.py`: recursive monitoring raised `NameError`
   because `monitor()` read a variable that only `finish()` defined. Commit
-  `015d385`.
+  `aa7e199`.
 
 ### Security
 
 - DNS process filter: an ETW `EVENT_FILTER_TYPE_PID` filter admits only the DNS
   Server process, and the callback checks the process ID again. Records from
-  other processes count as `foreign_pid_rejected`. Commit `f0b51f4`.
+  other processes count as `foreign_pid_rejected`. Commit `b46da39`.
 - The service no longer runs as LocalSystem. It runs as LocalService with a
   restricted service SID and only `SeChangeNotifyPrivilege`. The profile was
   validated on one lab DNS Server (Windows Server 2025, build 26100) on
@@ -467,26 +491,26 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   sdset`. SYSTEM and Administrators control the service. Interactive and
   service logons may query it, but they may not start, stop, or configure it.
   Network and batch logons get no access. Existing installs must be
-  reprovisioned. Commits `700dd62` and `b8d0427`.
+  reprovisioned. Commits `39c4337` and `3f15814`.
 - Backup and restore folders under `ProgramData\EtwDnstap` must be owned by
   SYSTEM or Administrators, must not be junctions, and must not let anyone else
   write. The grant script refuses otherwise, never reuses a backup folder, and
   validates `changes.json` before `-Restore` applies it. `-Restore` skips values
   that changed after the run unless `-Force` is given. This closes a local
-  privilege escalation found in review before release. Commit `b8d0427`.
+  privilege escalation found in review before release. Commit `3f15814`.
 - The DNS Server process ID is checked every 5 s. Windows can reuse that process
   ID after the DNS Server exits. A process that gets the same ID before the next
   check could inject records. The service cannot hold the DNS Server process
   open, because the restricted token is denied `OpenProcess` in the lab. See
-  [SECURITY.md](SECURITY.md). Commit `5f610f5`.
+  [SECURITY.md](SECURITY.md). Commit `39a5ce4`.
 - The ETW callback context requires the DNS Server process ID. The earlier
   default, which accepted any process, could not be reached from the service,
-  and it is removed. Commit `0865e19`.
+  and it is removed. Commit `9146740`.
 
-## Commit log through `dde7188`
+## Commit log through `7f91264`
 
 This is not a release. It lists every commit on `main` from the first commit
-through `dde7188`, from `git log`, grouped by category. Commits after `9172f2d`
+through `7f91264`, from `git log`, grouped by category. Commits after `9172f2d`
 are in the last subsection. Each entry is summarized
 from its commit subject. Per-commit contents were not reviewed for this file.
 The removal of the CLI options is recorded under `[Unreleased]`.
@@ -514,50 +538,50 @@ The removal of the CLI options is recorded under `[Unreleased]`.
 Added:
 
 - `dc9d7e0`, Split ETW module and add pipeline seams for sinks and producers.
-- `8588619`, Restructure documentation and add project files.
-- `12cce7a`, Add property tests, fuzz targets, golden vectors and CI.
-- `9ab6dad`, Add skills-driven evaluation plan.
-- `14d6e6a`, Add a property test for copy_record admission and copying.
-- `8c79f69`, Add the obsolete and legacy code cleanup plan.
-- `dde7188`, Wake the parser once per delivered ETW buffer.
+- `253df79`, Restructure documentation and add project files.
+- `4603bc8`, Add property tests, fuzz targets, golden vectors and CI.
+- `65b6e7f`, Add skills-driven evaluation plan.
+- `abf6538`, Add a property test for copy_record admission and copying.
+- `26cd08d`, Add the obsolete and legacy code cleanup plan.
+- `7f91264`, Wake the parser once per delivered ETW buffer.
 
 Changed:
 
-- `6e62b2e`, Harden and consolidate lab performance scripts.
-- `f0b51f4`, Reconnect receiver, filter DNS PID, and run as virtual account.
-- `54eafae`, Reorganize docs into guide, design, performance, plans and history.
-- `b7f23ba`, Document reconnect, PID filter, virtual account and runtime stats.
-- `df6fd9c`, Reconcile CHANGELOG, guides and security notes with the code.
-- `47206d4`, Verify the release PE in CI and widen supply-chain checks.
-- `f3b4a6b`, Document the evaluation changes; move the executed plan to history.
-- `efb47af`, Record the backup hardening and narrower service DACL in CHANGELOG
+- `f1475d8`, Harden and consolidate lab performance scripts.
+- `b46da39`, Reconnect receiver, filter DNS PID, and run as virtual account.
+- `a2ae289`, Reorganize docs into guide, design, performance, plans and history.
+- `ca1fe2d`, Document reconnect, PID filter, virtual account and runtime stats.
+- `b70702a`, Reconcile CHANGELOG, guides and security notes with the code.
+- `f3f134b`, Verify the release PE in CI and widen supply-chain checks.
+- `c988b32`, Document the evaluation changes; move the executed plan to history.
+- `685f869`, Record the backup hardening and narrower service DACL in CHANGELOG
   and SECURITY.
-- `2fcc4a2`, Remove manifest keys that repeat Cargo defaults; pin CI tools.
-- `63dd477`, Remove unreferenced lab scripts and unused LabCommon exports.
-- `015d385`, Archive finished-campaign Python tools; fix parser-ramp monitor.
-- `0865e19`, Rename ring-era names, share test scaffolding, require the DNS PID.
-- `40a6b65`, Move executed plans and retired designs to history; fix doc status.
-- `21e31c0`, Record the cleanup validation; fix review findings; move the plan
+- `a691c10`, Remove manifest keys that repeat Cargo defaults; pin CI tools.
+- `18a29a9`, Remove unreferenced lab scripts and unused LabCommon exports.
+- `aa7e199`, Archive finished-campaign Python tools; fix parser-ramp monitor.
+- `9146740`, Rename ring-era names, share test scaffolding, require the DNS PID.
+- `6dac61f`, Move executed plans and retired designs to history; fix doc status.
+- `d538e35`, Record the cleanup validation; fix review findings; move the plan
   to history.
 
 Removed:
 
-- `69db97d`, Remove the per-event TDH fallback reader.
+- `ee94de6`, Remove the per-event TDH fallback reader.
 
 Fixed:
 
-- `d721569`, Record lab validation of the evaluation fixes; fix grant script on
+- `50fb489`, Record lab validation of the evaluation fixes; fix grant script on
   PS 5.1.
-- `987ec0f`, Make the log-file reclaim tests reach the log-file check.
-- `78d1ca0`, Make verify-pe.ps1 fail when it parses nothing.
+- `fc4e33c`, Make the log-file reclaim tests reach the log-file check.
+- `9837085`, Make verify-pe.ps1 fail when it parses nothing.
 
 Security:
 
-- `6718863`, Run as LocalService with a restricted service SID.
-- `e8560ac`, Scope the ETW grant to the service's own session GUID.
-- `9fce762`, Drop the global instance mutex, pin the DNS process, check session
+- `1a54272`, Run as LocalService with a restricted service SID.
+- `87c8d6d`, Scope the ETW grant to the service's own session GUID.
+- `cb0d290`, Drop the global instance mutex, pin the DNS process, check session
   GUID.
-- `700dd62`, Back up and restore ETW and service state; pin the service DACL.
-- `77d7c47`, Trim build-host paths from the release binary; narrow windows-sys.
-- `5f610f5`, Remove the DNS process handle; document the PID-reuse window.
-- `b8d0427`, Close the backup-folder privilege escalation; guard restore.
+- `39c4337`, Back up and restore ETW and service state; pin the service DACL.
+- `72cc41e`, Trim build-host paths from the release binary; narrow windows-sys.
+- `39a5ce4`, Remove the DNS process handle; document the PID-reuse window.
+- `3f15814`, Close the backup-folder privilege escalation; guard restore.

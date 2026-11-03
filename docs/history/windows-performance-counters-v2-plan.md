@@ -1,6 +1,6 @@
 # Windows performance counters (V2) plan
 
-> **Status:** Historical (executed and lab-validated 2026-11-01) · **Evidence dated:** 2026-11-01 · **Commit:** planned on top of `7ae60a6` · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed and lab-validated 2026-11-01) · **Evidence dated:** 2026-11-01 · **Commit:** planned on top of `7c62552` · **Reviewed:** 2026-11-01
 
 This plan adds a Windows Performance Counters V2 provider to the service. It
 replaces the earlier nine-counter proposal in this file. That proposal predated

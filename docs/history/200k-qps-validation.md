@@ -1,6 +1,6 @@
 # 200,000 QPS validation
 
-> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time) · **Commit:** `fcecb56` (lab build) · **Reviewed:** 2026-11-01
+> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time) · **Commit:** `54067ac` (lab build) · **Reviewed:** 2026-11-01
 
 This record covers two lab runs at 200,000 queries per second (QPS) with the
 largest ETW buffer size and the largest channel. It records how many ETW
@@ -16,10 +16,10 @@ The raw run data is lab evidence. It is not in the repository.
 | Item | Value |
 | --- | --- |
 | Guest | DNSTap-WS2025: 6 vCPUs, 4 GiB, Windows Server 2025 (10.0.26100). Rebooted before the runs. |
-| Service build | `fcecb56`, release, SHA-256 `0C3673E0801FD5431B2F44BF16734A4351DEA88E46C1BF642F7105593E486DCC` |
+| Service build | `54067ac`, release, SHA-256 `0C3673E0801FD5431B2F44BF16734A4351DEA88E46C1BF642F7105593E486DCC` |
 | Service options | `--plaintext --etw-buffer-kib 128 --etw-max-buffers 256 --capacity 262144 --stats-interval-seconds 5`. The other options were the defaults. |
 | Receiver | DNS-collector 3.2.3, plaintext. Its output went to the `devnull` logger, and its stdout and stderr went to null. It wrote nothing to disk. |
-| Client | `dns-stress` at `6d49577` on the host. Authoritative load, 16 threads, 1,024 in flight per thread, `--qps 200000`, 50 s. |
+| Client | `dns-stress` at `2073411` on the host. Authoritative load, 16 threads, 1,024 in flight per thread, `--qps 200000`, 50 s. |
 
 The service restarted before each run, so its counters started at zero. A
 sampler in the guest read the ETW session every 250 ms with

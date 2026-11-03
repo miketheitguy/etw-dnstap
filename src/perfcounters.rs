@@ -86,6 +86,7 @@ pub(crate) struct CounterValues {
     pub(crate) etw_buffers_in_use: u64,
     pub(crate) etw_buffers_maximum: u64,
     pub(crate) receiver_connected: u64,
+    pub(crate) spool_available: u64,
 }
 
 /// Reads the counters into the values to publish. Loads are relaxed and not
@@ -117,6 +118,7 @@ pub(crate) fn snapshot(
         etw_buffers_in_use: etw_buffers_allocated.saturating_sub(load(&capture.etw_buffers_free)),
         etw_buffers_maximum: load(&capture.etw_buffers_maximum),
         receiver_connected: u64::from(sink.connected.load(Ordering::Relaxed)),
+        spool_available: u64::from(sink.spool_available.load(Ordering::Relaxed)),
     }
 }
 
@@ -157,7 +159,7 @@ impl CounterDef {
     }
 }
 
-const COUNTER_COUNT: usize = 27;
+const COUNTER_COUNT: usize = 36;
 
 static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     // Throughput rates.
@@ -245,6 +247,36 @@ static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     }),
     by_ref(51, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_ADVANCED, |s| {
         &s.sink.reconnects
+    }),
+    // Send queue and spool. Appended after the receiver counters; the IDs
+    // above are frozen. The two gauges are references to their atomics, and
+    // the availability flag is set on each tick like `connected`.
+    by_ref(52, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.queue_dropped
+    }),
+    by_ref(53, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.spooled
+    }),
+    by_ref(54, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.replayed
+    }),
+    by_ref(55, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.spool_dropped
+    }),
+    by_ref(56, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_ADVANCED, |s| {
+        &s.sink.spool_dropped_bytes
+    }),
+    by_ref(57, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.spool_errors
+    }),
+    by_ref(58, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.spool_bytes
+    }),
+    by_ref(59, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_ADVANCED, |s| {
+        &s.sink.spool_segments
+    }),
+    by_value(60, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |v| {
+        v.spool_available
     }),
 ];
 
@@ -531,11 +563,12 @@ mod tests {
     const MANIFEST: &str = include_str!("../packaging/perfcounters/etw-dnstap.man");
 
     /// The counters that `PerfLib` reads through a pointer.
-    const REFERENCE_IDS: [u32; 17] = [
-        1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 32, 51,
+    const REFERENCE_IDS: [u32; 25] = [
+        1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 32, 51, 52, 53, 54, 55, 56, 57,
+        58, 59,
     ];
     /// The counters that the supervisor sets on each tick.
-    const VALUE_IDS: [u32; 10] = [30, 31, 33, 34, 40, 41, 42, 43, 44, 50];
+    const VALUE_IDS: [u32; 11] = [30, 31, 33, 34, 40, 41, 42, 43, 44, 50, 60];
 
     #[test]
     fn counter_types_match_their_winperf_definitions() {
@@ -658,6 +691,25 @@ mod tests {
     }
 
     #[test]
+    fn spool_available_is_zero_or_one() {
+        let (capture, parse, sink) = counters();
+        assert_eq!(snapshot(&capture, &parse, &sink, 1024).spool_available, 0);
+        sink.spool_available.store(true, Ordering::Relaxed);
+        assert_eq!(snapshot(&capture, &parse, &sink, 1024).spool_available, 1);
+    }
+
+    #[test]
+    fn spool_counters_are_appended_after_the_receiver_counters() {
+        // The first release's IDs are frozen; the spool counters follow the last
+        // of them in table order and in ID order.
+        let ids: Vec<u32> = COUNTERS.iter().map(|def| def.id).collect();
+        let position = ids.iter().position(|&id| id == 51).expect("counter 51");
+        assert_eq!(ids[position + 1..], [52, 53, 54, 55, 56, 57, 58, 59, 60]);
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(COUNTER_COUNT, 36);
+    }
+
+    #[test]
     fn the_table_selects_the_documented_value_sources() {
         let values = CounterValues {
             channel_depth: 30,
@@ -666,6 +718,7 @@ mod tests {
             etw_buffers_in_use: 41,
             etw_buffers_maximum: 42,
             receiver_connected: 50,
+            spool_available: 60,
         };
         let read = |id: u32| {
             let def = COUNTERS
@@ -677,7 +730,10 @@ mod tests {
             };
             value(&values)
         };
-        assert_eq!([30, 31, 40, 41, 42, 50].map(read), [30, 31, 40, 41, 42, 50]);
+        assert_eq!(
+            [30, 31, 40, 41, 42, 50, 60].map(read),
+            [30, 31, 40, 41, 42, 50, 60]
+        );
         // A fraction is the gauge over its base.
         assert_eq!((read(33), read(34)), (30, 31));
         assert_eq!((read(43), read(44)), (41, 42));
@@ -715,6 +771,14 @@ mod tests {
             (21, sink.disconnects.as_ptr()),
             (32, parse.queue_depth_max.as_ptr()),
             (51, sink.reconnects.as_ptr()),
+            (52, sink.queue_dropped.as_ptr()),
+            (53, sink.spooled.as_ptr()),
+            (54, sink.replayed.as_ptr()),
+            (55, sink.spool_dropped.as_ptr()),
+            (56, sink.spool_dropped_bytes.as_ptr()),
+            (57, sink.spool_errors.as_ptr()),
+            (58, sink.spool_bytes.as_ptr()),
+            (59, sink.spool_segments.as_ptr()),
         ];
         assert_eq!(expected.len(), REFERENCE_IDS.len());
         for (id, pointer) in expected {
@@ -979,9 +1043,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // The set has a name and a description; 25 displayed counters have both,
+        // The set has a name and a description; 34 displayed counters have both,
         // and the 2 base counters have a name only.
-        assert_eq!(checked, 2 + 25 * 2 + 2);
+        assert_eq!(checked, 2 + 34 * 2 + 2);
     }
 
     #[test]

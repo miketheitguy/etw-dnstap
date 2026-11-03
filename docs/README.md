@@ -1,6 +1,6 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` for the layout, conventions, and file list · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` for the layout, conventions, and file list · **Reviewed:** 2026-11-03
 
 This index lists every document in `docs/`. Each document starts with a status
 block that gives its status, evidence date, commit, and review date. This page
@@ -96,14 +96,14 @@ These documents in [`design/`](design/) help maintainers.
 
 ### Diagram note
 
-The diagram's labels match `main` at `54eafae`. They show the `src/etw/` module split, the
+The diagram's labels match `main` at `a2ae289`. They show the `src/etw/` module split, the
 bounded crossbeam channel with pooled leases, the DNS process filter, the
 LocalService restricted-token gate, and the reconnecting network sink. Its box
 positions are from the October 28, 2026 layout.
 
 It does not show the single-pass decoder (`etw/decode.rs`) and its schema
-rejection rule (`69db97d`), or the ETW buffer callback that wakes the parser
-(`dde7188`). For the current design, use
+rejection rule (`ee94de6`), or the ETW buffer callback that wakes the parser
+(`7f91264`). For the current design, use
 [Data path](design/data-path.md),
 [Pooled ETW intake](design/pooled-intake.md), and
 [Single-pass decoder](design/single-pass-decoder.md).
@@ -137,7 +137,7 @@ it is executed.
 | Document | State | Contents |
 | --- | --- | --- |
 | [Code review remediation plan](plans/code-review-remediation-plan.md) | Proposed. In progress on the `plan/code-review-remediation` branch | Findings of the 2026-11-01 Rust code review and the phased remediation |
-| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed. Regenerate before the next campaign | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `f0b51f4` |
+| [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed. Regenerate before the next campaign | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `b46da39` |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | Parallel parsing and TCP threading. Its fail-fast contract, timed park, and fallback decoding are out of date |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed | Diagnose the bottleneck and test parallel workers. P0 and diagnostic runs recorded Oct 31, 2026. P1a is next. P4 is deferred |
 
@@ -159,6 +159,7 @@ otherwise.
 | [ETW buffer wake validation](history/buffer-wake-validation.md) | Cause of the 1 s burst loss, wake options compared, lab results for the per-buffer wake |
 | [ETW flush removal validation](history/flush-removal-validation.md) | Lab results without the explicit flush at about 1,000 to 50,000 achieved QPS |
 | [200,000 QPS validation](history/200k-qps-validation.md) | Two runs with 128 KiB buffers and a 262,144-slot channel |
+| [TCP sink spool lab validation](history/tcp-sink-spool-lab-validation.md) | Receiver outages at 1,000 and 50,000 QPS, restart with leftovers, the spool folder grant under the restricted token |
 | [Live load validation plan](history/live-load-validation-plan.md) | Stages L1 to L5. The pending L4 action was not done. Its premise that counters reach only stderr is out of date |
 
 ### Performance campaigns
@@ -197,7 +198,7 @@ otherwise.
 | [Parser and encoder optimization plan](history/parser-encoder-optimization-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md). Reusable packet-vector implementation |
 | [Direct PacketData encoding plan](history/direct-packet-encoding-plan.md) | Superseded by [single-pass decoding](design/single-pass-decoder.md). Direct encoding without a packet vector |
 | [Single-pass decoder: implementation plan](history/single-pass-decoder-plan.md) | Staged plan, gates, and completion record. The current contract is [Single-pass decoder](design/single-pass-decoder.md) |
-| [TDH fallback removal](history/tdh-fallback-removal-plan.md) | Removal of the per-event TDH reader, executed in `69db97d` |
+| [TDH fallback removal](history/tdh-fallback-removal-plan.md) | Removal of the per-event TDH reader, executed in `ee94de6` |
 | [Combined parser and writer WPR plan](history/parser-writer-wpr-plan.md) | WPR experiment. Its `/DEBUG:NONE` setting is in `.cargo/config.toml` |
 | [Combined parser and writer WPR results](history/parser-writer-wpr-results.md) | CPU and blocking results |
 | [Schema-cache lookup WPR comparison](history/schema-lookup-wpr-results.md) | Schema-cache comparison |
@@ -223,6 +224,7 @@ otherwise.
 
 | Document | Contents |
 | --- | --- |
+| [TCP sink spool plan](history/tcp-sink-spool-plan.md) | Disk spool for the TCP sink, with a sender thread: decisions, design, stage records, and the completion record. Executed and lab-validated 2026-11-03 |
 | [TLS receiver plan](history/tls-receiver-plan.md) | TLS 1.2 and 1.3 for the receiver connection, with the decisions taken during implementation. Executed 2026-11-01 |
 | [Windows V2 performance counter plan](history/windows-performance-counters-v2-plan.md) | The `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. Lab-validated 2026-11-01 |
 | [ETW minimum buffers plan](history/etw-min-buffers-plan.md) | The `--etw-min-buffers` option. Lab-validated 2026-11-01 |
@@ -234,7 +236,12 @@ Records keep their recorded command text and source paths. Where a lab script
 or source file moved, the record has a short note that names the new path. See
 the
 [script moves and renames](../scripts/performance/README.md#file-moves-and-renames)
-for commit `6e62b2e`. Commit `dc9d7e0` split the ETW code into `src/etw/`.
+for commit `f1475d8`. Commit `dc9d7e0` split the ETW code into `src/etw/`.
+
+The 2026-11-03 history rewrite changed every commit hash from `253df79` (old
+`8588619`) onward. The [commit hash mapping](history/commit-hash-mapping.md)
+lists each old hash with the new one. Files under `datasets/` keep the old
+hashes.
 
 ## Instrumentation compatibility note
 

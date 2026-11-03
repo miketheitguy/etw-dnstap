@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
 
 Use this guide to install the service on a DNS Server host. It covers the
 service identity, the ETW access grant, the SCM registration, recovery, and the
@@ -121,7 +121,9 @@ icacls.exe $installDirectory /inheritance:r /grant:r `
 
 Only SYSTEM and Administrators keep write access. Ordinary users must not be
 able to replace the executable. The service SID gets read and execute in
-step 3. No write ACE is needed: the service writes no files.
+step 3. No write ACE is needed here. The service writes no files in this
+folder. Its spool folder is separate, and [Create the spool folder](#create-the-spool-folder)
+sets it up.
 
 ### 3. Copy the files, register the service and counters, and grant read and execute
 
@@ -143,6 +145,12 @@ out so the value is visible. Add other options from
 by default, so complete the [receiver certificate step](receiver.md#receiver-certificate)
 first. To send plaintext to a receiver on a trusted network, add `--plaintext`
 to the string instead.
+
+The spool is on by default. The service uses the folder from
+[Create the spool folder](#create-the-spool-folder). Step 3 does not create that
+folder. Until the folder exists and passes the service's checks, the service
+logs one warning and runs without a spool. To run without a spool, add
+`--no-spool` to the same string.
 
 The name `NT SERVICE\EtwDnstap` resolves once the service exists, so the
 `icacls` grant comes after `New-Service`. Step 2 removed inherited ACEs. Without
@@ -220,6 +228,122 @@ Run this block in the same PowerShell session as the commands that follow. Then
 `$backup = New-ProtectedBackupFolder` creates a snapshot folder and returns its
 path. The grant script applies the same checks to its own backup folders, and it
 never reuses a folder that exists.
+
+### Create the spool folder
+
+The spool is on by default. The service keeps frames that the receiver has not
+accepted yet in segment files in the spool folder. The default folder is
+`C:\ProgramData\EtwDnstap\spool`. The service uses the folder only when it
+exists and passes the service's own checks. The service never creates the
+folder. Run this step after step 3. The grant below names the service SID that
+step 3 creates.
+
+The service trusts only a folder that an administrator set up with a known owner
+and ACL. A folder the service created would be owned by the service account, which fails
+the owner check, and the service has no right to create it there. This step sets
+the owner and the ACL on purpose, and it checks them. It also stops
+if the folder already exists, so an existing folder is never reused without a
+look. Inspect such a folder first. Do not take ownership of it.
+
+Define `Test-SpoolFolder` in the same PowerShell session as the snapshot
+functions. It replaces `Test-ProtectedFolder` for this folder.
+
+```powershell
+function Test-SpoolFolder {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "'$Path' is a reparse point. Inspect it. Do not use it."
+    }
+    Test-ProtectedFolder (Split-Path -Parent $Path)
+    $acl = Get-Acl -LiteralPath $Path
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trustedSids -notcontains $owner) {
+        throw "'$Path' is owned by $owner. Inspect it. Do not use it."
+    }
+    $serviceSid = (New-Object Security.Principal.NTAccount 'NT SERVICE\EtwDnstap').
+        Translate([Security.Principal.SecurityIdentifier]).Value
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    $extra = @($rules | Where-Object {
+            $trustedSids -notcontains $_.IdentityReference.Value -and
+            $_.IdentityReference.Value -ne $serviceSid
+        })
+    if ($extra.Count -gt 0) {
+        throw "'$Path' has an ACE for $($extra[0].IdentityReference). Inspect it. Do not use it."
+    }
+    # The service gets two entries: the folder itself (read and execute, and
+    # write, but not delete), and Modify on the contents only.
+    $service = @($rules | Where-Object { $_.IdentityReference.Value -eq $serviceSid })
+    $own = @($service | Where-Object {
+            $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None
+        })
+    $contents = @($service | Where-Object {
+            $_.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None
+        })
+    $modify = [Security.AccessControl.FileSystemRights]::Modify -bor
+        [Security.AccessControl.FileSystemRights]::Synchronize
+    $container = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $inheritOnly = [Security.AccessControl.PropagationFlags]::InheritOnly
+    $ownRights = if ($own.Count -eq 1) { $own[0].FileSystemRights } else { 0 }
+    if ($service.Count -ne 2 -or $own.Count -ne 1 -or $contents.Count -ne 1 -or
+        ($ownRights -band [Security.AccessControl.FileSystemRights]::Delete) -ne 0 -or
+        ($ownRights -band [Security.AccessControl.FileSystemRights]::WriteData) -eq 0 -or
+        $contents[0].InheritanceFlags -ne $container -or
+        $contents[0].PropagationFlags -ne $inheritOnly -or
+        $contents[0].FileSystemRights -ne $modify) {
+        throw "'$Path' does not give the service the expected rights. Inspect it."
+    }
+    'Spool folder: as expected.'
+}
+```
+
+Then create the folder. Grant the service SID write and read and execute on the
+folder itself, and Modify on the contents only. The service can then create and
+delete segment files, but it cannot delete the folder:
+
+```powershell
+$spoolParent = Join-Path $env:ProgramData 'EtwDnstap'
+$spoolDirectory = Join-Path $spoolParent 'spool'
+if (-not (Test-Path -LiteralPath $spoolParent)) { New-ProtectedFolder $spoolParent }
+Test-ProtectedFolder $spoolParent
+New-ProtectedFolder $spoolDirectory
+icacls.exe $spoolDirectory /grant 'NT SERVICE\EtwDnstap:(RX,W)' | Out-Null
+icacls.exe $spoolDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(IO)(M)' | Out-Null
+Test-SpoolFolder $spoolDirectory
+icacls.exe $spoolDirectory
+```
+
+`New-ProtectedFolder` checks the folder before the grant, so it passes. Do not
+run `Test-ProtectedFolder` on the spool folder after the grant. It allows only
+SYSTEM and Administrators, so it rejects the service's entries. Use
+`Test-SpoolFolder`, which also runs `Test-ProtectedFolder` on the parent. The
+grants cover this folder only. They do not change the parent folder or the
+install folder.
+
+The last `icacls.exe` command should list four entries, and none has `(I)`:
+
+- `NT SERVICE\EtwDnstap` with write and read and execute, and with no `(OI)` or
+  `(CI)` flags. This entry applies to the folder only.
+- `NT SERVICE\EtwDnstap:(OI)(CI)(IO)(M)`. This entry applies to the contents only.
+- `BUILTIN\Administrators:(OI)(CI)(F)`
+- `NT AUTHORITY\SYSTEM:(OI)(CI)(F)`
+
+The service runs a check of its own at startup. It refuses the spool, logs one
+warning, and runs without a spool if any of these is false. The service's check
+is looser than `Test-SpoolFolder`, which allows only the three accounts above:
+
+- The spool folder exists and is a folder. Its parent is not a reparse point,
+  and the folder is not one either. Links and junctions are refused.
+- The folder is on a fixed local disk. The path starts with a drive letter. It
+  has no `.` or `..` part. Network and device paths are refused.
+- SYSTEM or Administrators owns the folder.
+- An allow entry grants read or write access to an account other than SYSTEM,
+  Administrators, or a service SID. An inherit-only `CREATOR OWNER` entry is
+  allowed. Deny entries do not count.
+
+The `icacls.exe` output is the check for other accounts. Run
+`Test-SpoolFolder $spoolDirectory` again after any change to the folder.
 
 ### 4. Set the service identity, privileges, ETW access, and event source
 
@@ -443,8 +567,14 @@ sc.exe query EtwDnstap
 ```
 
 The service should reach `STOPPED` with exit code 0. Check that the collector
-received the expected records. The service writes no capture, metrics, or log
-files. Retention is the collector's job.
+received the expected records. The service writes no capture or metrics files.
+Retention is the collector's job for the records it received.
+
+Frames that the receiver did not accept stay in the spool folder. A backlog is
+not sent before the service exits, so it waits on disk for the next start. Check
+`spool_segments` in the final `output stopped` line. It shows how many segment
+files remain. The folder holds DNS data. Delete it when you no longer need the
+frames. See [Uninstall](uninstall.md#7-delete-the-spool-folder).
 
 ### Validation checklist for the LocalService restricted profile
 
@@ -484,6 +614,10 @@ marked *lab* passed on build 26100. See
   names, and `typeperf "\EtwDnstap(*)\*" -sc 5` shows values while the service
   runs. The totals match the `capture stopped` counters, and the instance is gone
   after the service stops.
+- The spool. With the folder from [Create the spool folder](#create-the-spool-folder),
+  stop the collector for a short time under DNS traffic. `spool_segments` and
+  `spooled` rise while `receiver_connected` is false. After the collector
+  returns, `replayed` rises and `spool_bytes` falls. The lab validation has not covered this check.
 
 
 ## Next steps

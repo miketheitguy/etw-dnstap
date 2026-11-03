@@ -1,9 +1,9 @@
 # Tune capture for load
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
 
 Use this guide to choose `--etw-*` and `--capacity` values for the query rate
-you expect. The option list is in the
+you expect, and `--spool-max-mib` for the outage you must cover. The option list is in the
 [configuration reference](configuration.md#options). The counters that show loss
 are in [Log events and counters](monitoring.md).
 
@@ -287,6 +287,51 @@ results above stay as measured.
 
 See [200,000 QPS validation](../history/200k-qps-validation.md).
 
+
+## Spool sizing
+
+The spool holds frames while the receiver is down or slow. Its cap,
+`--spool-max-mib`, sets how long an outage it can cover. The rate of the
+frames sets how fast the cap fills.
+
+The figures use 103 bytes per frame. That is the average receiver bytes per
+frame in the small-answer lab runs, with the 4-byte length prefix included. It is
+not a measured minimum. Each query makes two frames: the query (event 256) and
+the response (event 257 or 258). Larger answers make larger frames, so the times
+below can be shorter.
+
+| Queries per second | Frames per second | Bytes per second | MiB per hour | Time to fill the default 4,096 MiB cap |
+| --- | --- | --- | --- | --- |
+| 1,000 | 2,000 | 206,000 | 707 | about 5.8 hours |
+| 10,000 | 20,000 | 2,060,000 | 7,072 | about 35 minutes |
+| 50,000 | 100,000 | 10,300,000 | 35,362 | about 7 minutes |
+| 200,000 | 400,000 | 41,200,000 | 141,449 | about 104 seconds |
+
+These are calculations from the 103-byte average. The lab has not run an outage
+with the spool, so no figure here is a measured result.
+
+Use these rules to choose the values:
+
+- Size the cap for the longest outage you must cover. Multiply the MiB per hour
+  by the hours, and add a margin. For 10,000 queries per second and a two-hour
+  outage, the spool needs about 14,144 MiB. Set `--spool-max-mib 16384`. The
+  volume must then also hold the free-space floor and one segment: 16,384 MiB
+  plus 2,048 MiB plus 64 MiB is 18,496 MiB, about 18.1 GiB, with the default
+  floor.
+- The free-space floor applies too. `--spool-min-free-mib` (default 2,048) keeps
+  that much free on the volume. The spool deletes its oldest data to keep it.
+- The disk must take the write rate in the bytes-per-second column while the
+  receiver is down. After the outage, the backlog drains at the rate the
+  receiver accepts. At 200,000 queries per second, that is about 41 MB per
+  second of writes, and then reads at the same rate for replay.
+- The send queue is in memory. It holds 128 blocks of about 64 KiB, which is
+  about 8 MiB. It absorbs short delays in the sender thread, not an outage. When
+  the receiver is down, the sender writes blocks to the spool at once. The queue
+  therefore lasts seconds at high rates: about 4 seconds at 10,000 queries per
+  second, and about 0.2 seconds at 200,000.
+
+See [The receiver is slow](troubleshooting.md#the-receiver-is-slow) for the
+checks when the spool grows.
 
 ## Next steps
 

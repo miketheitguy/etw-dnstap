@@ -32,7 +32,7 @@
           </counter>
           <counter id="2" uri="EtwDnstap.Pipeline.FramesSentPerSec"
                    nameID="108" name="Frames Sent/sec"
-                   descriptionID="110" description="Rate of dnstap frames that the parser encoded and handed to the output. Includes frames dropped while the receiver is down (see Receiver Down Drops)."
+                   descriptionID="110" description="Rate of dnstap frames that the parser encoded and handed to the output. Includes frames later lost in the sink (Send Queue Drops, Receiver Down Drops, Spool Dropped Frames), so it is not a delivery rate. Does not include leftover frames replayed from an earlier run."
                    type="perf_counter_bulk_count" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -56,7 +56,7 @@
           </counter>
           <counter id="11" uri="EtwDnstap.Pipeline.FramesSent"
                    nameID="144" name="Frames Sent"
-                   descriptionID="146" description="Total dnstap frames that the parser encoded and handed to the output since the service started. Includes frames dropped while the receiver is down (see Receiver Down Drops)."
+                   descriptionID="146" description="Total dnstap frames that the parser encoded and handed to the output since the service started. Includes frames later lost in the sink (Send Queue Drops, Receiver Down Drops, Spool Dropped Frames), so it is not a delivery count. Does not include leftover frames replayed from an earlier run."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -112,7 +112,7 @@
           </counter>
           <counter id="18" uri="EtwDnstap.Pipeline.ReceiverDownDrops"
                    nameID="172" name="Receiver Down Drops"
-                   descriptionID="174" description="Frames discarded because the receiver connection was down."
+                   descriptionID="174" description="Frames lost in the sink: the connection failed with them in flight, or they arrived while the receiver was down and no spool was usable."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -204,6 +204,74 @@
               <counterAttribute name="reference" />
             </counterAttributes>
           </counter>
+          <counter id="52" uri="EtwDnstap.Pipeline.SendQueueDrops"
+                   nameID="308" name="Send Queue Drops"
+                   descriptionID="310" description="Frames discarded on the parser thread because the send queue was full. Also counted in Frames Sent."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="53" uri="EtwDnstap.Pipeline.FramesSpooled"
+                   nameID="312" name="Frames Spooled"
+                   descriptionID="314" description="Total frames appended to the spool since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="54" uri="EtwDnstap.Pipeline.FramesReplayed"
+                   nameID="316" name="Frames Replayed"
+                   descriptionID="318" description="Total frames read from the spool and handed to the receiver connection since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="55" uri="EtwDnstap.Pipeline.SpoolDroppedFrames"
+                   nameID="320" name="Spool Dropped Frames"
+                   descriptionID="322" description="Frames removed from the spool unsent or refused by it: eviction at the size cap or free-space floor, corrupt or cut-off data, or an I/O error."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="56" uri="EtwDnstap.Pipeline.SpoolDroppedBytes"
+                   nameID="324" name="Spool Dropped Bytes"
+                   descriptionID="326" description="Bytes removed from the spool unsent, including leftover segments whose frame count is unknown."
+                   type="perf_counter_large_rawcount" detailLevel="advanced">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="57" uri="EtwDnstap.Pipeline.SpoolErrors"
+                   nameID="328" name="Spool Errors"
+                   descriptionID="330" description="Spool I/O errors since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="58" uri="EtwDnstap.Pipeline.SpoolBytes"
+                   nameID="332" name="Spool Bytes"
+                   descriptionID="334" description="Bytes now held in spool segment files."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="59" uri="EtwDnstap.Pipeline.SpoolSegments"
+                   nameID="336" name="Spool Segments"
+                   descriptionID="338" description="Spool segment files now on disk."
+                   type="perf_counter_large_rawcount" detailLevel="advanced">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="60" uri="EtwDnstap.Pipeline.SpoolAvailable"
+                   nameID="340" name="Spool Available"
+                   descriptionID="342" description="1 while a spool is in use and accepting data; 0 with --no-spool, an unusable folder, or while paused by an I/O error or the free-space floor."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
         </counterSet>
       </provider>
     </counters>

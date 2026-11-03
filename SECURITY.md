@@ -136,11 +136,30 @@ and [README.md](README.md).
   addresses. Use `--plaintext` only on a trusted network or behind an
   independently protected transport such as IPsec.
 - DNS payloads can contain private names and addresses. The service does not
-  log payloads, and it writes no capture or metrics files. The collector is
-  responsible for retention and access control.
+  log payloads. It writes no capture or metrics files. The spool is the one
+  exception, as described in the next item. The collector is responsible for
+  retention and access control for the records it receives.
+- **Spool data at rest.** The spool keeps frames that the receiver has not
+  accepted yet, in segment files in `C:\ProgramData\EtwDnstap\spool`. Each frame
+  is a complete dnstap message, with client addresses, query names, and DNS
+  payloads. The files are not encrypted, and the service does not encrypt them.
+  The ACL of the folder is the only protection.
+  - **Who can read and write.** SYSTEM, Administrators, and the service SID. The
+    install step grants no other account access. The service refuses a folder
+    that gives any account other than SYSTEM, Administrators, or a service SID
+    read or write access. It then logs one warning and runs without a spool.
+    Check the ACL after you install it, with `icacls`.
+  - **Turning it off.** `--no-spool` stops new writes. It does not delete the
+    files. Frames already in the folder stay there until someone deletes them.
+    See [Uninstall](docs/guide/uninstall.md) and
+    [Repair or upgrade](docs/guide/upgrade.md).
+  - **Restarts and power loss.** Unsent frames stay on disk across restarts and
+    reboots. The spool does not flush data to disk, so a power loss can lose
+    recent frames.
 - The executable and its install directory must not be writable by ordinary
   users. The service SID needs read and execute on the install directory, which
-  covers the executable. The service writes no files.
+  covers the executable. The service writes no files in this directory. Its
+  spool folder is separate, as described above.
 - The ETW session name is fixed by default (`EtwDnstap`) and is reclaimed at
   startup when it matches the program's shape. An administrator or a member of
   Performance Log Users can stop it.
@@ -150,6 +169,7 @@ and [README.md](README.md).
 - No runtime process mitigations beyond the link-time flags listed in
   [build.md](docs/guide/build.md#build-the-executable) (CFG, EH continuation
   guard, ASLR, NX, CET-compatible marker, stack protection).
-- No resend. Frames that are lost while the receiver is disconnected are counted
-  in `disconnected_dropped` and are not retried. See
-  [docs/guide/configuration.md](docs/guide/configuration.md#receiver-connection).
+- No resend of a lost frame. A frame in flight when a connection fails is
+  counted in `disconnected_dropped` and is not retried. A frame is never sent
+  twice. A frame held in the spool is sent once, oldest first. See
+  [docs/guide/configuration.md](docs/guide/configuration.md#spool).

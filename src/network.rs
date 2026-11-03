@@ -207,6 +207,13 @@ impl Connection {
         Ok(Self { writer })
     }
 
+    /// Writes bytes that already hold complete data frames, in one deadline
+    /// window.
+    fn write_framed(&mut self, framed: &[u8]) -> io::Result<()> {
+        self.reset_deadline();
+        self.writer.write_framed(framed)
+    }
+
     /// Starts timing socket writes into `stats`.
     fn attach_stats(&mut self, stats: Arc<SinkStats>) {
         self.writer.get_mut().get_mut().deadline_mut().stats = Some(stats);
@@ -233,6 +240,80 @@ impl FrameSink for Connection {
     fn finish(mut self) -> Result<()> {
         self.reset_deadline();
         finish_stream(self.writer)
+    }
+}
+
+/// The most bytes of one chunk of a pre-framed write, unless one frame is larger.
+const WRITE_CHUNK_BYTES: usize = 64 * 1024;
+
+/// The length of the first chunk of `bytes` (data frames, each a 4-byte
+/// big-endian length and its payload) and the frames in it. The chunk ends at a
+/// frame boundary, holds at least one frame, and holds at most
+/// `WRITE_CHUNK_BYTES` unless its one frame is larger. Bytes that do not parse as
+/// frames form one chunk with 0 frames.
+fn next_chunk(bytes: &[u8]) -> (usize, u32) {
+    let mut end = 0;
+    let mut frames = 0_u32;
+    while let Some(header) = bytes[end..].first_chunk::<4>() {
+        let next = usize::try_from(u32::from_be_bytes(*header))
+            .ok()
+            .and_then(|length| end.checked_add(4)?.checked_add(length));
+        let Some(next) = next.filter(|next| *next <= bytes.len()) else {
+            break;
+        };
+        if frames > 0 && next > WRITE_CHUNK_BYTES {
+            break;
+        }
+        end = next;
+        frames += 1;
+        if end >= WRITE_CHUNK_BYTES {
+            break;
+        }
+    }
+    if end == 0 {
+        (bytes.len(), 0)
+    } else {
+        (end, frames)
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::*;
+
+    fn framed(lengths: &[usize]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for length in lengths {
+            bytes.extend_from_slice(&u32::try_from(*length).expect("small").to_be_bytes());
+            bytes.resize(bytes.len() + length, 7);
+        }
+        bytes
+    }
+
+    #[test]
+    fn chunks_end_at_frame_boundaries_and_cover_every_frame_once() {
+        let lengths = [30_000, 30_000, 30_000, 70_000, 10, 65_000];
+        let mut rest = framed(&lengths);
+        let mut chunks = Vec::new();
+        while !rest.is_empty() {
+            let (length, frames) = next_chunk(&rest);
+            assert!(frames >= 1 && length > 0);
+            assert!(length <= WRITE_CHUNK_BYTES || frames == 1);
+            chunks.push(frames);
+            rest.drain(..length);
+        }
+        assert_eq!(chunks, [2, 1, 1, 2]);
+        assert_eq!(chunks.iter().sum::<u32>(), 6);
+    }
+
+    #[test]
+    fn bytes_that_are_not_frames_form_one_chunk_without_frames() {
+        assert_eq!(next_chunk(&[0, 0, 0, 9, 1]), (5, 0));
+        assert_eq!(next_chunk(&[1, 2]), (2, 0));
+        let mut bytes = framed(&[4]);
+        bytes.extend_from_slice(&[0, 0, 1]);
+        assert_eq!(next_chunk(&bytes), (8, 1));
+        assert_eq!(next_chunk(&bytes[8..]), (3, 0));
     }
 }
 
@@ -375,8 +456,9 @@ impl NetworkSink {
                 tracing::warn!(
                     receiver = %address,
                     %error,
-                    "dnstap receiver unavailable at startup; capture is running, events are \
-                     dropped and counted until it connects (retrying with backoff)"
+                    "dnstap receiver unavailable at startup; capture is running, and frames go \
+                    to the spool, or are dropped and counted when no spool is in use, \
+                    until it connects (retrying with backoff)"
                 );
                 State::Disconnected {
                     next_attempt: Instant::now() + backoff.next_delay(),
@@ -411,8 +493,9 @@ impl NetworkSink {
             receiver = %self.config.address,
             %error,
             retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-            "dnstap receiver connection lost; events are dropped and counted until it \
-             reconnects (buffered frames are discarded, never resent)"
+            "dnstap receiver connection lost; frames go to the spool, or are dropped \
+            and counted when no spool is in use, until it reconnects (frames \
+            already sent are never resent)"
         );
         self.state = State::Disconnected {
             next_attempt: Instant::now() + delay,
@@ -421,8 +504,8 @@ impl NetworkSink {
     }
 
     /// Advances a disconnected sink: collects a finished attempt or starts one
-    /// when the backoff has elapsed. Never blocks.
-    fn poll_reconnect(&mut self, now: Instant) {
+    /// when the backoff has elapsed. Never blocks. Does nothing while connected.
+    pub(crate) fn poll(&mut self, now: Instant) {
         let State::Disconnected {
             next_attempt,
             attempt,
@@ -485,15 +568,53 @@ impl NetworkSink {
         }
     }
 
-    const fn is_connected(&self) -> bool {
+    /// True while a Frame Streams session is established.
+    pub(crate) const fn is_connected(&self) -> bool {
         matches!(self.state, State::Connected(_))
+    }
+
+    /// Writes bytes that hold `frames` complete data frames (a 4-byte big-endian
+    /// length and the payload each), as the queued sink and the spool hold them.
+    /// Returns whether the session took them; they may still sit in the write
+    /// buffer until [`FrameSink::flush`].
+    ///
+    /// On a write failure the session is abandoned as in [`FrameSink::write_frame`]:
+    /// these frames and the unflushed ones are counted in `disconnected_dropped`.
+    /// While disconnected the frames are counted there at once.
+    pub(crate) fn write_framed(&mut self, bytes: &[u8], frames: u32) -> bool {
+        let mut remaining = u64::from(frames);
+        let State::Connected(connection) = &mut self.state else {
+            self.drop_frames(remaining);
+            return false;
+        };
+        // Whole frames in chunks, each with its own I/O deadline, so a large
+        // batch does not share one deadline and a failure's count stays exact.
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let (length, whole) = next_chunk(rest);
+            let in_chunk = if whole == 0 {
+                remaining
+            } else {
+                u64::from(whole).min(remaining)
+            };
+            let (chunk, tail) = rest.split_at(length);
+            if let Err(error) = connection.write_framed(chunk) {
+                // This chunk and every chunk after it were not delivered.
+                self.connection_lost(&error, remaining);
+                return false;
+            }
+            self.unflushed_frames += in_chunk;
+            remaining -= in_chunk;
+            rest = tail;
+        }
+        true
     }
 }
 
 impl FrameSink for NetworkSink {
     fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
         if !self.is_connected() {
-            self.poll_reconnect(Instant::now());
+            self.poll(Instant::now());
         }
         let State::Connected(connection) = &mut self.state else {
             self.drop_frames(1);
@@ -508,7 +629,7 @@ impl FrameSink for NetworkSink {
 
     fn flush(&mut self) -> io::Result<()> {
         if !self.is_connected() {
-            self.poll_reconnect(Instant::now());
+            self.poll(Instant::now());
         }
         if let State::Connected(connection) = &mut self.state {
             match connection.flush() {

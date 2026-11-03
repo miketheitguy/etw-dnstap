@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
 
 Use this guide to find the cause of a failed start, restarts, drops, or missing
 records. Start with the Application event log and the SCM state.
@@ -11,6 +11,8 @@ records. Start with the Application event log and the SCM state.
 | --- | --- |
 | The service stops at start, or `sc.exe start` fails | [The service does not reach RUNNING](#the-service-does-not-reach-running) |
 | The collector is down, or the service reports receiver errors | [The receiver is down or unreachable](#the-receiver-is-down-or-unreachable) |
+| The receiver is slow, or frames go to the spool | [The receiver is slow](#the-receiver-is-slow) |
+| The log shows a spool warning | [Spool warnings](#spool-warnings) |
 | The service restarts again and again | [The service keeps restarting](#the-service-keeps-restarting) |
 | Capture stops during a run | [Capture stops during a run](#capture-stops-during-a-run) |
 | A counter such as `ring_dropped` or `etw_lost` is above 0 | [Counters show drops](#counters-show-drops) |
@@ -66,11 +68,19 @@ Search the Application log for the text, then go to the section named.
 | `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied` | Event ID 1 | The restricted token cannot query the `DNS` service. | [RUNNING](#the-service-does-not-reach-running) |
 | `already exists and does not match this program's session shape` | Event ID 1 | A session with the name exists and cannot be reclaimed. Its shape or its GUID differs from this service's. | [Stale session](#stale-etw-session-blocks-startup) |
 | `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | Event ID 5 | A deadline expired, and the process aborted. | [Watchdog](#watchdog-aborts-or-stop-hangs) |
-| `dnstap receiver unavailable at startup` | Event ID 3 | The service is running and reconnecting. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
-| `dnstap receiver connection lost` | Event ID 3 | An established session failed. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `dnstap receiver unavailable at startup; capture is running, and frames go to the spool, or are dropped and counted when no spool is in use, until it connects (retrying with backoff)` | Event ID 3 | The service is running and reconnecting. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `dnstap receiver connection lost; frames go to the spool, or are dropped and counted when no spool is in use, until it reconnects (frames already sent are never resent)` | Event ID 3 | An established session failed. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. Logged for the first four failures, then for the 61st, 121st, and every 60 failures after that. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver reconnected` | Event ID 2 | A session was re-established. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `shutting down while the dnstap receiver is disconnected` | Event ID 3 | The service stopped without sending STOP. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `spool folder is not usable; capture continues without a spool` | Event ID 3 | The folder failed a check. The `reason` field names the check. The service runs without a spool. | [Spool warnings](#spool-warnings) |
+| `spool could not be opened; capture continues without a spool` | Event ID 3 | The folder passed the checks, but the spool could not open. The `error` field gives the cause. | [Spool warnings](#spool-warnings) |
+| `dnstap spool deleted its oldest segment unsent` | Event ID 3 | The size cap or the free-space floor removed a segment that held unsent frames. | [Spool warnings](#spool-warnings) |
+| `dnstap spool discarded unreadable segment data` | Event ID 3 | Segment data was unreadable: a corrupt or cut-off tail, a missing START, a read error after retries, or an invalid cursor that dropped the oldest segment. The `frames` and `bytes` fields give the loss. | [Spool warnings](#spool-warnings) |
+| `dnstap spool I/O error` | Event ID 3 | A spool file operation failed. The spool pauses for 10 seconds. | [Spool warnings](#spool-warnings) |
+| `could not seal the dnstap spool segment` | Event ID 3 | At shutdown, the active segment could not be closed with STOP. | [Spool warnings](#spool-warnings) |
+| `dnstap spool backlog kept on disk for the next run` | Event ID 2 | Unsent frames wait on disk for the next start. Not an error. | [Spool warnings](#spool-warnings) |
+| `spool in use` | Event ID 2 | The spool opened. The `leftover_segments` and `leftover_bytes` fields show what an earlier run left. | [Spool warnings](#spool-warnings) |
 | `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
 | `a capture worker exited before shutdown was requested` | Event ID 1 | A worker thread ended on its own. | [Restarts](#the-service-keeps-restarting) |
 | `ETW consumer did not return within 5 s of STOP` | Event ID 3 | The trace handle was closed to force the worker out. | [ETW warnings](#etw-consumer-and-session-warnings) |
@@ -91,6 +101,7 @@ Work through these causes in order.
 | Cause | What you see | Action |
 | --- | --- | --- |
 | Invalid option | Event ID 1 with `invalid service arguments`. | Correct the binary path. Options are in [configuration.md](configuration.md). Removed options fail here. |
+| Malformed `--spool-dir` | Event ID 1 with `invalid service arguments`. | A value that is not absolute, is not a path that starts with a drive letter, or has a `.` or `..` part fails command-line parsing. Correct the value in the binary path. Only the default folder falls back silently. |
 | Wrong identity | Event ID 1: `must run as NT AUTHORITY\LocalService`. The service is still LocalSystem, a virtual account, or another account. | Run `sc.exe qc EtwDnstap`. Run `cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'`. Use `cmd.exe` because Windows PowerShell 5.1 drops the empty password. Then run `sc.exe sidtype EtwDnstap restricted` and start again. |
 | Service SID missing | Event ID 1: `the service SID NT SERVICE\EtwDnstap is not an enabled group`. | Run `sc.exe qsidtype EtwDnstap`. If it reports `NONE`, run `sc.exe sidtype EtwDnstap restricted`, then start again. |
 | Unrestricted token | Event ID 1: `the process token is not restricted`. | Run `sc.exe sidtype EtwDnstap restricted`, then start again. An unrestricted SID type does not meet the profile. |
@@ -119,22 +130,30 @@ checkpoint that does not advance before the wait hint passes indicates a hang.
 
 ## The receiver is down or unreachable
 
-A receiver that is down does not stop the service. The sink logs the event,
-drops and counts the events it cannot deliver, and retries with backoff.
+A receiver that is down does not stop the service. With a spool in use, the
+service stores frames on disk and sends them when the receiver returns. Without
+a spool, the sink counts the frames it cannot deliver, and it retries with
+backoff.
 
 1. **At startup:** Event ID 3, `dnstap receiver unavailable at startup; capture
-   is running, events are dropped and counted until it connects`. The service
+   is running, and frames go to the spool, or are dropped and counted when no
+   spool is in use, until it connects (retrying with backoff)`. The service
    reaches `RUNNING`.
 2. **During a run:** Event ID 3, `dnstap receiver connection lost`. Then
    `dnstap reconnect failed` appears for the first four failures, then for the 61st,
    121st, and every 60 failures after that. When a session is re-established, Event ID 2 logs
    `dnstap receiver reconnected`.
 3. **Counters:** `receiver_connected` is `false` while down.
-   `receiver_disconnects`, `receiver_reconnect_failures`, and
-   `disconnected_dropped` show the loss. See [Counters](#counters-show-drops).
+   `receiver_disconnects` and `receiver_reconnect_failures` show the failures.
+   With a spool, `spool_bytes` and `spool_segments` rise while the receiver is
+   down, and `replayed` rises after it returns. Use `spool_bytes` for the spool
+   size. A folder listing can show the open segment as 0 bytes until the
+   segment is closed. Without a spool, `disconnected_dropped` shows the loss.
+   See [Counters](#counters-show-drops).
 
-Frames in the write buffer when a session failed, and events that arrived while
-disconnected, are never resent. The sink's retry delay has a base of 250 ms that
+Frames in flight when a session failed are counted in `disconnected_dropped`
+and are never resent. Frames that arrive while the receiver is down go to the
+spool when one is in use. Without a spool, they count in `disconnected_dropped`. The sink's retry delay has a base of 250 ms that
 doubles up to 30 seconds, and each wait is randomized. See
 [Receiver connection](configuration.md#receiver-connection).
 
@@ -145,11 +164,72 @@ and correct the collector's content type. Only the first connection at startup s
 the service on a protocol failure.
 
 **Shutdown while disconnected.** The service logs `shutting down while the dnstap
-receiver is disconnected; no STOP sent` and stops with exit code 0. Records
+receiver is disconnected; no STOP sent` and stops with exit code 0. Frames still in the
+spool stay on disk, and the next start sends them. Without a spool, frames
 captured during the outage are in `disconnected_dropped`, not in the collector.
+
+With a spool, check `spool_available`. It should read `true`. `spool_bytes`
+should fall after the receiver returns, and `replayed` should rise. If
+`spool_bytes` keeps rising while `receiver_connected` is `true`, see
+[The receiver is slow](#the-receiver-is-slow).
 
 Check the collector's listener, its port, its content type, and the firewall
 between the hosts.
+
+## The receiver is slow
+
+A spool removes most slow-receiver loss while the spool is in use. When the send
+queue holds 96 of its 128 blocks, the sender writes new blocks to the spool. The
+parser does not wait for the receiver.
+
+Signs: `spooled` and `spool_bytes` rise while `receiver_connected` stays `true`.
+`slow_writes` and `write_max_us` rise.
+
+Frames still drop in two cases. A socket write that stalls for longer than the
+queue lasts drops frames, and they count in `queue_dropped`. With no spool in
+use, the queue fills and drops frames in `queue_dropped` too. Refused blocks
+count in `spool_dropped`, and the queue does not fill.
+
+Check these in order:
+
+1. `queue_dropped`. With a spool in use, a rise means that a socket write or a
+   disk write blocked the sender thread for longer than the queue lasts. Check
+   `slow_writes`, `write_max_us`, and the disk. Check `spool_available` and
+   `spool_dropped` too.
+2. `spool_bytes` against `--spool-max-mib`. If it grows for the whole run, the
+   receiver takes less than the input rate. At the cap, the spool deletes its
+   oldest data. `spool_dropped` and the warning
+   `dnstap spool deleted its oldest segment unsent` show the loss.
+3. `slow_writes` and `write_max_us`. Large values point to the receiver or the
+   network path.
+4. The disk that holds the spool. At 200,000 queries per second, the spool
+   writes about 41 MB per second. See [Spool sizing](tuning.md#spool-sizing).
+5. The collector's CPU, its disk, and its input queue.
+
+## Spool warnings
+
+Search the Application log for the text. The fields of each event are listed in
+[Spool messages](monitoring.md#spool-messages). None of these events contains
+frame data.
+
+- **`spool folder is not usable; capture continues without a spool, so frames are dropped and counted while the receiver is down`** (Event ID 3, at startup). The `reason` field gives the check that failed. Find the reason below and follow its action:
+  - ``the spool folder path is not absolute``, ``the spool folder path has a `.` or `..` component``, ``the spool folder path is not on a local drive letter (network, device, and other path forms are not accepted)``: these checks run on the default path only. A malformed `--spool-dir` fails at command-line parsing. Inspect the default path.
+  - ``the spool folder is not on a fixed local disk (drive type {code})``: the folder is on a removable, network, RAM, or unknown drive. Move it to a fixed local disk, and set `--spool-dir`.
+  - ``the spool folder has no parent folder``: the folder is a drive root, such as `C:\`. Choose a folder with a parent.
+  - ``the spool folder does not exist``: create the folder. See [Create the spool folder](install.md#create-the-spool-folder) or [Add the spool folder](upgrade.md#add-the-spool-folder).
+  - ``the spool folder path is not a folder``: a file has that name. Inspect it.
+  - ``the {which} is a reparse point``, where `{which}` is `spool folder` or `parent of the spool folder`: a link or junction is in the path. Inspect it. Do not follow it.
+  - ``the spool folder owner is not SYSTEM or Administrators``: run `icacls` on the folder. Do not take ownership of it. If you did not create it, remove it, and create it again with the install steps.
+  - ``the spool folder has no access control list, so every account can read and write it``: recreate the folder with the install steps.
+  - ``the spool folder permissions let an account other than SYSTEM, Administrators, or a service read or write it``: run `icacls` on the folder. Remove each entry that is not SYSTEM, Administrators, or `NT SERVICE\EtwDnstap`. Then run `Test-SpoolFolder` as in install.md.
+  - ``cannot check the {which}: {source}``: a Windows call failed during the check. `{which}` names the check, and `{source}` gives the Windows error. Check the disk and the path.
+- **`spool could not be opened; capture continues without a spool, so frames are dropped and counted while the receiver is down`** (Event ID 3, at startup). The folder passed the checks, but the spool could not be opened. The `error` field gives the cause. Check that the disk responds, and that no other program holds `cursor.bin` open.
+- **`dnstap spool deleted its oldest segment unsent`** (Event ID 3). The size cap or the free-space floor removed a segment with unsent frames. The `frames` and `bytes` fields give the loss. Check `spool_dropped`, `spool_dropped_bytes`, `--spool-max-mib`, and the free space on the volume. A longer outage than the cap covers needs a larger cap. See [Spool sizing](tuning.md#spool-sizing). The first four warnings are logged, then every 60th. The counters are complete.
+- **`dnstap spool discarded unreadable segment data`** (Event ID 3). Segment data could not be read. This happens for a corrupt or cut-off tail, a missing START, a read error that failed after retries, and an invalid cursor that dropped the oldest segment. The `frames` and `bytes` fields give the loss. Check `spool_errors` and `spool_dropped`, and the disk. The first four warnings are logged, then every 60th.
+- **`dnstap spool I/O error`** (Event ID 3). A file operation in the spool failed, such as a create, a write, a read, or a delete. The `error` field gives the cause. The spool pauses for 10 seconds, and the block counts in `spool_dropped`. Check `spool_errors`, the free space and health of the disk, any program that locks files in the folder, and the folder's ACL.
+- **`could not seal the dnstap spool segment`** (Event ID 3, at shutdown). The last segment closed without its STOP. The next start reads it as an unsealed leftover and replays its frames. No action is needed unless the message repeats. If it repeats, check the disk.
+- **`dnstap spool backlog kept on disk for the next run`** (Event ID 2, at shutdown). Not an error. Unsent frames wait on disk. The next start replays them first. The `leftover_segments` field of `spool in use` shows how many segments there are.
+- **`spool in use`** (Event ID 2, at startup). Not an error. It shows the folder, the cap, the floor, and any leftovers from an earlier run.
 
 ## The service keeps restarting
 
@@ -202,9 +282,15 @@ shutdown. A restart resets every counter. The loss categories are:
 | `ring_dropped` | The event channel was full. The newest event was dropped. | Raise `--capacity`. For moderate or high rates, use the [high-rate settings](tuning.md#high-rate-settings). |
 | `pool_exhausted_regular`, `pool_exhausted_jumbo` | The pool had no free slot of the record's class. | Raise `--jumbo-capacity` if `pool_exhausted_jumbo` rises. With `--jumbo-capacity 0`, every jumbo record is counted here. |
 | `receiver_disconnected` | The channel's parser end was gone. This is the event channel, not TCP. | Check whether the parser stopped. See [restarts](#the-service-keeps-restarting). |
-| `disconnected_dropped` | Frames lost to a TCP outage. | Correct the receiver path. See [the receiver section](#the-receiver-is-down-or-unreachable). |
+| `disconnected_dropped` | Frames lost in the sink: in flight when a connection failed, or arriving while the receiver was down with no spool in use. | Check `spool_available`. With a spool, fix the spool folder. Without one, enable the spool or correct the receiver path. See [the receiver section](#the-receiver-is-down-or-unreachable). |
+| `queue_dropped` | The send queue was full. With a spool in use, a socket write or a disk write blocked the sender thread for longer than the queue lasts. | See [The receiver is slow](#the-receiver-is-slow). |
+| `spool_dropped`, `spool_dropped_bytes` | The spool removed or refused frames unsent. | See [Spool warnings](#spool-warnings). Raise `--spool-max-mib` if the outage is longer than the cap covers. |
+| `spool_errors` | Spool I/O errors. | See [Spool warnings](#spool-warnings). |
 | `foreign_pid_rejected` | Records from a process other than the DNS Server. | Normally 0. A nonzero value during a DNS restart is expected. Otherwise investigate. |
 | `callback_errors` | Records the callback could not hand off. | Investigate with the Event Log. Not in `intake_dropped`. |
+
+Each frame lost in the sink is in at most one of `queue_dropped`,
+`disconnected_dropped`, and `spool_dropped`.
 
 `intake_dropped` is the sum of `ring_dropped`, `pool_exhausted_regular`,
 `pool_exhausted_jumbo`, and `receiver_disconnected`. Do not add it to them.
@@ -338,12 +424,19 @@ start. The ETW start also has its own 10-second deadline, so the message can
 name 10 s. Large `--capacity` values allocate more pool memory, so they can take
 longer to reach capture.
 
+Shutdown does not wait for a spool backlog. The sink stops writing data to the
+receiver 1 second after shutdown starts. A write in progress and the STOP/FINISH
+exchange can take about 4 seconds more.
+
 ## Upgrading
 
 - A removed option (`--output`, `--max-output-bytes`, `--metrics`,
   `--etw-flush-ms`) fails command-line parsing, and the service does not start.
   Remove it from the binary path. To replace `--etw-flush-ms`, use the
   [high-rate settings](tuning.md#high-rate-settings).
+- After an upgrade, the service logs `spool folder is not usable` until the spool
+  folder exists. Create it as in [upgrade.md](upgrade.md#add-the-spool-folder).
+  Register the new counter manifest too, or the spool counters do not appear.
 - A service still running as LocalSystem or the virtual account refuses to
   start. Follow the upgrade steps in
   [upgrade.md](upgrade.md#repair-cases). In summary:
@@ -367,6 +460,8 @@ names first.
 - The members of `net localgroup "Performance Log Users"`, and the SDDL
   printed by `scripts\provision\Grant-EtwDnstapEtwAccess.ps1`.
 - The `logman query -ets` list.
+- The `output stats` line that shows the spool counters. Do not send the spool
+  files. They hold client addresses and query names.
 - The commit SHA and whether it is a release or a diagnostic (`diag-timing`) build.
 
 For security issues, follow [SECURITY.md](../../SECURITY.md) rather than a public issue.

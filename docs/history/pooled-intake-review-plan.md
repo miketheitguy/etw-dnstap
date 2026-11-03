@@ -109,7 +109,7 @@ python scripts/performance/metrics-ledger-test.py -v
 python scripts/performance/pooled-intake-run-test.py -v
 ```
 
-> **Script path changed (commit `6e62b2e`):** the suites are now `scripts/performance/test_metrics_ledger.py` and `scripts/performance/test_pooled_intake_run.py`; the later `metrics-ledger-test.py` mention in this record also refers to `test_metrics_ledger.py`. The command above is the
+> **Script path changed (commit `f1475d8`):** the suites are now `scripts/performance/test_metrics_ledger.py` and `scripts/performance/test_pooled_intake_run.py`; the later `metrics-ledger-test.py` mention in this record also refers to `test_metrics_ledger.py`. The command above is the
 > recorded historical text. See [script moves and renames](../../scripts/performance/README.md#file-moves-and-renames).
 
 The focused suite passes 14 tests, including the actual command paths of all

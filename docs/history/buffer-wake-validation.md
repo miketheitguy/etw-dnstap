@@ -1,6 +1,6 @@
 # ETW buffer wake validation
 
-> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time) · **Commit:** working tree on `69db97d` (the buffer-wake change) · **Reviewed:** 2026-11-01
+> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time) · **Commit:** working tree on `ee94de6` (the buffer-wake change) · **Reviewed:** 2026-11-01
 
 This record covers the change that wakes the parser once for each delivered ETW
 buffer. Before the change, the parser waited for its next timed poll. It
@@ -85,7 +85,7 @@ authoritative `dns-stress` for 50 s, and the checkpoint was
 | buffer wake, diag | 10,000 | 997,045 | 10,728 (1.08%) | 105 | 8,192 | 21,739 / 21,720 | 0.656 |
 | before the change, diag | 10,000 | 996,898 | 604,902 (60.7%) | 0 | 8,192 | n/a | 0.375 |
 | buffer wake, release | 5,000 | 499,262 / 499,258 | 0 / 0 | 0 | 5,516 / 5,888 | 10,901 / 10,900 | 0.391 / 0.281 |
-| `0865e19` release | 5,000 | 499,274 / 499,238 | 93,378 / 90,208 | 0 | 8,192 | n/a | 0.359 / 0.422 |
+| `9146740` release | 5,000 | 499,274 / 499,238 | 93,378 / 90,208 | 0 | 8,192 | n/a | 0.359 / 0.422 |
 
 Notes:
 

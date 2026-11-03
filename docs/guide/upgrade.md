@@ -1,10 +1,10 @@
 # Repair or upgrade the service
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
 
 Use this guide to change an installed service. It covers these tasks: take a
 snapshot, restore it, move from an older build, and replace the executable or
-the counter manifest. To install a new service, see
+the counter manifest, and add the spool folder. To install a new service, see
 [Install and provision](install.md).
 
 
@@ -100,6 +100,39 @@ Then restore the other parts of the snapshot:
 `icacls /restore` runs on the parent folder, because `/save` stores paths
 relative to the parent.
 
+## Add the spool folder
+
+This build adds the disk spool. The spool is on by default, so the service
+looks for the spool folder at startup. The default folder is
+`C:\ProgramData\EtwDnstap\spool`. Do these steps in the same change as the
+executable and the manifest:
+
+1. Take the snapshot, as in [Snapshot before a change](#snapshot-before-a-change).
+2. Create the folder with
+   [Create the spool folder](install.md#create-the-spool-folder). Run the steps
+   in the same PowerShell session as the snapshot functions. The steps need the
+   service SID from step 3, so the service must already be registered.
+   `New-ProtectedFolder` stops if the folder exists. If it does, inspect it. Do
+   not take ownership of it, and do not reuse it without that check.
+3. Replace the executable and the counter manifest, as in
+   [Replace the executable](#replace-the-executable) and
+   [Replace the counter manifest](#replace-the-counter-manifest). The manifest
+   change is required. Without the new registration, counters 52 to 60 do not
+   appear in `typeperf -q EtwDnstap`.
+
+Until the folder exists and passes the checks, the service logs one warning
+and runs without a spool. The warning starts with `spool folder is not usable;
+capture continues without a spool`. Its `reason` names the failed check. See
+[Spool warnings](troubleshooting.md#spool-warnings).
+
+Do not delete the spool folder during a repair. It can hold frames that were
+not sent. The snapshot does not include it, and the restore steps do not change
+it. To run without a spool, add `--no-spool` to the binary path. Change the path
+as in [Changing the binary path](#repair-cases).
+
+After the service starts, `spool_available` in the `output stats` line reads
+`true` while the spool is in use.
+
 ## Repair cases
 
 - **Upgrading from LocalSystem or the virtual account.** A service still
@@ -124,7 +157,7 @@ relative to the parent.
   LocalSystem and back. After any `obj=` change, still run
   `sc.exe sidtype EtwDnstap restricted` and check it with
   `sc.exe qsidtype EtwDnstap`. The check costs little.
-- **Upgrading from the first version of the grant script** (commit `6718863`).
+- **Upgrading from the first version of the grant script** (commit `1a54272`).
   That version granted `0x423` on the default GUID and `0x80` on the DNS
   provider GUID, and created a descriptor of its own for the provider. Replace
   the executable, run the current script with `-SessionName`, then restart the
@@ -143,7 +176,10 @@ relative to the parent.
 
 ## Replace the executable
 
-Take the snapshot first. Then:
+Take the snapshot first. Run the commands from the folder that holds the new
+`etw-dnstap.exe` under `target\x86_64-pc-windows-msvc\release\`, or change the
+`Copy-Item` source to the folder where you put it. If the service is already
+stopped, `sc.exe stop` prints `FAILED 1062`. That is expected. Then:
 
 ```powershell
 sc.exe stop EtwDnstap
@@ -184,9 +220,13 @@ snapshot folder stays until you remove the folder.
 
 ## Replace the counter manifest
 
-Do this only when a new release changes `etw-dnstap.man`. Take the snapshot
+Do this only when a new release changes `etw-dnstap.man`. The release that
+adds the spool changes it, so [Add the spool folder](#add-the-spool-folder)
+calls this section. Take the snapshot
 first, as for the executable. Run these commands while the service is stopped,
-between `sc.exe stop` and `sc.exe start`.
+between `sc.exe stop` and `sc.exe start`. Run them from the folder that holds
+the new `etw-dnstap.man` under `packaging\perfcounters\`, or change the
+`Copy-Item` source to the folder where you put it.
 
 ```powershell
 $installDirectory = 'C:\Program Files\EtwDnstap'
