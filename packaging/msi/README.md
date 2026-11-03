@@ -15,6 +15,14 @@ the Rust build and the CI checks first.
 | `CustomActions.wxs` | The provisioning custom actions and their sequence rows. Install runs after `InstallServices`. Uninstall runs before `RemoveFiles`. Rollback runs only for a failed first install. |
 | `Invoke-EtwDnstapProvisioning.ps1` | The script that the custom actions run as SYSTEM with Windows PowerShell 5.1. It checks the receiver, creates or checks the data folders, manages the service SID's group membership, and runs the grant script. On uninstall it deletes only what EtwDnstap created. |
 
+Lab validation: pending, see [docs/plans/msi-installer-plan.md](../../docs/plans/msi-installer-plan.md).
+The guides that describe the MSI are [Install with the MSI](../../docs/guide/install.md#install-with-the-msi),
+[Uninstall with the MSI](../../docs/guide/uninstall.md#uninstall-with-the-msi),
+[Upgrade, repair, or change settings with the MSI](../../docs/guide/upgrade.md#upgrade-repair-or-change-settings-with-the-msi),
+and [Build the MSI](../../docs/guide/build.md#build-the-msi).
+The executable's version resource is written by [build.rs](../../build.rs), and
+[tests/version_resource.rs](../../tests/version_resource.rs) checks it.
+
 The grant script is not copied here. `Product.wxs` takes it from
 [scripts/provision/Grant-EtwDnstapEtwAccess.ps1](../../scripts/provision/Grant-EtwDnstapEtwAccess.ps1).
 

@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde`, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0`, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-03
 
 `etw-dnstap` is a Windows service. It captures DNS Server client query and
 response events from Event Tracing for Windows (ETW). It sends them to a
@@ -48,6 +48,10 @@ response events from Event Tracing for Windows (ETW). It sends them to a
    The receiver does not need to run first. The service reconnects.
 4. [Start the service](docs/guide/install.md#7-start-capture-and-check-that-it-is-running),
    generate DNS traffic, and stop it. Check that the receiver got the records.
+
+An MSI installer does steps 2 to 6 and needs one restart. See
+[Install with the MSI](docs/guide/install.md#install-with-the-msi). Lab validation
+is pending.
 
 The release executable is `target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`.
 The options are listed in [configuration.md](docs/guide/configuration.md).

@@ -1,6 +1,6 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` for the layout, conventions, and file list · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` for the layout, conventions, and file list · **Reviewed:** 2026-11-03
 
 This index lists every document in `docs/`. Each document starts with a status
 block that gives its status, evidence date, commit, and review date. This page
@@ -63,7 +63,9 @@ configuration, troubleshooting, and removal.
 | Task | Document |
 | --- | --- |
 | Build the executable | [Build the executable](guide/build.md) |
+| Build the MSI installer | [Build the MSI](guide/build.md#build-the-msi) |
 | Install and register the service | [Install and provision](guide/install.md) |
+| Install with the MSI | [Install with the MSI](guide/install.md#install-with-the-msi) |
 | Prepare the receiver and its certificate | [Set up the dnstap receiver](guide/receiver.md) |
 | Look up an option, default, or range | [Configuration reference](guide/configuration.md) |
 | Choose settings for a high query rate | [Tune capture for load](guide/tuning.md) |
@@ -71,7 +73,9 @@ configuration, troubleshooting, and removal.
 | Fix a failed start, drops, or missing records | [Troubleshooting](guide/troubleshooting.md) |
 | Diagnose receiver resets during service stop | [Service shutdown remediation](guide/service-stop-remediation.md) |
 | Change or upgrade an installed service | [Repair or upgrade](guide/upgrade.md) |
+| Upgrade, repair, or change settings of an MSI install | [Upgrade, repair, or change settings with the MSI](guide/upgrade.md#upgrade-repair-or-change-settings-with-the-msi) |
 | Remove the service and its leftovers | [Uninstall](guide/uninstall.md) |
+| Remove an MSI install | [Uninstall with the MSI](guide/uninstall.md#uninstall-with-the-msi) |
 
 Policy documents in the repository root:
 

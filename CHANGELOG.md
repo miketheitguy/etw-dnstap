@@ -7,8 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## Versioning policy
 
 The version is the `version` field in [Cargo.toml](Cargo.toml). The service
-reports it in the `version` field of its `capture started` event. The repository
-has no Git tag and no release yet.
+reports it in the `version` field of its `capture started` event. It can also be
+read offline, without running the service, from the executable's version resource
+(`(Get-Item <exe>).VersionInfo`). The executable's version resource and the MSI
+`ProductVersion` both come from `Cargo.toml`, so they agree. The MSI is never
+built from a pre-release or build-metadata version, because an MSI version has
+three numeric fields: major and minor up to 255, and patch up to 65535. The MSI
+`UpgradeCode` never changes. It is what lets a newer MSI upgrade an older one.
+The repository has no Git tag and no release yet.
 Every change stays under `[Unreleased]` until a tag is made.
 
 **SemVer rule.** A major version of `0` means initial development. Under
@@ -47,6 +53,15 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- An MSI installer, `etw-dnstap-<version>-x64.msi`, built with WiX v7 by
+  [scripts/build/Build-Msi.ps1](scripts/build/Build-Msi.ps1). It does the work of
+  [install.md](docs/guide/install.md) steps 2 to 6 and creates the spool folder.
+  The install needs one restart, and the service then starts with delayed
+  automatic start. The uninstall reverses it, and it deletes the spool and
+  the ETW snapshots. The MSI is unsigned, and lab validation is pending.
+- A version resource in the executable (`VERSIONINFO`). It holds the `Cargo.toml`
+  version as `FileVersion` and `ProductVersion`, and the product name and company.
+  The performance counter names do not change.
 - Event ID 6, an Error event in the Application log, for a panic. Its text starts
   with `EtwDnstap panicked:` and has the panic message and location. It is written
   just before the process aborts.
