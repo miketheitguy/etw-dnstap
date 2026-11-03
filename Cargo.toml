@@ -25,7 +25,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Win32_System_Performance: the PerfLib V2 provider API (src/perfcounters.rs).
 # Win32_Storage_FileSystem: GetDiskFreeSpaceExW (spool free space) and the reparse-point
-# attribute constant. Win32_Security_Authorization: GetNamedSecurityInfoW (spool folder owner).
+# attribute constant; also the version-resource readers in tests/version_resource.rs
+# (GetFileVersionInfoW, VerQueryValueW). Win32_Security_Authorization: GetNamedSecurityInfoW (spool folder owner).
 # Both are used by src/spool/fsinfo.rs.
 # Win32_System_Time looks unused to grep, but windows-sys gates OpenTraceW and
 # EVENT_TRACE_LOGFILEW (src/etw/session.rs) behind it.
@@ -45,7 +46,8 @@ fuzzing = []
 bench = ["windows-sys/Win32_System_ProcessStatus"]
 
 [build-dependencies]
-# Compiles packaging/perfcounters/etw-dnstap-perf.rc (counter names) into the exe.
+# Compiles packaging/perfcounters/etw-dnstap-perf.rc (counter names) and the generated
+# VERSIONINFO resource into the exe.
 embed-resource = "3.0.12"
 
 [dev-dependencies]
