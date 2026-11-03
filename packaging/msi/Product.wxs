@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  EtwDnstap MSI. Scope and behavior: docs/plans/msi-installer-plan.md (W1 to W9).
+  EtwDnstap MSI. Scope and behavior: docs/history/msi-installer-plan.md (W1 to W9).
   Version, executable path, and repository root come from the build script through
   MSBuild properties that EtwDnstap.wixproj turns into preprocessor variables.
 -->

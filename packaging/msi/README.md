@@ -3,7 +3,7 @@
 > **Status:** Current · **Describes:** the MSI sources at commit `58fde72` · **Evidence dated:** 2026-11-03 (lab run on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-03
 >
 > The guides that describe the MSI are in [docs/guide/install.md](../../docs/guide/install.md)
-> and the plan is [docs/plans/msi-installer-plan.md](../../docs/plans/msi-installer-plan.md).
+> and the plan is [docs/history/msi-installer-plan.md](../../docs/history/msi-installer-plan.md).
 
 This directory holds the WiX v7 sources for the EtwDnstap MSI. The build script
 is [scripts/build/Build-Msi.ps1](../../scripts/build/Build-Msi.ps1), which runs
@@ -56,10 +56,10 @@ component condition keeps the old behavior until it is upgraded. See
 Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
 on 2026-11-03: install, a failed install and its rollback, repair, a receiver
 change, and uninstall, each with a restart. A major upgrade from an older MSI
-has not been tested. See [the plan and its results](../../docs/plans/msi-installer-plan.md).
+has not been tested. See [the plan and its results](../../docs/history/msi-installer-plan.md).
 The later changes to the component condition, the group removal by SID, same-version
 upgrades, and the session-name rule were not run in the lab. Those runs are open
-in [the findings fix plan](../../docs/plans/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
+in [the findings fix plan](../../docs/history/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
 The group removal by SID, the install fallback to the SID path, and the launch
 condition message are unverified.
 

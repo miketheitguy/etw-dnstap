@@ -29,7 +29,7 @@ ETW grants takes effect at boot, as the grants do at install.
 Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
 on 2026-11-03: install, a failed install and its rollback, repair, a receiver
 change, and uninstall, each with a restart. A major upgrade from an older MSI
-has not been tested. See [the plan and its results](../plans/msi-installer-plan.md).
+has not been tested. See [the plan and its results](../history/msi-installer-plan.md).
 
 ### What the uninstall removes
 
@@ -104,7 +104,7 @@ If someone ran `sc.exe delete EtwDnstap` before `msiexec /x`, the name
 because it uses the service SID, so the uninstall should complete, with the
 warning above if the group step fails. The lab has not run this case with the
 current MSI. The run is open in
-[the plan](../plans/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
+[the plan](../history/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
 
 ### Check the result
 

@@ -31,7 +31,7 @@ Each run reads them back, unless you pass a new value on the command line.
 Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
 on 2026-11-03: install, a failed install and its rollback, repair, a receiver
 change, and uninstall, each with a restart. A major upgrade from an older MSI
-has not been tested. See [the plan and its results](../plans/msi-installer-plan.md).
+has not been tested. See [the plan and its results](../history/msi-installer-plan.md).
 
 ### When the install steps run
 
@@ -58,7 +58,7 @@ this rule keeps the old behavior until you upgrade it to an MSI that has the
 rule.
 
 The lab has not yet run the maintenance case with the current MSI. See
-[the plan](../plans/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
+[the plan](../history/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
 
 ### Upgrade to a newer build
 

@@ -1,6 +1,6 @@
 # MSI installer plan
 
-> **Status:** Executed on `plan/msi-installer`, not merged to `main` · **Evidence dated:** 2026-11-03 · **Commit:** written at `7903bb7`, executed through `531ae0d` · **Reviewed:** 2026-11-03
+> **Status:** Executed. Merged to `main`. Lab validation of the later MSI fixes is open (see the findings fix plan) · **Evidence dated:** 2026-11-03 · **Commit:** written at `7903bb7`, executed through `531ae0d` · **Reviewed:** 2026-11-03
 
 This plan adds a Windows Installer package (MSI), built with the WiX Toolset, that
 does everything that [install.md](../guide/install.md) steps 2 to 6 do by hand:

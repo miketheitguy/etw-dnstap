@@ -24,7 +24,7 @@ decides its folder.
 | [`guide/`](guide/) | Operator guides | Current |
 | [`design/`](design/) | Architecture and reference | Current |
 | [`performance/`](performance/) | The latest native performance record, its graphs, trace analysis, and campaign plan | Current review. Supporting records are Historical |
-| [`plans/`](plans/) | Plans and analyses that are not yet executed | Proposed. A partly executed plan, or a plan executed on an unmerged branch, says so in its status block |
+| [`plans/`](plans/) | Plans and analyses that are not yet executed | Proposed. A partly executed plan says so in its status block |
 | [`history/`](history/) | Finished campaigns, reviews, completed plans, and superseded documents | Historical, Superseded |
 | [`assets/performance/`](assets/performance/) | Graph SVGs, CSV copies, and provenance manifests | Generated |
 | [`assets/pipeline/`](assets/pipeline/) | Animated GIF of the data path from an ETW event to a TCP frame | Current |
@@ -143,14 +143,12 @@ regenerate. Do not edit the numbers. The lab scripts are documented in
 
 ## Plans
 
-These documents in [`plans/`](plans/) are not yet executed, or only partly, or
-are executed on a branch that is not merged. The status block of each gives its
-execution state. A plan moves to `history/` when it is executed and merged.
+These documents in [`plans/`](plans/) are not yet executed, or only partly. The
+status block of each gives its execution state. A plan moves to `history/` when
+it is executed and merged.
 
 | Document | State | Contents |
 | --- | --- | --- |
-| [MSI installer plan](plans/msi-installer-plan.md) | Executed on the `plan/msi-installer` branch, not yet merged to `main`. Moves to `history/` when it merges | The MSI package, the provisioning script, the version resource, and the lab tests, with the lab results |
-| [Code review findings fix plan](plans/code-review-findings-fix-plan.md) | Executed on the `plan/msi-installer` branch, not merged to `main`. Lab validation of the MSI fixes is open. Moves to `history/` when it merges and the lab runs pass | Fixes for the 12 findings (F1 to F12) of the 2026-11-03 documentation alignment review: schema load retry, reconnect and spool log lines, the startup watchdog label, the rate-warning text, the session-name rule, the MSI install conditions, uninstall by service SID, same-version upgrades, and the documents that describe them |
 | [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed. Regenerate before the next campaign | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `b46da39` |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | Parallel parsing and TCP threading. Its fail-fast contract, timed park, and fallback decoding are out of date |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed | Diagnose the bottleneck and test parallel workers. P0 and diagnostic runs recorded Oct 31, 2026. P1a is next. P4 is deferred |
@@ -239,6 +237,8 @@ otherwise.
 | Document | Contents |
 | --- | --- |
 | [No console output plan](history/no-console-output-plan.md) | Removal of every stdout and stderr write from the service, the `--help` and `--version` flags, Event ID 6 for a panic, and the `version` field. Executed and lab-validated 2026-11-03 |
+| [MSI installer plan](history/msi-installer-plan.md) | The MSI package, the provisioning script, the version resource, and the lab tests, with the lab results |
+| [Code review findings fix plan](history/code-review-findings-fix-plan.md) | Fixes for the 12 findings (F1 to F12) of the 2026-11-03 documentation alignment review: schema load retry, reconnect and spool log lines, the startup watchdog label, the rate-warning text, the session-name rule, the MSI install conditions, uninstall by service SID, same-version upgrades, and the documents that describe them. Lab validation of the MSI fixes is open |
 | [Code review remediation plan](history/code-review-remediation-plan.md) | Findings of the 2026-11-01 Rust code review and the phases that acted on them (baseline, fixes, performance experiments, pipeline split, lint tightening), with the execution record. Executed and merged to `main` |
 | [TCP sink spool plan](history/tcp-sink-spool-plan.md) | Disk spool for the TCP sink, with a sender thread: decisions, design, stage records, and the completion record. Executed and lab-validated 2026-11-03 |
 | [TLS receiver plan](history/tls-receiver-plan.md) | TLS 1.2 and 1.3 for the receiver connection, with the decisions taken during implementation. Executed 2026-11-01 |

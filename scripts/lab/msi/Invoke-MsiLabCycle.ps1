@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Host driver for the MSI lab tests L0 to L7 (docs/plans/msi-installer-plan.md, "Lab tests").
+Host driver for the MSI lab tests L0 to L7 (docs/history/msi-installer-plan.md, "Lab tests").
 
 .DESCRIPTION
 Runs in Windows PowerShell 5.1 (Hyper-V module). Imports scripts/performance/LabCommon.psm1,

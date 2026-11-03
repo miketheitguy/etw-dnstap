@@ -1,6 +1,6 @@
 # Code review findings fix plan
 
-> **Status:** Executed on `plan/msi-installer`, not merged. Lab validation open · **Evidence dated:** 2026-11-03 (engineering review of the documentation alignment findings) · **Commit:** written on `plan/msi-installer` after `58fde72`; the work is not committed yet · **Reviewed:** 2026-11-03
+> **Status:** Executed. Merged to `main`. Lab validation open · **Evidence dated:** 2026-11-03 (engineering review of the documentation alignment findings) · **Commit:** written on `plan/msi-installer` after `58fde72`; the work is not committed yet · **Reviewed:** 2026-11-03
 
 This plan helps the maintainer fix the defects that the 2026-11-03
 documentation alignment review found, then bring the documents in line with the
@@ -200,8 +200,8 @@ open until a maintainer performs them:
 
 ## Results
 
-The packages ran on `plan/msi-installer` after `58fde72`. Nothing is committed
-yet, and the branch is not merged to `main`. The maintainer commits after V1.
+The packages ran on `plan/msi-installer` after `58fde72`. The result is committed
+in commit `c972593`, which is merged to `main`.
 
 | Package | Findings | What changed |
 | --- | --- | --- |

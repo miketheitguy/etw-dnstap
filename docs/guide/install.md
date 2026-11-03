@@ -43,7 +43,7 @@ MSI action changes. The manual steps stay the reference.
 Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
 on 2026-11-03: install, a failed install and its rollback, repair, a receiver
 change, and uninstall, each with a restart. A major upgrade from an older MSI
-has not been tested. See [the plan and its results](../plans/msi-installer-plan.md).
+has not been tested. See [the plan and its results](../history/msi-installer-plan.md).
 
 ### MSI prerequisites
 
