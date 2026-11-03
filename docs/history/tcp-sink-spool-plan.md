@@ -703,3 +703,9 @@ found five documentation defects, fixed in the same commit as the record:
 
 The guest was restored and verified against its recorded state. The Hyper-V
 checkpoint `spool-pre-2026-11-03` is kept.
+
+### Merge
+
+Merged into `main` on 2026-11-03 as merge commit `01ace10`. The branch
+also updated the pipeline animation with the sender thread and the spool
+(`31d32f5`).
