@@ -1,6 +1,6 @@
 # No console output plan
 
-> **Status:** Approved; in progress on branch `plan/no-console-output` · **Evidence dated:** 2026-11-03 · **Commit:** written at `1be4f3e` · **Reviewed:** 2026-11-03
+> **Status:** Approved. Steps 1 to 6 executed on the `plan/no-console-output` branch; the branch awaits the maintainer's decision on merging to `main` · **Evidence dated:** 2026-11-03 · **Commit:** written at `1be4f3e`, executed through `985bcd5` · **Reviewed:** 2026-11-03
 
 This plan removes every write to stdout and stderr from `etw-dnstap.exe`. After
 it, the Application event log (source `EtwDnstap`), the performance counters,
@@ -185,3 +185,38 @@ On DNSTap-WS2025, with the DNS-collector output on the receiver sent to null:
 - **A panic before the event source opens.** The hook opens the source itself
   through the existing lazy `event_source()`. If registration fails, the panic
   text is lost and the process still aborts, as it does for any log line.
+
+## Results
+
+| Step | Commit | Result |
+| --- | --- | --- |
+| 1. Plan | `fbd34d2` | Written. |
+| 2. Code, C1 to C6 | `0eb9cde` | As planned. The panic text formatter takes `Option<(&str, u32, u32)>` in place of `Option<&Location>`, so tests can give exact values. `src/pipeline/config_tests.rs` also expected `--help` to display help and was updated. `clippy.toml` sets `allow-print-in-tests = true` for the existing test `println!` calls. `benches/hot_path.rs` has one scoped `print_stderr` allow. |
+| 3. Documentation, D1 to D7 | `ec438e2`, merged in `c65951d` | As planned. The troubleshooting guide also gets a "A panic aborts the process" section. |
+| 4. Tests, T1 to T4 | `179be84`, merged in `985bcd5` | As planned. T1 was shown to fail with an `eprintln!` added to `main`. |
+| 5. Gates | `985bcd5` | All six gates pass: 417 + 1 tests (default) and 422 + 1 tests (`diag-timing`) passed, 7 ignored in each. `verify-link-exceptions.ps1`: 6 checks, 0 failed. `verify-pe.ps1`: 21 checks, 0 failed. |
+| 6. Lab check | `985bcd5` | Passed. See below. |
+
+### Lab check
+
+The release build is from the source of `0eb9cde`; the later commits change
+only tests and documentation. Guest checkpoint
+`no-console-output-pre-2026-11-03` was taken first. The receiver routed to its
+`devnull` logger, with its stdout and stderr sent to null. The service was
+`STOPPED` at the start and at the end, with no leftover ETW session.
+
+1. The new executable replaced the installed one (the guest keeps the old one as
+   `etw-dnstap.exe.nco-bak`). `NT SERVICE\EtwDnstap:(I)(RX)` was kept. The
+   service reached `RUNNING`. `capture started` had `version="0.1.0"`.
+2. `sc.exe stop` reached `STOPPED` with exit code 0. `capture stopped` and
+   `output stopped` were written.
+3. Run from a console in the guest with no arguments, `--help`, `-h`,
+   `--version`, `-V`, `--receiver bad`, and valid arguments: each exited with
+   code 1 with 0 bytes on stdout and 0 bytes on stderr.
+4. With `--help` added to `ImagePath`, the start failed with Event ID 1:
+   `EtwDnstap failed: invalid service arguments: unexpected argument '--help'
+   found`, followed by the usage line. The guest's SCM recovery actions
+   (restart after 5 s, 5 s, and 60 s, with failure actions on non-crash
+   failures) restarted it. The first restart hit the same Event ID 1. The
+   `ImagePath` was then restored, and the 60 s restart ran normally. The
+   service was stopped again to leave the guest as found.
