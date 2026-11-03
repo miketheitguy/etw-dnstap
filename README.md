@@ -76,10 +76,10 @@ Run it with `--help` for the options.
 An event moves through five stages: the ETW producer, the intake callback, a
 bounded buffer, the parser, and the sink. The sink queues frames for a sender
 thread, which writes them to the TCP receiver, or to a disk spool while the
-receiver is down or slow. The animation shows the earlier single-thread sink.
+receiver is down or slow. The animation's last stage shows a receiver outage.
 The [data path](docs/design/data-path.md) reference describes each stage.
 
-![Animation of the data path. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, and releases the slot. The TCP sink sends the frame to the receiver.](docs/assets/pipeline/etw-to-tcp-pipeline.gif)
+![Animation of the data path in six stages. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, releases the slot, and packs the frame into a 64 KiB block. The dnstap-sender thread writes the block to the TCP receiver. In the last stage the receiver is down: frames go to the disk spool, and after the reconnect the spool replays them, oldest first, before newer frames.](docs/assets/pipeline/etw-to-tcp-pipeline.gif)
 
 ## What is captured
 

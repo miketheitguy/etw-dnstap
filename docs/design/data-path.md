@@ -8,11 +8,12 @@ the stage that changes or loses an event. Operators use it to connect a counter
 to a stage. It does not repeat the details of each stage. The sections that
 follow link to the documents that do.
 
-![Animation of the data path. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, and releases the slot. The TCP sink buffers the frame and sends it to the receiver.](../assets/pipeline/etw-to-tcp-pipeline.gif)
+![Animation of the data path in six stages. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, releases the slot, and packs the frame into a 64 KiB block. The dnstap-sender thread writes the block to the TCP receiver. In the last stage the receiver is down: frames go to the disk spool, and after the reconnect the spool replays them, oldest first, before newer frames.](../assets/pipeline/etw-to-tcp-pipeline.gif)
 
 The animation slows the events and shows illustrative counter values. The
-[stage table](#stages) has the same information as text. The animation shows the
-earlier single-thread sink, with no send queue and no spool.
+[stage table](#stages) has the same information as text. The animation splits
+stage 5 in two: tab 05 shows normal sending, and tab 06 shows a receiver
+outage, the spool, and the replay.
 
 ## Stages
 
