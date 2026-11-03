@@ -36,7 +36,7 @@
                   Property="ProvisionInstallRollback"
                   Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Invoke-EtwDnstapProvisioning.ps1&quot; -Action Uninstall -SessionName &quot;[SESSION_NAME]&quot;" />
 
-    <!-- Uninstall, after StopServices and before RemoveFiles. -->
+    <!-- Uninstall, after StopServices and before DeleteServices. -->
     <CustomAction Id="ProvisionUninstall"
                   BinaryRef="Wix4UtilCA_X64"
                   DllEntry="WixQuietExec"
@@ -52,13 +52,20 @@
       <Custom Action="SetProvisionInstall" Before="ProvisionInstall" Condition="NOT REMOVE" />
       <Custom Action="ProvisionInstall" After="InstallServices" Condition="NOT REMOVE" />
 
-      <!-- Rollback only when a first install fails, never after a failed upgrade. -->
-      <Custom Action="SetProvisionInstallRollback" Before="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
-      <Custom Action="ProvisionInstallRollback" After="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <!-- Rollback only when a first install fails, never after a failed upgrade. A
+           rollback action must come before the action it undoes: Windows Installer
+           runs only the rollback actions already written to the script, so one
+           scheduled after ProvisionInstall would not run when ProvisionInstall
+           itself fails part way through. -->
+      <Custom Action="SetProvisionInstallRollback" Before="ProvisionInstallRollback" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="ProvisionInstallRollback" Before="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
 
-      <!-- Uninstall only on a real removal, not while a major upgrade removes the old product. -->
+      <!-- Uninstall only on a real removal, not while a major upgrade removes the old
+           product. It runs after StopServices and before DeleteServices (and so
+           before RemoveFiles): NT SERVICE\EtwDnstap must still resolve for the group
+           removal and for the grant script's SID check. -->
       <Custom Action="SetProvisionUninstall" Before="ProvisionUninstall" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
-      <Custom Action="ProvisionUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="ProvisionUninstall" Before="DeleteServices" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
   </Fragment>
 
