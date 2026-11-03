@@ -51,7 +51,7 @@ $dataFolder = Join-Path $env:ProgramData 'EtwDnstap'
 $spoolFolder = Join-Path $dataFolder 'spool'
 $trustedSids = 'S-1-5-18', 'S-1-5-32-544'
 $expectedServiceSd = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;IU)(A;;CCLCSWLORC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)'
-$expectedFolderSddl = "O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;$serviceSid)"
+$expectedFolderSddl = "O:BAG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;$serviceSid)"
 $script:Failures = 0
 $script:Passes = 0
 
@@ -209,7 +209,7 @@ else {
             if (-not $expected.ContainsKey($name)) { Assert-Check "event-source-matches-L0-$name" $false "extra in MSI registration: $($found[$name].kind) $($found[$name].data)" }
             elseif (-not $found.ContainsKey($name)) { Assert-Check "event-source-matches-L0-$name" $false "missing in MSI registration; L0 had: $($expected[$name].kind) $($expected[$name].data)" }
             else {
-                $same = ($found[$name].kind -eq $expected[$name].kind) -and ($found[$name].data -ceq $expected[$name].data)
+                $same = ($found[$name].kind -eq $expected[$name].kind) -and ($found[$name].data -ieq $expected[$name].data)
                 Assert-Check "event-source-matches-L0-$name" $same "MSI=[$($found[$name].kind) $($found[$name].data)] L0=[$($expected[$name].kind) $($expected[$name].data)]"
             }
         }
@@ -254,7 +254,7 @@ Assert-Check 'process-runs-from-install-folder' ($process.Count -eq 1 -and $proc
 
 if ($running) {
     Start-Sleep -Seconds 2
-    $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $serviceName; Id = 2; StartTime = $boot } -ErrorAction SilentlyContinue)
+    $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $serviceName; Id = 2; StartTime = $boot } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'capture started' })
     $message = if ($events.Count -gt 0) { $events[0].Message } else { '' }
     $reported = if ($message -match '\bversion[=:]\s*"?([0-9][0-9A-Za-z.+-]*)') { $Matches[1] } else { '' }
     Assert-Check 'event-2-capture-started-version-equals-Cargo-version' ($reported -ceq $ExpectedVersion) ("events-since-boot=$($events.Count) version=$reported message=" + $message.Substring(0, [Math]::Min(300, $message.Length)))

@@ -257,13 +257,14 @@ function Invoke-Msiexec([string]$StepName, [string]$Mode, [string]$Properties, [
     $seconds = [int]((Get-Date) - $started).TotalSeconds
     $hostLog = Join-Path $runDir "$StepName-msiexec.log"
     if (Test-Path -LiteralPath $hostLog) { Remove-Item -LiteralPath $hostLog -Force }
-    $null = Receive-LabFile -Session $session -GuestPath $guestLog -Destination $hostLog
+    Copy-Item -LiteralPath $guestLog -Destination $hostLog -FromSession $session -Force
     $script:StepMsiexec.Add([pscustomobject]@{
             mode = $Mode; arguments = ($arguments -replace [regex]::Escape($script:GuestStage), '<stage>')
             exitCode = $exit; expected = $ExpectedExitCodes; seconds = $seconds; log = (Split-Path -Leaf $hostLog)
         })
     Add-Assertion $AssertionStep "msiexec $Mode ($StepName) exit code" ($ExpectedExitCodes.Count -eq 0 -or $ExpectedExitCodes -contains $exit) "exit=$exit expected=$(if ($ExpectedExitCodes.Count -eq 0) { 'recorded only' } else { $ExpectedExitCodes -join ' or ' }) seconds=$seconds"
     Save-LogEvidence $StepName $hostLog
+    if ($ExpectedExitCodes.Count -gt 0 -and $ExpectedExitCodes -notcontains $exit) { throw "msiexec exit code $exit is not one of $($ExpectedExitCodes -join ', '). Not going on. See $StepName-msiexec.log." }
     return $exit
 }
 
@@ -275,7 +276,7 @@ function Save-LogEvidence([string]$StepName, [string]$LogPath) {
         'Action ended .*ProvisionUninstall', 'ConfigureService', 'Failure', 'Creating folder', 'Product: EtwDnstap -- ', 'RECEIVER_REMEMBERED', 'Action start .*: (AppSearch|LaunchConditions|FindRelatedProducts|SetSessionName|MigrateFeatureStates)', 'Property.S.: (RECEIVER|SESSION_NAME|SERVICE_ARGS) '
     $encoding = [Text.Encoding]::Unicode
     $bytes = [IO.File]::ReadAllBytes($LogPath)
-    $text = if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $encoding.GetString($bytes, 2, $bytes.Length - 2) } else { [Text.Encoding]::Default.GetString($bytes) }
+    $text = if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $encoding.GetString($bytes, 2, $bytes.Length - 2) } elseif ($bytes.Length -ge 2 -and $bytes[1] -eq 0) { $encoding.GetString($bytes) } else { [Text.Encoding]::Default.GetString($bytes) }
     $lines = $text -split "`r?`n"
     $kept = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -546,6 +547,13 @@ function Get-GuestInstallState {
 # L5b: change the receiver on an installed product. Both command forms are tried and the
 # effect of each is recorded: the plain form (maintenance mode, no REINSTALL) and the
 # form with REINSTALL=ALL REINSTALLMODE=vomus. The receiver is then set back to the lab value.
+function Read-MsiLogText([string]$Path) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { return [Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2) }
+    if ($bytes.Length -ge 2 -and $bytes[1] -eq 0) { return [Text.Encoding]::Unicode.GetString($bytes) }
+    return [Text.Encoding]::Default.GetString($bytes)
+}
+
 function Invoke-StepL5b {
     $check = 'L5b'
     Initialize-GuestStage
@@ -561,7 +569,7 @@ function Invoke-StepL5b {
         $before = Get-GuestInstallState
         $exit = Invoke-Msiexec $sub 'install' $form.Properties @() -AssertionStep $check
         $after = Get-GuestInstallState
-        $logText = [Text.Encoding]::Default.GetString([IO.File]::ReadAllBytes((Join-Path $runDir "$sub-msiexec.log")))
+        $logText = Read-MsiLogText (Join-Path $runDir "$sub-msiexec.log")
         $ran = [regex]::Matches($logText, '\[EtwDnstap\] Receiver .* accepted').Count -gt 0
         $changed = $after.ImagePath -match [regex]::Escape($newReceiver)
         if ($changed -and $null -eq $working) { $working = $form }

@@ -60,7 +60,7 @@ function Get-ContentSnapshot([string]$Path) {
                 kind       = if ($_.PSIsContainer) { 'folder' } else { 'file' }
                 attributes = [string]$_.Attributes
                 fileCount  = $files.Count
-                bytes      = [int64]($files | Measure-Object -Property Length -Sum).Sum
+                bytes      = [int64]$(if ($files.Count -gt 0) { ($files | Measure-Object -Property Length -Sum).Sum } else { 0 })
             }
         })
 }
