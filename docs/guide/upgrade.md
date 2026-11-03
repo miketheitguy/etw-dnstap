@@ -1,6 +1,6 @@
 # Repair or upgrade the service
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` · **Reviewed:** 2026-11-03
 
 Use this guide to change an installed service. It covers these tasks: take a
 snapshot, restore it, move from an older build, and replace the executable or
@@ -12,6 +12,83 @@ For an existing installation, keep the service identity, privileges, executable
 ACLs, and recovery policy as they are. Change only what you need. Take the
 snapshot first. Do not reset a value to a guessed default. Restore the value
 that the snapshot holds.
+
+## Upgrade, repair, or change settings with the MSI
+
+Use `msiexec` with the same MSI file, or with a newer one, to change an
+installation that the MSI made. Run it from an elevated session with
+`/qn /norestart /l*v <log>`. Restart the computer when `msiexec` exits with
+`3010`.
+
+The MSI keeps the values of the last install in `HKLM\SOFTWARE\EtwDnstap\Installer`.
+Each run reads them back, unless you pass a new value on the command line.
+
+Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-installer-plan.md).
+
+### Upgrade to a newer build
+
+```powershell
+msiexec.exe /i etw-dnstap-<new-version>-x64.msi /qn /norestart /l*v upgrade.log
+```
+
+- The newer MSI is a major upgrade. It removes the installed product and installs
+  the new one in one transaction. The service is stopped during the upgrade, and
+  it starts again after the restart.
+- It reuses the remembered `RECEIVER`, `SESSION_NAME`, and `SERVICE_ARGS`, unless
+  you pass them on the command line.
+- It keeps the spool folder, the ETW grants, and the membership of Performance
+  Log Users. The uninstall steps do not run during an upgrade, so none of these
+  is removed. The install steps run again. They check the folders, add the
+  membership if it is missing, and run the grant script.
+
+### Downgrade is refused
+
+An MSI with a lower version is refused with the message `A newer version of
+EtwDnstap is already installed. Uninstall it first.` To return to an older build,
+uninstall the current one, restart the computer, and install the older MSI. The
+uninstall deletes the spool. See [Uninstall with the MSI](uninstall.md#uninstall-with-the-msi).
+
+### Repair
+
+```powershell
+msiexec.exe /fvomus etw-dnstap-<version>-x64.msi /qn /norestart /l*v repair.log
+```
+
+Repair reinstalls the files, the registry values, and the service settings from
+the MSI. It runs the install steps again, and it keeps the remembered values.
+
+### Empty values keep the remembered value
+
+An empty property on the command line counts as not set. So `SERVICE_ARGS=`
+does not clear the remembered `SERVICE_ARGS`, and an upgrade or repair keeps
+the old value. The same applies to `RECEIVER=` and `SESSION_NAME=`.
+
+To clear `SERVICE_ARGS`, uninstall, restart the computer, and install again
+without it. The uninstall deletes the spool, so check the spool first, as
+described in [Uninstall with the MSI](uninstall.md#uninstall-with-the-msi).
+
+### Change the receiver
+
+Run the MSI with the new `RECEIVER` value. The value replaces the remembered one:
+
+```powershell
+msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v receiver.log RECEIVER=192.0.2.20:6000
+```
+
+- The MSI checks the new value in the same way as [step 1](install.md#1-check-the-receiver-address).
+  A bad value stops the install, and Windows Installer rolls back the changes.
+- The new value is written to the service's binary path and to the remembered
+  settings. The service uses it at its next start, and the restart after the
+  install provides that start.
+- The ETW grants do not depend on `RECEIVER`. They depend on `SESSION_NAME`.
+
+### Change the session name
+
+Install with the new name, for example `msiexec.exe /i ... SESSION_NAME=EtwDnstap-New`.
+The new session name has its own session GUID. The grant script grants the
+service SID on the new GUID, and it removes the service SID's grants from the
+other GUIDs that it manages. Restart the computer after the install, because
+the grant applies at boot.
 
 ## Snapshot before a change
 
