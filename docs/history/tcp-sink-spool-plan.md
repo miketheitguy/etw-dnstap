@@ -669,3 +669,37 @@ Run by the orchestrator on 2026-11-03. All pass:
 
 Not done yet: the lab outage test (step 10), which needs user approval, and
 the status-header updates in the edited guides, which happen at commit time.
+
+### Lab outage test (step 10)
+
+Run by a lab agent on 2026-11-03 with user approval, against the build of
+`e6b744f`. See the
+[TCP sink spool lab validation](tcp-sink-spool-lab-validation.md). All three
+runs pass, and so does provisioning by the guide:
+
+| Run | Encoded | Spooled = replayed | Counted sink loss | Uncounted gap |
+| --- | --- | --- | --- | --- |
+| A: 1,000 QPS, 60 s outage | 300,000 | 134,915 | 636 (one 64 KiB block) | 66 frames |
+| B: 50,000 QPS, 60 s outage | 15,000,000 | 6,783,646 | 640 (one 64 KiB block) | 1,645 frames, 169 KB |
+| C: restart with leftovers | 1,000 QPS | 63,066 leftovers replayed | 632 in the first run | within resolution |
+
+All drop counters except `disconnected_dropped` are 0. Every uncounted gap
+is under the 1 MiB socket send buffer bound. Run B used the high-rate intake
+settings (`--etw-buffer-kib 64 --etw-max-buffers 256 --capacity 262144`),
+because the default channel drops at intake at 50,000 QPS without a spool.
+The receiver could not check frame order or duplicates, because the
+collector writes nothing. The unit, property, and end-to-end tests cover
+those.
+
+The service created, wrote, read, and deleted segments under the restricted
+token with the split grant, and the guide's blocks ran literally. The lab
+found five documentation defects, fixed in the same commit as the record:
+
+- the in-flight loss is one block of up to 64 KiB, not about 100 ms of frames;
+- the copy sources in the upgrade guide;
+- `receiver_reconnects` also counts the first connection after a down start;
+- a folder listing can show the open segment as 0 bytes;
+- the `icacls` entry order and the `FAILED 1062` note.
+
+The guest was restored and verified against its recorded state. The Hyper-V
+checkpoint `spool-pre-2026-11-03` is kept.

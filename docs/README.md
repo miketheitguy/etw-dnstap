@@ -159,6 +159,7 @@ otherwise.
 | [ETW buffer wake validation](history/buffer-wake-validation.md) | Cause of the 1 s burst loss, wake options compared, lab results for the per-buffer wake |
 | [ETW flush removal validation](history/flush-removal-validation.md) | Lab results without the explicit flush at about 1,000 to 50,000 achieved QPS |
 | [200,000 QPS validation](history/200k-qps-validation.md) | Two runs with 128 KiB buffers and a 262,144-slot channel |
+| [TCP sink spool lab validation](history/tcp-sink-spool-lab-validation.md) | Receiver outages at 1,000 and 50,000 QPS, restart with leftovers, the spool folder grant under the restricted token |
 | [Live load validation plan](history/live-load-validation-plan.md) | Stages L1 to L5. The pending L4 action was not done. Its premise that counters reach only stderr is out of date |
 
 ### Performance campaigns

@@ -326,8 +326,8 @@ The last `icacls.exe` command should list four entries, and none has `(I)`:
 - `NT SERVICE\EtwDnstap` with write and read and execute, and with no `(OI)` or
   `(CI)` flags. This entry applies to the folder only.
 - `NT SERVICE\EtwDnstap:(OI)(CI)(IO)(M)`. This entry applies to the contents only.
-- `NT AUTHORITY\SYSTEM:(OI)(CI)(F)`
 - `BUILTIN\Administrators:(OI)(CI)(F)`
+- `NT AUTHORITY\SYSTEM:(OI)(CI)(F)`
 
 The service runs a check of its own at startup. It refuses the spool, logs one
 warning, and runs without a spool if any of these is false. The service's check

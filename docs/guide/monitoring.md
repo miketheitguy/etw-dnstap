@@ -95,7 +95,7 @@ These fields appear on `output stats` and `output stopped`.
 | `output_errors` | Parser output failures. Increments when a frame cannot be queued for the sender thread, because the sender thread has stopped (and so for each `output_failed_events`). Also increments when a flush of the queue fails, when `finish` reports that the sender thread panicked, and when the STOP/FINISH exchange at shutdown fails. |
 | `receiver_connected` | `true` while a Frame Streams session exists. A flag, not a count. |
 | `receiver_disconnects` | Established sessions that were lost. |
-| `receiver_reconnects` | Successful reconnects after the first session. |
+| `receiver_reconnects` | Successful reconnects after the first session. When the receiver is down at startup, the first connection counts here too. |
 | `receiver_reconnect_failures` | Reconnect attempts that failed at connect, handshake, or protocol. |
 | `disconnected_dropped` | Frames lost in the sink: frames in flight when a connection failed, such as frames written since the last successful flush, and frames that arrived while the receiver was down and no spool was in use. Frames in flight may have reached the receiver. A frame in a failed replay batch is counted here too, after `replayed`. Never resent. Not part of `intake_dropped`. |
 | `slow_writes` | Socket writes that took at least 5 ms. |
@@ -263,7 +263,7 @@ How the totals relate:
 | % ETW Buffers Used | 43 | Buffers in use as a percentage of the maximum. | None |
 | (base of 43) | 44 | Hidden counter. It is the base for % ETW Buffers Used. | None |
 | Receiver Connected | 50 | 1 while a Frame Streams session exists. Otherwise 0. | `receiver_connected` |
-| Receiver Reconnects | 51 | Successful reconnects after the first session. | `receiver_reconnects` |
+| Receiver Reconnects | 51 | Successful reconnects after the first session. When the receiver is down at startup, the first connection counts here too. | `receiver_reconnects` |
 | Spool Bytes | 58 | Bytes now held in spool segment files. | `spool_bytes` |
 | Spool Segments | 59 | Spool segment files now on disk. Advanced detail. | `spool_segments` |
 | Spool Available | 60 | 1 while a spool is in use and accepting data. 0 with `--no-spool`, with an unusable folder, and while the spool is paused by an I/O error or by the free-space floor. | `spool_available` |

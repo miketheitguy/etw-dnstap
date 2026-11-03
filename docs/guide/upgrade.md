@@ -176,7 +176,10 @@ After the service starts, `spool_available` in the `output stats` line reads
 
 ## Replace the executable
 
-Take the snapshot first. Then:
+Take the snapshot first. Run the commands from the folder that holds the new
+`etw-dnstap.exe` under `target\x86_64-pc-windows-msvc\release\`, or change the
+`Copy-Item` source to the folder where you put it. If the service is already
+stopped, `sc.exe stop` prints `FAILED 1062`. That is expected. Then:
 
 ```powershell
 sc.exe stop EtwDnstap
@@ -221,7 +224,9 @@ Do this only when a new release changes `etw-dnstap.man`. The release that
 adds the spool changes it, so [Add the spool folder](#add-the-spool-folder)
 calls this section. Take the snapshot
 first, as for the executable. Run these commands while the service is stopped,
-between `sc.exe stop` and `sc.exe start`.
+between `sc.exe stop` and `sc.exe start`. Run them from the folder that holds
+the new `etw-dnstap.man` under `packaging\perfcounters\`, or change the
+`Copy-Item` source to the folder where you put it.
 
 ```powershell
 $installDirectory = 'C:\Program Files\EtwDnstap'

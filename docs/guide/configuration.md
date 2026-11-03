@@ -373,10 +373,12 @@ has the figures.
 - A frame in a failed batch counts in `replayed` and in `disconnected_dropped`.
 - The loss is bounded. A failed connection loses the batch in progress, up to
   256 KiB, or about 2,500 frames at 103 bytes each. The batch counts in
-  `replayed` and in `disconnected_dropped`. It also loses the frames written
-  since the last flush, about 100 ms of frames, which count in
-  `disconnected_dropped`. Data in the socket send buffer, up to 1 MiB, is lost
-  too, and it is not counted.
+  `replayed` and in `disconnected_dropped`. It also loses the block or chunk
+  that was being written, up to 64 KiB or about 636 frames at 103 bytes each,
+  and the frames written before it since the last flush. These count in
+  `disconnected_dropped`. The lab saw one 64 KiB block per outage at 1,000 and
+  50,000 queries per second. Data in the socket send buffer, up to 1 MiB, is
+  lost too, and it is not counted.
 - The spool does not flush data to disk. It protects against a receiver
   outage, not a power loss. A power loss can lose recent frames.
 

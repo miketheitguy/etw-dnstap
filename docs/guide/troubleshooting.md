@@ -146,8 +146,10 @@ backoff.
 3. **Counters:** `receiver_connected` is `false` while down.
    `receiver_disconnects` and `receiver_reconnect_failures` show the failures.
    With a spool, `spool_bytes` and `spool_segments` rise while the receiver is
-   down, and `replayed` rises after it returns. Without a spool,
-   `disconnected_dropped` shows the loss. See [Counters](#counters-show-drops).
+   down, and `replayed` rises after it returns. Use `spool_bytes` for the spool
+   size. A folder listing can show the open segment as 0 bytes until the
+   segment is closed. Without a spool, `disconnected_dropped` shows the loss.
+   See [Counters](#counters-show-drops).
 
 Frames in flight when a session failed are counted in `disconnected_dropped`
 and are never resent. Frames that arrive while the receiver is down go to the
