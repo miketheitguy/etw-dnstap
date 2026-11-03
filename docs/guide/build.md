@@ -1,14 +1,14 @@
 # Build the executable
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
 
 Use this guide to build `etw-dnstap.exe` from source and check its hardening.
 It is for the person who prepares the executable. To install the result on a DNS
 Server, see [Install and provision](install.md).
 
-Before you start, you need Visual Studio C++ Build Tools with the Windows SDK
-(for the MSVC linker) and a clone of this repository. No Protocol Buffers
-compiler is required.
+Before you start, you need a clone of this repository and Visual Studio C++
+Build Tools with the Windows SDK. The tools supply the MSVC linker and the
+resource compiler. You do not need a Protocol Buffers compiler.
 
 ## Install the Rust toolchain
 
@@ -19,8 +19,8 @@ It is a dated nightly, so a stable toolchain is not enough.
 2. From the repository root, run `rustup toolchain install` with no toolchain
    name. rustup reads `rust-toolchain.toml` and installs the pinned nightly with
    `clippy`, `rustfmt`, `rust-src`, and the `x86_64-pc-windows-msvc` target. CI
-   uses the same command. Current rustup versions do not install a toolchain
-   from `rustup show`.
+   runs the same command with `--profile minimal`. Current rustup versions do
+   not install a toolchain from `rustup show`.
 3. Run `rustup show active-toolchain`. Check that the output names the pinned
    channel.
 
@@ -44,8 +44,8 @@ cargo build --locked --release
 ```
 
 The release executable is
-`target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`. `target\` is ignored by
-Git. It is a local build artifact, not part of the clone.
+`target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`. Git ignores `target\`.
+It is a local build artifact, not part of the clone.
 
 Points to know before you build:
 
@@ -62,9 +62,10 @@ Points to know before you build:
 - **Hardening flags** (CFG, EH continuation guard, ASLR, high-entropy VA, NX,
   CET-compatible marker, stack protection (`-Z stack-protector=all`), and
   `/DEBUG:NONE` for release) come from
-  `.cargo/config.toml`. The CET flag is a compatibility marker. It does not prove
-  that the hardware enforces shadow stacks. After each build, and after any
-  toolchain or flag change, check the release executable:
+  `.cargo/config.toml`. The release profile also sets `trim-paths = "all"`,
+  which keeps build-host paths out of the image. The CET flag is a compatibility
+  marker. It does not prove that the hardware enforces shadow stacks. After each
+  build, and after any toolchain or flag change, check the release executable:
 
   ```powershell
   scripts\ci\verify-pe.ps1 -Path target\x86_64-pc-windows-msvc\release\etw-dnstap.exe
@@ -75,9 +76,13 @@ Points to know before you build:
   - A hardening flag is missing.
   - The image has a PDB entry.
   - The image imports an ASan runtime, or the dynamic C or Universal CRT.
-  - The image contains an absolute `C:\Users\` path.
+  - The image contains an absolute path that starts at a drive's `Users` folder.
 
   CI runs the same check on the release build.
+- **Linker warnings.** The release link prints one `LNK2047` warning for each
+  prebuilt `ring` assembly object. `.cargo/config.toml` allows them with
+  `/FORCE:GUARDEHCONT`. CI runs `scripts\ci\verify-link-exceptions.ps1` on the
+  build log. It fails when the objects differ from `scripts/ci/link-exceptions.txt`.
 - **Check the binary.** `etw-dnstap.exe --version` prints the package version.
   `--help` prints the options without starting capture.
 

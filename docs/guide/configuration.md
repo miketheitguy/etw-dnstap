@@ -1,27 +1,28 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` (defaults from `CaptureArgs` in `src/pipeline/config.rs`) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
 
-Every option is set in the service binary path, not in `sc.exe start`. Install
-and provisioning steps are in [install.md](install.md). Symptoms are in
+Set every option in the service binary path. The service ignores arguments that
+you give to `sc.exe start`. Install and provisioning steps are in
+[install.md](install.md). Symptoms are in
 [troubleshooting.md](troubleshooting.md). Values for high query rates are in
 [tuning.md](tuning.md). Log events and counters are in
 [monitoring.md](monitoring.md).
 
 ## Options
 
-Defaults and ranges come from `CaptureArgs` in `src/pipeline/config.rs`. Values outside
-the range are rejected at startup.
+Defaults and ranges come from `CaptureArgs` in `src/pipeline/config.rs`. The service
+rejects a value outside the range at startup.
 
 | Option | Default | Range or format | Meaning |
 | --- | --- | --- | --- |
-| `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Frame Streams TCP receiver. The connection is TLS by default and plaintext with `--plaintext`. Hostnames are rejected. The service starts even when the receiver is down and reconnects. See [Receiver connection](#receiver-connection). |
+| `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Frame Streams TCP receiver. The connection is TLS by default and plaintext with `--plaintext`. The option does not accept hostnames. The service starts even when the receiver is down and reconnects. See [Receiver connection](#receiver-connection). |
 | `--plaintext` | off | Flag | Disables TLS. The connection is plaintext TCP with no peer authentication. Use it only on a trusted network. See [TLS](#tls). |
 | `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | The name that the receiver certificate must match. It is also sent as SNI. Without it, the certificate must carry the receiver IP as an `iPAddress` SAN. |
 | `--capacity N` | `24576` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value. See [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for records with a padded payload over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Without it, capture runs until SCM stops the service or a failure occurs. |
-| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. A leaked session with the same name, shape, and session GUID is reclaimed at startup. See [Session reclaim](#session-reclaim). The name also sets the session GUID that the ETW grant names. A new name therefore needs a run of the grant script with that name, and a restart. See [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
+| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. At startup, the service reclaims a leaked session with the same name, shape, and session GUID. See [Session reclaim](#session-reclaim). The name also sets the session GUID that the ETW grant names. A new name therefore needs a run of the grant script with that name, and a restart of the computer. See [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
 | `--etw-min-buffers N` | `0` | 0 to 4,096, at most `--etw-max-buffers` | Requested minimum ETW buffer count, reserved when the session starts. `0` lets ETW choose. ETW raises the value to at least two per logical processor. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
@@ -33,9 +34,9 @@ the range are rejected at startup.
 
 ### Removed options
 
-`--output`/`-o`, `--max-output-bytes`, and `--metrics` were removed. Arguments
-that use them fail command-line parsing. The service writes no capture or
-metrics files.
+The service does not have `--output`/`-o`, `--max-output-bytes`, or `--metrics`.
+An argument that uses them fails command-line parsing. The service writes no
+capture or metrics files.
 
 This build removes `--etw-flush-ms`. The service no longer asks ETW to flush
 the session. A binary path that still has `--etw-flush-ms` fails command-line
@@ -50,10 +51,10 @@ use them in production.
 | Option | Range | Effect |
 | --- | --- | --- |
 | `--diag-timer-resolution-ms MS` | 1 to 15 | Calls `timeBeginPeriod` for the whole run and withdraws it on exit. |
-| `--diag-thread-priority LEVEL` | `above-normal` or `highest` | Raises the priority of the `dnstap-parser` and `etw-consumer` threads. Failure to set it is logged once and ignored. |
+| `--diag-thread-priority LEVEL` | `above-normal` or `highest` | Raises the priority of the `dnstap-parser` and `etw-consumer` threads. If the call fails, the service logs a warning and continues at the default priority. |
 
-The feature also times the parser's idle parks and socket writes, and adds the
-results to the stop report. It is for locating wait time. It does not change
+The feature also times the parser's idle parks, socket writes, and flushes. It
+adds the results to the stop report. It is for locating wait time. It does not change
 capture behavior.
 
 ## Storage
@@ -62,46 +63,53 @@ Counted storage at the defaults (`--capacity 24576` and 64 jumbo slots) is
 59.59 MiB. The previous default `--capacity 8192` counts 25.22 MiB. With the
 high-rate `--capacity 65536` and the default 64 jumbo slots, it is 145.53 MiB.
 With `--capacity 131072` and 64 jumbo slots, it is 283.03 MiB. With
-`--capacity 262144` and 64 jumbo slots, it is 558.03 MiB. At the
-maximum (262,144 events and 256 jumbo slots) it is 582.11 MiB. These are
-calculated payload, slot, free-list, and channel totals. They exclude the allocator, native ETW buffers, TDH caches,
-protobuf data, and output buffers. They are not measured process-memory limits.
-See [pooled-intake.md](../design/pooled-intake.md) for the budget.
+`--capacity 262144` and 64 jumbo slots, it is 558.03 MiB. At the maximum
+(262,144 events and 256 jumbo slots) it is 582.11 MiB. These totals are
+calculated payload, slot, free-list, and channel sizes. They exclude the
+allocator, native ETW buffers, TDH caches, protobuf data, and output buffers.
+They are not measured process-memory limits. See
+[pooled-intake.md](../design/pooled-intake.md) for the budget.
 
 ## Subscription
 
 The service enables the `Microsoft-Windows-DNSServer` provider at level `0xFF`
 in its own real-time session. The level is a maximum, so `0xFF` passes every
-level: there is no level filter. It does not enable the Analytical event log. At
-startup it resolves the `QUERY_RECEIVED`, `RESPONSE_SUCCESS`, and
+level. There is no level filter. The service does not enable the Analytical
+event log. At startup it resolves the `QUERY_RECEIVED`, `RESPONSE_SUCCESS`, and
 `RESPONSE_FAILURE` keyword bits by name and sets `MatchAnyKeyword` to them. On
-the lab VM they are `0x1`, `0x2`, and `0x4`, so the mask is `0x7`. If the lookup
-fails, if `QUERY_RECEIVED` or `RESPONSE_SUCCESS` is missing or malformed, or if
-any two of the three names share a bit, it logs one warning and uses
-`0x8000000000000000` instead, the bit associated with the Analytical channel. A
-shared bit means the metadata cannot be trusted.
+the lab VM they are `0x1`, `0x2`, and `0x4`, so the mask is `0x7`.
 
-If only `RESPONSE_FAILURE` is missing or malformed, the mask is narrowed to
-`QUERY_RECEIVED | RESPONSE_SUCCESS` and failed responses are not captured. The
-service logs one warning: "RESPONSE_FAILURE keyword is not available (reason);
-failed responses are not captured".
+The service logs one warning and uses `0x8000000000000000` instead in these
+cases. This is the bit associated with the Analytical channel.
+
+- The keyword lookup fails.
+- `QUERY_RECEIVED` or `RESPONSE_SUCCESS` is missing or malformed.
+- Any two of the three names share a bit.
+
+A shared bit means the metadata cannot be trusted.
+
+If only `RESPONSE_FAILURE` is missing or malformed, the service narrows the mask
+to `QUERY_RECEIVED | RESPONSE_SUCCESS`. The service then does not capture failed
+responses. It logs one warning. The warning text starts with "RESPONSE_FAILURE
+keyword is not available" and ends with "failed responses are not captured".
 
 The `capture started` line shows the masks in use, whether the fallback applied
-(`keyword_fallback`), and whether failed responses are captured
-(`failed_responses_captured`). It is `false` only in the partial case above. In
-the full-channel fallback, event 258 passes the keyword mask, so it is `true`.
+(`keyword_fallback`), and whether the service captures failed responses
+(`failed_responses_captured`). The last field is `false` only in the partial
+case above. In the full-channel fallback, event 258 passes the keyword mask, so
+the field is `true`.
 
-Only event IDs 256 (query received), 257 (response success), and 258 (response
-failure) are accepted. Event 256 produces `CLIENT_QUERY`. Events 257 and 258
-produce `CLIENT_RESPONSE`. Event 258 is a failed response, for example SERVFAIL.
-Its packet was observed to be the response sent to the client for SERVFAIL
-(Reason `System`) and for a policy REFUSED (Reason `Policy`). A 258 whose packet
-is not a response (QR bit clear) is rejected and counted in `rejected`.
-NXDOMAIN is a successful response and arrives as event 257. Event IDs 259, 260,
-and 261 are excluded, and excluded events do not increment any counter. An
-IGNORE policy produces event 259 (`IGNORED_QUERY`) with no packet and no
-response on the wire, so it is correctly not captured. The query itself is still
-captured as 256. See
+The service accepts only event IDs 256 (query received), 257 (response
+success), and 258 (response failure). Event 256 produces `CLIENT_QUERY`. Events
+257 and 258 produce `CLIENT_RESPONSE`. Event 258 is a failed response, for
+example SERVFAIL. The lab observed that its packet was the response sent to the
+client for SERVFAIL (Reason `System`) and for a policy REFUSED (Reason `Policy`). The
+parser rejects a 258 whose packet is not a response (QR bit clear) and counts it
+in `rejected`. NXDOMAIN is a successful response and arrives as event 257. The
+service excludes event IDs 259, 260, and 261. Excluded events do not increment
+any counter. An IGNORE policy produces event 259 (`IGNORED_QUERY`) with no
+packet and no response on the wire, so the service correctly does not capture
+it. The service still captures the query itself as 256. See
 [README.md](../../README.md#what-is-captured) for the message mapping.
 
 More facts from the subscription code:
@@ -123,51 +131,52 @@ More facts from the subscription code:
 The same provider is also filtered to one process: the running `DNS` service
 (the DNS Server role). The subscription adds an `EVENT_FILTER_TYPE_PID` filter
 with that process ID, and the callback checks the record's process ID again
-before it copies the record. A mismatch is counted in `foreign_pid_rejected`
-and is not counted in `received`.
+before it copies the record. The callback counts a mismatch in
+`foreign_pid_rejected`, not in `received`.
 
 - Startup fails if the `DNS` service is not running. Start it first.
-- The process ID is read again every 5 seconds. If it changes, or the service
-  stops, EtwDnstap stops with a service failure. SCM then restarts it under the
+- The service reads the process ID again every 5 seconds. If it changes, or the
+  service stops, EtwDnstap stops with a service failure. SCM then restarts it under the
   recovery policy in [install.md](install.md#5-configure-scm-recovery), and the
   new instance resolves the new process ID.
-- Records from a restarted DNS Server are not captured until EtwDnstap has
-  restarted. Expect a gap of at least the detection interval plus the SCM
+- The service does not capture records from a restarted DNS Server until
+  EtwDnstap restarts. Expect a gap of at least the detection interval plus the SCM
   restart delay.
-- The ETW-side filter is expected to keep other processes' records out of the
-  callback. Whether it does so on a live host is unverified. A nonzero
+- The ETW-side filter should keep other processes' records out of the callback.
+  The project has not verified this on a live host. A nonzero
   `foreign_pid_rejected` shows that records from another process reached the
   callback.
 
 ## Message and transport limits
 
 - **Frame Streams content type:** `protobuf:dnstap.Dnstap`, with protobuf data
-  frames. Control payloads up to 512 bytes and content-type fields up to 256
-  bytes are accepted.
-- **Deadlines:** connection establishment has a 2-second timeout. The whole
-  handshake, each buffered write or flush, and STOP/FINISH each have a 2-second
-  deadline shared across partial socket calls. A peer cannot extend a deadline
-  by trickling bytes. The TLS handshake shares the 2-second connect and
-  handshake deadline with READY and ACCEPT. Time spent inside the
-  Windows certificate verifier, for example a revocation check, is not
-  interrupted by the deadline, but it is charged to it. A verifier that takes
-  longer than the remaining deadline fails the handshake with a timeout.
+  frames. The service accepts control payloads up to 512 bytes and
+  content-type fields up to 256 bytes.
+- **Deadlines:** the TCP connection has a 2-second timeout. The handshake has
+  one 2-second deadline. It starts after the TCP connection opens. It covers
+  the TLS handshake, READY, ACCEPT, and START. Each write call and each flush
+  call has its own 2-second deadline. The final flush, STOP, and FINISH share
+  one 2-second deadline. A deadline covers partial socket calls, so a peer
+  cannot extend it by trickling bytes. The deadline does not interrupt the
+  Windows certificate verifier, for example during a revocation check, but it
+  counts the verifier's time. A verifier that takes longer than the remaining
+  time fails the handshake with a timeout.
 - **Socket send buffer:** the connection asks the kernel for a 1 MiB send
   buffer (`SO_SNDBUF`), so a briefly slow receiver stalls the parser less. If
   the request fails, the connection proceeds with the default buffer.
 - **Flush:** when the parser is idle and output is pending, it flushes if the
   last flush is 100 ms or older. While busy, it flushes at least once a
-  second. The clock is read every 64 events, so the busy bound is approximate.
-- **Failure:** a failed session is abandoned, and its buffered frames are
-  discarded. No STOP is sent after a partial frame. Capture continues and the
-  sink reconnects. See [Receiver connection](#receiver-connection).
-- **Encoded size:** each encoded message is limited to 70 KiB.
+  second. The parser reads the clock every 64 events, so the busy bound is approximate.
+- **Failure:** the sink abandons a failed session and discards its buffered
+  frames. The sink sends no STOP after a partial frame. Capture continues and
+  the sink reconnects. See [Receiver connection](#receiver-connection).
+- **Encoded size:** each encoded message is at most 70 KiB.
 - **DNS envelope:** the DNS message must be 12 to 65,535 bytes, and the QR bit must
   match the event's direction. The encoder preserves packet bytes verbatim. It
-  does not validate every name or resource record, and it does not strip or add
-  a TCP length prefix.
-- **Missing or malformed packet data** is rejected. It is never rebuilt from a
-  query name.
+  does not check every name or resource record, and it does not strip or add a
+  TCP length prefix.
+- **Missing or malformed packet data:** the parser rejects it. The service never
+  rebuilds a packet from a query name.
 - **Standards:** the message layout follows the official
   [dnstap protobuf schema](https://github.com/dnstap/dnstap.pb/blob/main/dnstap.proto)
   (CC0). The Frame Streams control format follows the
@@ -184,8 +193,8 @@ and is not counted in `received`.
 The sink keeps one Frame Streams session to `--receiver`. Network failures
 are recoverable. Protocol failures at startup are not.
 
-- **Startup.** The first connection is attempted once, synchronously. A network
-  failure (refused, timed out, reset) does not stop the service. The service
+- **Startup.** The service attempts the first connection once, synchronously. A
+  network failure (refused, timed out, reset) does not stop the service. The service
   logs a warning, starts disconnected, and retries. A protocol failure at
   startup is fatal. A receiver that answers but does not accept the
   `protobuf:dnstap.Dnstap` content type, or that sends a malformed control
@@ -198,50 +207,51 @@ are recoverable. Protocol failures at startup are not.
   delay and the base. The base starts at 250 ms and doubles up to a 30-second
   cap. A successful reconnect resets the base to 250 ms. Every new session
   repeats READY, ACCEPT, and START.
-- **No resend.** Frames that were buffered when a session failed, and frames
-  that arrive while disconnected, are never sent again. They are counted in
-  `disconnected_dropped`.
+- **No resend.** The sink never sends frames that it buffered when a session
+  failed. It also never sends frames that arrive while disconnected. It counts
+  them in `disconnected_dropped`.
 - **Incompatible receiver after startup.** A reconnect attempt that receives the
   wrong content type counts as a failed attempt. The service keeps running and
   retries. Only the first connection's protocol failure stops the service.
-- **Shutdown while disconnected.** No STOP is sent. The service logs a warning
-  and stops with success. The frames that were not delivered are counted.
+- **Shutdown while disconnected.** The sink sends no STOP. The service logs a
+  warning and stops with success. The sink has already counted the frames that
+  it did not deliver.
 - **Shutdown while connected.** The sink sends STOP and waits for FINISH within
   the 2-second deadline. A missing or invalid FINISH is a shutdown failure: the
   service stops with an error.
 
 ### TLS
 
-The Frame Streams session runs inside TLS unless `--plaintext` is given. With
+The Frame Streams session runs inside TLS unless you set `--plaintext`. With
 `--plaintext`, the connection is plaintext TCP with no peer authentication, as
 in earlier builds. A receiver that speaks plaintext while TLS is on fails the
 handshake. That is a protocol failure, as described below.
 
-- **Versions.** TLS 1.2 and TLS 1.3 only. No other version is offered.
+- **Versions.** TLS 1.2 and TLS 1.3 only. The service offers no other version.
 - **Library.** rustls with the `ring` crypto provider. Schannel is not used for
   the TLS record layer.
-- **Verification.** The receiver certificate is verified by Windows CryptoAPI
-  through `rustls-platform-verifier`. It uses the machine store: Trusted Root
+- **Verification.** Windows CryptoAPI checks the receiver certificate through
+  `rustls-platform-verifier`. It uses the machine store: Trusted Root
   Certification Authorities and intermediates, and roots pushed by Group
   Policy. The certificate must match `--tls-server-name`, or the receiver IP
-  as an `iPAddress` SAN when that flag is not set. The same name is sent as
-  SNI.
+  as an `iPAddress` SAN when that flag is not set. The service sends the same
+  name as SNI.
 - **Revocation.** The verifier checks revocation for the receiver (end-entity)
   certificate only. It does not check the intermediates. The check is best
-  effort. If the status cannot be obtained, the connection proceeds. One cause
-  is an unreachable Online Certificate Status Protocol (OCSP) responder or
-  certificate revocation list (CRL) distribution point. A certificate that
-  names no OCSP responder and no CRL distribution point is not checked for
-  revocation. A certificate that Windows CryptoAPI reports as revoked, from a CRL, an
-  OCSP responder, or an OCSP response stapled by the receiver, is rejected. The
-  verifier gives revocation network retrieval a cumulative 10-second limit. The
-  2-second handshake deadline does not interrupt the verifier, but the time it
-  takes counts against the deadline. If the verifier returns after the deadline
-  has passed, the next socket write fails the handshake with a timeout. That is
-  a network failure, and the service retries it. See
-  [Deadlines](#message-and-transport-limits). Hard-fail revocation is not
-  provided.
-- **Failure class.** A certificate that does not verify is a protocol failure,
+  effort. If the verifier cannot get the status, the connection proceeds. One
+  cause is an unreachable Online Certificate Status Protocol (OCSP) responder or
+  certificate revocation list (CRL) distribution point. The verifier does not
+  check revocation for a certificate that names no OCSP responder and no CRL
+  distribution point. The verifier rejects a certificate that Windows CryptoAPI
+  reports as revoked. The report can come from a CRL, an OCSP responder, or an
+  OCSP response that the receiver staples. The verifier gives revocation network
+  retrieval a cumulative 10-second limit. The 2-second handshake deadline does
+  not interrupt the verifier, but the time it takes counts against the
+  deadline. If the verifier returns after the deadline passes, the next socket
+  write fails the handshake with a timeout. That is a network failure, and the
+  service retries it. See [Deadlines](#message-and-transport-limits). The
+  service does not provide hard-fail revocation.
+- **Failure class.** A certificate that fails the check is a protocol failure,
   not a network failure. At the first connection it is fatal: the service stops
   with an error (Event ID 1). On a reconnect it is a counted failed attempt, and
   the service keeps retrying. This is the same rule as the content-type failure
@@ -249,9 +259,9 @@ handshake. That is a protocol failure, as described below.
 - **No client certificate.** The service does not authenticate itself to the
   receiver.
 - **No close_notify.** FINISH ends the Frame Streams session. The TCP close
-  follows. No TLS close_notify alert is sent.
+  follows. The service sends no TLS close_notify alert.
 
-The TLS handshake runs under the 2-second connect and handshake deadline. See
+The TLS handshake runs under the 2-second handshake deadline. See
 [Deadlines](#message-and-transport-limits) for the verifier exception. The
 certificate requirements for the receiver are in
 [receiver.md](receiver.md#receiver-certificate).
@@ -284,18 +294,20 @@ The service has no instance mutex. Only one instance runs, for two reasons.
 The SCM starts one process for the service. The identity check refuses a
 process that does not run as this service.
 
-On startup, a leaked session with the same name, the same session GUID, and
-this program's shape is stopped and replaced. The session GUID is the one that
-the service derives from the session name. The shape is real-time only, with no file, circular,
-append, new-file, system, buffering, or private logger mode, and no log file.
+On startup, the service stops and replaces a leaked session with the same name,
+the same session GUID, and this program's shape. The session GUID is the one
+that the service derives from the session name. The shape is real-time only,
+with no file, circular, append, new-file, system, buffering, or private logger
+mode, and no log file.
 Buffer size, buffer counts, flush timer, and clock type are not part of the
 shape. A different `--etw-buffer-kib` does not block reclaim. The service logs
 `stale ETW session used a different buffer size; reclaiming anyway` and
-continues. Any other session with that name, including one with a different GUID, is left alone, and startup fails.
+continues. The service does not stop any other session with that name,
+including one with a different GUID. Startup fails instead.
 
-Sessions named `etw-dnstap-<pid>` from earlier builds are not reclaimed.
-Clean them up once with `logman query -ets`, then `logman stop etw-dnstap-<pid> -ets`.
-
+The service does not reclaim sessions named `etw-dnstap-<pid>` from earlier
+builds. Find them with `logman query -ets`. Then stop each one with
+`logman stop etw-dnstap-<pid> -ets`.
 
 ## Next steps
 

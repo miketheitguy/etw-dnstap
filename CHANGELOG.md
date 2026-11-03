@@ -47,6 +47,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- A data-path reference, [docs/design/data-path.md](docs/design/data-path.md), with an
+  animation of the five stages from an ETW event to a TCP frame. The sources
+  that build the GIF are in `scripts/docs/pipeline-animation/`.
 - CI captures the release link output and fails when the linker's LNK2047 object
   set (ring's prebuilt NASM objects, the `/FORCE:GUARDEHCONT` exception) differs
   from `scripts/ci/link-exceptions.txt` in either direction. The allowlist header
@@ -197,6 +200,11 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   plans moved from `docs/plans/` to `docs/history/`. The Phase 2 results moved
   from the baseline record to `datasets/baselines/code-review-2026-11-01/phase-2-results.md`.
   The troubleshooting guide has a symptom table.
+- Documentation audit against the code. The operator guides, the pooled intake
+  reference, and the policy documents now match the source. Examples: the pool
+  is leaked and has no reference count, the TLS handshake and the Frame Streams
+  handshake share one 2-second deadline, and the Events Dropped counter does not
+  add the jumbo drops twice.
 - Internal: the Clippy lints `multiple_unsafe_ops_per_block`,
   `missing_const_for_fn`, and `shadow_unrelated` are enabled as warnings in
   `Cargo.toml`, so CI fails on them. Three functions became `const fn`, and the

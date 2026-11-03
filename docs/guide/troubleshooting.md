@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
 
 Use this guide to find the cause of a failed start, restarts, drops, or missing
 records. Start with the Application event log and the SCM state.
@@ -59,7 +59,7 @@ Search the Application log for the text, then go to the section named.
 | `restricting SIDs do not include` | Event ID 1 | The token is restricted but lacks the service SID or `S-1-5-33`. | [RUNNING](#the-service-does-not-reach-running) |
 | `lacks an enabled Performance Log Users` | Event ID 1 | The service SID is not in the group, or the membership is deny-only. | [RUNNING](#the-service-does-not-reach-running) |
 | `configure SCM RequiredPrivileges` or `requires only an enabled SeChangeNotifyPrivilege` | Event ID 1 | The token holds more than one privilege, or the one privilege is missing or disabled. | [RUNNING](#the-service-does-not-reach-running) |
-| `connect/negotiation with dnstap receiver` | Event ID 1 | A protocol failure at startup, such as a wrong content type. Fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `connect/negotiation with dnstap receiver` | Event ID 1 | A protocol failure at startup, such as a wrong content type or a TLS certificate that the service rejects. Fatal. | [RUNNING](#the-service-does-not-reach-running) |
 | `service 'DNS' is not running` | Event ID 1 | The `DNS` service is stopped. | [RUNNING](#the-service-does-not-reach-running) |
 | `EnableTraceEx2: access denied` | Event ID 1 | The DNS provider GUID has a descriptor of its own that grants neither LocalService nor Performance Log Users `TRACELOG_GUID_ENABLE`. Not seen in the lab. | [install.md](install.md#if-an-etw-access-check-is-denied) |
 | `StartTraceW: access denied` | Event ID 1 | The service SID lacks `TRACELOG_CREATE_REALTIME` on the session GUID in the message, the session name changed, or the computer has not restarted since the grant. | [install.md](install.md#if-an-etw-access-check-is-denied) |
@@ -74,16 +74,19 @@ Search the Application log for the text, then go to the section named.
 | `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
 | `a capture worker exited before shutdown was requested` | Event ID 1 | A worker thread ended on its own. | [Restarts](#the-service-keeps-restarting) |
 | `ETW consumer did not return within 5 s of STOP` | Event ID 3 | The trace handle was closed to force the worker out. | [ETW warnings](#etw-consumer-and-session-warnings) |
-| `received rate is above what the default buffer settings were validated for` | Event ID 3 | The load is above the rate the defaults were validated for. | [Rate warning](#rate-warning) |
+| `received rate is above what the default buffer settings were validated for` | Event ID 3 | The load is above the rate that the default settings handle. | [Rate warning](#rate-warning) |
 | `rejected ETW event` | Event ID 3 | A parser rejection. The first four are logged. | [Rejected events](#rejected-events) |
 | `DNS event schema is unsupported and its events are rejected` | Event ID 3 | A schema did not load or did not compile. Its events are rejected. | [Rejected events](#rejected-events) |
 | `stale ETW session used a different buffer size` | Event ID 3 | A leaked session was reclaimed despite a buffer mismatch. | [Stale session](#stale-etw-session-blocks-startup) |
-| `ETW keyword narrowing unavailable` | Event ID 3 | The subscription uses the fallback keyword mask. | [Counters](#counters-show-drops) |
+| `ETW keyword narrowing unavailable` | Event ID 3 | The subscription uses the fallback keyword mask. | [No records](#no-records-arrive-at-the-collector) |
+| `RESPONSE_FAILURE keyword is not available` | Event ID 3 | The service does not capture failed responses. | [Subscription](configuration.md#subscription) |
+| `performance counters are unavailable` | Event ID 3 | Counter registration failed. Capture continues without counters. | [install.md](install.md#7-start-capture-and-check-that-it-is-running) |
 
 ## The service does not reach RUNNING
 
-`sc.exe query EtwDnstap` shows `START_PENDING`, then `STOPPED` with a nonzero
-exit code. Work through these causes in order.
+`sc.exe query EtwDnstap` shows `START_PENDING`, then `STOPPED`. A failed start
+reports a service-specific error (`WIN32_EXIT_CODE` 1066, `SERVICE_EXIT_CODE` 1).
+Work through these causes in order.
 
 | Cause | What you see | Action |
 | --- | --- | --- |
@@ -95,7 +98,8 @@ exit code. Work through these causes in order.
 | Not in Performance Log Users | Event ID 1: `lacks an enabled Performance Log Users`. | Run `net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add`. Restart the service. |
 | Privileges | Event ID 1: `configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege` or `requires only an enabled SeChangeNotifyPrivilege`. | Run `sc.exe privs EtwDnstap SeChangeNotifyPrivilege`, then start again. Run `sc.exe qprivs EtwDnstap` to check the result. |
 | DNS Server not running | Event ID 1: `service 'DNS' is not running (process ID 0)`. | Start the DNS Server role service. Check that it is Running. |
-| Receiver protocol mismatch | Event ID 1: `connect/negotiation with dnstap receiver` with `did not accept dnstap content type`. | Configure the collector for content type `protobuf:dnstap.Dnstap`. Network failures do not stop startup. See [the receiver section](#the-receiver-is-down-or-unreachable). |
+| Receiver protocol mismatch | Event ID 1: `connect/negotiation with dnstap receiver` with `did not accept dnstap content type`. | Configure the collector for content type `protobuf:dnstap.Dnstap`. A refused or timed-out connection does not stop startup. See [the receiver section](#the-receiver-is-down-or-unreachable). |
+| Receiver certificate not accepted | Event ID 1: `connect/negotiation with dnstap receiver` with `TLS handshake`. | Import the receiver CA into `Cert:\LocalMachine\Root`. Use a certificate that names the receiver IP address, or pass its name in `--tls-server-name`. See [the receiver certificate step](receiver.md#receiver-certificate). |
 | ETW access denied | Event ID 1: `StartTraceW: access denied` or `EnableTraceEx2: access denied`. | For `StartTraceW`, run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` with the session name from the message, then restart the computer. For `EnableTraceEx2`, inspect the DNS provider descriptor and do not add a grant on it. See [install.md](install.md#if-an-etw-access-check-is-denied). |
 | SCM query of `DNS` denied | Event ID 1: `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied`. | The restricted token needs `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` for Everyone or the service SID. Inspect `sc.exe sdshow DNS`. The query succeeded in the lab on build 26100. |
 | Leaked ETW session with the same name | Event ID 1: a session with the name exists and is not reclaimable (different shape or different GUID). | See [Stale ETW session](#stale-etw-session-blocks-startup). |
@@ -137,7 +141,7 @@ doubles up to 30 seconds, and each wait is randomized. See
 **Incompatible receiver after startup.** If the receiver answers with the wrong
 content type during a reconnect, each attempt fails with `dnstap reconnect
 failed`. The service does not stop. Check that `receiver_connected` stays `false`
-and fix the collector's content type. Only the first connection at startup stops
+and correct the collector's content type. Only the first connection at startup stops
 the service on a protocol failure.
 
 **Shutdown while disconnected.** The service logs `shutting down while the dnstap
@@ -198,7 +202,7 @@ shutdown. A restart resets every counter. The loss categories are:
 | `ring_dropped` | The event channel was full. The newest event was dropped. | Raise `--capacity`. For moderate or high rates, use the [high-rate settings](tuning.md#high-rate-settings). |
 | `pool_exhausted_regular`, `pool_exhausted_jumbo` | The pool had no free slot of the record's class. | Raise `--jumbo-capacity` if `pool_exhausted_jumbo` rises. With `--jumbo-capacity 0`, every jumbo record is counted here. |
 | `receiver_disconnected` | The channel's parser end was gone. This is the event channel, not TCP. | Check whether the parser stopped. See [restarts](#the-service-keeps-restarting). |
-| `disconnected_dropped` | Frames lost to a TCP outage. | Fix the receiver path. See [the receiver section](#the-receiver-is-down-or-unreachable). |
+| `disconnected_dropped` | Frames lost to a TCP outage. | Correct the receiver path. See [the receiver section](#the-receiver-is-down-or-unreachable). |
 | `foreign_pid_rejected` | Records from a process other than the DNS Server. | Normally 0. A nonzero value during a DNS restart is expected. Otherwise investigate. |
 | `callback_errors` | Records the callback could not hand off. | Investigate with the Event Log. Not in `intake_dropped`. |
 
@@ -212,7 +216,7 @@ together. `rejected` counts events the parser rejected. Excluded event IDs (259,
 [Counter relationships](monitoring.md#counter-relationships).
 
 Compare your collector's record count with the client's count, and treat any
-difference as unexplained until you have read the counters.
+difference as unexplained until you read the counters.
 
 ## Rate warning
 
@@ -330,9 +334,9 @@ session, or restart the computer.
 A timeout does not prove that the native operation never completed. Check
 `logman query -ets` after an abort. The startup budget covers these steps:
 the identity checks, the receiver connection, the pool allocation, and the ETW
-start. Large
-`--capacity` values allocate more pool memory, so they can take longer to reach
-capture.
+start. The ETW start also has its own 10-second deadline, so the message can
+name 10 s. Large `--capacity` values allocate more pool memory, so they can take
+longer to reach capture.
 
 ## Upgrading
 

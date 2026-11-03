@@ -1,9 +1,9 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change and response failure capture (event 258) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728`, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-02
 
 `etw-dnstap` is a Windows service. It captures DNS Server client query and
-response events from Event Tracing for Windows (ETW) and sends them to a
+response events from Event Tracing for Windows (ETW). It sends them to a
 [dnstap](https://dnstap.info/) receiver over TCP, using Frame Streams.
 
 - **Runs as** the Service Control Manager (SCM) service `EtwDnstap`, under
@@ -66,7 +66,16 @@ Run it with `--help` for the options.
 | Report a vulnerability or read the threat model | [SECURITY.md](SECURITY.md) |
 | Build, test, and propose changes | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | See the release history | [CHANGELOG.md](CHANGELOG.md) |
+| Follow an event from ETW to the receiver | [Data path](docs/design/data-path.md) |
 | Understand the design, measurements, and records | [Documentation index](docs/README.md) |
+
+## How it works
+
+An event moves through five stages: the ETW producer, the intake callback, a
+bounded buffer, the parser, and the TCP sink. The animation shows one cycle.
+The [data path](docs/design/data-path.md) reference describes each stage.
+
+![Animation of the data path. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, and releases the slot. The TCP sink sends the frame to the receiver.](docs/assets/pipeline/etw-to-tcp-pipeline.gif)
 
 ## What is captured
 

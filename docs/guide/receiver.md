@@ -1,6 +1,6 @@
 # Set up the dnstap receiver
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
 
 Use this guide to prepare the collector that receives the records. Do this
 before you start the service, although the service also reconnects if the
@@ -12,7 +12,7 @@ The service keeps one outbound TCP connection to `--receiver`. It negotiates
 content type `protobuf:dnstap.Dnstap` with READY, ACCEPT, and START, then sends
 data frames. On shutdown it sends STOP and waits for FINISH. After a failure it
 reconnects and negotiates again. Frames lost in the gap are counted, not resent.
-The connection is TLS by default, and the service verifies the receiver
+The connection is TLS by default, and the service checks the receiver
 certificate. It sends no client certificate. With `--plaintext`, the connection
 is plaintext with no peer authentication.
 
@@ -55,7 +55,7 @@ receiver a certificate. See the
 
 ## Receiver certificate
 
-The service connects with TLS and verifies the receiver certificate with the
+The service connects with TLS and checks the receiver certificate against the
 Windows machine certificate store. Skip this step only if the binary path
 contains `--plaintext`. The connection fails if any of these conditions is not
 met:
@@ -69,7 +69,7 @@ met:
 Revocation endpoints do not need to be reachable. The service checks revocation
 for the receiver certificate only and proceeds when the status cannot be
 obtained. A reachable endpoint that answers slowly can push the handshake past
-its 2-second deadline; see [TLS](configuration.md#tls).
+its 2-second deadline. See [TLS](configuration.md#tls).
 
 To import a private CA into the machine root store:
 
@@ -77,8 +77,8 @@ To import a private CA into the machine root store:
 Import-Certificate -FilePath '.\receiver-ca.cer' -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-A certificate that does not verify stops the service at startup with Event ID 1.
-A receiver that speaks plaintext while TLS is on has the same effect. See
+A certificate that the service rejects stops the service at startup with Event
+ID 1. A receiver that speaks plaintext while TLS is on has the same effect. See
 [TLS](configuration.md#tls).
 
 

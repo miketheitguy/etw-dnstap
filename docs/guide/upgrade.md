@@ -1,10 +1,11 @@
 # Repair or upgrade the service
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
 
-Use this guide to change an installed service: to take a snapshot, restore it,
-move from an older build, or replace the executable or the counter manifest. To
-install a new service, see [Install and provision](install.md).
+Use this guide to change an installed service. It covers these tasks: take a
+snapshot, restore it, move from an older build, and replace the executable or
+the counter manifest. To install a new service, see
+[Install and provision](install.md).
 
 
 For an existing installation, keep the service identity, privileges, executable
@@ -87,9 +88,9 @@ Then restore the other parts of the snapshot:
 1. Run `net localgroup "Performance Log Users"` and compare it with
    `plu.txt`. Add or remove `NT SERVICE\EtwDnstap` so that they match.
 2. If a repair ran the grant script, run it with `-Restore "$backup\etw"`.
-   The script checks the folders and `changes.json`, validates every entry
-   before it applies any, and skips a value that changed after the run that saved
-   it. Use `-Force` only after you have looked at the skipped values.
+   The script checks the folders and `changes.json`. It checks every entry
+   before it applies any, and it skips a value that changed after the run that
+   saved it. Use `-Force` only after you look at the skipped values.
 3. If you replaced the executable, put the saved copy back (see below).
 4. Run `Restart-Computer` if the grant script restored any descriptor. ETW
    applies descriptors at boot.
@@ -116,7 +117,7 @@ relative to the parent.
   5. Keep the service SID's read and execute grant from
      [step 3](install.md#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute).
      Keep the recovery policy from [step 5](install.md#5-configure-scm-recovery).
-  6. Start the service. Confirm the account with `sc.exe qc EtwDnstap`.
+  6. Start the service. Check the account with `sc.exe qc EtwDnstap`.
 
   In the lab on build 26100, `obj=` did not clear the SID type or the privilege
   list. This held for a change to the same account, and for a change to
@@ -127,8 +128,8 @@ relative to the parent.
   That version granted `0x423` on the default GUID and `0x80` on the DNS
   provider GUID, and created a descriptor of its own for the provider. Replace
   the executable, run the current script with `-SessionName`, then restart the
-  computer. The script removes the old grants, deletes the provider
-  descriptor once it matches the default again, and grants on the session GUID.
+  computer. The script removes the old grants and the provider
+  descriptor once it matches the default again. It then grants on the session GUID.
   The lab tested this path.
 - **Changing `--session-name`.** The session GUID follows the name. Run the
   grant script with the new name (and any others still in use), then restart
@@ -161,14 +162,14 @@ sc.exe query EtwDnstap
   second hash is the new executable. Compare it with the hash of the file you
   built.
 - `icacls` must show `NT SERVICE\EtwDnstap:(I)(RX)` for the new file. If it does
-  not, the service cannot start. Do not change the other ACLs. Fix only the
+  not, the service cannot start. Do not change the other ACLs. Restore only the
   service SID's read and execute grant from step 3.
 - The service must reach `RUNNING`, and a `capture started` line must appear.
 - If the new release also changes `etw-dnstap.man`, follow
   [Replace the counter manifest](#replace-the-counter-manifest) between the stop
   and the start.
 
-To roll back, stop the service, delete the new file, rename the backup back,
+To roll back, stop the service, remove the new file, rename the backup back,
 and start the service:
 
 ```powershell
@@ -178,7 +179,7 @@ Rename-Item "$exe.bak" 'etw-dnstap.exe'
 sc.exe start EtwDnstap
 ```
 
-When the new executable works, delete `etw-dnstap.exe.bak`. The copy in the
+When the new executable works, remove `etw-dnstap.exe.bak`. The copy in the
 snapshot folder stays until you remove the folder.
 
 ## Replace the counter manifest

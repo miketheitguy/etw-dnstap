@@ -1,6 +1,6 @@
 # Diagnose and remediate receiver shutdown resets
 
-> **Status:** Current (operator guide) · **Evidence dated:** the recorded failure is undated in text · **Commit:** not recorded · **Reviewed:** 2026-11-01
+> **Status:** Current (operator guide) · **Evidence dated:** the recorded failure is undated in text · **Commit:** not recorded · **Reviewed:** 2026-11-02
 
 This guide is for maintainers of the documented DNS-collector lab receiver. It
 explains an intermittent failure of the Windows service stop. The failure occurs

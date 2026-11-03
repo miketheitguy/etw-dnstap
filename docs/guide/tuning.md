@@ -1,6 +1,6 @@
 # Tune capture for load
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the removal of the explicit ETW flush (defaults from `CaptureArgs` in `src/pipeline/config.rs`) and the defaults `--etw-max-buffers 64` and `--capacity 24576` · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
 
 Use this guide to choose `--etw-*` and `--capacity` values for the query rate
 you expect. The option list is in the
@@ -20,15 +20,16 @@ the burst that needs the buffers. Raising `--etw-max-buffers` only allows more
 buffers on demand. It does not allocate them up front.
 
 The default is `0`, which lets ETW choose. The service holds no fixed minimum.
-ETW raises the minimum to at least two buffers per logical processor, and it
-may reduce a minimum that exceeds its own limit. It raises the maximum to at
-least the adjusted minimum. The default maximum is 64. On a host with more than
-32 logical processors, ETW's minimum is above 64, and ETW raises the maximum to
-match. With the previous default maximum of 12, the maximum was the effective
-floor on a 6-CPU host: ETW's minimum and maximum were both 12 on the lab VM.
-Peak buffer memory can exceed the requested bound. With the default, a host with 1 logical
-processor reserves 2 buffers. A host with 2 or more logical processors reserves
-two per processor.
+ETW raises the minimum to at least two buffers per logical processor. It may
+reduce a minimum that exceeds its own limit. It raises the maximum to at least
+the adjusted minimum.
+
+The default maximum is 64. On a host with more than 32 logical processors,
+ETW's minimum is above 64, and ETW raises the maximum to match. With the
+previous default maximum of 12, the maximum was the effective floor on the
+6-vCPU lab VM: ETW's minimum and maximum were both 12. Peak buffer memory can
+exceed the requested bound. With the default minimum, a host reserves two
+buffers for each logical processor.
 
 The minimum must not exceed `--etw-max-buffers`. Otherwise the service does not
 start and reports `ETW minimum buffers (65) must not exceed ETW maximum buffers
@@ -55,13 +56,13 @@ The defaults are `--etw-buffer-kib 16 --etw-max-buffers 64 --capacity 24576`:
 
 **The lab validated the current defaults in one 60-second run at 10,000 queries
 per second** (about 20,000 events per second) on 2026-11-01. Every event was
-captured, with 0 ring drops and 0 `etw_lost`. ETW delivered late four times; each
+captured, with 0 ring drops and 0 `etw_lost`. ETW delivered late four times. Each
 time about 35,000 to 41,000 events arrived in one second, and the channel peaked
 at 8,800 events. ETW had at most 5 buffers in use and allocated at most 18. The
 rate warning below uses a threshold of 22,000 events per second, just above
 this validated rate.
 
-The tables below were measured with the previous defaults: 16 KiB buffers, a
+The lab measured the tables below with the previous defaults: 16 KiB buffers, a
 maximum of 12, and a channel of 8,192 events. Read them as results for those
 settings.
 
@@ -70,7 +71,8 @@ by default) apart. Delivery latency is therefore up to about 2 seconds, and
 usually under 1 second. The service does not ask ETW for more flushes. A batch
 that holds more events than the channel can take drops the excess unless the
 parser drains it while it arrives. The ETW buffer callback wakes the parser for
-each delivered buffer, so the parser drains each batch while it arrives.
+each delivered buffer that enqueued an event. The parser therefore drains each
+batch while it arrives.
 
 The lab used one 6-vCPU, 4 GiB VM with Windows Server 2025, an authoritative
 load, and 50-second runs. The rates are the rates that the client achieved. The
@@ -94,8 +96,9 @@ results with all of the previous defaults were:
   44,000 to 50,000. They also used less service CPU: 1.8 to 1.9 seconds against
   6.6 to 8.7 seconds. Two clients with different pacing gave the same loss, so
   the client is not the cause. The cause in the service or in ETW is not known.
-- At about 50,000 queries per second, the loss depended on the client: 0.34 to
-  1.24% with 54 client threads, and 4.39% with 4 threads and steady pacing.
+- At about 50,000 queries per second, the loss depended on the client. It was
+  0.34 to 1.24% with 54 client threads. It was 4.39% with 4 threads and steady
+  pacing.
 - Before the buffer wake, a 5,000 queries-per-second load lost about 19%.
 
 See [ETW buffer wake validation](../history/buffer-wake-validation.md) and
@@ -115,8 +118,8 @@ Later lab runs on 2026-11-01 used other values:
   events at the channel. Each drop followed a late ETW real-time delivery: a
   second with about 1,500 events, then about 40,000 the next second. ETW lost
   nothing.
-- In a 10-minute run at 10,000 queries per second with 16 KiB buffers, ETW had
-  up to 16 buffers in use and allocated up to 21.
+- In a 10-minute run at 10,000 queries per second with 16 KiB buffers, ETW used
+  up to 16 buffers and allocated up to 21.
 - With the previous default maximum of 12 buffers on the 6-vCPU lab VM, ETW's
   minimum and maximum were both 12.
 
@@ -201,22 +204,23 @@ the real load.
 
 Two earlier lab results do not apply to this build:
 
-- An explicit periodic flush, which the service no longer has, gave 0 ring
-  drops at 10,000 and 20,000 queries per second with 64 KiB × 256 buffers. See
+- An explicit periodic flush gave 0 ring drops at 10,000 and 20,000 queries per
+  second with 64 KiB × 256 buffers. The service no longer has this flush. See
   [Removed periodic flush](../design/ring-buffer.md#removed-periodic-flush).
-- With 64 KiB × 256 buffers, the previous default 8,192-event channel, and no flush,
-  the channel dropped 59 to 79% of events at 10,000 to 20,000 queries per
-  second. That result predates the buffer wake. The lab did not repeat it with
-  the buffer wake.
+- The lab ran 64 KiB × 256 buffers with the previous default 8,192-event channel
+  and no flush. The channel dropped 59 to 79% of events at 10,000 to 20,000
+  queries per second. That result predates the buffer wake. The lab did not
+  repeat it with the buffer wake.
 
-**Warning.** The service can log one warning (Event ID 3) per run when the
-default buffer settings are in use: the default ETW settings and the default
-`--capacity`. It logs it at the end of the first measurement window in which the
-received rate is more than 22,000 events per second, which is above the rate
-that the defaults were validated for. The window is `--stats-interval-seconds`,
-or 60 seconds when snapshots are disabled. The warning does not mean that events
-were lost. It tells you to watch `ring_dropped` and `etw_lost`, and to raise
-`--capacity` and `--etw-max-buffers` if they increase, for example to
+**Warning.** The service can log one warning (Event ID 3) per run. It does so
+when the default buffer settings are in use: the default ETW settings (buffer
+size, buffer counts, and flush interval) and the default `--capacity`. The
+service logs it at the end of the first measurement window in which the received
+rate is more than 22,000 events per second. This rate is above the rate that the
+lab validated the defaults for. The window is `--stats-interval-seconds`, or 60
+seconds when `--stats-interval-seconds` is `0`. The warning does not mean that
+events were lost. It tells you to watch `ring_dropped` and `etw_lost`. If they
+increase, raise `--capacity` and `--etw-max-buffers`, for example to
 `--etw-buffer-kib 64 --etw-max-buffers 256 --capacity 65536`.
 
 ### Settings for 200,000 queries per second
@@ -260,10 +264,11 @@ Costs:
 
 - Counted storage with `--capacity 24576` and the default 64 jumbo slots is
   62,486,608 bytes (59.59 MiB). The service allocates it at startup. With
-  `--capacity 262144`, the counted storage is 558.03 MiB, and the private
-  bytes measured with the earlier 408-byte slot header were about 684 MiB (the
-  header is now 24 bytes, about 96 MiB less at this capacity).
-- The startup deadline at this capacity is 12 seconds.
+  `--capacity 262144`, the counted storage is 558.03 MiB. The lab measured about
+  684 MiB of private bytes at this capacity with the earlier 408-byte slot
+  header. The header is now 24 bytes, which is about 96 MiB less.
+- The startup deadline is 12 seconds at `--capacity 24576` and 26 seconds at
+  `--capacity 262144`.
 - ETW buffer memory is at most 4 MiB with 32 buffers of 128 KiB.
 
 The lab did not run these exact values. It also did not measure 128 KiB
@@ -277,7 +282,7 @@ events in batches in earlier runs. After you apply these settings, monitor
 2026-11-01 the lab also ran 32 buffers with `--capacity 24576` at 200,000
 queries per second. One run had 37,133 ring drops and 351 `etw_lost`. Another
 had 3,219 `etw_lost`. See the lab notes. Treat 32 and 24,576 as the earlier
-recommendation, not as a setting that is known to lose nothing. The recorded
+recommendation. No run shows that this setting loses nothing. The recorded
 results above stay as measured.
 
 See [200,000 QPS validation](../history/200k-qps-validation.md).

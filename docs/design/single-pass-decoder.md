@@ -113,8 +113,8 @@ The parser applies these checks after the fields are read:
   the endpoint is absent.
 - The timestamp must convert to a time at or after the Unix epoch.
 - The packet length must be 12 through 65,535 bytes. The encoder checks this.
-- The DNS QR bit must match the event: a query for 256, a response for 257 and
-  258. The encoder checks this.
+- The DNS QR bit must match the event. Event 256 needs a query. Events 257 and
+  258 need a response. The encoder checks this.
 
 ## Bounds
 

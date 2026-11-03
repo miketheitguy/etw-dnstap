@@ -81,9 +81,9 @@ history. They do not apply to the current build:
 
 With the same buffers and no flush, before the buffer wake, the channel dropped
 59 to 79% of events at 10,000 to 20,000 queries/s. At 20,000 queries/s with the flush,
-the largest batch was about 6,800 events with a 100 ms interval and about 3,500
-with 50 ms. The flush wrote about 5 to 16% more ETW buffers and cost under 0.1%
-of a core when idle.
+the largest batch was about 6,800 events with a 100 ms interval. With a 50 ms
+interval it was about 3,500 events. The flush wrote about 5 to 16% more ETW
+buffers. It cost under 0.1% of a core when idle.
 
 ### Pools and memory budget
 

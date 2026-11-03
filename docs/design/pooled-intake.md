@@ -27,9 +27,9 @@ The keywords also enable events that include 284, 285, 287, 288, and 597 to 599.
 The event-ID filter excludes them after the provider builds them, so they cost `dns.exe` CPU
 but never reach the service.
 
-Immediately after the check for a null record, the callback accepts only event
-256 (client query), 257 (successful client response), and 258 (failed client
-response, for example SERVFAIL). It excludes all other event IDs, including 260
+The callback accepts only event 256 (client query), 257 (successful client
+response), and 258 (failed client response, for example SERVFAIL). It checks
+this right after the null-record check. It excludes all other event IDs, including 260
 (recursive query) and 261 (recursive response). This check comes before context access, counters,
 TLS, pool acquisition, payload copy, queue admission, and TDH parsing. Excluded records do not count
 as received records, overload drops, or errors. After context access, the
@@ -82,21 +82,21 @@ The native API must still supply readable memory. These checks cannot validate
 arbitrary non-null addresses.
 
 `RawEtwEvent` owns a `PooledBuffer` lease. Each lease owns one boxed slot and a
-strong pool reference. A move through the channel allocates no ownership
-object. A clone of the existing `Arc` changes its reference count. The parser
-uses the scoped `with_record` helper to build a temporary typed descriptor
-array. The helper repairs the array's pointers into the leased aligned storage
-and clears `UserContext`. The parser keeps the lease during synchronous TDH
-calls. The parser and reconstruction
-tests use this same helper. Each extended payload starts on an 8-byte boundary. No native callback
-pointer survives in the queued event.
+`&'static` reference to the pool. The pool has no reference count, so a lease
+adds no atomic operation. A move through the channel allocates no ownership
+object. The parser uses the scoped `with_record` helper to build a temporary
+typed descriptor array. The helper repairs the array's pointers into the leased
+aligned storage and clears `UserContext`. The parser keeps the lease during
+synchronous TDH calls. The parser and reconstruction tests use this same helper.
+Each extended payload starts on an 8-byte boundary. No native callback pointer
+survives in the queued event.
 
 Dropping the lease returns its slot to the corresponding bounded free list. The
-parser can return a slot from another thread, and queued leases keep the pool
-alive after the native worker exits. The native callback context independently
-retains the pool throughout `ProcessTrace`, so rejection or channel failure
-cannot destroy the last pool owner inside a callback. Final pool destruction can
-free memory during shutdown after callbacks end.
+parser can return a slot from another thread. `PoolManager::with_progress`
+leaks the pool once, after it allocates every slot. The pool therefore lives for
+the rest of the process, and no callback can destroy it. The service exits when
+the pipeline ends, and the operating system then frees the memory. A failed
+startup frees the slots that it already allocated, because the leak comes last.
 
 There are exactly N private, non-cloneable slots in a class and N free-list
 entries. A returning lease owns one slot outside the list. Legitimate concurrent
@@ -131,19 +131,25 @@ parser-held event, and one callback event. The default jumbo budget allows only
 The 65th can be dropped even when the channel has space. Adjust this budget only
 with a measured workload and an explicit memory allowance.
 
-The jumbo size covers the previous accepted maximum of 65,535 user bytes plus
-65,535 aggregate extended bytes, up to 16 seven-byte alignment gaps, one more
-gap before the item table, and the table's 16 cells of 16 bytes. Slot selection
-includes alignment padding and the item table, rather than only DNS packet
-length. A record with extended data therefore needs 16 bytes less payload than
-a regular slot holds for each item it carries, or it uses a jumbo slot.
+The jumbo size covers these parts:
+
+- The previous accepted maximum of 65,535 user bytes.
+- 65,535 aggregate extended bytes.
+- Up to 16 seven-byte alignment gaps, and one more gap before the item table.
+- The item table, which has 16 cells of 16 bytes.
+
+Slot selection includes alignment padding and the item table, not only the DNS
+packet length. A record with extended data therefore has 16 fewer payload bytes
+in a regular slot for each item it carries. If it does not fit, it uses a jumbo
+slot.
 
 On the configured Windows x64 target, each slot also has a 24-byte
 allocation. It holds the payload pointer and length and the class flag. The
-extended-data item table is not in it: a record's items (a packed 8-byte header
-word and an 8-byte payload offset each, 16 bytes) are stored in the last bytes
-of the slot's own payload storage, so a slot carries no table when the record
-has no extended data, which is the case for this provider. The allocation was
+extended-data item table is not in it. A record's items are stored in the last
+bytes of the slot's own payload storage. Each item is a packed 8-byte header
+word and an 8-byte payload offset, 16 bytes in all. A slot therefore carries no
+table when the record has no extended data, which is the case for this
+provider. The allocation was
 408 bytes while the table was in the header. `RawEtwEvent` occupies 104 bytes. With the locked queue versions,
 free-list elements occupy 16 bytes and channel elements occupy 112 bytes. The
 following table counts requested element and payload storage:
@@ -182,8 +188,8 @@ the same sizes:
 - Total: 152,598,608 bytes, which is 145.53 MiB.
 
 On the lab VM, the process private bytes were about 31 MiB with the previous
-defaults (8,192 events) and about 179 MiB with the high-rate settings. The lab has
-not measured the current defaults. See the
+defaults (8,192 events). They were about 179 MiB with the high-rate settings. The
+lab has not measured the current defaults. See the
 [flush removal validation](../history/flush-removal-validation.md).
 
 The tuning guide gives `--capacity 131072` as an example for
@@ -200,8 +206,8 @@ the default 64 jumbo slots it uses the same sizes:
 The high-rate setting and its lab results are in the
 [tuning guide](../guide/tuning.md#high-rate-settings).
 
-These totals exclude allocator rounding, allocator metadata, the small queue and
-`Arc` headers, worker stacks, native ETW buffers, TDH caches, protobuf data, and
+These totals exclude allocator rounding, allocator metadata, the small queue headers,
+worker stacks, native ETW buffers, TDH caches, protobuf data, and
 output buffers. They are not process-private-memory measurements or total-memory
 limits. Payload pages are initialized before native delivery. Startup still
 does heap allocations. A failure of the ordinary allocation machinery can
@@ -385,7 +391,7 @@ deallocations separately. It counts them during callback success, a full
 channel, regular and jumbo exhaustion, jumbo success, disconnection, malformed
 metadata, and TLS failures.
 It also measures an isolated parser-thread lease return while the pool remains
-owned. Setup, TLS installation, and final pool destruction occur outside these
+owned. Setup and TLS installation occur outside these
 measurement scopes. This does not instrument arbitrary direct allocations in
 Windows DLLs or prove the behavior of a real installed ETW session.
 

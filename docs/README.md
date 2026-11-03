@@ -1,6 +1,6 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` for the layout, conventions, and file list · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` for the layout, conventions, and file list · **Reviewed:** 2026-11-02
 
 This index lists every document in `docs/`. Each document starts with a status
 block that gives its status, evidence date, commit, and review date. This page
@@ -27,6 +27,7 @@ decides its folder.
 | [`plans/`](plans/) | Plans and analyses that are not yet executed | Proposed. A partly executed plan says so in its status block |
 | [`history/`](history/) | Finished campaigns, reviews, completed plans, and superseded documents | Historical, Superseded |
 | [`assets/performance/`](assets/performance/) | Graph SVGs, CSV copies, and provenance manifests | Generated |
+| [`assets/pipeline/`](assets/pipeline/) | Animated GIF of the data path from an ETW event to a TCP frame | Current |
 | [`assets/loss-solutioning/`](assets/loss-solutioning/) | Animated GIFs of the event-loss causes and fixes | Historical |
 
 The graph assets stay in `docs/assets/performance/` because
@@ -86,6 +87,7 @@ These documents in [`design/`](design/) help maintainers.
 
 | Document | Contents |
 | --- | --- |
+| [Data path](design/data-path.md) | The five stages from an ETW event to a TCP frame, with the thread, code, and loss counters of each stage. Includes the animation |
 | [Pooled ETW intake](design/pooled-intake.md) | Ownership, memory budget, buffer-callback parser wake, and loss accounting |
 | [Ring capacity and shutdown](design/ring-buffer.md) | Channel bounds, parser wake and linger, ETW delivery batches, the removed periodic flush, and shutdown order |
 | [Single-pass decoder](design/single-pass-decoder.md) | Decoder grammar, the schema rejection rule (no per-event TDH reader), bounds, and validation scope |
@@ -94,7 +96,7 @@ These documents in [`design/`](design/) help maintainers.
 
 ### Diagram note
 
-The diagram's labels match `main` at `54eafae`: the `src/etw/` module split, the
+The diagram's labels match `main` at `54eafae`. They show the `src/etw/` module split, the
 bounded crossbeam channel with pooled leases, the DNS process filter, the
 LocalService restricted-token gate, and the reconnecting network sink. Its box
 positions are from the October 28, 2026 layout.
@@ -102,7 +104,8 @@ positions are from the October 28, 2026 layout.
 It does not show the single-pass decoder (`etw/decode.rs`) and its schema
 rejection rule (`69db97d`), or the ETW buffer callback that wakes the parser
 (`dde7188`). For the current design, use
-[Pooled ETW intake](design/pooled-intake.md) and
+[Data path](design/data-path.md),
+[Pooled ETW intake](design/pooled-intake.md), and
 [Single-pass decoder](design/single-pass-decoder.md).
 
 ## Performance

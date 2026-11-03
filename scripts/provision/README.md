@@ -1,6 +1,6 @@
 # Provisioning scripts
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-01
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-02
 >
 > See [the validation record](../../docs/history/localservice-restricted-validation.md).
 
@@ -12,11 +12,11 @@ and control its own real-time trace session. It runs as
 (`sc.exe sidtype EtwDnstap restricted`). Windows calls such a token
 *write-restricted*. Windows classes some accesses as a write. A write here is
 a change of state, not event data. Each such access must also pass a second
-check. That check considers only the restricting SIDs: the service SID,
+test. That test considers only the restricting SIDs: the service SID,
 Everyone, the logon SID, and `S-1-5-33`. LocalService and Performance Log Users
 do not count for it.
 
-Creating the session is such a change. ETW checks it against the descriptor of
+Creating the session is such a change. ETW tests it against the descriptor of
 the session's GUID. When the GUID has no descriptor, ETW uses the shared default
 descriptor `{0811c1af-7a07-4a06-82ed-869455cdf713}`. EtwDnstap starts its
 session with a stable GUID derived from the session name. The script therefore
@@ -81,7 +81,7 @@ kinds of grant:
 - Copies of those grants that other components made.
 
 A non-default
-descriptor that equals the default once those ACEs are gone is deleted, so ETW
+descriptor that equals the default once those ACEs are gone is removed, so ETW
 falls back to the default exactly as before. Nothing else is changed. `-Remove`
 does the same for every descriptor, the session GUIDs included.
 
@@ -93,10 +93,10 @@ net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add
 ```
 
 The service SID is derived from the service name (SHA-1 of the upper-cased name),
-so `-Remove` works after `sc.exe delete`. The script cross-checks the derived SID
+so `-Remove` works after `sc.exe delete`. The script compares the derived SID
 against the system when the service still exists.
 
-The script never calls `EventAccessRemove`, which would delete a whole
+The script never calls `EventAccessRemove`, which would remove a whole
 descriptor, including system defaults. It reads each descriptor from the
 registry value, removes the ACEs for the service SID, and writes the result
 back. It does not use `EventAccessQuery` for this, because that call returns
@@ -126,7 +126,7 @@ from. The script never reuses an existing backup folder.
 | File | Content |
 | --- | --- |
 | `wmi-security.reg` | `reg.exe export` of the whole `WMI\Security` key, made before any change. For reference and manual recovery. |
-| `changes.json` | The original bytes (Base64) of each value that the run changed or deleted. The names of the values that the run created. For each value, the SHA-256 of the bytes that the run left in it. |
+| `changes.json` | The original bytes (Base64) of each value that the run changed or removed. The names of the values that the run created. For each value, the SHA-256 of the bytes that the run left in it. |
 
 `-WhatIf` changes nothing, and that includes the backup. A run that has nothing
 to change makes no backup. If the script cannot make the backup, it stops
@@ -139,19 +139,19 @@ To undo a run, preview and then run:
 .\Grant-EtwDnstapEtwAccess.ps1 -Restore "$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>"
 ```
 
-`-Restore` does these checks before it applies anything:
+`-Restore` makes these tests before it applies anything:
 
-1. It checks the owner, the reparse status, and the ACL of `changes.json` and
-   of every folder above it.
-2. It checks that each name is a GUID.
-3. It checks that each saved value parses as a security descriptor.
-4. It checks that the file came from this computer.
+1. The owner, the reparse status, and the ACL of `changes.json` and of every
+   folder above it are trusted.
+2. Each name is a GUID.
+3. Each saved value parses as a security descriptor.
+4. The file came from this computer.
 
 It applies nothing until every entry passes. It writes
-the original bytes back, deletes the values that the run created, and prints a
-summary of the values restored, deleted and skipped. A value that holds other
+the original bytes back, removes the values that the run created, and prints a
+summary of the values restored, removed, and skipped. A value that holds other
 bytes than the run wrote was changed after the run. `-Restore` skips it with a
-warning. `-Restore -Force` overwrites or deletes it. `-Restore` reminds you to
+warning. `-Restore -Force` overwrites or removes it. `-Restore` reminds you to
 restart the computer, because ETW applies the descriptors at boot. It does not
 change group membership.
 
@@ -162,8 +162,8 @@ and does not grant on it.
 
 **Upgrading from the first version** (commit `6718863`), which granted `0x423`
 on the default GUID and `0x80` on the DNS provider GUID: run the current script
-with `-SessionName`, then restart. It removes both old grants and deletes the
-provider descriptor the first version created. The lab tested this path.
+with `-SessionName`, then restart. It removes both old grants and the
+provider descriptor that the first version created. The lab tested this path.
 
 The full procedure is in [install.md](../../docs/guide/install.md#4-set-the-service-identity-privileges-etw-access-and-event-source)
 and [uninstall.md](../../docs/guide/uninstall.md).

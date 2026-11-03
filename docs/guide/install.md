@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` with the TLS receiver change, the Windows performance counter provider, the LocalService restricted-SID profile, and the default `--capacity 24576` in the service binary path · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `907f728` · **Reviewed:** 2026-11-02
 
 Use this guide to install the service on a DNS Server host. It covers the
 service identity, the ETW access grant, the SCM registration, recovery, and the
@@ -13,9 +13,9 @@ Load and other Windows builds were not covered. A later lab run tested the SCM
 recovery policy and a DNS Server restart. See
 [the lab record](../history/skills-evaluation-lab-validation.md). On other
 builds, run the [validation checklist](#validation-checklist-for-the-localservice-restricted-profile)
-on a disposable host first. Steps 3, 4 and 7 were run on the lab host. The
-performance counter commands in steps 3 and 7 were run there on 2026-11-01, by
-an administrator. The other steps come from the source and the reviewed lab
+on a disposable host first. Steps 3, 4, and 7 ran on the lab host. An
+administrator ran the performance counter commands in steps 3 and 7 there on
+2026-11-01. The other steps come from the source and the reviewed lab
 procedure.
 
 | Task | Guide |
@@ -40,7 +40,7 @@ procedure.
   For TLS, import the receiver CA first. See
   [Set up the dnstap receiver](receiver.md).
 - An elevated Windows PowerShell 5.1 session for the provisioning steps.
-  `New-EventLog` and `Remove-EventLog` are run from Windows PowerShell.
+  Run `New-EventLog` and `Remove-EventLog` from Windows PowerShell.
 
 ## Provision the service
 
@@ -50,9 +50,9 @@ existing installation, see [Repair or upgrade](upgrade.md).
 
 The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with a
 **restricted** service SID type. Windows calls the resulting token
-*write-restricted*. The name refers to Windows access checks, not to ETW data:
-the service only reads events. At
-startup it requires all of the following, and refuses to start otherwise:
+*write-restricted*. The name refers to Windows access control, not to ETW data:
+the service only reads events. At startup it requires all of the following, and
+refuses to start otherwise:
 
 - The token user is `S-1-5-19`.
 - The service SID `NT SERVICE\EtwDnstap` (`S-1-5-80-...`) is an enabled group.
@@ -64,15 +64,15 @@ startup it requires all of the following, and refuses to start otherwise:
 - The only privilege is an enabled `SeChangeNotifyPrivilege`.
 
 For any access that Windows classes as a write (a change of state), a
-write-restricted token must also pass a second check. That check considers only
-the restricting SIDs. Creating the service's own real-time trace session is
-such a change. LocalService and Performance Log Users do not count for it, so
+write-restricted token must also pass a second access test. That test considers
+only the restricting SIDs. Creating the service's own real-time trace session is
+such a change. LocalService and Performance Log Users do not count for that test, so
 step 4 grants `TRACELOG_CREATE_REALTIME` directly to the service SID. Every
 other ETW call the service makes passed in the lab without a grant: enabling
 the provider, consuming the session, and querying and stopping it.
 
-The grant is scoped to the service's own session. The service starts its ETW
-session with a stable GUID derived from `--session-name`, and ETW checks the
+The grant covers only the service's own session. The service starts its ETW
+session with a stable GUID derived from `--session-name`, and ETW tests the
 right against that GUID's descriptor. Step 4 grants on that GUID only and
 leaves the shared default descriptor unchanged. This matches how Windows
 provisions its own restricted LocalService services, such as `DPS`: their ETW
@@ -106,9 +106,9 @@ if ($receiverEndpoint.Port -eq 0 -or
 $Receiver = $receiverEndpoint.ToString()   # IPv6 is written as [address]:port
 ```
 
-The validation mirrors `check_receiver` in `src/pipeline/config.rs`: a numeric IP with a
-nonzero port, not unspecified and not multicast. It does not test reachability.
-Check that with a connection test to the collector.
+This check mirrors `check_receiver` in `src/pipeline/config.rs`. It accepts a numeric IP
+address with a nonzero port that is not unspecified and not multicast. It does not test
+reachability. Test that with a connection test to the collector.
 
 ### 2. Create the protected installation directory
 
@@ -148,14 +148,14 @@ The name `NT SERVICE\EtwDnstap` resolves once the service exists, so the
 `icacls` grant comes after `New-Service`. Step 2 removed inherited ACEs. Without
 this grant, the copied executable is not readable by the service, and the
 service cannot start. Read and execute is not a write, so this grant to the
-service SID is enough. The lab confirmed it.
+service SID is enough. The lab test showed this.
 
 The manifest, `etw-dnstap.man`, defines the performance counter set. `lodctr`
 reads it from the protected directory and registers the counter set. The
 counter instance appears only while the service runs. If the manifest is not
 registered, the service captures normally and logs nothing about it, but
 consumers cannot find the counter set: `typeperf -q EtwDnstap` lists nothing. To
-fix it, run `lodctr` again and restart the service.
+register the manifest, run `lodctr` again and restart the service.
 
 The lab validated this step on 2026-11-01 with the LocalService restricted-SID
 profile. The counters were read by an administrator. Reading by a non-admin
@@ -245,8 +245,8 @@ Restart-Computer
 - `sidtype restricted` makes the SCM build a write-restricted token. The
   restricting SIDs are the service SID, Everyone, the logon SID, and
   `S-1-5-33`. An unrestricted token fails the identity check.
-- `privs` leaves only `SeChangeNotifyPrivilege` out of LocalService's default
-  privileges. The service refuses to run if the token holds any other
+- `privs` limits the service to `SeChangeNotifyPrivilege`. LocalService holds more
+  privileges by default. The service refuses to run if the token holds any other
   privilege, or if that privilege is disabled.
 - `sc.exe sdshow` saves the service security descriptor that the SCM gave to
   `New-Service`. `sc.exe sdset` replaces it. The new descriptor gives SYSTEM
@@ -257,13 +257,13 @@ Restart-Computer
   reconfigure the service. Network and batch logons get no right, so a remote
   user cannot read the binary path, which holds the collector address. The SACL
   audits failed access by any principal. Run `sdset` through `cmd.exe` for the
-  same reason as `obj=`: it keeps the quotes and the parentheses of the string
+  same reason as `obj=`. That keeps the quotes and the parentheses of the string
   intact. The default descriptor also gives interactive and service logons the
   user-defined control right. The service does not use it, so the new descriptor
-  omits it. The lab confirmed on build 26100 that `sc.exe sdshow EtwDnstap`
-  prints exactly the string in step 6 after `sdset`. A standard user got "Access
-  is denied" (error 5) from `sc.exe stop`, `start`, `config`, and `control
-  EtwDnstap 200`, and could query the service.
+  omits it. In the lab on build 26100, `sc.exe sdshow EtwDnstap` printed exactly
+  the string in step 6 after `sdset`. A standard user got "Access is denied"
+  (error 5) from `sc.exe stop`, `start`, `config`, and `control EtwDnstap 200`.
+  That user could query the service.
 - `net localgroup` adds the **service SID**, not all LocalService processes, to
   Performance Log Users. That lets the service create and control ETW sessions.
   The membership must be enabled in the token, not deny-only. Restart the
@@ -276,15 +276,16 @@ Restart-Computer
   script grants no right to log events. It also removes any other ACE for the
   service SID from every ETW descriptor, including grants from earlier versions
   of the script. Run it with `-WhatIf` first. That run lists each change and
-  changes nothing. Both runs print the SDDL of each session GUID and of the
-  default descriptor. After a `-WhatIf` run, that SDDL is unchanged.
-  Before the first change, it exports the `WMI\Security` registry key and saves
-  the original bytes of each value it changes into `-BackupPath`. A run with
-  `-WhatIf` writes no backup. To undo the run, use `-Restore` as described in
+  changes nothing. Both runs print the SDDL of the descriptor of each session
+  GUID that has one, and of the default descriptor. A `-WhatIf` run leaves that
+  SDDL unchanged. Before the first change, the script exports the `WMI\Security`
+  registry key. It also saves the original bytes of each value that it changes
+  into `-BackupPath`. A run with `-WhatIf` writes no backup. To undo the run,
+  use `-Restore` as described in
   [scripts/provision/README.md](../../scripts/provision/README.md#backup-and-restore).
 - `New-EventLog` registers the `EtwDnstap` source. Without it, service failures
   and the capture start and stop lines are not written to the Application log.
-  The lab confirmed that the restricted token can write these events.
+  The lab test showed that the restricted token can write these events.
 - `Restart-Computer` is required. ETW applies its security descriptors at boot.
   In the lab, a grant applied without a restart had no effect.
 
@@ -360,7 +361,7 @@ sc.exe qc EtwDnstap
 - `depend= DNS` keeps the dependency on the `DNS` service. Include it so that
   the dependency does not change.
 - `sc.exe qc` should show `START_TYPE` as `AUTO_START  (DELAYED)`. The lab
-  confirmed this. `Get-Service` shows `Automatic`.
+  showed this. `Get-Service` shows `Automatic`.
 - With `depend= DNS`, the SCM stops `EtwDnstap` whenever it stops `DNS` on
   request. `Restart-Service DNS` fails because `DNS` has a dependent service.
   Use `Restart-Service DNS -Force`. In the lab, this command stopped `EtwDnstap`
@@ -402,9 +403,9 @@ Check each of these results:
   the service.
 - The `sdshow` output equals the string from step 4 exactly.
 
-A difference means that someone
-changed the descriptor, or that this OS build prints it in another form. Record
-the found string, and do not start the service until you know which.
+A difference means that someone changed the descriptor, or that this OS build
+prints it in another form. Record the string that you found. Do not start the
+service until you know which.
 
 ### 7. Start capture and check that it is running
 
@@ -428,8 +429,9 @@ typeperf "\EtwDnstap(*)\*" -sc 5
 `typeperf -q` lists the counter names. The second command prints five samples
 of every counter in every instance. The ETW gauges read 0 until the first ETW
 query succeeds. If the names do not appear, the manifest is not registered: run
-the `lodctr` command from step 3 again and restart the service. A warning
-(Event ID 3) appears only if a provider call fails at startup.
+the `lodctr` command from step 3 again and restart the service. If counter
+registration fails at startup, the service logs the warning `performance
+counters are unavailable` (Event ID 3). Capture continues without counters.
 
 Then set the start type as described in [step 5](#start-type).
 

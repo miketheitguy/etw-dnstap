@@ -76,10 +76,10 @@ Notes:
   `etw::keywords`. The name filters in `.github/workflows/ci.yml` leave out
   every test that calls a `windows-sys` function and three tests that take
   more than ten minutes each under Miri. To run it locally, add the component
-  with `rustup component add miri`, run `cargo miri setup` from a directory
-  outside the repository that holds a copy of `rust-toolchain.toml` (inside
-  the repository the sysroot build picks up `build-std` and fails), then run
-  the job's command with the job's `MIRIFLAGS`, `PROPTEST_CASES`, and
+  with `rustup component add miri`. Run `cargo miri setup` from a directory
+  outside the repository. That directory holds a copy of `rust-toolchain.toml`.
+  Inside the repository, the sysroot build picks up `build-std` and fails. Then
+  run the job's command with the job's `MIRIFLAGS`, `PROPTEST_CASES`, and
   `PROPTEST_DISABLE_FAILURE_PERSISTENCE` settings. The counting allocator in
   `src/etw/test_support.rs` is compiled out under Miri.
 - Coverage and a 60-second fuzz smoke run (`fuzz/`) are report-only. They do
@@ -99,9 +99,13 @@ Notes:
   [build guide](docs/guide/build.md#optional-address-sanitizer-builds).
 
 The criterion benchmark in `benches/hot_path.rs` measures the per-event hot
-path on deterministic DNS records: the deep copy into a pooled slot (also on a
-production-sized pool), decode, encode, `parse_and_encode`, its parts, and a
-two-thread producer and consumer run. It needs the `bench` feature, which
+path on deterministic DNS records. It covers these parts:
+
+- The deep copy into a pooled slot, also on a production-sized pool.
+- Decode, encode, `parse_and_encode`, and its parts.
+- A two-thread producer and consumer run.
+
+It needs the `bench` feature, which
 exposes benchmark entry points. That feature is never enabled in a shipped
 build. `cargo bench` without `--features bench` builds and runs nothing, with no
 error, because the target declares `required-features`. Run it with the alias
@@ -112,11 +116,11 @@ library for unwinding as `cargo test-release` does:
 cargo bench-hot-path
 ```
 
-The bench binary is built with `panic = "unwind"` (Cargo builds bench targets
-for unwinding), while the shipped build aborts, so the code is close to but not
+The bench binary is built with `panic = "unwind"`, because Cargo builds bench
+targets for unwinding. The shipped build aborts, so the code is close to but not
 identical to what ships. Criterion writes its reports under `target\criterion\`,
 a local artifact that is not in a clone. Between sessions the same host drifts
-by several percent, more than a run's confidence interval, so judge a change
+by several percent, more than a run's confidence interval. Judge a change
 with an A/B run in one session, as described in
 [the baseline record](datasets/baselines/code-review-2026-11-01/README.md#comparing-a-change-with-the-baseline):
 `cargo bench-hot-path -- --save-baseline pre`, make the change, then
@@ -170,6 +174,7 @@ The status decides the folder under `docs/`:
 | `docs/plans/` | Proposed plans and analyses that are not executed. Move a plan to `docs/history/` when it is executed |
 | `docs/history/` | Historical and Superseded records: finished campaigns, reviews, and completed plans |
 | `docs/assets/performance/` | Generated graphs and data copies (the default output of `plot-pooled-wpr.py`) |
+| `docs/assets/pipeline/` | The data-path animation. Build it with `scripts/docs/pipeline-animation/Build-Animation.ps1` |
 
 When a document's status changes, move it with `git mv`, update every relative
 link to it, and update its row in [docs/README.md](docs/README.md). Do not rewrite
@@ -199,7 +204,7 @@ matches.
 | Procedure | Tells an operator what to do, in numbered steps, with a check after each step that can fail | [build.md](docs/guide/build.md), [install.md](docs/guide/install.md), [receiver.md](docs/guide/receiver.md), [upgrade.md](docs/guide/upgrade.md), [uninstall.md](docs/guide/uninstall.md), [service-stop-remediation.md](docs/guide/service-stop-remediation.md) |
 | Reference | Lists facts to look up: options, defaults, ranges, tuned settings, counters, log events | [configuration.md](docs/guide/configuration.md), [tuning.md](docs/guide/tuning.md), [monitoring.md](docs/guide/monitoring.md), [measurement-terms.md](docs/design/measurement-terms.md) |
 | Diagnosis | Starts from a symptom and gives the cause and the corrective action | [troubleshooting.md](docs/guide/troubleshooting.md) |
-| Design | Tells a maintainer how a part of the code works and why | [pooled-intake.md](docs/design/pooled-intake.md), [ring-buffer.md](docs/design/ring-buffer.md), [single-pass-decoder.md](docs/design/single-pass-decoder.md) |
+| Design | Tells a maintainer how a part of the code works and why | [data-path.md](docs/design/data-path.md), [pooled-intake.md](docs/design/pooled-intake.md), [ring-buffer.md](docs/design/ring-buffer.md), [single-pass-decoder.md](docs/design/single-pass-decoder.md) |
 | Record | Keeps the results of one campaign, review, or plan | `docs/performance/`, `docs/history/` |
 
 A procedure links to the reference for option details. It does not copy them.
