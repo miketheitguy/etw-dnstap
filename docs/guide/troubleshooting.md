@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` branch · **Reviewed:** 2026-11-03
 
 Use this guide to find the cause of a failed start, restarts, drops, or missing
 records. Start with the Application event log and the SCM state.
@@ -20,20 +20,19 @@ records. Start with the Application event log and the SCM state.
 | The service runs, but the collector gets nothing | [No records arrive at the collector](#no-records-arrive-at-the-collector) |
 | A leftover ETW session blocks the start | [Stale ETW session blocks startup](#stale-etw-session-blocks-startup) |
 | The service aborts or does not stop | [Watchdog aborts or stop hangs](#watchdog-aborts-or-stop-hangs) |
+| The binary prints nothing, or a console launch exits with code 1 | [Run from a console](#run-from-a-console) |
+| The Application log has Event ID 6 | [A panic aborts the process](#a-panic-aborts-the-process) |
 | An event log message that you want to look up | [Event log messages](#event-log-messages) |
 
 ## Read the diagnostics
 
-The service writes its diagnostics to two places:
-
-- **Application log, source `EtwDnstap`.** Event ID 1 is a fatal service failure.
-  Event ID 2 is any information line, including the start and stop counters.
-  Event ID 3 is any warning. Event ID 4 is an error that does not by itself stop
-  the service. Event ID 5 is a watchdog abort. A log write failure is dropped
-  silently and never stops capture. See
-  [Log event IDs](monitoring.md#log-event-ids).
-- **stderr.** Tracing output goes to stderr. Under SCM, stderr is not a durable
-  log. Use the event log for evidence.
+The service writes its diagnostics only to the Application log, source
+`EtwDnstap`. It writes nothing to stdout or stderr. Event ID 1 is a fatal service
+failure. Event ID 2 is any information line, including the start and stop
+counters. Event ID 3 is any warning. Event ID 4 is an error that does not by
+itself stop the service. Event ID 5 is a watchdog abort. Event ID 6 is a panic.
+A log write failure is dropped silently and never stops capture. See
+[Log event IDs](monitoring.md#log-event-ids).
 
 To read the stored failure text:
 
@@ -47,6 +46,18 @@ Get-WinEvent -FilterHashtable $eventFilter -MaxEvents 10 |
 If there are no events, check that the source is registered
 (`[System.Diagnostics.EventLog]::SourceExists('EtwDnstap')`). See
 [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source).
+
+## Run from a console
+
+The binary writes nothing to stdout or stderr. A console launch exits with code
+1 and prints nothing, whatever arguments you pass. A console process cannot
+connect to SCM, so it does not write to the event log either. `--help`, `-h`,
+`--version`, and `-V` are not options. They fail like any unknown argument.
+
+To read the running version, start the service and read the `version` field of
+the `capture started` event. To check an argument, start the service through SCM
+and read Event ID 1, as described in
+[The service does not reach RUNNING](#the-service-does-not-reach-running).
 
 ## Event log messages
 
@@ -68,6 +79,7 @@ Search the Application log for the text, then go to the section named.
 | `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied` | Event ID 1 | The restricted token cannot query the `DNS` service. | [RUNNING](#the-service-does-not-reach-running) |
 | `already exists and does not match this program's session shape` | Event ID 1 | A session with the name exists and cannot be reclaimed. Its shape or its GUID differs from this service's. | [Stale session](#stale-etw-session-blocks-startup) |
 | `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | Event ID 5 | A deadline expired, and the process aborted. | [Watchdog](#watchdog-aborts-or-stop-hangs) |
+| `EtwDnstap panicked:` | Event ID 6 | A panic in the service. The text gives the panic message and location, and the process aborts. | [Panic](#a-panic-aborts-the-process) |
 | `dnstap receiver unavailable at startup; capture is running, and frames go to the spool, or are dropped and counted when no spool is in use, until it connects (retrying with backoff)` | Event ID 3 | The service is running and reconnecting. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver connection lost; frames go to the spool, or are dropped and counted when no spool is in use, until it reconnects (frames already sent are never resent)` | Event ID 3 | An established session failed. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. Logged for the first four failures, then for the 61st, 121st, and every 60 failures after that. | [Receiver](#the-receiver-is-down-or-unreachable) |
@@ -427,6 +439,14 @@ longer to reach capture.
 Shutdown does not wait for a spool backlog. The sink stops writing data to the
 receiver 1 second after shutdown starts. A write in progress and the STOP/FINISH
 exchange can take about 4 seconds more.
+
+## A panic aborts the process
+
+A panic in the service writes Event ID 6 to the Application log, and then the
+process aborts. The text starts with `EtwDnstap panicked:` and gives the panic
+message and the source location. The abort skips cleanup, as a watchdog abort
+does. Check for a leftover ETW session with `logman query -ets`, and report the
+Event ID 6 text with the steps that led to it.
 
 ## Upgrading
 
