@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136`, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` branch, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-03
 
 `etw-dnstap` is a Windows service. It captures DNS Server client query and
 response events from Event Tracing for Windows (ETW). It sends them to a
@@ -11,10 +11,10 @@ response events from Event Tracing for Windows (ETW). It sends them to a
 - **Only reads events.** Its one ETW grant lets it create its own real-time
   trace session. It does not enable or change the DNS Server Analytical event
   log.
-- **Has no foreground mode.** `--help` and `--version` print information and
-  exit without starting capture.
+- **Has no foreground mode.** It has no `--help` or `--version`. A console
+  launch exits with code 1 and prints nothing.
 - **Writes files only for the spool.** Diagnostics go to the Application event
-  log, stderr, and Windows performance counters. The spool keeps frames that the
+  log and Windows performance counters. The spool keeps frames that the
   receiver has not accepted yet, in `C:\ProgramData\EtwDnstap\spool` by default.
   See [Spool](docs/guide/configuration.md#spool).
 
@@ -50,7 +50,7 @@ response events from Event Tracing for Windows (ETW). It sends them to a
    generate DNS traffic, and stop it. Check that the receiver got the records.
 
 The release executable is `target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`.
-Run it with `--help` for the options.
+The options are listed in [configuration.md](docs/guide/configuration.md).
 
 ## Documentation
 

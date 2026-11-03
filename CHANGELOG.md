@@ -6,8 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## Versioning policy
 
-The version is the `version` field in [Cargo.toml](Cargo.toml). The binary
-prints it with `--version`. The repository has no Git tag and no release yet.
+The version is the `version` field in [Cargo.toml](Cargo.toml). The service
+reports it in the `version` field of its `capture started` event. The repository
+has no Git tag and no release yet.
 Every change stays under `[Unreleased]` until a tag is made.
 
 **SemVer rule.** A major version of `0` means initial development. Under
@@ -17,8 +18,7 @@ time, and the public API should not be treated as stable.
 **Local policy while the version is `0.y.z`.** This policy states what the
 project promises. It is not a SemVer rule. The public contract has these parts:
 
-- The command-line options, their defaults and ranges, and the `--help` and
-  `--version` output.
+- The command-line options, and their defaults and ranges.
 - The Application event log messages and counters, and the dnstap output sent
   to the receiver.
 - The ETW session name, and the session GUID derived from it.
@@ -47,6 +47,12 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- Event ID 6, an Error event in the Application log, for a panic. Its text starts
+  with `EtwDnstap panicked:` and has the panic message and location. It is written
+  just before the process aborts.
+- A `version` field on the `capture started` event, set from the package version in
+  `Cargo.toml`. It is how an operator reads the running version now that the binary
+  has no `--version` flag.
 - A disk spool for DNS frames that the receiver has not accepted yet. It is on
   by default, in `C:\ProgramData\EtwDnstap\spool`. While the receiver is down or
   slow, frames are written to segment files there. After the receiver
@@ -401,6 +407,14 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Removed
 
+- **Breaking.** The service writes nothing to stdout or stderr. Tracing output goes
+  only to the Application event log, and the panic text goes there too. The `--help`,
+  `-h`, `--version`, and `-V` options are removed. They fail command-line parsing like
+  any unknown argument. A console launch, with any arguments, exits with code 1 and
+  prints nothing. Under SCM, an argument error is still Event ID 1 and an SCM failure
+  status. Read the running version from the `version` field of `capture started`.
+  This changes the public contract under the local policy, so the next release
+  increases `y`.
 - **Breaking.** The `--etw-flush-ms` option and the periodic ETW flush. The
   supervisor no longer sends `EVENT_TRACE_CONTROL_FLUSH`, and it no longer
   wakes the parser after a flush. A service binary path that still has

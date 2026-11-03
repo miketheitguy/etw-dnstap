@@ -1,10 +1,11 @@
 # Log events and counters
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` branch · **Reviewed:** 2026-11-03
 
-Diagnostics go to the Application event log under source `EtwDnstap` and to
-stderr. The service writes no capture or metrics files. The one exception is the
-spool, which keeps frames that were not sent yet in segment files. See
+Diagnostics go to the Application event log under source `EtwDnstap`. The
+service writes nothing to stdout or stderr, and it writes no capture or metrics
+files. The one exception is the spool, which keeps frames that were not sent yet
+in segment files. See
 [Spool](configuration.md#spool). The Windows performance counters show many of
 the same values. See
 [Performance counters](#performance-counters).
@@ -18,6 +19,7 @@ the same values. See
 | 3 | Warning | Every warning-level line, such as an unavailable receiver, a lost connection, a failed reconnect, a rejected event, the rate warning, a reclaimed session, and the spool warnings in [Spool messages](#spool-messages). |
 | 4 | Error | Every error-level log line, such as `ETW cleanup failed` or the reason for a stop after a DNS Server process change. A fatal service failure uses Event ID 1. |
 | 5 | Error | Watchdog expiry, written just before the process aborts. |
+| 6 | Error | A panic, written just before the process aborts. The text starts with `EtwDnstap panicked:` and has the panic message and location. |
 
 ## Periodic and final reports
 
@@ -28,6 +30,8 @@ with the same fields, even when you disable periodic snapshots.
 
 `capture started` records these fields:
 
+- `version`, the package version from `Cargo.toml`. This is how you read the
+  running version, because the binary has no `--version` flag.
 - `session` (the ETW session name), `session_guid`, and `receiver`.
 - `tls` (`true` unless you set `--plaintext`) and `tls_server_name` when set.
 - `capacity`, `etw_buffer_kib`, and `etw_flush_seconds`.
