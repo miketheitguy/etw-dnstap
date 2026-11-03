@@ -570,7 +570,7 @@ function Invoke-StepL5b {
         $exit = Invoke-Msiexec $sub 'install' $form.Properties @() -AssertionStep $check
         $after = Get-GuestInstallState
         $logText = Read-MsiLogText (Join-Path $runDir "$sub-msiexec.log")
-        $ran = [regex]::Matches($logText, '\[EtwDnstap\] Receiver .* accepted').Count -gt 0
+        $ran = [regex]::Matches($logText, 'Receiver \S+ accepted\.').Count -gt 0
         $changed = $after.ImagePath -match [regex]::Escape($newReceiver)
         if ($changed -and $null -eq $working) { $working = $form }
         $observation = "form=$($form.Name) exit=$exit ImagePath-has-new-receiver=$changed ImagePath=[$($after.ImagePath)] registry-Receiver=[$($after.Receiver)] provisioning-install-ran=$ran service=$($after.Service) (before: Receiver=[$($before.Receiver)] service=$($before.Service))"
