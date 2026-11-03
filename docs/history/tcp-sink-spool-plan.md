@@ -1,6 +1,6 @@
 # TCP sink spool plan
 
-> **Status:** Active · **Branch:** `tcp-sink-spool` · **Base:** `main` at commit `0f6db1e` · **Reviewed:** 2026-11-03
+> **Status:** Historical (executed and lab-validated 2026-11-03) · **Evidence dated:** 2026-11-03 · **Commit:** branch `tcp-sink-spool`, based on `main` at `0f6db1e` · **Reviewed:** 2026-11-03
 
 This plan stops the TCP sink from losing frames while the dnstap receiver is
 down. Today `NetworkSink` drops every frame that arrives while it is

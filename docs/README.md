@@ -220,16 +220,11 @@ otherwise.
 | [Service shutdown validation plan](history/service-stop-validation-plan.md) | Bounded receiver-close comparison |
 | [Service shutdown validation results](history/service-stop-validation-results.md) | Results of that comparison |
 
-### Feature plans, active
-
-| Document | Contents |
-| --- | --- |
-| [TCP sink spool plan](history/tcp-sink-spool-plan.md) | Disk spool for the TCP sink, with a sender thread: decisions, design, stage records, and the completion record. Active on the `tcp-sink-spool` branch. Not yet merged |
-
 ### Feature plans, executed
 
 | Document | Contents |
 | --- | --- |
+| [TCP sink spool plan](history/tcp-sink-spool-plan.md) | Disk spool for the TCP sink, with a sender thread: decisions, design, stage records, and the completion record. Executed and lab-validated 2026-11-03 |
 | [TLS receiver plan](history/tls-receiver-plan.md) | TLS 1.2 and 1.3 for the receiver connection, with the decisions taken during implementation. Executed 2026-11-01 |
 | [Windows V2 performance counter plan](history/windows-performance-counters-v2-plan.md) | The `EtwDnstap` counter set: catalog, manifest, registration, and suggested alerts. Lab-validated 2026-11-01 |
 | [ETW minimum buffers plan](history/etw-min-buffers-plan.md) | The `--etw-min-buffers` option. Lab-validated 2026-11-01 |
