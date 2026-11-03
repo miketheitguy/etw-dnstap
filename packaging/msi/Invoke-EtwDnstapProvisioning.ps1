@@ -203,8 +203,10 @@ function Initialize-DataFolders {
 }
 
 function Get-PerformanceLogUsersName {
-    return (New-Object Security.Principal.SecurityIdentifier $PerformanceLogUsersSid).
+    # Get-LocalGroupMember and net.exe need the group name without the BUILTIN\ domain part.
+    $account = (New-Object Security.Principal.SecurityIdentifier $PerformanceLogUsersSid).
         Translate([Security.Principal.NTAccount]).Value
+    return $account.Substring($account.IndexOf([char]92) + 1)
 }
 
 function Test-ServiceInGroup([string]$GroupName) {
@@ -214,9 +216,12 @@ function Test-ServiceInGroup([string]$GroupName) {
     return ($members -contains $serviceSid)
 }
 
-function Invoke-Grant([string[]]$Arguments) {
+# The grant script has ConfirmImpact High, so it asks before each change unless
+# -Confirm:$false is given, and a non-interactive host cannot answer. Named parameters
+# go through a hashtable: an array splat passes '-Remove' as a positional string.
+function Invoke-Grant([hashtable]$Parameters) {
     if (-not (Test-Path -LiteralPath $GrantScript)) { throw "Grant script not found at $GrantScript." }
-    & $GrantScript @Arguments
+    & $GrantScript @Parameters -Confirm:$false
 }
 
 function Invoke-Install {
@@ -235,7 +240,7 @@ function Invoke-Install {
         Write-Step "Added NT SERVICE\$ServiceName to $group."
     }
 
-    Invoke-Grant @('-SessionName', $SessionName)
+    Invoke-Grant @{ SessionName = $SessionName }
     Write-Step "Ran the ETW grant for session '$SessionName'. Restart the computer before the service starts."
 }
 
@@ -300,7 +305,7 @@ function Invoke-Uninstall {
         Write-Step "NT SERVICE\$ServiceName is not in $group."
     }
 
-    Invoke-Grant @('-Remove')
+    Invoke-Grant @{ Remove = $true }
     Write-Step 'Removed the ETW grants of the service SID.'
 
     if (Test-Path -LiteralPath $DataRoot) {
