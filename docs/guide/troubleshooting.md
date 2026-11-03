@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `no-console-output` branch · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
 
 Use this guide to find the cause of a failed start, restarts, drops, or missing
 records. Start with the Application event log and the SCM state.

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `no-console-output` branch · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
 
 Set every option in the service binary path. The service ignores arguments that
 you give to `sc.exe start`. Install and provisioning steps are in

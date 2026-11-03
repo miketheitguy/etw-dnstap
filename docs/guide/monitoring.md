@@ -1,6 +1,6 @@
 # Log events and counters
 
-> **Status:** Current · **Describes:** `no-console-output` branch · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
 
 Diagnostics go to the Application event log under source `EtwDnstap`. The
 service writes nothing to stdout or stderr, and it writes no capture or metrics

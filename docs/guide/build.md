@@ -1,6 +1,6 @@
 # Build the executable
 
-> **Status:** Current · **Describes:** `no-console-output` branch · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
 
 Use this guide to build `etw-dnstap.exe` from source and check its hardening.
 It is for the person who prepares the executable. To install the result on a DNS
