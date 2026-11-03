@@ -1,6 +1,6 @@
 # Data path: from an ETW event to a TCP frame
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-03
 
 This reference follows one DNS Server event through the service. It names the
 thread, the code, and the counters of each stage. Maintainers use it to find
@@ -11,13 +11,17 @@ follow link to the documents that do.
 ![Animation of the data path. A DNS Server event moves from the ETW session to the intake callback, which checks it and copies it into a pool slot. A bounded channel queues the slot. The parser thread decodes the record, encodes it as dnstap, and releases the slot. The TCP sink buffers the frame and sends it to the receiver.](../assets/pipeline/etw-to-tcp-pipeline.gif)
 
 The animation slows the events and shows illustrative counter values. The
-[stage table](#stages) has the same information as text.
+[stage table](#stages) has the same information as text. The animation shows the
+earlier single-thread sink, with no send queue and no spool.
 
 ## Stages
 
-An event passes through five stages, on three threads. The `etw-consumer`
-thread runs stage 2. The `dnstap-parser` thread runs stages 4 and 5. ETW and
-the DNS Server run stage 1. The buffer in stage 3 belongs to both threads.
+An event passes through five stages, on four threads: the `etw-consumer`,
+`dnstap-parser`, and `dnstap-sender` threads, and the `dnstap-reconnect` helper.
+The `etw-consumer` thread runs stage 2. The `dnstap-parser` thread runs stage 4
+and the first part of stage 5. The `dnstap-sender` thread runs the rest of
+stage 5. ETW and the DNS Server run stage 1. The buffer in stage 3 belongs to
+the `etw-consumer` and `dnstap-parser` threads.
 
 | # | Stage | Thread | Code | What happens |
 | --- | --- | --- | --- | --- |
@@ -25,7 +29,7 @@ the DNS Server run stage 1. The buffer in stage 3 belongs to both threads.
 | 2 | Intake | `etw-consumer` | `native_etw_callback`, `copy_record` | The callback checks the provider, the event ID, and the process ID. It copies the record into a pool slot and sends the slot to the channel. |
 | 3 | Buffer | Both | `PoolManager`, the bounded channel, `native_buffer_callback` | The channel holds the slots. After each delivered ETW buffer, the buffer callback wakes the parser if that buffer enqueued an event. |
 | 4 | Parse | `dnstap-parser` | `Parser::parse`, `Encoder::encode` | The parser decodes the record in one pass, encodes it as a dnstap message, and releases the slot. |
-| 5 | Send | `dnstap-parser` | `NetworkSink`, `FrameStreamWriter` | The sink writes the frame to a 64 KiB buffer and flushes it to the receiver over TCP, with TLS by default. |
+| 5 | Queue and send | `dnstap-parser`, then `dnstap-sender` | `QueuedSink`, `SenderThread::route`, `NetworkSink`, `Spool` | The parser appends the frame to a block and queues the block. The sender thread writes each block to the receiver over TCP, with TLS by default. While the receiver is down or slow, it stores the block in the spool instead. |
 
 Decoding happens in stage 4, after the buffer. The intake callback only copies
 bytes. It does not decode them.
@@ -89,41 +93,66 @@ The parser increments `encoded` after it hands the frame to the sink. When the
 channel is empty, the parser polls for a short time and then parks. See the
 [single-pass decoder](single-pass-decoder.md) for the decoding rules.
 
-### 5. Send
+### 5. Queue and send
 
-The sink writes each frame to a 64 KiB buffer. A full buffer flushes itself.
-The parser also flushes unsent frames after 100 ms of idle time. When the
-parser is busy, it flushes if the last flush is over one second old. Each socket
-operation has a 2-second deadline.
+Stage 5 runs on two threads. The `dnstap-parser` thread queues the frames. The
+`dnstap-sender` thread sends them. The parser never does socket or disk I/O.
 
-At connection time, the sink completes the TLS handshake. It then runs the
-Frame Streams handshake: READY, ACCEPT, and START. At shutdown, it sends STOP
-and waits for FINISH.
+On the parser thread, `QueuedSink::write_frame` appends each frame to a block of
+complete dnstap frames. The parser queues a block when it holds 64 KiB. It also
+queues a partial block on its idle and busy timers, 100 ms and 1 second. The
+queue is a bounded channel of 128 blocks. A block that finds the queue full is
+discarded, and its frames count in `queue_dropped`. The blocks come from a pool
+that is allocated at startup, so the parser does not allocate per frame.
 
-If the connection fails, the sink discards the buffered frames and the frames
-that arrive while it is down. It counts them in `disconnected_dropped` and never
-resends them. A separate `dnstap-reconnect` thread reconnects with a backoff
-from 250 ms to 30 s. See
+On the sender thread, `SenderThread::route` sends each block to one of three
+places:
+
+1. The spool, when the receiver is down, when the spool already holds frames,
+   or when 96 of the 128 queued blocks are waiting.
+2. The receiver, when it is connected and the spool is empty.
+3. Nowhere, when no spool is in use and the receiver is down. The frames count
+   in `disconnected_dropped`.
+
+While the receiver is connected and the spool holds frames, the sender replays
+the oldest frames in batches of up to 256 KiB. It records the new read position
+before each batch goes to the socket, so a frame is never sent twice. See
+[Spool](../guide/configuration.md#spool).
+
+The sender thread owns the link (`NetworkSink`). It runs the TLS handshake and
+the Frame Streams handshake, and it sends STOP and waits for FINISH at shutdown.
+Reconnects run on the `dnstap-reconnect` helper thread, with a backoff from
+250 ms to 30 s. See
 [Receiver connection](../guide/configuration.md#receiver-connection).
 
 ## Startup and shutdown order
 
 The service starts the stages from the receiver side back to the source. This
-order means that the sink and the buffer exist before the first event arrives:
+order means that the link, the spool, the queue, and the event channel exist
+before the first event arrives:
 
-1. Connect the sink. A refused connection does not stop the service. A TLS or
+1. Connect the link. A refused connection does not stop the service. A TLS or
    protocol failure does.
-2. Create the channel and the pool.
-3. Start the parser thread.
-4. Start the ETW session and the `etw-consumer` thread.
+2. Check the spool folder and open the spool. A failed check logs one warning,
+   and the run continues without a spool.
+3. Allocate the block pool and the queue, and start the `dnstap-sender` thread.
+4. Create the event channel and the slot pool.
+5. Start the parser thread.
+6. Start the ETW session and the `etw-consumer` thread.
 
 Shutdown runs from the source forward:
 
 1. Stop the ETW session and join the `etw-consumer` thread.
 2. Publish `producer_done` and wake the parser.
-3. The parser drains the channel, sends STOP, and ends.
+3. The parser sends its last partial block, closes the queue, and waits for the
+   sender thread.
+4. The sender thread routes the blocks still in the queue. It seals the spool
+   segment and keeps any backlog on disk. It stops writing data to the receiver 1
+   second after shutdown starts. A write in progress and the STOP/FINISH exchange
+   can take about 4 seconds more.
 
-A watchdog ends the process if shutdown takes more than 10 seconds. See
+A watchdog ends the process if shutdown takes more than 10 seconds. The sender
+thread takes about 5 seconds at most. See
 [Completion and resource ownership](ring-buffer.md#completion-and-resource-ownership).
 
 ## Where events are lost
@@ -137,7 +166,13 @@ Each stage has its own loss counters. Use the counter to find the stage.
 | 2 | The pool has no free slot. | `pool_exhausted_regular`, `pool_exhausted_jumbo` |
 | 3 | The channel is full. | `ring_dropped` |
 | 4 | The record does not decode. | `rejected`, `schema_rejected` |
-| 5 | The receiver is down. | `disconnected_dropped` |
+| 5 | The send queue is full. | `queue_dropped` |
+| 5 | The receiver is down with no spool in use, or the connection fails with frames in flight. | `disconnected_dropped` |
+| 5 | The spool refuses a block, evicts a segment, or cannot read a frame. | `spool_dropped`, `spool_dropped_bytes` |
+| 5 | A spool I/O error. The block is also counted in `spool_dropped`. | `spool_errors` |
+
+Each frame lost in stage 5 is in at most one of `queue_dropped`,
+`disconnected_dropped`, and `spool_dropped`.
 
 `intake_dropped` is the sum of the stage 2 and stage 3 admission losses. Do not
 add it to those counters. The [Log events and counters](../guide/monitoring.md#counter-relationships)

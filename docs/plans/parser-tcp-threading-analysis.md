@@ -262,6 +262,11 @@ guarantee, and partial progress requires correct handling. See
 
 ## Failure and shutdown contract
 
+> **Superseded in part.** The [TCP sink spool plan](../history/tcp-sink-spool-plan.md)
+> stores frames that arrive while the receiver is down, and it sends them in order
+> after the receiver returns. The no-replay rule below still applies to frames in
+> flight when a connection fails.
+
 Commit `f0b51f4` superseded the fail-fast rule in this paragraph. The sink now
 reconnects with backoff, performs a fresh handshake, and never replays frames.
 Frames lost while disconnected are counted. Keep the no-replay rule. A successful

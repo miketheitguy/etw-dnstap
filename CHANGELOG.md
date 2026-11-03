@@ -47,6 +47,20 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- A disk spool for DNS frames that the receiver has not accepted yet. It is on
+  by default, in `C:\ProgramData\EtwDnstap\spool`. While the receiver is down or
+  slow, frames are written to segment files there. After the receiver
+  reconnects, the service sends them oldest first, before newer frames. Delivery
+  stays at most once. The folder must exist and pass the service's trust check.
+  Without it, the service logs one warning and runs without a spool. The install
+  and upgrade guides have the folder step. The spool holds DNS data unencrypted,
+  so see [SECURITY.md](SECURITY.md). New options are `--spool-dir`,
+  `--no-spool`, `--spool-max-mib` (default 4096), and `--spool-min-free-mib`
+  (default 2048). A `dnstap-sender` thread now owns the receiver connection and
+  the spool. New performance counters 52 to 60 are appended, and the updated
+  manifest must be registered again on upgrade. `disconnected_dropped` now
+  counts only frames lost in the sink, and the help text of counters 2, 11, and
+  18 changed to match. See [configuration.md](docs/guide/configuration.md#spool).
 - A data-path reference, [docs/design/data-path.md](docs/design/data-path.md), with an
   animation of the five stages from an ETW event to a TCP frame. The sources
   that build the GIF are in `scripts/docs/pipeline-animation/`.
@@ -191,6 +205,16 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The spool is on by default. An upgrade needs the spool folder
+  and the re-registered counter manifest. See
+  [Add the spool folder](docs/guide/upgrade.md#add-the-spool-folder). With a
+  spool in use, frames from a receiver outage go to the spool and are sent
+  later. They are no longer counted in `disconnected_dropped`. `disconnected_dropped`
+  and counter 18 (Receiver Down Drops) now count only frames lost in the sink.
+  The help text of counters 2, 11, and 18 changed. The two receiver warnings
+  changed text. After a restart, the receiver can get frames that an earlier run
+  left in the spool. To keep the earlier loss handling, run with `--no-spool`.
+  The counter meaning changes still apply with `--no-spool`.
 - Documentation restructure. `docs/guide/install.md` and
   `docs/guide/configuration.md` are split by task. The new guides are
   `build.md`, `receiver.md`, `upgrade.md`, `tuning.md`, and `monitoring.md`.

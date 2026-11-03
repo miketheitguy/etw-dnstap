@@ -1,6 +1,6 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` for the layout, conventions, and file list · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` for the layout, conventions, and file list · **Reviewed:** 2026-11-03
 
 This index lists every document in `docs/`. Each document starts with a status
 block that gives its status, evidence date, commit, and review date. This page
@@ -218,6 +218,12 @@ otherwise.
 | [Service shutdown fix plan](history/service-stop-fix-plan.md) | Superseded by [service shutdown remediation](guide/service-stop-remediation.md) |
 | [Service shutdown validation plan](history/service-stop-validation-plan.md) | Bounded receiver-close comparison |
 | [Service shutdown validation results](history/service-stop-validation-results.md) | Results of that comparison |
+
+### Feature plans, active
+
+| Document | Contents |
+| --- | --- |
+| [TCP sink spool plan](history/tcp-sink-spool-plan.md) | Disk spool for the TCP sink, with a sender thread: decisions, design, stage records, and the completion record. Active on the `tcp-sink-spool` branch. Not yet merged |
 
 ### Feature plans, executed
 

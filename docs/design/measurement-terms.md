@@ -1,6 +1,6 @@
 # Measurement terms and result gates
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` (live counter names. The JSONL schemas describe historical binaries.) · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` (live counter names. The JSONL schemas describe historical binaries.) · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-03
 
 This reference helps maintainers and administrators read the service's
 performance reports. It keeps four things separate: DNS responses, captured
@@ -64,8 +64,8 @@ The live log differs from schema 2 in these names. It reports ETW loss as
 `etw_realtime_buffers_lost`. It splits pool exhaustion into
 `pool_exhausted_regular` and `pool_exhausted_jumbo`, with no `pool_exhausted`
 field. It has no `queue_backlog` or `output_limit_dropped` field. It adds
-`foreign_pid_rejected`, `schema_rejected`, `disconnected_dropped`, and the ETW
-buffer-delivery counters.
+`foreign_pid_rejected`, `schema_rejected`, `disconnected_dropped`, the send-queue
+and spool counters, and the ETW buffer-delivery counters.
 
 The service distinguishes these loss units:
 
@@ -80,7 +80,7 @@ The service distinguishes these loss units:
 | `etw_realtime_buffers_lost` | Lost ETW buffers, not lost events. Never add this count to event counts. |
 | `output_failed_events` | Dequeued events whose frame-output operation failed. |
 | `output_errors` | Failed output operations, including a flush or final STOP/FINISH failure after all encoded records were delivered. |
-| `disconnected_dropped` | Live service only (no schema 2 equivalent). Frames discarded because the TCP receiver was down, or frames written since the last successful flush when a session failed. Those may have reached the receiver. Never resent. Not part of `intake_dropped`. Frames it counts were already encoded. |
+| `disconnected_dropped` | Live service only (no schema 2 equivalent). Frames lost in the sink: frames in flight when a connection failed, and frames that arrived while the receiver was down and no spool was in use. A frame in a failed replay batch is also in `replayed`. Never resent. Not part of `intake_dropped`. Frames it counts were already encoded. |
 
 After native capture stops and the parser joins, schema 2 requires these exact
 identities:
