@@ -406,7 +406,7 @@ function Save-Original {
 # -Restore can tell whether anything changed the value after this run.
 function Complete-Backup {
     if (-not $script:BackupStarted) { return }
-    foreach ($entry in @($script:ChangedValues) + @($script:CreatedValues)) {
+    foreach ($entry in $script:ChangedValues.ToArray() + $script:CreatedValues.ToArray()) {
         $value = (Get-Item -LiteralPath $WmiSecurityKey).GetValue($entry.Name)
         $entry.WrittenSha256 = if ($null -eq $value) { '' } else { Get-Sha256Hex -Bytes ([byte[]]$value) }
     }
