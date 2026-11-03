@@ -1171,6 +1171,44 @@ mod tests {
     }
 
     #[test]
+    fn panic_event_message_includes_the_location_when_known() {
+        assert_eq!(
+            panic_event_message("boom", Some(("src/lib.rs", 12, 5))),
+            "EtwDnstap panicked: boom at src/lib.rs:12:5"
+        );
+    }
+
+    #[test]
+    fn panic_event_message_omits_a_missing_location() {
+        assert_eq!(
+            panic_event_message("boom", None),
+            "EtwDnstap panicked: boom"
+        );
+    }
+
+    #[test]
+    fn panic_event_message_keeps_the_prefix_for_an_empty_message() {
+        assert_eq!(panic_event_message("", None), "EtwDnstap panicked: ");
+        assert_eq!(
+            panic_event_message("", Some(("a.rs", 1, 2))),
+            "EtwDnstap panicked:  at a.rs:1:2"
+        );
+    }
+
+    #[test]
+    fn a_long_panic_message_is_capped_and_terminated_by_event_text() {
+        let message = "m".repeat(MAX_LINE_BYTES * 2);
+        let text = panic_event_message(&message, Some(("a.rs", 1, 2)));
+        assert!(text.len() > MAX_EVENT_UNITS);
+        let units = event_text(&text);
+        assert_eq!(units.len(), MAX_EVENT_UNITS + 1);
+        assert_eq!(units.last(), Some(&0));
+        let prefix: Vec<u16> = "EtwDnstap panicked: ".encode_utf16().collect();
+        assert!(units.starts_with(&prefix));
+        assert!(!units[..MAX_EVENT_UNITS].contains(&0));
+    }
+
+    #[test]
     fn levels_map_to_event_types_and_ids() {
         assert_eq!(event_kind(Level::ERROR), (EVENTLOG_ERROR_TYPE, 4));
         assert_eq!(event_kind(Level::WARN), (EVENTLOG_WARNING_TYPE, 3));

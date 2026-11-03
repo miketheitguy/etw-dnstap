@@ -507,6 +507,35 @@ fn applied_buffer_counts_are_logged_only_after_a_successful_query() {
     assert!(failed_text.is_empty(), "{failed_text}");
 }
 
+#[test]
+fn capture_started_logs_the_package_version() {
+    let config = PipelineConfig::try_from(
+        parse_args_from(["etw-dnstap", "--receiver", "127.0.0.1:6000", "--plaintext"])
+            .expect("args"),
+    )
+    .expect("config");
+    let keywords = KeywordSelection {
+        match_any: 1,
+        match_all: 0,
+        fallback: false,
+        failed_responses: true,
+    };
+    let lines = LogLines::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(lines.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        log_capture_started(&config, keywords);
+    });
+    let bytes = lines.0.lock().expect("log buffer").clone();
+    let text = String::from_utf8(bytes).expect("log text");
+    assert!(text.contains("capture started"), "{text}");
+    let expected = format!("version=\"{}\"", env!("CARGO_PKG_VERSION"));
+    assert!(text.contains(&expected), "{text}");
+}
+
 #[cfg(feature = "diag-timing")]
 #[test]
 fn timer_resolution_guard_pairs_begin_and_end() {
