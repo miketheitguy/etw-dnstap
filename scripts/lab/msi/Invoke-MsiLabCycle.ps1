@@ -76,7 +76,7 @@ $upgradeCode = '{0F4D1A87-DAD8-4C37-ABD4-FEC4DA400FAB}'
 
 # ---- steps to run ---------------------------------------------------------------------------
 $requested = @($Step -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-if ($requested -contains 'All') { $requested = $allSteps }
+$requested = @(foreach ($name in $requested) { if ($name -eq 'All') { $allSteps } else { $name } })
 foreach ($name in $requested) {
     if (($allSteps + 'Restore') -notcontains $name) { throw "Unknown step '$name'. Use All, L0 to L7, or Restore." }
 }
@@ -254,6 +254,7 @@ function Invoke-Msiexec([string]$StepName, [string]$Mode, [string]$Properties, [
         $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList $argumentText -Wait -PassThru
         $process.ExitCode
     }
+    $exit = [int]$exit
     $seconds = [int]((Get-Date) - $started).TotalSeconds
     $hostLog = Join-Path $runDir "$StepName-msiexec.log"
     if (Test-Path -LiteralPath $hostLog) { Remove-Item -LiteralPath $hostLog -Force }
