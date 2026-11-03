@@ -26,7 +26,10 @@ code. Each build has its own product code, so use the one for the installed buil
 The uninstall exits with code `3010`. Restart the computer. The removal of the
 ETW grants takes effect at boot, as the grants do at install.
 
-Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-installer-plan.md).
+Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
+on 2026-11-03: install, a failed install and its rollback, repair, a receiver
+change, and uninstall, each with a restart. A major upgrade from an older MSI
+has not been tested. See [the plan and its results](../plans/msi-installer-plan.md).
 
 ### What the uninstall removes
 
@@ -49,8 +52,14 @@ Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-ins
 > not received are lost. Check `spool_segments` in the last `output stopped`
 > line before you uninstall, and see [Spool](configuration.md#spool). The
 > uninstall also deletes the `backup` folder, which holds the grant script's
-> snapshots of the ETW descriptors. After an MSI uninstall, `-Restore` cannot
-> undo the removal. To restore the grants, install the MSI again.
+> snapshots of the ETW descriptors. That includes snapshots from runs of the
+> script that came before the MSI, for example from a hand-provisioned install,
+> and their copies of the executable. Copy any snapshot you want to keep before
+> you uninstall. After an MSI uninstall, `-Restore` cannot undo the removal. To
+> restore the grants, install the MSI again.
+>
+> A first install that fails and rolls back runs the same removal, so it also
+> deletes `spool` and `backup` folders that were there before the install.
 
 ### What the uninstall keeps
 
@@ -64,8 +73,8 @@ Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-ins
 - Dnstap records that the collector already received. The DNS Server role, its
   configuration, and its Analytical event log are not changed.
 
-The lines that start with `[EtwDnstap]` in the uninstall log say what each step
-removed or kept.
+The lines that start with `WixQuietExec:` after the `ProvisionUninstall` action
+in the uninstall log say what each step removed or kept.
 
 ### Check the result
 

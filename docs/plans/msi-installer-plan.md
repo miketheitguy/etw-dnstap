@@ -1,6 +1,6 @@
 # MSI installer plan
 
-> **Status:** Planned · **Commit:** written at `7903bb7` · **Reviewed:** 2026-11-03
+> **Status:** Executed on `plan/msi-installer`, not merged to `main` · **Evidence dated:** 2026-11-03 · **Commit:** written at `7903bb7`, executed through `531ae0d` · **Reviewed:** 2026-11-03
 
 This plan adds a Windows Installer package (MSI), built with the WiX Toolset, that
 does everything that [install.md](../guide/install.md) steps 2 to 6 do by hand:
@@ -360,4 +360,96 @@ check.
 
 ## Results
 
-Not executed yet.
+| Step | Commit | Result |
+| --- | --- | --- |
+| 1. Plan | `3ea6ba2` | Written. |
+| 2. V1, V2 | `8964ad5` | As planned. `build.rs` compiles the generated `VERSIONINFO` `.rc` and the counter `.rc` separately. `tests/version_resource.rs` checks every field; it was shown to fail with a wrong expected value. |
+| 3. W1 to W9, B | `80e2652` to `20e5b01`, `1aad4d0` | WiX `WixToolset.Sdk` and `WixToolset.Util.wixext` 7.0.1. The EULA is accepted with `<AcceptEula>wix7</AcceptEula>` (<https://docs.firegiant.com/wix/osmf/>). `1aad4d0` (orchestrator review) moved the provisioning rollback before `ProvisionInstall`, and the provisioning uninstall before `DeleteServices`. |
+| 4. L scripts, lab run | `a81f420` to `531ae0d` | L0 to L7 and L5b passed in one run from the checkpoint. See below. |
+| 5. D1 to D6 | `3af7033`, `f642f24`, merged in `244f47e` | As planned. The orchestrator then corrected the guides from the lab results. |
+| 6. Gates | `244f47e` | All six cargo gates pass: 417 + 2 tests (default) and 422 + 2 tests (`diag-timing`), 7 ignored in each. `Build-Msi.ps1` end to end from a clean release build: link exceptions 6 checks, 0 failed; PE 21 checks, 0 failed; `FileVersion` and `ProductVersion` 0.1.0; MSI `ProductVersion` 0.1.0. Link check: 0 broken. |
+
+### Lab run
+
+Guest DNSTap-WS2025 (Windows Server 2025, build 26100). Checkpoint
+`msi-installer-pre-2026-11-03` was taken first and is kept. The receiver routed
+to its `devnull` logger, with its stdout and stderr sent to null. Results are in
+`target\lab-msi\20261103-040548\` on the host (not tracked).
+
+| Step | msiexec exit | Assertions |
+| --- | --- | --- |
+| L0 save state, checkpoint | none | 7 pass |
+| L1 remove the hand-provisioned install, restart | none | 14 pass |
+| L2 no `RECEIVER` | 1603 | 15 pass, nothing changed |
+| L3 hostname `RECEIVER`, rollback | 1603 | 14 pass, removed state |
+| L4 install, restart | 3010 | 34 pass |
+| L5 repair (`/fvomus`), restart | 3010 | 35 pass, `ImagePath` unchanged |
+| L5b receiver change | 3010 (each run) | 7 pass |
+| L6 uninstall, restart | 3010 | 14 pass, removed state |
+| L7 install again, restart | 3010 | 34 pass, left installed |
+
+- The service reached `RUNNING` 122 to 124 seconds after boot (delayed start).
+  `capture started` had `version="0.1.0"`. After DNS queries in the guest, the
+  receiver's `bytes_received` rose (84 to 23524).
+- `sc.exe sdshow` equals the install.md step 4 string, SACL included.
+  `qsidtype` RESTRICTED, `qprivs` `SeChangeNotifyPrivilege` only,
+  `AUTO_START (DELAYED)`, `qfailure` 86400 and 5000/5000/60000, and
+  `FAILURE_ACTIONS_ON_NONCRASH_FAILURES: TRUE`.
+- The grant script ran under SYSTEM for the grant and for `-Remove`. After L4,
+  exactly one `0x20` allow ACE for the service SID was on the session GUID of
+  `EtwDnstap-Lab`, and none elsewhere. After L6, none of 394 descriptors held an
+  ACE for it.
+- `typeperf -q EtwDnstap` listed 34 counters with the new executable.
+- The L6 log shows `StopServices`, `ProvisionUninstall`, `DeleteServices`, then
+  `RemoveFiles`. `NT SERVICE\EtwDnstap` resolved for the group removal and
+  `-Remove`.
+- In the L5 log, `AppSearch` set `RECEIVER_REMEMBERED` before `LaunchConditions`.
+
+### Defects found in the lab
+
+| Commit | Defect | Fix |
+| --- | --- | --- |
+| `a81f420` | `Grant-EtwDnstapEtwAccess.ps1` `Complete-Backup` joined two lists with `@() + @()`. Windows PowerShell 5.1 threw "Argument types do not match" when one was empty, so a run that changed a value failed at its end. This affects the manual steps too. | Join the `ToArray()` copies. |
+| `aac2eff` | The provisioning script passed `BUILTIN\Performance Log Users` to `Get-LocalGroupMember` and `net.exe`, which reject it; splatted an array, so `-Remove` arrived as a positional string; and did not answer the grant script's `ConfirmImpact=High` prompt. | Bare group name, a hashtable splat, `-Confirm:$false`. |
+| `addf37e` | The `MsiServiceConfigFailureActions` row failed with access denied, then error 1939, and the install rolled back. The other `MsiServiceConfig` operations succeeded. The root cause was not found. | The provisioning install action runs the install.md step 5 `sc.exe failure` command. The `ServiceConfig` row still sets the non-crash flag. |
+| `2ee99f3` | `util:EventSource` with `Supports*` attributes wrote `TypesSupported`, which `New-EventLog` does not. | Attributes removed. The key now holds only `EventMessageFile` (`REG_EXPAND_SZ`), as `New-EventLog` writes it. |
+
+### Differences from the plan
+
+- The install folder DACL reads `D:P(...)`, not `D:PAI(...)`.
+  `MsiLockPermissionsEx` writes a protected DACL without the auto-inherited
+  flag. The ACEs are the W4 ACEs.
+- L5 (repair) exits with 3010, because `ScheduleReboot` is unconditional. Repair
+  and reinstall stop the service and do not start it again until the restart.
+- **Receiver change (L5b).** Plain `msiexec /i <msi> RECEIVER=<new>` on the
+  installed product exited 3010 but changed neither `ImagePath` nor the
+  remembered value. The provisioning install action still ran.
+  `REINSTALL=ALL REINSTALLMODE=vomus RECEIVER=<new>` changed both. upgrade.md
+  documents the second form.
+- WixQuietExec formats each output line as an MSI record, so the
+  `[EtwDnstap]` prefix is read as an empty property and dropped. The log shows
+  `WixQuietExec:   <text>`. The guides say so.
+- **Snapshots deleted.** The L3 rollback and the L6 uninstall deleted
+  `backup` folders that came before the MSI: grant-script snapshots from earlier
+  lab work, including copies of `etw-dnstap.exe` and `service.reg` from
+  2026-11-01. This follows decision 2. The checkpoint still holds them. The
+  uninstall guide warns about it.
+
+### Not covered
+
+- A major upgrade from an older MSI version. There is only one version.
+- A session name change through `REINSTALL=ALL`.
+- The uninstall.md manual order (`sc.exe delete` before `net localgroup /delete`).
+
+### Follow-up
+
+- **Maintenance runs without `REINSTALL`.** The provisioning install action runs
+  on every non-removal run (`NOT REMOVE`), including a plain `msiexec /i` on the
+  installed product, which reinstalls nothing. With a new `SESSION_NAME`, that
+  moves the ETW grant to the new GUID while `ImagePath` keeps the old name, and
+  the service fails after the restart. upgrade.md tells operators to use
+  `REINSTALL=ALL`. A fix in the package is to condition `ProvisionInstall` on the
+  executable component being installed or reinstalled (`$EtwDnstapExe=3`), and
+  `ScheduleReboot` with it. That needs a new lab run of L4, L5, and L5b.
+- Signing the executable and the MSI (decision 8).
+- A CI job that runs `Build-Msi.ps1`.

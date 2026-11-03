@@ -58,7 +58,8 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   [install.md](docs/guide/install.md) steps 2 to 6 and creates the spool folder.
   The install needs one restart, and the service then starts with delayed
   automatic start. The uninstall reverses it, and it deletes the spool and
-  the ETW snapshots. The MSI is unsigned, and lab validation is pending.
+  the ETW snapshots. The MSI is unsigned. The lab validated install, rollback, repair, a receiver
+  change, and uninstall on Windows Server 2025, build 26100.
 - A version resource in the executable (`VERSIONINFO`). It holds the `Cargo.toml`
   version as `FileVersion` and `ProductVersion`, and the product name and company.
   The performance counter names do not change.

@@ -23,7 +23,10 @@ installation that the MSI made. Run it from an elevated session with
 The MSI keeps the values of the last install in `HKLM\SOFTWARE\EtwDnstap\Installer`.
 Each run reads them back, unless you pass a new value on the command line.
 
-Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-installer-plan.md).
+Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
+on 2026-11-03: install, a failed install and its rollback, repair, a receiver
+change, and uninstall, each with a restart. A major upgrade from an older MSI
+has not been tested. See [the plan and its results](../plans/msi-installer-plan.md).
 
 ### Upgrade to a newer build
 
@@ -56,6 +59,8 @@ msiexec.exe /fvomus etw-dnstap-<version>-x64.msi /qn /norestart /l*v repair.log
 
 Repair reinstalls the files, the registry values, and the service settings from
 the MSI. It runs the install steps again, and it keeps the remembered values.
+It stops the service and does not start it again. It exits with `3010`. Restart
+the computer, and the service starts with the delayed start.
 
 ### Empty values keep the remembered value
 
@@ -69,22 +74,42 @@ described in [Uninstall with the MSI](uninstall.md#uninstall-with-the-msi).
 
 ### Change the receiver
 
-Run the MSI with the new `RECEIVER` value. The value replaces the remembered one:
+Reinstall the installed MSI with the new `RECEIVER` value. Use the MSI file of
+the installed version. The value replaces the remembered one:
 
 ```powershell
-msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v receiver.log RECEIVER=192.0.2.20:6000
+msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v receiver.log `
+    REINSTALL=ALL REINSTALLMODE=vomus RECEIVER=192.0.2.20:6000
 ```
+
+`REINSTALL=ALL` is required. Without it, `msiexec /i` on an installed product
+changes nothing that lasts: in the lab, the service's binary path and the
+remembered value stayed the same, and the run still asked for a restart.
+
+- The reinstall stops the service and does not start it again. It exits with
+  `3010`. Restart the computer, and the service starts with the new receiver.
 
 - The MSI checks the new value in the same way as [step 1](install.md#1-check-the-receiver-address).
   A bad value stops the install, and Windows Installer rolls back the changes.
 - The new value is written to the service's binary path and to the remembered
-  settings. The service uses it at its next start, and the restart after the
-  install provides that start.
+  settings.
 - The ETW grants do not depend on `RECEIVER`. They depend on `SESSION_NAME`.
 
 ### Change the session name
 
-Install with the new name, for example `msiexec.exe /i ... SESSION_NAME=EtwDnstap-New`.
+Reinstall with the new name, as for the receiver:
+
+```powershell
+msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v session.log `
+    REINSTALL=ALL REINSTALLMODE=vomus SESSION_NAME=EtwDnstap-New
+```
+
+Do not leave out `REINSTALL=ALL`. Without it, the install steps still run the
+grant script with the new name, which moves the grant to the new GUID, but the
+service's binary path keeps the old name. After the restart, the service then
+fails with `StartTraceW: access denied`. The lab tested the reinstall form for a
+receiver change only, not for a session name change.
+
 The new session name has its own session GUID. The grant script grants the
 service SID on the new GUID, and it removes the service SID's grants from the
 other GUIDs that it manages. Restart the computer after the install, because

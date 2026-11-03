@@ -15,7 +15,10 @@ the Rust build and the CI checks first.
 | `CustomActions.wxs` | The provisioning custom actions and their sequence rows. Install runs after `InstallServices`. Uninstall runs before `RemoveFiles`. Rollback runs only for a failed first install. |
 | `Invoke-EtwDnstapProvisioning.ps1` | The script that the custom actions run as SYSTEM with Windows PowerShell 5.1. It checks the receiver, creates or checks the data folders, manages the service SID's group membership, and runs the grant script. On uninstall it deletes only what EtwDnstap created. |
 
-Lab validation: pending, see [docs/plans/msi-installer-plan.md](../../docs/plans/msi-installer-plan.md).
+Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
+on 2026-11-03: install, a failed install and its rollback, repair, a receiver
+change, and uninstall, each with a restart. A major upgrade from an older MSI
+has not been tested. See [the plan and its results](../../docs/plans/msi-installer-plan.md).
 The guides that describe the MSI are [Install with the MSI](../../docs/guide/install.md#install-with-the-msi),
 [Uninstall with the MSI](../../docs/guide/uninstall.md#uninstall-with-the-msi),
 [Upgrade, repair, or change settings with the MSI](../../docs/guide/upgrade.md#upgrade-repair-or-change-settings-with-the-msi),

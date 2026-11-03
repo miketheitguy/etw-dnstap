@@ -50,8 +50,8 @@ response events from Event Tracing for Windows (ETW). It sends them to a
    generate DNS traffic, and stop it. Check that the receiver got the records.
 
 An MSI installer does steps 2 to 6 and needs one restart. See
-[Install with the MSI](docs/guide/install.md#install-with-the-msi). Lab validation
-is pending.
+[Install with the MSI](docs/guide/install.md#install-with-the-msi). The lab
+validated it on Windows Server 2025, build 26100.
 
 The release executable is `target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`.
 The options are listed in [configuration.md](docs/guide/configuration.md).

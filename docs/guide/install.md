@@ -40,9 +40,10 @@ starts it.
 Use the manual steps on a host where the MSI is not used, or to see what each
 MSI action changes. The manual steps stay the reference.
 
-Lab validation: pending, see [docs/plans/msi-installer-plan.md](../plans/msi-installer-plan.md).
-The MSI has not yet been run on a lab DNS Server. The steps in this section
-describe the sources.
+Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
+on 2026-11-03: install, a failed install and its rollback, repair, a receiver
+change, and uninstall, each with a restart. A major upgrade from an older MSI
+has not been tested. See [the plan and its results](../plans/msi-installer-plan.md).
 
 ### MSI prerequisites
 
@@ -131,8 +132,8 @@ typeperf -q EtwDnstap
 - The Application log has Event ID 2, `capture started`. Its `version` field
   matches the version in the MSI file name.
 - The MSI log, `install.log`, holds the output of the provisioning script. The
-  lines that start with `[EtwDnstap]` say what each step did. A line that starts
-  with `[EtwDnstap] FAILED:` gives the cause.
+  lines that start with `WixQuietExec:` after the `ProvisionInstall` action say
+  what each step did. A line `WixQuietExec:   FAILED: <cause>` gives the cause.
 
 Then check the service as in [step 6](#6-inspect-the-registered-identity-and-access-controls)
 and [step 7](#7-start-capture-and-check-that-it-is-running), without starting it
@@ -149,7 +150,7 @@ by hand.
 | `util:PerfCounterManifest` | Step 3 (`lodctr`) | Registers the counter set. Uninstall removes the registration. |
 | `ServiceInstall` | Steps 3 and 4 (`New-Service`, `sc.exe config`, `sc.exe sidtype`, `sc.exe privs`, `sc.exe sdset`) | Creates the service as `NT AUTHORITY\LocalService`, with a restricted SID type, only `SeChangeNotifyPrivilege`, the step 4 descriptor, and the `DNS` dependency. |
 | `ServiceConfig` | Step 5 (failure flag) and the start type | Sets delayed automatic start and the non-crash failure flag. |
-| `ServiceConfigFailureActions` | Step 5 (`sc.exe failure`) | Resets after 86400 seconds. Restarts after 5 seconds, 5 seconds, and 60 seconds. |
+| Provisioning, recovery policy | Step 5 (`sc.exe failure`) | Runs the step 5 `sc.exe failure` command: reset after 86400 seconds, restart after 5 seconds, 5 seconds, and 60 seconds. The MSI service failure-actions table is not used, because on the lab host it failed with access denied (error 1939). |
 | Provisioning, group step | Step 4 (`net localgroup ... /add`) | Adds `NT SERVICE\EtwDnstap` to Performance Log Users. Skips it if already a member. |
 | Provisioning, grant step | Step 4 (grant script) | Runs `Grant-EtwDnstapEtwAccess.ps1 -SessionName` from the install folder. |
 | `util:EventSource` | Step 4 (`New-EventLog`) | Registers the `EtwDnstap` source in the Application log, with the same message file. |
