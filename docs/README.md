@@ -140,7 +140,7 @@ it is executed.
 | [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Proposed. Regenerate before the next campaign | Client-event filter ramp. Its capture contract predates `e59425f`, `9172f2d`, and `b46da39` |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Proposed | Parallel parsing and TCP threading. Its fail-fast contract, timed park, and fallback decoding are out of date |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Proposed. Partly executed | Diagnose the bottleneck and test parallel workers. P0 and diagnostic runs recorded Oct 31, 2026. P1a is next. P4 is deferred |
-| [No console output plan](plans/no-console-output-plan.md) | Approved. Executed on the `plan/no-console-output` branch; awaits the merge to `main` | Remove every stdout and stderr write from the service; drop `--help` and `--version` |
+| [No console output plan](plans/no-console-output-plan.md) | Executed. Merged to `main` in `ef00c76` | Remove every stdout and stderr write from the service; drop `--help` and `--version` |
 
 ## History
 

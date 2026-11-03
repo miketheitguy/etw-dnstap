@@ -1,6 +1,6 @@
 # No console output plan
 
-> **Status:** Approved. Steps 1 to 6 executed on the `plan/no-console-output` branch; the branch awaits the maintainer's decision on merging to `main` · **Evidence dated:** 2026-11-03 · **Commit:** written at `1be4f3e`, executed through `985bcd5` · **Reviewed:** 2026-11-03
+> **Status:** Executed. Merged to `main` in `ef00c76` · **Evidence dated:** 2026-11-03 · **Commit:** written at `1be4f3e`, executed through `985bcd5` · **Reviewed:** 2026-11-03
 
 This plan removes every write to stdout and stderr from `etw-dnstap.exe`. After
 it, the Application event log (source `EtwDnstap`), the performance counters,
