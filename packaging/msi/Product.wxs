@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EtwDnstap MSI. Scope and behavior: docs/plans/msi-installer-plan.md (W1 to W9).
+  Version, executable path, and repository root come from the build script through
+  MSBuild properties that EtwDnstap.wixproj turns into preprocessor variables.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="EtwDnstap"
+           Manufacturer="miketheitguy"
+           Version="$(var.EtwVersion)"
+           UpgradeCode="{0F4D1A87-DAD8-4C37-ABD4-FEC4DA400FAB}"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of EtwDnstap is already installed. Uninstall it first." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- W2: Add/Remove Programs. No modify button; help link to the repository. -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/miketheitguy/etw-dnstap" />
+
+    <!-- W9: public properties. Secure, so that deferred actions can read them. -->
+    <Property Id="RECEIVER" Secure="yes" />
+    <Property Id="SESSION_NAME" Secure="yes" />
+    <Property Id="SERVICE_ARGS" Secure="yes" />
+
+    <!-- W9: values remembered by the last install, read back for repair and upgrade. -->
+    <Property Id="RECEIVER_REMEMBERED">
+      <RegistrySearch Id="RememberedReceiver" Root="HKLM" Key="SOFTWARE\EtwDnstap\Installer" Name="Receiver" Type="raw" />
+    </Property>
+    <Property Id="SESSION_NAME_REMEMBERED">
+      <RegistrySearch Id="RememberedSessionName" Root="HKLM" Key="SOFTWARE\EtwDnstap\Installer" Name="SessionName" Type="raw" />
+    </Property>
+    <Property Id="SERVICE_ARGS_REMEMBERED">
+      <RegistrySearch Id="RememberedServiceArgs" Root="HKLM" Key="SOFTWARE\EtwDnstap\Installer" Name="ServiceArgs" Type="raw" />
+    </Property>
+
+    <!-- W3: the DNS service must be registered. -->
+    <Property Id="DNS_SERVICE_TYPE">
+      <RegistrySearch Id="DnsServiceType" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\DNS" Name="Type" Type="raw" />
+    </Property>
+
+    <!-- W3: launch conditions. -->
+    <Launch Condition="VersionNT64" Message="EtwDnstap needs 64-bit Windows." />
+    <Launch Condition="Installed OR DNS_SERVICE_TYPE" Message="The DNS Server role is not installed. Install it before EtwDnstap." />
+    <Launch Condition="Installed OR RECEIVER OR RECEIVER_REMEMBERED" Message="Set RECEIVER to the collector's numeric IP address and port, for example RECEIVER=192.0.2.10:6000." />
+
+    <!-- W7: the provisioning actions live in CustomActions.wxs. Referencing them links that fragment. -->
+    <CustomActionRef Id="ProvisionInstall" />
+    <CustomActionRef Id="SetProvisionInstall" />
+    <CustomActionRef Id="ProvisionInstallRollback" />
+    <CustomActionRef Id="SetProvisionInstallRollback" />
+    <CustomActionRef Id="ProvisionUninstall" />
+    <CustomActionRef Id="SetProvisionUninstall" />
+
+    <Feature Id="Main" Title="EtwDnstap" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <!-- W9: fill the properties that were not given on the command line. -->
+    <SetProperty Id="RECEIVER" Value="[RECEIVER_REMEMBERED]" After="AppSearch" Sequence="execute"
+                 Condition="NOT RECEIVER AND RECEIVER_REMEMBERED" />
+    <SetProperty Id="SESSION_NAME" Action="SetSessionNameRemembered" Value="[SESSION_NAME_REMEMBERED]" After="AppSearch" Sequence="execute"
+                 Condition="NOT SESSION_NAME AND SESSION_NAME_REMEMBERED" />
+    <SetProperty Id="SESSION_NAME" Action="SetSessionNameDefault" Value="EtwDnstap" After="AppSearch" Sequence="execute"
+                 Condition="NOT SESSION_NAME AND NOT SESSION_NAME_REMEMBERED" />
+    <SetProperty Id="SERVICE_ARGS" Value="[SERVICE_ARGS_REMEMBERED]" After="AppSearch" Sequence="execute"
+                 Condition="NOT SERVICE_ARGS AND SERVICE_ARGS_REMEMBERED" />
+
+    <!-- W8: reboot is needed, because ETW applies the grant only at boot. -->
+    <InstallExecuteSequence>
+      <ScheduleReboot After="InstallFinalize" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="EtwDnstap" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <!-- W4, W5: the executable, the service, its SCM policy, and its ACL. -->
+      <Component Bitness="always64" Id="EtwDnstapExe">
+        <File Id="EtwDnstapExe" Source="$(var.EtwExePath)" KeyPath="yes" />
+        <ServiceInstall Id="EtwDnstapService"
+                        Name="EtwDnstap"
+                        DisplayName="EtwDnstap"
+                        Description="Captures Windows DNS Server ETW events and sends them as dnstap Frame Streams."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT AUTHORITY\LocalService"
+                        Arguments="--receiver &quot;[RECEIVER]&quot; --session-name &quot;[SESSION_NAME]&quot; [SERVICE_ARGS]"
+                        Interactive="no"
+                        Vital="yes">
+          <ServiceDependency Id="DNS" />
+          <!-- W5: MsiServiceConfig. Delayed start, restricted SID, one privilege, non-crash failure flag. -->
+          <ServiceConfig DelayedAutoStart="yes"
+                         ServiceSid="restricted"
+                         FailureActionsWhen="failedToStopOrReturnedError"
+                         OnInstall="yes"
+                         OnReinstall="yes">
+            <RequiredPrivilege Name="SeChangeNotifyPrivilege" />
+          </ServiceConfig>
+          <!-- W5: install.md step 5. Reset after 86400 s, restart after 5 s, 5 s, then 60 s. -->
+          <ServiceConfigFailureActions ResetPeriod="86400" OnInstall="yes" OnReinstall="yes">
+            <Failure Action="restartService" Delay="5000" />
+            <Failure Action="restartService" Delay="5000" />
+            <Failure Action="restartService" Delay="60000" />
+          </ServiceConfigFailureActions>
+          <!-- W5: install.md step 4 service descriptor. -->
+          <PermissionEx Sddl="D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;IU)(A;;CCLCSWLORC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)" />
+        </ServiceInstall>
+        <!-- W5: stop and delete the service on uninstall. No start: the service starts after the reboot. -->
+        <ServiceControl Id="EtwDnstapServiceControl" Name="EtwDnstap" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+
+      <!-- W4: the performance counter manifest. util:PerfCounterManifest is the lodctr step. -->
+      <Component Bitness="always64" Id="EtwDnstapManifest">
+        <File Id="EtwDnstapManifest" Source="$(var.EtwRepoRoot)packaging\perfcounters\etw-dnstap.man" KeyPath="yes">
+          <util:PerfCounterManifest ResourceFileDirectory="[INSTALLFOLDER]" />
+        </File>
+      </Component>
+
+      <!-- W4: the grant script is referenced from scripts/provision, not copied into the repository. -->
+      <Component Bitness="always64" Id="GrantScript">
+        <File Id="GrantScript" Source="$(var.EtwRepoRoot)scripts\provision\Grant-EtwDnstapEtwAccess.ps1" KeyPath="yes" />
+      </Component>
+
+      <!-- W7: the provisioning script that the custom actions run. -->
+      <Component Bitness="always64" Id="ProvisioningScript">
+        <File Id="ProvisioningScript" Source="Invoke-EtwDnstapProvisioning.ps1" KeyPath="yes" />
+      </Component>
+
+      <!-- W4: the install folder ACL (install.md step 2) plus the service SID's read and execute grant (step 3). -->
+      <Component Bitness="always64" Id="InstallFolderAcl" Directory="INSTALLFOLDER" Guid="{FE22C6CF-7D5B-4901-9522-3EEC35C32C83}">
+        <CreateFolder>
+          <PermissionEx Sddl="O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;S-1-5-80-3892396922-4053150511-3308241269-1610546069-1753937115)" />
+        </CreateFolder>
+      </Component>
+
+      <!-- W6: the Application log source, with the file New-EventLog uses. -->
+      <Component Bitness="always64" Id="EventSource">
+        <util:EventSource Log="Application"
+                          Name="EtwDnstap"
+                          EventMessageFile="[WindowsFolder]Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll"
+                          SupportsErrors="yes"
+                          SupportsInformationals="yes"
+                          SupportsWarnings="yes"
+                          KeyPath="yes" />
+      </Component>
+
+      <!-- W9: remembered values, readable by SYSTEM and Administrators only. -->
+      <Component Bitness="always64" Id="RememberedSettings">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\EtwDnstap" ForceDeleteOnUninstall="yes">
+          <RegistryKey Key="Installer" ForceCreateOnInstall="yes">
+            <PermissionEx Sddl="O:BAG:SYD:PAI(A;OICI;KA;;;SY)(A;OICI;KA;;;BA)" />
+            <RegistryValue Name="Receiver" Type="string" Value="[RECEIVER]" KeyPath="yes" />
+            <RegistryValue Name="SessionName" Type="string" Value="[SESSION_NAME]" />
+            <RegistryValue Name="ServiceArgs" Type="string" Value="[SERVICE_ARGS]" />
+          </RegistryKey>
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

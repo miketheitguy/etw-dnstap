@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  W7: provisioning custom actions. Each deferred action runs Windows PowerShell 5.1
+  by its full path through the util extension's WixQuietExec entry point, which
+  runs the command without a window, logs the command and its output to the MSI
+  log, and fails the action on a non-zero exit code. The command line is passed
+  through CustomActionData: a type 51 action sets a property with the same name as
+  the deferred action, immediately before it.
+
+  Properties in these command lines are validated by the script itself. The
+  script takes SESSION_NAME and RECEIVER only. SERVICE_ARGS never reaches a
+  PowerShell command line; it is written only into the service's ServiceInstall
+  Arguments (Product.wxs).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <!-- Install, after InstallServices so that NT SERVICE\EtwDnstap resolves. -->
+    <CustomAction Id="ProvisionInstall"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="SetProvisionInstall"
+                  Property="ProvisionInstall"
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Invoke-EtwDnstapProvisioning.ps1&quot; -Action Install -SessionName &quot;[SESSION_NAME]&quot; -Receiver &quot;[RECEIVER]&quot;" />
+
+    <!-- Rollback of a failed first install only. Undoes what the install action did. -->
+    <CustomAction Id="ProvisionInstallRollback"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="SetProvisionInstallRollback"
+                  Property="ProvisionInstallRollback"
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Invoke-EtwDnstapProvisioning.ps1&quot; -Action Uninstall -SessionName &quot;[SESSION_NAME]&quot;" />
+
+    <!-- Uninstall, after StopServices and before RemoveFiles. -->
+    <CustomAction Id="ProvisionUninstall"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="SetProvisionUninstall"
+                  Property="ProvisionUninstall"
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Invoke-EtwDnstapProvisioning.ps1&quot; -Action Uninstall -SessionName &quot;[SESSION_NAME]&quot;" />
+
+    <InstallExecuteSequence>
+      <!-- Install, repair, and major upgrade: not on removal. -->
+      <Custom Action="SetProvisionInstall" Before="ProvisionInstall" Condition="NOT REMOVE" />
+      <Custom Action="ProvisionInstall" After="InstallServices" Condition="NOT REMOVE" />
+
+      <!-- Rollback only when a first install fails, never after a failed upgrade. -->
+      <Custom Action="SetProvisionInstallRollback" Before="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="ProvisionInstallRollback" After="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+
+      <!-- Uninstall only on a real removal, not while a major upgrade removes the old product. -->
+      <Custom Action="SetProvisionUninstall" Before="ProvisionUninstall" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="ProvisionUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Fragment>
+
+</Wix>

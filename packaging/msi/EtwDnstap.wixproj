@@ -1,0 +1,38 @@
+<Project Sdk="WixToolset.Sdk/7.0.1">
+  <!--
+    Inputs from scripts/build/Build-Msi.ps1 (MSBuild properties):
+      EtwVersion   X.Y.Z, from Cargo.toml
+      EtwExePath   path of the release etw-dnstap.exe, relative to this project
+      EtwRepoRoot  path of the repository root, relative to this project
+    The defaults below are used when the script is not the caller.
+
+    Build output goes under target\msi\ (BaseIntermediateOutputPath and
+    BaseOutputPath are set on the command line by the script, so that no obj or
+    bin folder is created in this directory).
+  -->
+  <PropertyGroup>
+    <EtwVersion Condition="'$(EtwVersion)' == ''">0.1.0</EtwVersion>
+    <EtwRepoRoot Condition="'$(EtwRepoRoot)' == ''">..\..\</EtwRepoRoot>
+    <EtwExePath Condition="'$(EtwExePath)' == ''">..\..\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe</EtwExePath>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <OutputName>etw-dnstap-$(EtwVersion)-x64</OutputName>
+    <DefineConstants>EtwVersion=$(EtwVersion);EtwExePath=$(EtwExePath);EtwRepoRoot=$(EtwRepoRoot)</DefineConstants>
+
+    <!--
+      WiX v7 OSMF EULA. The maintainer accepted it (docs/plans/msi-installer-plan.md,
+      decision 1). The documented mechanism for build scripts is the AcceptEula
+      MSBuild property with the EULA ID, "wix7", in the .wixproj (Direct
+      Acceptance). Source: https://docs.firegiant.com/wix/osmf/
+      The package's build/CheckLicenseAcceptance.targets reads this property.
+    -->
+    <AcceptEula>wix7</AcceptEula>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Product.wxs" />
+    <Compile Include="CustomActions.wxs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="7.0.1" />
+  </ItemGroup>
+</Project>
