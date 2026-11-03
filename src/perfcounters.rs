@@ -1,8 +1,8 @@
 //! Publishes capture health as Windows performance counters (`PerfLib` V2).
 //!
 //! The counter set is defined by `packaging/perfcounters/etw-dnstap.man`. An
-//! administrator registers that manifest with `lodctr`; this module provides the
-//! values, in two ways:
+//! administrator registers that manifest with `lodctr` (the MSI does the same);
+//! this module provides the values, in two ways:
 //!
 //! - By reference: the raw totals and peaks (see [`Source::Reference`]) are the
 //!   existing `AtomicU64` counters. [`PerfPublisher::start`] hands their

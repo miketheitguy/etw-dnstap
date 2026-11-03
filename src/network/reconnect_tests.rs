@@ -1,5 +1,6 @@
-use super::test_support::{WAIT_TIMEOUT, handshake, retry_policy, wait_until};
+use super::test_support::{RefusedPort, WAIT_TIMEOUT, handshake, retry_policy, wait_until};
 use super::*;
+use crate::spool::test_support::capture_logs;
 use std::net::TcpListener;
 
 /// Retries within tens of milliseconds, so reconnect tests finish quickly.
@@ -104,12 +105,9 @@ fn reconnects_with_a_fresh_handshake_and_never_resends() {
 
 #[test]
 fn unreachable_receiver_at_startup_is_not_fatal_and_shutdown_is_prompt() {
-    let address = {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
-        listener.local_addr().expect("listener address")
-    };
+    let refused = RefusedPort::new();
     let stats = Arc::new(SinkStats::default());
-    let mut sink = NetworkSink::start_with(address, Arc::clone(&stats), fast_policy())
+    let mut sink = NetworkSink::start_with(refused.address(), Arc::clone(&stats), fast_policy())
         .expect("a refused connection starts the sink disconnected");
     assert!(!stats.connected.load(Ordering::Relaxed));
     for _ in 0..5 {
@@ -135,6 +133,294 @@ fn incompatible_receiver_at_startup_is_still_fatal() {
     let result = NetworkSink::start_with(address, Arc::default(), fast_policy());
     assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidData));
     receiver.join().expect("receiver assertions pass");
+}
+
+#[test]
+fn reconnect_failures_are_logged_four_times_then_every_60th_or_on_a_new_cause() {
+    let logged: Vec<u64> = (0..130)
+        .filter(|&prior| reconnect_log_due(prior, false))
+        .collect();
+    assert_eq!(logged, [0, 1, 2, 3, 60, 120]);
+    // The first failure of a cause in an outage is logged whatever the count.
+    assert!(reconnect_log_due(61, true));
+    assert!(!reconnect_log_due(61, false));
+}
+
+/// Applies the reconnect log rule to failures with these classes, whose prior
+/// counts start at `first_prior`, and returns the prior counts that are logged.
+fn logged_failures(
+    seen: &mut SeenClasses,
+    first_prior: u64,
+    classes: impl IntoIterator<Item = FailureClass>,
+) -> Vec<u64> {
+    let mut logged = Vec::new();
+    for (prior, class) in (first_prior..).zip(classes) {
+        let new_class = seen.insert(class);
+        if reconnect_log_due(prior, new_class) {
+            logged.push(prior);
+        }
+    }
+    logged
+}
+
+fn has(seen: SeenClasses, class: FailureClass) -> bool {
+    seen.0 & class.bit() != 0
+}
+
+#[test]
+fn alternating_causes_add_at_most_one_line_per_cause() {
+    use FailureClass::{Connect, Timeout, Tls};
+    // Started while down: the startup warning already reported `connect`.
+    let mut seen = SeenClasses::default();
+    seen.insert(Connect);
+    // Failures with prior counts 10 to 199. The cause alternates between
+    // connect and timeout, then from prior count 150 between connect and tls.
+    let classes = (10..200_u64).map(|prior| {
+        if prior.is_multiple_of(2) {
+            Connect
+        } else if prior < 150 {
+            Timeout
+        } else {
+            Tls
+        }
+    });
+    // 11 is the first timeout and 151 the first tls; 60, 120, and 180 are
+    // due by the count. A rule that logs every change of cause would log
+    // every one of these 190 failures.
+    assert_eq!(
+        logged_failures(&mut seen, 10, classes),
+        [11, 60, 120, 151, 180]
+    );
+}
+
+#[test]
+fn a_session_clears_the_seen_causes_so_the_next_outage_reports_each_once() {
+    use FailureClass::{Connect, Protocol, Timeout};
+    let mut seen = SeenClasses::default();
+    assert_eq!(
+        logged_failures(&mut seen, 10, [Connect, Timeout, Connect, Timeout]),
+        [10, 11]
+    );
+    assert!(has(seen, Connect) && has(seen, Timeout) && !has(seen, Protocol));
+    // `NetworkSink::poll` clears the set when a session is established.
+    seen.clear();
+    assert_eq!(seen, SeenClasses::default());
+    assert_eq!(
+        logged_failures(
+            &mut seen,
+            14,
+            [Timeout, Connect, Timeout, Protocol, Protocol]
+        ),
+        [14, 15, 17]
+    );
+}
+
+#[test]
+fn failure_classes_follow_the_error_kind_and_the_tls_payload() {
+    let tls = |kind| io::Error::new(kind, TlsFailure("TLS handshake: bad".into()));
+    let alert = |description| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            rustls::Error::AlertReceived(description),
+        )
+    };
+    let cases = [
+        (
+            io::Error::from(io::ErrorKind::ConnectionRefused),
+            FailureClass::Connect,
+        ),
+        (
+            io::Error::from(io::ErrorKind::ConnectionReset),
+            FailureClass::Connect,
+        ),
+        (
+            io::Error::from(io::ErrorKind::TimedOut),
+            FailureClass::Timeout,
+        ),
+        (
+            io::Error::from(io::ErrorKind::WouldBlock),
+            FailureClass::Timeout,
+        ),
+        (invalid_control("bad ACCEPT"), FailureClass::Protocol),
+        (tls(io::ErrorKind::InvalidData), FailureClass::Tls),
+        (tls(io::ErrorKind::ConnectionReset), FailureClass::Tls),
+        (tls(io::ErrorKind::TimedOut), FailureClass::Timeout),
+        // rustls reports a rejected record or a received alert after the
+        // handshake (a later read or write) as `InvalidData` with this payload.
+        (
+            alert(rustls::AlertDescription::CertificateRequired),
+            FailureClass::Tls,
+        ),
+        (
+            alert(rustls::AlertDescription::HandshakeFailure),
+            FailureClass::Tls,
+        ),
+    ];
+    for (error, class) in cases {
+        assert_eq!(FailureClass::of(&error), class, "{error:?}");
+    }
+    // The payload keeps the message text the log showed before.
+    assert_eq!(
+        tls(io::ErrorKind::InvalidData).to_string(),
+        "TLS handshake: bad"
+    );
+    assert_eq!(
+        alert(rustls::AlertDescription::CertificateRequired).to_string(),
+        "received fatal alert: CertificateRequired"
+    );
+}
+
+/// A receiver that answers `count` connections with an ACCEPT that lacks the
+/// dnstap content type, then stops listening.
+fn incompatible_receiver(listener: TcpListener, count: usize) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        for _ in 0..count {
+            let (stream, _) = listener.accept().expect("sender connects");
+            let mut stream = DeadlineTcp::new(stream, Duration::from_secs(3));
+            read_control(&mut stream, CONTROL_READY, true).expect("READY arrives");
+            write_control(&mut stream, CONTROL_ACCEPT, false).expect("incompatible ACCEPT");
+        }
+    })
+}
+
+/// A sink that started while its receiver was down (a refused connection),
+/// now pointed at `address` for its reconnect attempts.
+fn started_while_down(address: SocketAddr, stats: &Arc<SinkStats>) -> NetworkSink {
+    let refused = RefusedPort::new();
+    let mut sink = NetworkSink::start_with(refused.address(), Arc::clone(stats), fast_policy())
+        .expect("a refused connection starts the sink disconnected");
+    // Windows may report the refused loopback connect as a timeout instead.
+    // Either way the startup warning reported that one cause.
+    assert!(
+        [FailureClass::Connect, FailureClass::Timeout]
+            .iter()
+            .any(|&class| sink.seen_failures == SeenClasses(class.bit())),
+        "{:?}",
+        sink.seen_failures
+    );
+    assert!(!sink.ever_connected);
+    sink.config.address = address;
+    sink
+}
+
+const RECONNECT_FAILED: &str = "dnstap reconnect failed";
+
+#[test]
+fn a_new_failure_cause_is_logged_late_in_an_outage() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = incompatible_receiver(listener, 2);
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = started_while_down(address, &stats);
+    // A link that had a session before, and a long outage: failure 11 would
+    // not be logged by the count alone.
+    sink.ever_connected = true;
+    stats.reconnect_failures.store(10, Ordering::Relaxed);
+    let lines = capture_logs(|| {
+        wait_until(WAIT_TIMEOUT, "two refused handshakes", || {
+            sink.write_frame(b"frame").expect("drops are not errors");
+            stats.reconnect_failures.load(Ordering::Relaxed) >= 12
+        });
+    });
+    receiver.join().expect("receiver assertions pass");
+    // Failure 11 changes the cause from connect to protocol and is logged;
+    // failure 12 has the same cause and is not.
+    assert_eq!(lines.count(RECONNECT_FAILED), 1, "{}", lines.text());
+    assert!(
+        lines.text().contains("cause=\"protocol\""),
+        "{}",
+        lines.text()
+    );
+    assert!(lines.text().contains("failures=11"), "{}", lines.text());
+    assert_eq!(lines.count("ERROR"), 0, "{}", lines.text());
+    assert!(has(sink.seen_failures, FailureClass::Protocol));
+    assert!(!sink.is_connected());
+}
+
+#[test]
+fn a_refused_handshake_before_the_first_session_is_logged_once_as_an_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = incompatible_receiver(listener, 2);
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = started_while_down(address, &stats);
+    stats.reconnect_failures.store(10, Ordering::Relaxed);
+    let lines = capture_logs(|| {
+        wait_until(WAIT_TIMEOUT, "two refused handshakes", || {
+            sink.write_frame(b"frame").expect("drops are not errors");
+            stats.reconnect_failures.load(Ordering::Relaxed) >= 12
+        });
+    });
+    receiver.join().expect("receiver assertions pass");
+    assert_eq!(lines.count("ERROR"), 1, "{}", lines.text());
+    assert_eq!(
+        lines.count("refused the Frame Streams handshake before the first session"),
+        1,
+        "{}",
+        lines.text()
+    );
+    assert!(
+        lines.text().contains("dnstap content type"),
+        "{}",
+        lines.text()
+    );
+    // The second refusal has the same cause and a count that is not logged.
+    assert_eq!(lines.count(RECONNECT_FAILED), 0, "{}", lines.text());
+    assert!(sink.rejection_logged);
+    assert!(!sink.is_connected(), "retries go on; nothing is fatal");
+}
+
+#[test]
+fn a_cause_is_logged_again_in_the_outage_after_a_session() {
+    let rejecting = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let rejecting_address = rejecting.local_addr().expect("listener address");
+    let rejecter = incompatible_receiver(rejecting, 3);
+    let accepting = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let accepting_address = accepting.local_addr().expect("listener address");
+    let acceptor = thread::spawn(move || {
+        let (stream, _) = accepting.accept().expect("reconnection");
+        // One session, then the receiver goes away.
+        drop(handshake(stream));
+    });
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = started_while_down(rejecting_address, &stats);
+    stats.reconnect_failures.store(10, Ordering::Relaxed);
+    let lines = capture_logs(|| {
+        // Outage 1: failure 11 is the first rejection, logged once as an error.
+        wait_until(WAIT_TIMEOUT, "the first refused handshake", || {
+            sink.write_frame(b"frame").expect("drops are not errors");
+            stats.reconnect_failures.load(Ordering::Relaxed) >= 11
+        });
+        // No attempt is in flight: the next one starts on a later poll.
+        sink.config.address = accepting_address;
+        wait_until(WAIT_TIMEOUT, "a session", || {
+            sink.write_frame(b"frame").expect("drops are not errors");
+            sink.flush().expect("flush");
+            stats.reconnects.load(Ordering::Relaxed) >= 1
+        });
+        // Outage 2: the session ends and the receiver refuses again.
+        sink.config.address = rejecting_address;
+        wait_until(WAIT_TIMEOUT, "two more refused handshakes", || {
+            sink.write_frame(b"frame").expect("drops are not errors");
+            sink.flush().expect("flush");
+            stats.reconnect_failures.load(Ordering::Relaxed) >= 13
+        });
+    });
+    rejecter.join().expect("receiver assertions pass");
+    acceptor.join().expect("receiver assertions pass");
+    let text = lines.text();
+    assert_eq!(lines.count("ERROR"), 1, "{text}");
+    assert_eq!(stats.disconnects.load(Ordering::Relaxed), 1, "{text}");
+    // Failure 12 is the first protocol failure of the new outage and is
+    // logged, although outage 1 already reported that cause; failure 13 has
+    // the same cause and is not logged.
+    assert_eq!(lines.count(RECONNECT_FAILED), 1, "{text}");
+    assert!(text.contains("cause=\"protocol\" failures=12"), "{text}");
+    assert!(sink.ever_connected);
+    assert_eq!(
+        sink.seen_failures,
+        SeenClasses(FailureClass::Protocol.bit())
+    );
 }
 
 #[test]

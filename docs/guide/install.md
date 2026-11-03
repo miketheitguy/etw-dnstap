@@ -1,6 +1,6 @@
 # Install and provision the service
 
-> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI sources at commit `58fde72` · **Reviewed:** 2026-11-03
 
 Use this guide to install the service on a DNS Server host. It covers the
 service identity, the ETW access grant, the SCM registration, recovery, and the
@@ -57,6 +57,8 @@ has not been tested. See [the plan and its results](../plans/msi-installer-plan.
   TLS connection. The MSI does not install it. See
   [Set up the dnstap receiver](receiver.md#receiver-certificate). To send
   plaintext on a trusted network, pass `SERVICE_ARGS=--plaintext`.
+- A host with no hand-provisioned `EtwDnstap` service. Remove a manual install
+  first. See [Remove a hand-provisioned install](uninstall.md#remove-a-hand-provisioned-install).
 - An elevated session, and the MSI file `etw-dnstap-<version>-x64.msi`. To build
   it, see [Build the MSI](build.md#build-the-msi).
 
@@ -74,8 +76,8 @@ The MSI has three public properties:
 | Property | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `RECEIVER` | Yes, unless a value was remembered | None | The collector's `IP:port`, as in step 1 of the manual steps. It becomes the `--receiver` argument. |
-| `SESSION_NAME` | No | `EtwDnstap` | The ETW session name, which becomes `--session-name`. It takes letters, digits, `_`, `.`, and `-`, up to 128 characters. The install stops on any other value. |
-| `SERVICE_ARGS` | No | Empty | More arguments for the service's binary path, for example `--plaintext`. The MSI does not check them. See the [Configuration reference](configuration.md). |
+| `SESSION_NAME` | No | `EtwDnstap` | The ETW session name, which becomes `--session-name`. It takes 1 to 128 ASCII letters, digits, `_`, `.`, and `-`. It must not start with `-`. It is case-sensitive. A launch condition refuses a value that starts with `-` before the install changes anything, with the message `SESSION_NAME must not start with '-'. Use 1 to 128 ASCII letters, digits, '_', '.', or '-', and do not start with '-'.` A launch condition cannot test the length or the character set, so the provisioning script rejects any other invalid value, and the install fails and rolls back. A removal skips the launch condition. No real `msiexec` run has shown the message yet. |
+| `SERVICE_ARGS` | No | Empty | More arguments for the service's binary path, for example `--plaintext`. The MSI does not check them. The MSI creates only the default spool folder, so a `--spool-dir` folder is yours to create. See the [Configuration reference](configuration.md). |
 
 To set all three, add them to the same command:
 
@@ -89,6 +91,13 @@ If a value has spaces, put the whole property in quotes, for example
 
 The MSI keeps these values in `HKLM\SOFTWARE\EtwDnstap\Installer`. Repair and
 upgrade read them back. See [Upgrade, repair, or change settings with the MSI](upgrade.md#upgrade-repair-or-change-settings-with-the-msi).
+
+The provisioning steps (the folder checks, the group membership, the ETW grant,
+and the recovery policy) run only in a pass that installs the executable
+component: a first install, a major upgrade, a repair, or `REINSTALL=ALL`. A
+plain `msiexec /i` of an installed product with a changed `RECEIVER` or
+`SESSION_NAME` and no `REINSTALL` skips them and changes nothing. See
+[When the install steps run](upgrade.md#when-the-install-steps-run).
 
 ### Restart the computer
 
@@ -110,6 +119,9 @@ runs the uninstall provisioning for the changes the install made, and it
 removes the files. On an upgrade, the rollback restores the previous files and
 service settings, but it does not undo the provisioning steps. Fix the cause
 and run the install again. The provisioning steps can run again.
+
+If the install fails, `msiexec` exits with a non-zero code and the log says why. In
+the lab, a missing `RECEIVER` and a hostname `RECEIVER` each ended with `1603`.
 
 ### Check the result
 
@@ -143,15 +155,15 @@ by hand.
 
 | MSI action | Manual step | What the action does |
 | --- | --- | --- |
-| Launch conditions | Prerequisites | Check 64-bit Windows, the `DNS` service registration, and that `RECEIVER` is set or remembered. |
+| Launch conditions | Prerequisites | Check 64-bit Windows, the `DNS` service registration, that `RECEIVER` is set or remembered, and that `SESSION_NAME` does not start with `-`. |
 | Provisioning, receiver check | Step 1 | Runs the same check as step 1 on `RECEIVER`. A bad value stops the install. |
 | `InstallFolderAcl` component | Step 2 | Creates `C:\Program Files\EtwDnstap\` with SYSTEM and Administrators full control and no inherited ACEs. |
 | `EtwDnstapExe`, `EtwDnstapManifest`, `GrantScript`, `ProvisioningScript` components | Step 3 (copy files) | Copy the executable, the counter manifest, the grant script, and the provisioning script. The service SID gets read and execute on the folder. |
 | `util:PerfCounterManifest` | Step 3 (`lodctr`) | Registers the counter set. Uninstall removes the registration. |
-| `ServiceInstall` | Steps 3 and 4 (`New-Service`, `sc.exe config`, `sc.exe sidtype`, `sc.exe privs`, `sc.exe sdset`) | Creates the service as `NT AUTHORITY\LocalService`, with a restricted SID type, only `SeChangeNotifyPrivilege`, the step 4 descriptor, and the `DNS` dependency. |
-| `ServiceConfig` | Step 5 (failure flag) and the start type | Sets delayed automatic start and the non-crash failure flag. |
+| `ServiceInstall` | Steps 3 and 4 (`New-Service`, `sc.exe config`, `sc.exe sdset`) | Creates the service as `NT AUTHORITY\LocalService`, with the step 4 descriptor and the `DNS` dependency. |
+| `ServiceConfig` | Step 4 (`sc.exe sidtype`, `sc.exe privs`), step 5 (failure flag), and the start type | Sets the restricted SID type, only `SeChangeNotifyPrivilege`, delayed automatic start, and the non-crash failure flag. |
 | Provisioning, recovery policy | Step 5 (`sc.exe failure`) | Runs the step 5 `sc.exe failure` command: reset after 86400 seconds, restart after 5 seconds, 5 seconds, and 60 seconds. The MSI service failure-actions table is not used, because on the lab host it failed with access denied (error 1939). |
-| Provisioning, group step | Step 4 (`net localgroup ... /add`) | Adds `NT SERVICE\EtwDnstap` to Performance Log Users. Skips it if already a member. |
+| Provisioning, group step | Step 4 (`net localgroup ... /add`) | Adds `NT SERVICE\EtwDnstap` to Performance Log Users. Skips it if already a member. The membership check reads the group by account name first. If that throws, the script prints `The name-based membership check on <group> failed (<error>). Reading the members by SID instead.` and reads the members by SID through a small `Add-Type` class that it compiles once. If the compile fails, for example because application control blocks it, the install fails with `Could not read the members of <group>. By name: <error> By SID: <error>`. The lab has not run the fallback. |
 | Provisioning, grant step | Step 4 (grant script) | Runs `Grant-EtwDnstapEtwAccess.ps1 -SessionName` from the install folder. |
 | `util:EventSource` | Step 4 (`New-EventLog`) | Registers the `EtwDnstap` source in the Application log, with the same message file. |
 | Provisioning, data folders | Create the spool folder, and the `ProgramData` part of the snapshot folder | Creates `C:\ProgramData\EtwDnstap` and `spool` with the rights of the spool section, or accepts them if they exist and pass the checks. An existing folder that fails a check stops the install. |
@@ -490,17 +502,18 @@ The last `icacls.exe` command should list four entries, and none has `(I)`:
 - `NT AUTHORITY\SYSTEM:(OI)(CI)(F)`
 
 The service runs a check of its own at startup. It refuses the spool, logs one
-warning, and runs without a spool if any of these is false. The service's check
-is looser than `Test-SpoolFolder`, which allows only the three accounts above:
+warning, and runs without a spool if any of these checks fails. The service's
+check is looser than `Test-SpoolFolder`, which allows only the three accounts
+above:
 
 - The spool folder exists and is a folder. Its parent is not a reparse point,
   and the folder is not one either. Links and junctions are refused.
 - The folder is on a fixed local disk. The path starts with a drive letter. It
   has no `.` or `..` part. Network and device paths are refused.
 - SYSTEM or Administrators owns the folder.
-- An allow entry grants read or write access to an account other than SYSTEM,
-  Administrators, or a service SID. An inherit-only `CREATOR OWNER` entry is
-  allowed. Deny entries do not count.
+- The folder has a DACL. No allow entry grants read or write access to an
+  account other than SYSTEM, Administrators, or a service SID. An inherit-only
+  `CREATOR OWNER` entry is allowed. Deny entries do not count.
 
 The `icacls.exe` output is the check for other accounts. Run
 `Test-SpoolFolder $spoolDirectory` again after any change to the folder.
@@ -567,9 +580,10 @@ Restart-Computer
   into `-BackupPath`. A run with `-WhatIf` writes no backup. To undo the run,
   use `-Restore` as described in
   [scripts/provision/README.md](../../scripts/provision/README.md#backup-and-restore).
-- `New-EventLog` registers the `EtwDnstap` source. Without it, service failures
-  and the capture start and stop lines are not written to the Application log.
-  The lab test showed that the restricted token can write these events.
+- `New-EventLog` registers the `EtwDnstap` source in the Application log, with a
+  message file. Event Viewer uses the registration to show the message text. The
+  service opens this source name with `RegisterEventSourceW`. The lab test
+  showed that the restricted token can write these events.
 - `Restart-Computer` is required. ETW applies its security descriptors at boot.
   In the lab, a grant applied without a restart had no effect.
 
@@ -581,7 +595,8 @@ If the source already exists, `New-EventLog` fails. Check it first with
 - **`StartTraceW: access denied`:** the service SID lacks
   `TRACELOG_CREATE_REALTIME` on the session GUID the message names, or the
   computer has not restarted since the grant. A changed `--session-name` also
-  changes the GUID. Run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1
+  changes the GUID, and so does a change of case, because the name is hashed
+  as written. Run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1
   -SessionName <name>` with the name from the message, restart the computer,
   then start the service.
 - **`EnableTraceEx2: access denied`:** this did not occur in the lab. The

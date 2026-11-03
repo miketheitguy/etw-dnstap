@@ -1,6 +1,6 @@
 # Uninstall
 
-> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI sources at commit `58fde72` · **Reviewed:** 2026-11-03
 
 Removing the service does not change the DNS Server role, its configuration, or
 its Analytical event log. The service never enabled those.
@@ -37,7 +37,10 @@ has not been tested. See [the plan and its results](../plans/msi-installer-plan.
   session named by `SESSION_NAME`, from the remembered value. If no value was
   remembered, it uses `EtwDnstap`.
 - The service. The uninstall stops it and deletes its registration.
-- `NT SERVICE\EtwDnstap` from Performance Log Users.
+- `NT SERVICE\EtwDnstap` from Performance Log Users. The provisioning script
+  reads and removes the membership by the service SID, not by the account name,
+  because the service may already be gone. It uses only this path on an
+  uninstall. The install uses the account name first and falls back to the SID.
 - Every ETW grant of the service SID. The uninstall runs
   `Grant-EtwDnstapEtwAccess.ps1 -Remove`.
 - The performance counter registration, from `etw-dnstap.man`.
@@ -69,12 +72,39 @@ has not been tested. See [the plan and its results](../plans/msi-installer-plan.
 - A reparse point (a link or a junction) in `spool` or `backup`, and a reparse
   point for the `EtwDnstap` folder itself. The uninstall does not follow or
   delete it. It logs `KEPT`.
+- A spool folder that the service used through `--spool-dir`. The uninstall
+  removes only `C:\ProgramData\EtwDnstap\spool`.
 - Entries in the Application event log.
 - Dnstap records that the collector already received. The DNS Server role, its
   configuration, and its Analytical event log are not changed.
 
 The lines that start with `WixQuietExec:` after the `ProvisionUninstall` action
-in the uninstall log say what each step removed or kept.
+in the uninstall log say what each step removed or kept. If a provisioning step
+fails, the action fails, the uninstall stops, and Windows Installer rolls it back.
+A line `WixQuietExec:   FAILED: <cause>` gives the cause. The one exception is
+the group membership. If the script cannot read or remove it, the uninstall
+continues with the grant and the folder removal, and the log has this line:
+
+```text
+[EtwDnstap] WARNING: could not read or remove the membership of service SID <sid> in Performance Log Users (S-1-5-32-559). The uninstall continues. Remove the SID from the group by hand. Error: <message>
+```
+
+The SID path calls `netapi32` through a small `Add-Type` class. If application
+control or antivirus blocks that compile, the group step takes this warning and
+the uninstall continues. The lab has not run that case. If you see the warning,
+remove the service SID from the group by hand. A membership that is left behind
+grants nothing after the service and its ETW grants are gone. The log also has `Removed service SID <sid> (NT SERVICE\EtwDnstap) from Performance
+Log Users.` or `Service SID <sid> is not in Performance Log Users.` when the step
+succeeds.
+
+### After a hand-deleted service
+
+If someone ran `sc.exe delete EtwDnstap` before `msiexec /x`, the name
+`NT SERVICE\EtwDnstap` no longer resolves. The uninstall does not need it,
+because it uses the service SID, so the uninstall should complete, with the
+warning above if the group step fails. The lab has not run this case with the
+current MSI. The run is open in
+[the plan](../plans/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
 
 ### Check the result
 
@@ -100,7 +130,7 @@ in [install.md](install.md). Do not use them on an MSI install. They remove the
 parts by hand, and they leave the Windows Installer record in place.
 
 Run the commands in an elevated Windows PowerShell 5.1 session. The lab tested
-the `-Remove` run of the grant script in step 3. The other commands come from
+the `-Remove` run of the grant script in step 2. The other commands come from
 the provisioning steps in [install.md](install.md). They were **not executed**
 in this documentation pass. Test them on a disposable host first.
 
@@ -114,18 +144,12 @@ sc.exe query EtwDnstap
 If the service is already stopped, `sc.exe stop` reports an error. That is
 fine. Continue when `sc.exe query` shows `STOPPED`.
 
-## 2. Remove the service registration
+## 2. Remove the service SID's group membership and ETW grants
 
-```powershell
-sc.exe delete EtwDnstap
-```
-
-`sc.exe delete` removes the service's configuration. That includes the binary
-path, the account (`NT AUTHORITY\LocalService`), the SID type, the privilege list,
-and the recovery policy. If the service is still running, SCM marks it for
-deletion and removes it when it stops.
-
-## 3. Remove the service SID's group membership and ETW grants
+Run this step while the service is still registered, so that
+`NT SERVICE\EtwDnstap` still resolves to its SID. After step 3, the name does
+not resolve, and `net localgroup` cannot remove the member. The group then keeps
+the unresolved service SID. This guide has not tested a removal of such a SID.
 
 ```powershell
 net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /delete
@@ -148,13 +172,24 @@ the original bytes of each value it changes. The folder is
 its path. To undo the removal, run the script with `-Restore <folder>` and
 restart the computer. With `-WhatIf`, the script writes no backup.
 
-The script derives the service SID from the service name, so `-Remove` works
-after `sc.exe delete` as well. It strips only the ACEs for that SID. It prints
+The script derives the service SID from the service name, so `-Remove` also
+works after `sc.exe delete`. It strips only the ACEs for that SID. It prints
 one line for each descriptor that it changes or removes, and the SDDL of the
 default descriptor. It edits the descriptors under
 `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. The lab tested removal on
 build 26100. See
 [scripts/provision/README.md](../../scripts/provision/README.md).
+
+## 3. Remove the service registration
+
+```powershell
+sc.exe delete EtwDnstap
+```
+
+`sc.exe delete` removes the service's configuration. That includes the binary
+path, the account (`NT AUTHORITY\LocalService`), the SID type, the privilege list,
+and the recovery policy. If the service is still running, SCM marks it for
+deletion and removes it when it stops.
 
 ## 4. Remove the Event Log source
 
@@ -199,7 +234,7 @@ stopped the service, so nothing writes to the folder now. Delete the folder when
 you no longer need the frames. Frames in the spool never reached the collector.
 
 If the service ran with `--spool-dir`, set `$spoolDirectory` to that path. The
-binary path that `sc.exe qc EtwDnstap` showed before step 2 has it. The command
+binary path that `sc.exe qc EtwDnstap` showed before step 3 has it. The command
 below deletes the files in the folder, and then the empty folder. It stops if it
 finds a folder, a link, or a reparse point inside.
 
@@ -270,7 +305,7 @@ show `EtwDnstap`. The `typeperf -q EtwDnstap` list should not show the counters.
   need to roll back.
 - The `EtwDnstap` folder under `$env:ProgramData`, which can hold snapshots in
   `backup`. Step 7 removes only the `spool` folder.
-- The provider permission, if you granted one, until you reverse it in step 3.
+- The provider permission, if you granted one, until you reverse it in step 2.
 - The build output under `target\` in your repository clone. Remove it with the
   repository if you no longer need it.
 - The Rust toolchain installed by rustup.

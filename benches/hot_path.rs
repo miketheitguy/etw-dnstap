@@ -15,8 +15,9 @@
 //! Most groups run on one thread over a small pool that stays in cache, so
 //! their numbers are best cases. `copy_record_cold` and `two_thread` use a
 //! production-sized pool, and `two_thread` adds the cross-core cache traffic of
-//! the real producer and consumer. `decompose` splits `parse_and_encode` into
-//! its parts. See `datasets/baselines/code-review-2026-11-01/README.md` for how
+//! the real producer and consumer. `socket_write` times one write on a loopback
+//! connection, with the deadline logic. `decompose` splits `parse_and_encode`
+//! into its parts. See `datasets/baselines/code-review-2026-11-01/README.md` for how
 //! to compare runs.
 
 use std::{hint::black_box, thread, time::Duration, time::Instant};

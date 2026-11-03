@@ -1,6 +1,6 @@
 # Pooled ETW intake
 
-> **Status:** Current · **Describes:** `main` at commit `7f91264` (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** the code at commit `58fde72` (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-03
 
 This reference helps maintainers review the ownership, memory budget, and loss
 accounting of the pooled Event Tracing for Windows (ETW) intake. It describes the
@@ -14,8 +14,12 @@ The session enables the DNS provider with these settings:
 - Level `0xFF`. The level is a maximum, so this passes every level and there is
   no level filter.
 - `MatchAnyKeyword` set to the resolved `QUERY_RECEIVED | RESPONSE_SUCCESS |
-  RESPONSE_FAILURE` bits, or to `0x8000000000000000` when the keyword lookup
-  fails or any of the three names is missing, malformed, or shares a bit.
+  RESPONSE_FAILURE` bits. The mask is `0x8000000000000000` instead when the
+  keyword lookup fails. It is also that value when `QUERY_RECEIVED` or
+  `RESPONSE_SUCCESS` is missing or malformed, or when any two of the three
+  names share a bit. If only
+  `RESPONSE_FAILURE` is missing or malformed, the mask holds the other two bits
+  and the service does not capture event 258.
 - `MatchAllKeyword` set to zero.
 - `EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0`, which keeps keyword-zero events out.
 - An ETW event-ID filter that admits only 256, 257, and 258.
@@ -114,7 +118,7 @@ after `ProcessTrace` returns.
 
 ## Memory budget and configuration
 
-The channel default is `--capacity 24576`. It was 8192 before 2026-11-01. The command line accepts 1,024
+The channel default is `--capacity 24576`. It was 8192 until 2026-11-01. The command line accepts 1,024
 through 262,144. The pool itself accepts 1 through 262,144. Storage has two
 independent classes:
 
@@ -260,7 +264,11 @@ through the last required property. The supported layouts are:
 An array, a structure, a custom schema, or an unknown layout in that prefix
 makes the schema unsupported. Its events are rejected and counted in
 `schema_rejected`. Binary fields with zero length and no explicit fixed-length
-flag are also unsupported. There is no per-event TDH fallback. Unsupported
+flag are also unsupported. There is no per-event TDH fallback. An unsupported
+schema stays rejected. A schema whose metadata fails to load (a Win32 error from
+`TdhGetEventInformation`) is rejected too, but the parser loads it again after
+65,536 further rejected events of its key. See
+[Single-pass decoder](single-pass-decoder.md#supported-schemas). Unsupported
 trailing layouts can stay as names-only sentinels. The decoder does not inspect
 their bytes. Duplicate required property
 names prevent plan compilation, including duplicates after the required prefix.
@@ -326,7 +334,9 @@ loss categories:
 The following counters exist only in the live log of the TCP-only service. They
 are not schema 2 fields and are not part of the identities below. The full live
 list is in
-[Log events and counters](../guide/monitoring.md).
+[Log events and counters](../guide/monitoring.md). The live log also splits
+`pool_exhausted` into `pool_exhausted_regular` and `pool_exhausted_jumbo`. It
+has no `queue_backlog` field. It reports `queue_depth_max` instead.
 
 | Live counter | Meaning |
 | --- | --- |

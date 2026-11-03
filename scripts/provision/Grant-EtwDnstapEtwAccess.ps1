@@ -90,7 +90,8 @@ docs/history/localservice-restricted-validation.md.
 
 .PARAMETER SessionName
 Every --session-name an EtwDnstap instance on this host uses. Default: EtwDnstap.
-Grants for session names not listed are removed.
+Grants for session names not listed are removed. Each name is 1 to 128 characters:
+ASCII letters, digits, '_', '.', '-'. The first character must not be '-'.
 
 .PARAMETER ServiceName
 Service whose service SID receives the grant. Default: EtwDnstap.
@@ -136,8 +137,14 @@ Puts back the descriptors that the run saved. Restart the computer afterwards.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High', DefaultParameterSetName = 'Grant')]
 param(
+    # The service's session-name rule, checked for each name. Case-sensitive and anchored
+    # with \z: the default ValidatePattern ignores case, which lets U+212A and U+0130 match
+    # [A-Za-z], and its $ accepts a trailing newline. No leading '-': on a command line
+    # (the MSI's and the service's ImagePath) such a value is read as a parameter or an
+    # option name.
     [Parameter(ParameterSetName = 'Grant')]
     [ValidateNotNullOrEmpty()]
+    [ValidatePattern('^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,127}\z', Options = 'None')]
     [string[]]$SessionName = @('EtwDnstap'),
 
     [Parameter(ParameterSetName = 'Grant')]

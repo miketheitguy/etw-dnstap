@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use super::{
     config::{CaptureArgs, DEFAULT_CAPACITY, DiagContext, PipelineConfig, SpoolSettings},
     parser::{ParseCounters, join_parser, spawn_parser},
-    watchdog::{SHUTDOWN_TIMEOUT, ShutdownWatchdog},
+    watchdog::{CAPTURE_START_TIMEOUT, ShutdownWatchdog},
 };
 use crate::{
     etw::{
@@ -288,7 +288,7 @@ where
         config.diag,
     )?;
 
-    let startup_watchdog = ShutdownWatchdog::arm_for("startup", SHUTDOWN_TIMEOUT);
+    let startup_watchdog = ShutdownWatchdog::arm_for("startup", CAPTURE_START_TIMEOUT);
     let producer = start(ProducerStart {
         session_name: &config.session_name,
         sender,
@@ -375,6 +375,13 @@ where
 /// validated them at about 20,000 events/s (10,000 queries/s); the 10% margin
 /// covers ETW's once-per-second delivery batches within a rate window.
 const DEFAULTS_VALIDATED_EVENTS_PER_SEC: f64 = 22_000.0;
+/// The warning logged once when the rate passes
+/// [`DEFAULTS_VALIDATED_EVENTS_PER_SEC`]. It names both figures: the validated
+/// rate and the threshold above it.
+const RATE_WARNING: &str = "received rate is above 22,000 events/s; the default buffer settings \
+    were validated at about 20,000 events/s; if ring_dropped or etw_lost increase, raise \
+    --capacity and --etw-max-buffers, for example --etw-buffer-kib 64 --etw-max-buffers 256 \
+    --capacity 65536";
 /// How often the supervisor re-reads the DNS Server service process ID.
 const TARGET_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// Rate window when counter snapshots are disabled.
@@ -529,13 +536,7 @@ fn supervise(
             && default_rate_exceeded(monitor.defaults_in_use, rate)
         {
             monitor.rate_warned = true;
-            tracing::warn!(
-                events_per_second = rate.round(),
-                "received rate is above what the default buffer settings were validated \
-                 for (about 20,000 events/s); if ring_dropped or etw_lost increase, raise \
-                 --capacity and --etw-max-buffers, for example --etw-buffer-kib 64 \
-                 --etw-max-buffers 256 --capacity 65536"
-            );
+            tracing::warn!(events_per_second = rate.round(), "{RATE_WARNING}");
         }
         // One ETW query per iteration at most, shared by both ticks.
         let mut queried = false;

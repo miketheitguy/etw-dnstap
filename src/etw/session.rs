@@ -617,6 +617,10 @@ impl Capture {
         let dns_pid = service_process_id(DNS_SERVICE)
             .context("resolve the DNS Server service process ID for the PID filter")?;
         let mut name: Vec<u16> = name.encode_utf16().collect();
+        // A backstop only. The command line and `PipelineConfig::validate` accept
+        // just 1 to 128 characters from `[A-Za-z0-9_.-]`, not starting with a
+        // hyphen, so a name that reaches here is already far below this limit;
+        // the check guards other callers of `Capture::start`.
         ensure!(
             name.len() <= 1024,
             "ETW session name exceeds 1024 UTF-16 units"

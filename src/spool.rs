@@ -74,6 +74,20 @@ pub(crate) enum Appended {
     Dropped,
 }
 
+/// Whether the volume has the free space a new segment needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FreeSpace {
+    /// The floor is met (or no new segment was needed).
+    Met,
+    /// The floor is not met and no older segment is left to delete: `free`
+    /// bytes are free, and `needed` bytes (`min_free_bytes` plus a segment)
+    /// are needed.
+    Short { free: u64, needed: u64 },
+}
+
+/// Bytes in a MiB, for the free-space log.
+const MIB: u64 = 1024 * 1024;
+
 /// One segment file the spool knows about.
 struct SegmentInfo {
     sequence: u64,
@@ -128,6 +142,8 @@ pub(crate) struct Spool {
     evictions: u64,
     /// Discards of unreadable data so far, for the bounded log.
     discards: u64,
+    /// Free-space blocks so far, for the bounded log.
+    low_space_blocks: u64,
     /// How long a pause lasts. Tests shorten it.
     pause: Duration,
 }
@@ -177,6 +193,7 @@ impl Spool {
             transient: None,
             evictions: 0,
             discards: 0,
+            low_space_blocks: 0,
             pause: PAUSE,
         };
         spool.apply_cursor(cursor_state);
@@ -238,12 +255,13 @@ impl Spool {
             return self.refuse(frames);
         }
         match self.try_append(bytes, frames) {
-            Ok(true) => {
+            Ok(FreeSpace::Met) => {
                 // A suspension that has ended is over once a block is stored.
                 self.stats.spool_available.store(true, Ordering::Relaxed);
                 Appended::Stored
             }
-            Ok(false) => {
+            Ok(FreeSpace::Short { free, needed }) => {
+                self.note_low_space(free, needed);
                 self.blocked_until = Some(now + self.pause);
                 self.stats.spool_available.store(false, Ordering::Relaxed);
                 self.refuse(frames)
@@ -369,8 +387,9 @@ impl Spool {
 
     // ---- appending ----
 
-    /// Returns `Ok(false)` when the free-space floor leaves nothing to delete.
-    fn try_append(&mut self, bytes: &[u8], frames: u32) -> io::Result<bool> {
+    /// Returns [`FreeSpace::Met`] when the block is stored, and
+    /// [`FreeSpace::Short`] when the free-space floor leaves nothing to delete.
+    fn try_append(&mut self, bytes: &[u8], frames: u32) -> io::Result<FreeSpace> {
         let length = bytes.len() as u64;
         // Start a new segment when this block would overfill the active one.
         if self.writer.as_ref().is_some_and(|writer| {
@@ -390,8 +409,9 @@ impl Spool {
             }
         }
         if self.writer.is_none() {
-            if !self.ensure_free_space()? {
-                return Ok(false);
+            let space = self.ensure_free_space()?;
+            if space != FreeSpace::Met {
+                return Ok(space);
             }
             self.create_segment()?;
         }
@@ -409,14 +429,15 @@ impl Spool {
             .spooled
             .fetch_add(u64::from(frames), Ordering::Relaxed);
         self.update_gauges();
-        Ok(true)
+        Ok(FreeSpace::Met)
     }
 
     /// Deletes the oldest segments until the volume has `min_free_bytes` plus a
     /// segment free. It keeps the newest segment, and it stops when deleting a
     /// segment does not raise the free space the probe reports (something else
-    /// uses the space). Returns false when the floor is still not met.
-    fn ensure_free_space(&mut self) -> io::Result<bool> {
+    /// uses the space). Returns [`FreeSpace::Short`] with the last free space
+    /// the probe reported when the floor is still not met.
+    fn ensure_free_space(&mut self) -> io::Result<FreeSpace> {
         let needed = self
             .config
             .min_free_bytes
@@ -424,15 +445,18 @@ impl Spool {
         let mut free = (self.free_space)(&self.config.dir)?;
         loop {
             if free >= needed {
-                return Ok(true);
+                return Ok(FreeSpace::Met);
             }
             if self.segments.len() <= 1 {
-                return Ok(false);
+                return Ok(FreeSpace::Short { free, needed });
             }
             self.evict_oldest();
             let after = (self.free_space)(&self.config.dir)?;
             if after <= free {
-                return Ok(false);
+                return Ok(FreeSpace::Short {
+                    free: after,
+                    needed,
+                });
             }
             free = after;
         }
@@ -511,6 +535,23 @@ impl Spool {
             .spool_dropped
             .fetch_add(u64::from(frames), Ordering::Relaxed);
         Appended::Dropped
+    }
+
+    /// Logs that the free-space floor blocks appends for a pause: the first four
+    /// times, then every 60th. Free space is rounded down and the need up to
+    /// whole MiB, so a small shortfall never shows two equal values.
+    fn note_low_space(&mut self, free: u64, needed: u64) {
+        let blocks = self.low_space_blocks;
+        self.low_space_blocks += 1;
+        if blocks < 4 || blocks.is_multiple_of(60) {
+            tracing::warn!(
+                free_mib = free / MIB,
+                needed_mib = needed.div_ceil(MIB),
+                pause_s = self.pause.as_secs(),
+                "dnstap spool is refusing blocks: the volume is below the free-space floor \
+                and no older segment is left to delete"
+            );
+        }
     }
 
     /// Counts an I/O error. The log is bounded: the first four, then every 60th.

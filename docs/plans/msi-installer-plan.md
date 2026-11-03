@@ -439,7 +439,11 @@ to its `devnull` logger, with its stdout and stderr sent to null. Results are in
 
 - A major upgrade from an older MSI version. There is only one version.
 - A session name change through `REINSTALL=ALL`.
-- The uninstall.md manual order (`sc.exe delete` before `net localgroup /delete`).
+- The uninstall.md manual order. The guide first deleted the service (step 2)
+  and then removed the group membership (step 3). It now removes the membership
+  and the ETW grants first (step 2) and deletes the service second (step 3),
+  which is the order of `Remove-ManualEtwDnstap.ps1`. The lab did not run the
+  guide's steps.
 
 ### Follow-up
 

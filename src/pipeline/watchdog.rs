@@ -11,7 +11,14 @@ use anyhow::{Context, Result};
 use super::config::CaptureArgs;
 use crate::etw::PoolManager;
 
+/// Budget for stopping: draining the pipeline and joining its threads.
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Budget for the capture start alone (the ETW session start inside the larger
+/// startup budget). It is a separate constant from [`SHUTDOWN_TIMEOUT`] because
+/// the two deadlines answer different questions and must be tunable
+/// independently: a slow session start is not a slow stop. Both are 10 s today.
+pub(crate) const CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Startup budget before `--capacity` is known: the identity checks, the
 /// argument hand-over, the receiver connection, and the capture start.

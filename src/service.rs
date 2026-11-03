@@ -143,7 +143,10 @@ unsafe extern "system" fn service_main(_count: u32, _arguments: *mut *mut u16) {
 }
 
 fn run_registered(handle: SERVICE_STATUS_HANDLE) -> Result<()> {
-    let mut startup_guard = Some(pipeline::ShutdownWatchdog::arm());
+    let mut startup_guard = Some(pipeline::ShutdownWatchdog::arm_for(
+        "startup",
+        pipeline::STARTUP_BASE_BUDGET,
+    ));
     let result = (|| {
         // The capacity, and so the full startup budget, is not known until the
         // arguments are taken below; the base budget covers the steps before.

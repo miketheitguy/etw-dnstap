@@ -1,6 +1,6 @@
 # Log events and counters
 
-> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
 
 Diagnostics go to the Application event log under source `EtwDnstap`. The
 service writes nothing to stdout or stderr, and it writes no capture or metrics
@@ -15,11 +15,16 @@ the same values. See
 | Event ID | Type | Written for |
 | --- | --- | --- |
 | 1 | Error | A fatal service failure, whether at startup or during the run. The text starts with `EtwDnstap failed:`. |
-| 2 | Information | Every information-level line: `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, `ETW buffers applied`, `spool in use`, `dnstap spool backlog kept on disk for the next run`, and `diagnostic settings applied` in diagnostic builds. |
+| 2 | Information | Every information-level line: `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, `ETW buffers applied`, `spool in use`, `dnstap spool backlog kept on disk for the next run`, and, in diagnostic builds, `diagnostic settings applied` and `parser timing`. |
 | 3 | Warning | Every warning-level line, such as an unavailable receiver, a lost connection, a failed reconnect, a rejected event, the rate warning, a reclaimed session, and the spool warnings in [Spool messages](#spool-messages). |
 | 4 | Error | Every error-level log line, such as `ETW cleanup failed` or the reason for a stop after a DNS Server process change. A fatal service failure uses Event ID 1. |
 | 5 | Error | Watchdog expiry, written just before the process aborts. |
 | 6 | Error | A panic, written just before the process aborts. The text starts with `EtwDnstap panicked:` and has the panic message and location. |
+
+The service logs at information level and above. It does not write debug
+events. Each event has one text string, which the service cuts at 8,192 UTF-16
+code units. The service never stops capture because an event could not be
+written.
 
 ## Periodic and final reports
 
@@ -31,7 +36,10 @@ with the same fields, even when you disable periodic snapshots.
 `capture started` records these fields:
 
 - `version`, the package version from `Cargo.toml`. This is how you read the
-  running version, because the binary has no `--version` flag.
+  running version, because the binary has no `--version` flag. To read the
+  version of the file without running it, use
+  `(Get-Item <exe>).VersionInfo`: `ProductVersion` is the same string, and
+  `FileVersion` is `X.Y.Z`.
 - `session` (the ETW session name), `session_guid`, and `receiver`.
 - `tls` (`true` unless you set `--plaintext`) and `tls_server_name` when set.
 - `capacity`, `etw_buffer_kib`, and `etw_flush_seconds`.
@@ -56,11 +64,39 @@ of them logs frame data.
 | `spool in use` | 2 | `spool_dir`, `spool_max_mib`, `spool_min_free_mib`, `leftover_segments`, `leftover_bytes` | At startup, when the spool opens. The leftover fields show what an earlier run left. |
 | `spool folder is not usable; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 3 | `spool_dir`, `reason` | At startup, when the folder check fails. The service runs without a spool. |
 | `spool could not be opened; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 3 | `spool_dir`, `error` | At startup, when the folder check passes but the spool cannot open, for example because `cursor.bin` cannot be read. The service runs without a spool. |
-| `dnstap spool deleted its oldest segment unsent` | 3 | `frames`, `bytes` | When the size cap or the free-space floor deletes a segment that still held unsent data. The first four, then every 60th. |
-| `dnstap spool discarded unreadable segment data` | 3 | `frames`, `bytes` | Segment data could not be read: a corrupt or cut-off tail, a missing START, a read error after retries, or an invalid cursor that dropped the oldest segment. The first four, then every 60th. |
-| `dnstap spool I/O error` | 3 | `error` | A spool file operation failed. The spool pauses for 10 seconds. The first four, then every 60th. `spool_errors` counts every error. |
+| `dnstap spool deleted its oldest segment unsent` | 3 | `frames`, `bytes` | When the size cap or the free-space floor deletes a segment that still held unsent data. The first four, then the 61st, 121st, and so on. |
+| `dnstap spool discarded unreadable segment data` | 3 | `frames`, `bytes` | Segment data could not be read: a corrupt or cut-off tail, a missing START, a read error after retries, or an invalid cursor that dropped the oldest segment. The first four, then the 61st, 121st, and so on. |
+| `dnstap spool I/O error` | 3 | `error` | A spool file operation failed. The spool pauses for 10 seconds. The first four, then the 61st, 121st, and so on. `spool_errors` counts every error. |
+| `dnstap spool is refusing blocks: the volume is below the free-space floor and no older segment is left to delete` | 3 | `free_mib`, `needed_mib`, `pause_s` | A new segment needs `--spool-min-free-mib` plus one segment of free space, the volume has less, and only the newest segment is left to delete. The spool refuses blocks for `pause_s` (10) seconds, and each refused block counts in `spool_dropped`. The first four pauses, then the 61st, 121st, and so on. Blocks refused during a pause log nothing. `free_mib` rounds down and `needed_mib` rounds up. |
 | `could not seal the dnstap spool segment` | 3 | `error` | At shutdown, when the active segment cannot take its STOP. A later run reads the segment as an unsealed leftover. |
 | `dnstap spool backlog kept on disk for the next run` | 2 | none | At shutdown, when unsent frames remain in the spool. |
+
+### Receiver, schema, and rate messages
+
+The sink, the schema cache, the parser, and the supervisor write these lines.
+Each line carries the fields in the table. None of them logs frame data.
+
+| Message | Event ID | Fields | When |
+| --- | --- | --- | --- |
+| `dnstap reconnect failed` | 3 | `receiver`, `error`, `cause`, `failures` | A reconnect attempt failed. `cause` is `connect` (the TCP connection failed), `timeout`, `tls` (setup or handshake, including a certificate that is not trusted or does not match, and a TLS alert that the receiver sends after the handshake, such as `received fatal alert: CertificateRequired` from a receiver that requires a client certificate), or `protocol` (the Frame Streams handshake). `failures` is the count of failed attempts in the run. Logged for the first four failures, then the 61st, 121st, and so on, and for the first failure of each `cause` since a session was last established. |
+| `dnstap receiver failed the TLS handshake before the first session; check that the Windows trust store trusts the receiver certificate, that --tls-server-name (or the receiver IP address when it is not set) matches the certificate, and that the receiver does not require a client certificate (this client sends none); retrying with backoff` | 4 | `receiver`, `error`, `cause`, `failures` | Once per run. The receiver was down at startup, and the first attempt that reached it ended with a TLS rejection. It replaces `dnstap reconnect failed` for that attempt. |
+| `dnstap receiver refused the Frame Streams handshake before the first session; check that the receiver accepts the dnstap content type; retrying with backoff` | 4 | `receiver`, `error`, `cause`, `failures` | Once per run. The same situation as the previous line, with a Frame Streams handshake rejection. |
+| `could not start the dnstap reconnect thread; retrying with backoff` | 3 | `receiver`, `error`, `failures` | The service could not start the thread for a reconnect attempt. The first four, then the 61st, 121st, and so on. |
+| `dnstap reconnect thread ended without a result; retrying with backoff` | 4 | `receiver`, `failures` | The reconnect thread ended without a result. The first four, then the 61st, 121st, and so on. |
+| `DNS event schema load failed; its events are rejected until the load is retried` | 3 | `event_id`, `version`, `failures`, `retry_after_events` (65,536) | Windows could not return the metadata of an event schema (a Win32 error from `TdhGetEventInformation`). The error follows the message. The first four failures of each (event ID, version) key, then the 61st, 121st, and so on. |
+| `DNS event schema is unsupported and its events are rejected` | 3 | `event_id`, `version` | The metadata loaded, but this program cannot decode it. Logged once for each key. The program does not retry the key, but the line can appear again for the same key: after the list of rejected keys (8 entries) is cleared because it is full, and when the retry of a load failure fails as unsupported. |
+| `rejected ETW event; the first four and then every 60th are logged, all are counted` | 3 | `error`, `rejected` | The parser rejected an event. `rejected` is the running count. |
+| `received rate is above 22,000 events/s; the default buffer settings were validated at about 20,000 events/s; if ring_dropped or etw_lost increase, raise --capacity and --etw-max-buffers, for example --etw-buffer-kib 64 --etw-max-buffers 256 --capacity 65536` | 3 | `events_per_second` | Once per run, with the default buffer settings, at the end of the first measurement window above 22,000 events per second. |
+
+The service remembers which `cause` values it has logged since a session was
+last established, and it logs the first failure of each one even when the count
+is not one of the first four or every 60th. A session that is established, at
+startup or on a reconnect, clears that memory, so each later outage logs each of
+its causes again. A lost session does not clear it. The line
+`dnstap receiver connection lost` marks the start of each outage. A failed
+connection at startup adds its `cause`, because the startup warning already
+reported it. Causes that alternate add at most one extra line per cause in an
+outage.
 
 ## Capture counters
 
@@ -82,7 +118,7 @@ These fields appear on `capture stats` and `capture stopped`.
 | `etw_lost` | Events ETW reports as lost in the session, from its last successful query or stop. |
 | `etw_buffers_lost` | ETW buffers lost. This is a buffer count, not an event count. Never add it to event counts. |
 | `callback_errors` | Records the callback could not copy or hand off, for example malformed native data, or thread-local state that is missing or re-entered. Not part of `intake_dropped`. |
-| `schema_rejected` | Records whose event schema failed to load or did not compile into a single-pass decode plan. This includes the first failure for each (event ID, version) key and each later record with that key. Part of `rejected`. |
+| `schema_rejected` | Records whose event schema failed to load or did not compile into a single-pass decode plan. This includes the first failure for each (event ID, version) key, each later record with that key, and each retry of a failed load that fails again. Part of `rejected`. |
 | `etw_stats_valid` | `true` when the last ETW query or stop succeeded. A flag, not a count. |
 | `etw_stats_errors` | Failed ETW statistics queries. While the performance counters run, the service also queries once per second, and those failures count here too. |
 | `stale_sessions_reclaimed` | Leaked sessions stopped at startup. |
@@ -100,7 +136,7 @@ These fields appear on `output stats` and `output stopped`.
 | `receiver_connected` | `true` while a Frame Streams session exists. A flag, not a count. |
 | `receiver_disconnects` | Established sessions that were lost. |
 | `receiver_reconnects` | Successful reconnects after the first session. When the receiver is down at startup, the first connection counts here too. |
-| `receiver_reconnect_failures` | Reconnect attempts that failed at connect, handshake, or protocol. |
+| `receiver_reconnect_failures` | Reconnect attempts that failed at connect, handshake, or protocol. Also counts an attempt thread that could not start and one that ended without a result. |
 | `disconnected_dropped` | Frames lost in the sink: frames in flight when a connection failed, such as frames written since the last successful flush, and frames that arrived while the receiver was down and no spool was in use. Frames in flight may have reached the receiver. A frame in a failed replay batch is counted here too, after `replayed`. Never resent. Not part of `intake_dropped`. |
 | `slow_writes` | Socket writes that took at least 5 ms. |
 | `write_max_us` | Longest single socket write in microseconds. |
@@ -161,9 +197,14 @@ dequeued       = encoded + ignored + rejected + output_failed_events
 The service publishes a Windows performance counter set named `EtwDnstap`. The
 lab tested it on 2026-11-01 (see below). The
 manifest is [`packaging/perfcounters/etw-dnstap.man`](../../packaging/perfcounters/etw-dnstap.man).
-The installed copy is `C:\Program Files\EtwDnstap\etw-dnstap.man`.
+The provider is also named `EtwDnstap`. The provider GUID is
+`{A7F0B1F4-C87D-4267-979F-594A4AB2145D}`, and the counter set GUID is
+`{B02EDFA2-B961-4E06-89D2-56C95ECB336C}`. The installed copy is
+`C:\Program Files\EtwDnstap\etw-dnstap.man`. The MSI registers it with
+`lodctr`. In a hand-provisioned install,
 [Install and provision](install.md#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute)
-registers it.
+registers it. The counter names and help text are resources in `etw-dnstap.exe`,
+which the manifest names as the application identity.
 
 You can read the counters in Performance Monitor, with `typeperf`, or with
 `logman` data collector sets. WMI (Windows Management Instrumentation) reads them
@@ -175,8 +216,9 @@ The counter set has one instance. The instance name is the ETW session name, so
 the default instance is `EtwDnstap`. A different `--session-name` changes the
 instance name. ETW session names are unique on a host, so the name stays the same
 after each restart. Counter paths use the form `\EtwDnstap(<instance>)\<counter>`,
-so a session name with `(`, `)`, `#`, `/`, or `\` makes the instance hard to
-address. Use a session name without those characters.
+so the instance name is easy to address: `--session-name` accepts only ASCII
+letters, digits, underscore, dot, and hyphen, and not a hyphen first. See
+[Options](configuration.md#options).
 
 The instance exists only while capture runs. Counters start from zero when the
 service starts. A restart resets them.
@@ -210,6 +252,12 @@ means that the log has no matching field.
 
 The `/sec` counters are rates. The reader computes each rate from the change in
 the counter over time.
+
+All counter values are 64-bit and have scale 0. The `/sec` counters
+(IDs 1 to 3) have type `PERF_COUNTER_BULK_COUNT`. The totals and the other
+gauges have type `PERF_COUNTER_LARGE_RAWCOUNT`. The two percentage counters
+(IDs 33 and 43) have type `PERF_LARGE_RAW_FRACTION`, and each has a hidden base
+counter of type `PERF_LARGE_RAW_BASE`.
 
 #### Totals since the service started
 
@@ -260,12 +308,12 @@ How the totals relate:
 | Channel Capacity | 31 | The `--capacity` value. The `capture started` line also shows it. | None |
 | Channel Peak Depth | 32 | The deepest channel depth that the parser sampled, so this is a lower bound. | `queue_depth_max` |
 | % Channel Used | 33 | Channel Depth as a percentage of Channel Capacity. | None |
-| (base of 33) | 34 | Hidden counter. It is the base for % Channel Used. | None |
+| % Channel Used Base | 34 | Hidden counter. It holds Channel Capacity and is the base for % Channel Used. | None |
 | ETW Buffers Allocated | 40 | ETW buffers allocated for the session. | None |
 | ETW Buffers In Use | 41 | Allocated buffers that ETW does not report as free. It never goes below 0. | None |
 | ETW Buffers Maximum | 42 | The maximum buffer count that ETW reports. It can be higher than `--etw-max-buffers`. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). | None |
 | % ETW Buffers Used | 43 | Buffers in use as a percentage of the maximum. | None |
-| (base of 43) | 44 | Hidden counter. It is the base for % ETW Buffers Used. | None |
+| % ETW Buffers Used Base | 44 | Hidden counter. It holds ETW Buffers Maximum and is the base for % ETW Buffers Used. | None |
 | Receiver Connected | 50 | 1 while a Frame Streams session exists. Otherwise 0. | `receiver_connected` |
 | Receiver Reconnects | 51 | Successful reconnects after the first session. When the receiver is down at startup, the first connection counts here too. | `receiver_reconnects` |
 | Spool Bytes | 58 | Bytes now held in spool segment files. | `spool_bytes` |
@@ -275,8 +323,10 @@ How the totals relate:
 The ETW gauges come from the last successful query. They read 0 until the first
 query succeeds.
 
-Spool Dropped Bytes (56) and Spool Segments (59) are advanced counters. Perfmon
-shows them only at the Advanced detail level.
+The manifest gives these counters the Advanced detail level: Pool Exhausted
+Drops (14), Jumbo Pool Exhausted Drops (15), Events Rejected (19), Callback
+Errors (20), Receiver Reconnects (51), Spool Dropped Bytes (56), and Spool
+Segments (59). All other counters have the Standard detail level.
 
 ### Reading the counters
 
@@ -305,7 +355,10 @@ the new one in the same way. See
 [Replace the counter manifest](upgrade.md#replace-the-counter-manifest).
 
 If a provider call fails at startup, the service writes one warning (Event ID 3)
-that names the call and the Win32 status. Capture continues without counters.
+`performance counters are unavailable; capture continues without performance
+counters`. Its `error` field names the call and the Win32 status, for example
+`PerfStartProviderEx failed: <message> (code <n>)`. Capture continues without
+counters.
 
 ### Lab validation
 

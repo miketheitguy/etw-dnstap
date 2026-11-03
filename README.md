@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0`, with the TLS receiver and response failure capture (event 258) · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the repository at commit `58fde72`, with the MSI, the TLS receiver, and response failure capture (event 258) · **Reviewed:** 2026-11-03
 
 `etw-dnstap` is a Windows service. It captures DNS Server client query and
 response events from Event Tracing for Windows (ETW). It sends them to a

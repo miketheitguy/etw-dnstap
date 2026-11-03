@@ -1,14 +1,16 @@
 # Tune capture for load
 
-> **Status:** Current · **Describes:** `tcp-sink-spool` at commit `0569136` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
 
 Use this guide to choose `--etw-*` and `--capacity` values for the query rate
 you expect, and `--spool-max-mib` for the outage you must cover. The option list is in the
 [configuration reference](configuration.md#options). The counters that show loss
 are in [Log events and counters](monitoring.md).
 
-The defaults `--etw-max-buffers 64` and `--capacity 24576` are not lab-tested as a set. The sections
-below give the lab results for each setting.
+The lab ran the defaults as a set once: one 60-second run at 10,000 queries per
+second. See [Low-rate defaults](#low-rate-defaults). The other results in this
+guide come from other settings. The sections below give the lab results for each
+setting.
 
 ## ETW buffer minimums
 
@@ -124,8 +126,10 @@ Later lab runs on 2026-11-01 used other values:
   minimum and maximum were both 12.
 
 The current defaults raise the channel to 24,576 events and the maximum to 64
-buffers. The lab has not run them as a set, so these results do not show that
-they avoid drops at 10,000 queries per second.
+buffers. The lab ran them as a set once, in the 60-second run at 10,000 queries
+per second that this section describes first. The tables and runs above used
+other settings. They do not show how the defaults behave at other rates or run
+lengths.
 
 ### High-rate settings
 
@@ -216,8 +220,9 @@ Two earlier lab results do not apply to this build:
 when the default buffer settings are in use: the default ETW settings (buffer
 size, buffer counts, and flush interval) and the default `--capacity`. The
 service logs it at the end of the first measurement window in which the received
-rate is more than 22,000 events per second. This rate is above the rate that the
-lab validated the defaults for. The window is `--stats-interval-seconds`, or 60
+rate is more than 22,000 events per second. The message reads `received rate is
+above 22,000 events/s; the default buffer settings were validated at about
+20,000 events/s`, so it states both figures. The window is `--stats-interval-seconds`, or 60
 seconds when `--stats-interval-seconds` is `0`. The warning does not mean that
 events were lost. It tells you to watch `ring_dropped` and `etw_lost`. If they
 increase, raise `--capacity` and `--etw-max-buffers`, for example to

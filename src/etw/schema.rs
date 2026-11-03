@@ -34,6 +34,10 @@ use crate::event::{DecodedDnsEvent, DnsEventMetadata, Transport};
 
 /// Schemas cached per parser; the cache is cleared when it fills.
 const MAX_CACHED_SCHEMAS: usize = 8;
+/// Further events of a key whose TDH metadata did not load that are rejected
+/// from the cache before the parser loads that schema again. It is a count of
+/// events, not a time, so the reject path reads no clock.
+const SCHEMA_RETRY_EVENTS: u32 = 65_536;
 /// The `EVENT_PROPERTY_INFO.Flags` bits (`PROPERTY_FLAGS` in `tdh.h`) the
 /// single-pass compiler interprets: the length and count arms, fixed or by
 /// index. A property with any other bit set is kept as an opaque name.
@@ -61,6 +65,55 @@ struct Schema {
     port: PropertyType,
 }
 
+/// Why a schema did not load. The class decides whether the key is retried.
+#[derive(Debug)]
+enum SchemaFailure {
+    /// `TdhGetEventInformation` returned a Win32 error, for example because the
+    /// provider manifest is not registered yet. The condition can pass, so the
+    /// load is retried after [`SCHEMA_RETRY_EVENTS`] further rejected events.
+    Load(anyhow::Error),
+    /// TDH returned metadata that this program cannot use: not a manifest
+    /// schema, another provider or event, a malformed layout, or a schema that
+    /// does not compile into a single-pass plan. The same metadata gives the
+    /// same result, so the key is not retried.
+    Unsupported(anyhow::Error),
+}
+
+/// How later events of a rejected key are treated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rejection {
+    /// Rejected until the rejected-key list is cleared because it is full.
+    Unsupported,
+    /// Rejected for `remaining` further events; the next event after those
+    /// loads the schema again.
+    LoadFailed { remaining: u32 },
+}
+
+/// A key whose schema failed, and how its events are treated now.
+#[derive(Clone, Copy, Debug)]
+struct RejectedKey {
+    key: (u16, u8),
+    rejection: Rejection,
+    /// TDH load failures of this key so far, for the bounded log.
+    load_failures: u32,
+}
+
+impl RejectedKey {
+    /// Counts one event against the key. Returns true while the event is
+    /// rejected from the cache, and false when the retry budget is spent and the
+    /// caller loads the schema again.
+    const fn hold(&mut self) -> bool {
+        match &mut self.rejection {
+            Rejection::Unsupported => true,
+            Rejection::LoadFailed { remaining: 0 } => false,
+            Rejection::LoadFailed { remaining } => {
+                *remaining -= 1;
+                true
+            }
+        }
+    }
+}
+
 /// Reuses initialized text storage on the parser thread.
 pub(crate) struct Parser {
     // Owned plans permit borrowing cache hits without allocation or refcount work.
@@ -69,12 +122,14 @@ pub(crate) struct Parser {
     schemas: Vec<((u16, u8), Schema)>,
     // At most 255 nonterminating UTF-16 units, each requiring at most 3 UTF-8 bytes.
     text: [u8; 768],
-    // Keys whose schema failed to load or did not compile into a plan. Without this every such event would repeat
-    // the TDH calls and their allocations on the parser thread. Bounded like the
-    // positive cache and reserved up front.
-    rejected_keys: Vec<(u16, u8)>,
+    // Keys whose schema failed to load or did not compile into a plan. Without
+    // this every such event would repeat the TDH calls and their allocations on
+    // the parser thread. An unsupported schema stays here; a TDH load failure is
+    // retried after SCHEMA_RETRY_EVENTS further events. Bounded like the
+    // positive cache and reserved up front, so no update allocates.
+    rejected_keys: Vec<RejectedKey>,
     // Events rejected without a TDH call because their key is in `rejected_keys`,
-    // plus the first failure of each key.
+    // plus each failed load (the first failure of a key and each failed retry).
     rejected_events: u64,
 }
 
@@ -104,11 +159,65 @@ impl Parser {
     }
 
     /// Remembers a failed schema key, clearing the list first when it is full.
-    fn remember_rejected(&mut self, key: (u16, u8)) {
+    fn remember_rejected(&mut self, entry: RejectedKey) {
         if self.rejected_keys.len() >= MAX_CACHED_SCHEMAS {
             self.rejected_keys.clear();
         }
-        self.rejected_keys.push(key);
+        self.rejected_keys.push(entry);
+    }
+
+    /// Records a failed load of `key` and returns the error for the caller.
+    /// `retried` is the index of the key's entry when this load was a retry; that
+    /// entry is then updated in place. The log is bounded: an unsupported schema
+    /// is logged once per key, and a load failure on the first four failures of
+    /// its key and then on every 60th.
+    fn reject(
+        &mut self,
+        key: (u16, u8),
+        retried: Option<usize>,
+        failure: SchemaFailure,
+    ) -> anyhow::Error {
+        self.rejected_events += 1;
+        let prior_failures = retried.map_or(0, |index| self.rejected_keys[index].load_failures);
+        let (rejection, load_failures, error) = match failure {
+            SchemaFailure::Unsupported(error) => {
+                tracing::warn!(
+                    event_id = key.0,
+                    version = key.1,
+                    "DNS event schema is unsupported and its events are rejected: {error:#}"
+                );
+                (Rejection::Unsupported, prior_failures, error)
+            }
+            SchemaFailure::Load(error) => {
+                if prior_failures < 4 || prior_failures.is_multiple_of(60) {
+                    tracing::warn!(
+                        event_id = key.0,
+                        version = key.1,
+                        failures = prior_failures.saturating_add(1),
+                        retry_after_events = SCHEMA_RETRY_EVENTS,
+                        "DNS event schema load failed; its events are rejected until the load \
+                        is retried: {error:#}"
+                    );
+                }
+                (
+                    Rejection::LoadFailed {
+                        remaining: SCHEMA_RETRY_EVENTS,
+                    },
+                    prior_failures.saturating_add(1),
+                    error,
+                )
+            }
+        };
+        let entry = RejectedKey {
+            key,
+            rejection,
+            load_failures,
+        };
+        match retried {
+            Some(index) => self.rejected_keys[index] = entry,
+            None => self.remember_rejected(entry),
+        }
+        error.context(format!("DNS event {} version {} schema", key.0, key.1))
     }
 
     /// Decodes one event into a format-neutral view, or `None` for events this
@@ -132,7 +241,14 @@ impl Parser {
         if let Some((_, schema)) = self.schemas.iter().find(|(cached, _)| *cached == key) {
             return parse_fast(schema, event.header(), event.payload(), &mut self.text).map(Some);
         }
-        if self.rejected_keys.contains(&key) {
+        // Only a cache miss reaches this scan, so the accepted path does no more work.
+        let retried = self
+            .rejected_keys
+            .iter()
+            .position(|rejected| rejected.key == key);
+        if let Some(index) = retried
+            && self.rejected_keys[index].hold()
+        {
             self.rejected_events += 1;
             bail!(
                 "DNS event {id} version {} schema was rejected earlier (cached)",
@@ -141,18 +257,12 @@ impl Parser {
         }
         let loaded = match event.with_record(|record| load_schema(record, peer_name)) {
             Ok(schema) => schema,
-            Err(error) => {
-                self.remember_rejected(key);
-                self.rejected_events += 1;
-                // Logged once per key; later events hit the cache silently.
-                tracing::warn!(
-                    event_id = id,
-                    version = key.1,
-                    "DNS event schema is unsupported and its events are rejected: {error:#}"
-                );
-                return Err(error.context(format!("DNS event {id} version {} schema", key.1)));
-            }
+            Err(failure) => return Err(self.reject(key, retried, failure)),
         };
+        // A retry that loads clears the key.
+        if let Some(index) = retried {
+            self.rejected_keys.swap_remove(index);
+        }
         self.insert_schema(key, loaded);
         let cached = self
             .schemas
@@ -221,21 +331,26 @@ fn observed_port(port: u16) -> Option<u16> {
     (port != 0).then_some(port)
 }
 
-fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema> {
+/// Loads and compiles the schema of `record`. A Win32 error from
+/// `TdhGetEventInformation` is a [`SchemaFailure::Load`]; every other failure
+/// is a [`SchemaFailure::Unsupported`].
+fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema, SchemaFailure> {
     let mut size = 0;
     #[cfg(test)]
     tdh_tick();
     // SAFETY: record and all its backing buffers remain alive for this TDH call.
     let status = unsafe { TdhGetEventInformation(record, 0, null(), null_mut(), &raw mut size) };
-    ensure!(
-        status == ERROR_INSUFFICIENT_BUFFER,
-        "TDH metadata size query failed: {}",
-        std::io::Error::from_raw_os_error(status.cast_signed())
-    );
-    ensure!(
-        (size_of::<TRACE_EVENT_INFO>()..=MAX_METADATA).contains(&(size as usize)),
-        "invalid TDH metadata size"
-    );
+    if status != ERROR_INSUFFICIENT_BUFFER {
+        return Err(SchemaFailure::Load(anyhow!(
+            "TDH metadata size query failed: {}",
+            std::io::Error::from_raw_os_error(status.cast_signed())
+        )));
+    }
+    if !(size_of::<TRACE_EVENT_INFO>()..=MAX_METADATA).contains(&(size as usize)) {
+        return Err(SchemaFailure::Unsupported(anyhow!(
+            "invalid TDH metadata size"
+        )));
+    }
     // u64 storage supplies the alignment required by TRACE_EVENT_INFO and its
     // flexible EVENT_PROPERTY_INFO array, unlike a cast from a byte Vec.
     let mut storage = vec![0u64; (size as usize).div_ceil(8)];
@@ -252,9 +367,25 @@ fn load_schema(record: &EVENT_RECORD, peer_name: PropertyName) -> Result<Schema>
             &raw mut size,
         )
     };
-    check_status(fill_status, "TdhGetEventInformation")?;
+    check_status(fill_status, "TdhGetEventInformation").map_err(SchemaFailure::Load)?;
+    compile_metadata(record, &storage, size, capacity, peer_name)
+        .map_err(SchemaFailure::Unsupported)
+}
+
+/// Checks the metadata that `TdhGetEventInformation` wrote into `storage` and
+/// compiles it. `size` is the byte count TDH reported and `capacity` the byte
+/// count it was given. The size checks below keep every read inside `storage`.
+fn compile_metadata(
+    record: &EVENT_RECORD,
+    storage: &[u64],
+    size: u32,
+    capacity: u32,
+    peer_name: PropertyName,
+) -> Result<Schema> {
     ensure!(
-        size <= capacity && size as usize >= size_of::<TRACE_EVENT_INFO>(),
+        size <= capacity
+            && size as usize <= size_of_val(storage)
+            && size as usize >= size_of::<TRACE_EVENT_INFO>(),
         "invalid TDH metadata result size"
     );
     // SAFETY: The successful API initialized this aligned header in bounds.

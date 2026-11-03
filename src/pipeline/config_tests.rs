@@ -424,3 +424,80 @@ fn validate_refuses_a_network_spool_folder() {
     });
     assert!(config.validate().is_err());
 }
+
+#[test]
+fn session_name_rule_accepts_the_boundaries_and_names_the_offender() {
+    assert!(check_session_name(DEFAULT_SESSION_NAME).is_ok());
+    assert!(check_session_name("a").is_ok());
+    assert!(check_session_name(&"a".repeat(128)).is_ok());
+    assert!(check_session_name("A-z_0.9").is_ok());
+    assert!(check_session_name("a-").is_ok());
+    assert!(check_session_name(".-").is_ok());
+    assert!(check_session_name(&format!("a{}", "-".repeat(127))).is_ok());
+
+    let rule = "session name must be 1 to 128 ASCII letters, digits, underscore, dot, or \
+        hyphen, not starting with a hyphen";
+    assert_eq!(
+        check_session_name("").expect_err("empty"),
+        format!("{rule}; it has 0 characters")
+    );
+    assert_eq!(
+        check_session_name(&"a".repeat(129)).expect_err("too long"),
+        format!("{rule}; it has 129 characters")
+    );
+    for name in [
+        "-",
+        "-a",
+        "--session-name",
+        &format!("-{}", "a".repeat(127)),
+    ] {
+        assert_eq!(
+            check_session_name(name).expect_err(name),
+            format!("{rule}; it starts with a hyphen"),
+            "{name:?}"
+        );
+    }
+    // An invalid character is reported before the leading hyphen.
+    assert!(
+        check_session_name("-a b")
+            .expect_err("space")
+            .ends_with("' ' at position 3 is not allowed")
+    );
+    for (name, character, position) in [
+        ("a b", r"' '", 2),
+        ("a\\b", r"'\\'", 2),
+        ("caf\u{e9}", "'\u{e9}'", 4),
+        ("name\n", r"'\n'", 5),
+        ("name\0", r"'\0'", 5),
+        ("a/b", "'/'", 2),
+    ] {
+        assert_eq!(
+            check_session_name(name).expect_err(name),
+            format!("{rule}; {character} at position {position} is not allowed"),
+            "{name:?}"
+        );
+    }
+    // The character check comes first, so a long non-ASCII name reports the character.
+    let long = "\u{e9}".repeat(200);
+    assert!(
+        check_session_name(&long)
+            .expect_err("non-ASCII")
+            .contains("'\u{e9}' at position 1")
+    );
+}
+
+#[test]
+fn validate_applies_the_session_name_rule() -> Result<()> {
+    let mut config = PipelineConfig::try_from(parse_args_from([
+        "etw-dnstap",
+        "--receiver",
+        "127.0.0.1:6000",
+    ])?)?;
+    config.session_name = "bad name".into();
+    assert!(config.validate().is_err());
+    config.session_name = "-x".into();
+    assert!(config.validate().is_err());
+    config.session_name = "EtwDnstap-Lab".into();
+    config.validate()?;
+    Ok(())
+}

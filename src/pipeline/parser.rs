@@ -140,8 +140,15 @@ fn parse_loop<S: FrameSink>(
                 Err(error) => {
                     let previous = counters.rejected.fetch_add(1, Ordering::Relaxed);
                     // Bound diagnostics and never print event payloads or domain names.
-                    if previous < 4 {
-                        tracing::warn!(%error, "rejected ETW event; further errors counted");
+                    // Same cadence as the other counters: the first four, then the
+                    // 61st, 121st, and so on. The schema cache logs its own per-key
+                    // load failure; this line covers every rejected event.
+                    if should_log_rejection(previous) {
+                        tracing::warn!(
+                            %error,
+                            rejected = previous.saturating_add(1),
+                            "rejected ETW event; the first four and then every 60th are logged, all are counted"
+                        );
                     }
                 }
             }
@@ -198,6 +205,12 @@ pub(crate) fn parse_and_encode<'e>(
     };
     drop(event);
     result
+}
+
+/// Whether the rejection that follows `previous` earlier rejections is logged:
+/// the first four, then the 61st, 121st, and so on.
+const fn should_log_rejection(previous: u64) -> bool {
+    previous < 4 || previous.is_multiple_of(60)
 }
 
 // The per-event ETW callback stays wake-free; see docs/history/ring-wakeup.md.

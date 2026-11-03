@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
 
 Use this guide to find the cause of a failed start, restarts, drops, or missing
 records. Start with the Application event log and the SCM state.
@@ -29,8 +29,9 @@ records. Start with the Application event log and the SCM state.
 The service writes its diagnostics only to the Application log, source
 `EtwDnstap`. It writes nothing to stdout or stderr. Event ID 1 is a fatal service
 failure. Event ID 2 is any information line, including the start and stop
-counters. Event ID 3 is any warning. Event ID 4 is an error that does not by
-itself stop the service. Event ID 5 is a watchdog abort. Event ID 6 is a panic.
+counters. Event ID 3 is any warning. Event ID 4 is any other error-level line,
+such as `ETW cleanup failed`, or the reason for a stop after the DNS Server
+process changed. Event ID 5 is a watchdog abort. Event ID 6 is a panic.
 A log write failure is dropped silently and never stops capture. See
 [Log event IDs](monitoring.md#log-event-ids).
 
@@ -55,7 +56,8 @@ connect to SCM, so it does not write to the event log either. `--help`, `-h`,
 `--version`, and `-V` are not options. They fail like any unknown argument.
 
 To read the running version, start the service and read the `version` field of
-the `capture started` event. To check an argument, start the service through SCM
+the `capture started` event. To read the version of the file without running
+it, use `(Get-Item <exe>).VersionInfo`. To check an argument, start the service through SCM
 and read Event ID 1, as described in
 [The service does not reach RUNNING](#the-service-does-not-reach-running).
 
@@ -75,14 +77,17 @@ Search the Application log for the text, then go to the section named.
 | `connect/negotiation with dnstap receiver` | Event ID 1 | A protocol failure at startup, such as a wrong content type or a TLS certificate that the service rejects. Fatal. | [RUNNING](#the-service-does-not-reach-running) |
 | `service 'DNS' is not running` | Event ID 1 | The `DNS` service is stopped. | [RUNNING](#the-service-does-not-reach-running) |
 | `EnableTraceEx2: access denied` | Event ID 1 | The DNS provider GUID has a descriptor of its own that grants neither LocalService nor Performance Log Users `TRACELOG_GUID_ENABLE`. Not seen in the lab. | [install.md](install.md#if-an-etw-access-check-is-denied) |
-| `StartTraceW: access denied` | Event ID 1 | The service SID lacks `TRACELOG_CREATE_REALTIME` on the session GUID in the message, the session name changed, or the computer has not restarted since the grant. | [install.md](install.md#if-an-etw-access-check-is-denied) |
-| `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied` | Event ID 1 | The restricted token cannot query the `DNS` service. | [RUNNING](#the-service-does-not-reach-running) |
+| `StartTraceW: access denied` | Event ID 1 | The service SID lacks `TRACELOG_CREATE_REALTIME` on the session GUID in the message, the session name changed or the grant spells it differently (the name is case-sensitive), or the computer has not restarted since the grant. | [install.md](install.md#if-an-etw-access-check-is-denied) |
+| `OpenServiceW(DNS)`, `OpenSCManagerW`, or `QueryServiceStatusEx(DNS)` with `(code 5)` | Event ID 1 | The restricted token cannot query the `DNS` service. The message adds `the restricted service token needs SC_MANAGER_CONNECT and SERVICE_QUERY_STATUS`. | [RUNNING](#the-service-does-not-reach-running) |
 | `already exists and does not match this program's session shape` | Event ID 1 | A session with the name exists and cannot be reclaimed. Its shape or its GUID differs from this service's. | [Stale session](#stale-etw-session-blocks-startup) |
-| `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | Event ID 5 | A deadline expired, and the process aborted. | [Watchdog](#watchdog-aborts-or-stop-hangs) |
+| `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | Event ID 5 | A deadline expired, and the process aborted. The text names the phase: `startup` while the service starts, `shutdown` while it stops. | [Watchdog](#watchdog-aborts-or-stop-hangs) |
 | `EtwDnstap panicked:` | Event ID 6 | A panic in the service. The text gives the panic message and location, and the process aborts. | [Panic](#a-panic-aborts-the-process) |
 | `dnstap receiver unavailable at startup; capture is running, and frames go to the spool, or are dropped and counted when no spool is in use, until it connects (retrying with backoff)` | Event ID 3 | The service is running and reconnecting. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver connection lost; frames go to the spool, or are dropped and counted when no spool is in use, until it reconnects (frames already sent are never resent)` | Event ID 3 | An established session failed. Not fatal. | [Receiver](#the-receiver-is-down-or-unreachable) |
-| `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. Logged for the first four failures, then for the 61st, 121st, and every 60 failures after that. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `dnstap reconnect failed` | Event ID 3 | A reconnect attempt failed. The `cause` field is `connect`, `timeout`, `tls`, or `protocol`. Logged for the first four failures, then for the 61st, 121st, and every 60 failures after that, and for the first failure of each `cause` since a session was last established. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `dnstap receiver failed the TLS handshake before the first session` | Event ID 4 | The receiver was down at startup, and the first attempt that reached it ended with a TLS rejection. The text names the trust store, the server name, and a required client certificate as the checks. Logged once. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `dnstap receiver refused the Frame Streams handshake before the first session` | Event ID 4 | The same, with a Frame Streams handshake rejection. Logged once. | [Receiver](#the-receiver-is-down-or-unreachable) |
+| `could not start the dnstap reconnect thread` or `dnstap reconnect thread ended without a result` | Event ID 3, Event ID 4 | The service could not run a reconnect attempt. It retries with backoff. The first four, then the 61st, 121st, and so on. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `dnstap receiver reconnected` | Event ID 2 | A session was re-established. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `shutting down while the dnstap receiver is disconnected` | Event ID 3 | The service stopped without sending STOP. | [Receiver](#the-receiver-is-down-or-unreachable) |
 | `spool folder is not usable; capture continues without a spool` | Event ID 3 | The folder failed a check. The `reason` field names the check. The service runs without a spool. | [Spool warnings](#spool-warnings) |
@@ -90,15 +95,17 @@ Search the Application log for the text, then go to the section named.
 | `dnstap spool deleted its oldest segment unsent` | Event ID 3 | The size cap or the free-space floor removed a segment that held unsent frames. | [Spool warnings](#spool-warnings) |
 | `dnstap spool discarded unreadable segment data` | Event ID 3 | Segment data was unreadable: a corrupt or cut-off tail, a missing START, a read error after retries, or an invalid cursor that dropped the oldest segment. The `frames` and `bytes` fields give the loss. | [Spool warnings](#spool-warnings) |
 | `dnstap spool I/O error` | Event ID 3 | A spool file operation failed. The spool pauses for 10 seconds. | [Spool warnings](#spool-warnings) |
+| `dnstap spool is refusing blocks: the volume is below the free-space floor and no older segment is left to delete` | Event ID 3 | The volume has less free space than `--spool-min-free-mib` plus one segment, and only the newest segment is left. The spool refuses blocks for 10 seconds. | [Spool warnings](#spool-warnings) |
 | `could not seal the dnstap spool segment` | Event ID 3 | At shutdown, the active segment could not be closed with STOP. | [Spool warnings](#spool-warnings) |
 | `dnstap spool backlog kept on disk for the next run` | Event ID 2 | Unsent frames wait on disk for the next start. Not an error. | [Spool warnings](#spool-warnings) |
 | `spool in use` | Event ID 2 | The spool opened. The `leftover_segments` and `leftover_bytes` fields show what an earlier run left. | [Spool warnings](#spool-warnings) |
 | `the DNS Server service restarted` or `the DNS Server service stopped` | Event ID 4, then Event ID 1 | The DNS Server process changed or stopped, so the service exits for restart. | [Restarts](#the-service-keeps-restarting) |
 | `a capture worker exited before shutdown was requested` | Event ID 1 | A worker thread ended on its own. | [Restarts](#the-service-keeps-restarting) |
 | `ETW consumer did not return within 5 s of STOP` | Event ID 3 | The trace handle was closed to force the worker out. | [ETW warnings](#etw-consumer-and-session-warnings) |
-| `received rate is above what the default buffer settings were validated for` | Event ID 3 | The load is above the rate that the default settings handle. | [Rate warning](#rate-warning) |
-| `rejected ETW event` | Event ID 3 | A parser rejection. The first four are logged. | [Rejected events](#rejected-events) |
-| `DNS event schema is unsupported and its events are rejected` | Event ID 3 | A schema did not load or did not compile. Its events are rejected. | [Rejected events](#rejected-events) |
+| `received rate is above 22,000 events/s` | Event ID 3 | The load is above the rate that the default settings handle. | [Rate warning](#rate-warning) |
+| `rejected ETW event` | Event ID 3 | A parser rejection. The first four are logged, then the 61st, 121st, and so on. | [Rejected events](#rejected-events) |
+| `DNS event schema load failed; its events are rejected until the load is retried` | Event ID 3 | Windows could not return the metadata of an event schema. The service retries after 65,536 more rejected events of that key. | [Rejected events](#rejected-events) |
+| `DNS event schema is unsupported and its events are rejected` | Event ID 3 | A schema loaded but did not compile into a decode plan, or it is not the expected event. The service logs it once per key and does not retry the key. It can log it again after the list of rejected keys (8 entries) is cleared because it is full, or when the retry of a load failure fails as unsupported. | [Rejected events](#rejected-events) |
 | `stale ETW session used a different buffer size` | Event ID 3 | A leaked session was reclaimed despite a buffer mismatch. | [Stale session](#stale-etw-session-blocks-startup) |
 | `ETW keyword narrowing unavailable` | Event ID 3 | The subscription uses the fallback keyword mask. | [No records](#no-records-arrive-at-the-collector) |
 | `RESPONSE_FAILURE keyword is not available` | Event ID 3 | The service does not capture failed responses. | [Subscription](configuration.md#subscription) |
@@ -113,6 +120,7 @@ Work through these causes in order.
 | Cause | What you see | Action |
 | --- | --- | --- |
 | Invalid option | Event ID 1 with `invalid service arguments`. | Correct the binary path. Options are in [configuration.md](configuration.md). Removed options fail here. |
+| Invalid session name | Event ID 1 with `invalid service arguments` and `session name must be 1 to 128 ASCII letters, digits, underscore, dot, or hyphen, not starting with a hyphen`. The text ends with the reason: the first character that is not allowed and its position, `it starts with a hyphen`, or the length. | Use a name of 1 to 128 ASCII letters, digits, underscore, dot, or hyphen that does not start with a hyphen. See [configuration.md](configuration.md#options). |
 | Malformed `--spool-dir` | Event ID 1 with `invalid service arguments`. | A value that is not absolute, is not a path that starts with a drive letter, or has a `.` or `..` part fails command-line parsing. Correct the value in the binary path. Only the default folder falls back silently. |
 | Wrong identity | Event ID 1: `must run as NT AUTHORITY\LocalService`. The service is still LocalSystem, a virtual account, or another account. | Run `sc.exe qc EtwDnstap`. Run `cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'`. Use `cmd.exe` because Windows PowerShell 5.1 drops the empty password. Then run `sc.exe sidtype EtwDnstap restricted` and start again. |
 | Service SID missing | Event ID 1: `the service SID NT SERVICE\EtwDnstap is not an enabled group`. | Run `sc.exe qsidtype EtwDnstap`. If it reports `NONE`, run `sc.exe sidtype EtwDnstap restricted`, then start again. |
@@ -122,9 +130,9 @@ Work through these causes in order.
 | Privileges | Event ID 1: `configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege` or `requires only an enabled SeChangeNotifyPrivilege`. | Run `sc.exe privs EtwDnstap SeChangeNotifyPrivilege`, then start again. Run `sc.exe qprivs EtwDnstap` to check the result. |
 | DNS Server not running | Event ID 1: `service 'DNS' is not running (process ID 0)`. | Start the DNS Server role service. Check that it is Running. |
 | Receiver protocol mismatch | Event ID 1: `connect/negotiation with dnstap receiver` with `did not accept dnstap content type`. | Configure the collector for content type `protobuf:dnstap.Dnstap`. A refused or timed-out connection does not stop startup. See [the receiver section](#the-receiver-is-down-or-unreachable). |
-| Receiver certificate not accepted | Event ID 1: `connect/negotiation with dnstap receiver` with `TLS handshake`. | Import the receiver CA into `Cert:\LocalMachine\Root`. Use a certificate that names the receiver IP address, or pass its name in `--tls-server-name`. See [the receiver certificate step](receiver.md#receiver-certificate). |
-| ETW access denied | Event ID 1: `StartTraceW: access denied` or `EnableTraceEx2: access denied`. | For `StartTraceW`, run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` with the session name from the message, then restart the computer. For `EnableTraceEx2`, inspect the DNS provider descriptor and do not add a grant on it. See [install.md](install.md#if-an-etw-access-check-is-denied). |
-| SCM query of `DNS` denied | Event ID 1: `OpenServiceW(DNS)` or `OpenSCManagerW` with `access denied`. | The restricted token needs `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` for Everyone or the service SID. Inspect `sc.exe sdshow DNS`. The query succeeded in the lab on build 26100. |
+| Receiver certificate not accepted | Event ID 1: `connect/negotiation with dnstap receiver` with `TLS handshake`, or with a TLS alert such as `received fatal alert: CertificateRequired`. | Import the receiver CA into `Cert:\LocalMachine\Root`. Use a certificate that names the receiver IP address, or pass its name in `--tls-server-name`. If the receiver requires a client certificate, turn that requirement off, because the service sends none. See [the receiver certificate step](receiver.md#receiver-certificate). |
+| ETW access denied | Event ID 1: `StartTraceW: access denied` or `EnableTraceEx2: access denied`. | For `StartTraceW`, run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` with the session name from the message, then restart the computer. Use the exact spelling of `--session-name`, including its case. The session GUID comes from the exact name, so a grant for `etwdnstap` does not cover `EtwDnstap`. For `EnableTraceEx2`, inspect the DNS provider descriptor and do not add a grant on it. See [install.md](install.md#if-an-etw-access-check-is-denied). |
+| SCM query of `DNS` denied | Event ID 1: `OpenServiceW(DNS)`, `OpenSCManagerW`, or `QueryServiceStatusEx(DNS)` with `(code 5)`. | The restricted token needs `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` for Everyone or the service SID. Inspect `sc.exe sdshow DNS`. The query succeeded in the lab on build 26100. |
 | Leaked ETW session with the same name | Event ID 1: a session with the name exists and is not reclaimable (different shape or different GUID). | See [Stale ETW session](#stale-etw-session-blocks-startup). |
 | Watchdog abort | No Event ID 1. Event ID 5 names the startup deadline. | See [Watchdog aborts](#watchdog-aborts-or-stop-hangs). |
 
@@ -153,8 +161,11 @@ backoff.
    reaches `RUNNING`.
 2. **During a run:** Event ID 3, `dnstap receiver connection lost`. Then
    `dnstap reconnect failed` appears for the first four failures, then for the 61st,
-   121st, and every 60 failures after that. When a session is re-established, Event ID 2 logs
-   `dnstap receiver reconnected`.
+   121st, and every 60 failures after that. It also appears for the first
+   failure of each `cause` field value (`connect`, `timeout`, `tls`, or
+   `protocol`) since a session was last established. Causes that alternate add
+   at most one extra line per cause in an outage. When a session is
+   re-established, Event ID 2 logs `dnstap receiver reconnected`.
 3. **Counters:** `receiver_connected` is `false` while down.
    `receiver_disconnects` and `receiver_reconnect_failures` show the failures.
    With a spool, `spool_bytes` and `spool_segments` rise while the receiver is
@@ -170,10 +181,27 @@ doubles up to 30 seconds, and each wait is randomized. See
 [Receiver connection](configuration.md#receiver-connection).
 
 **Incompatible receiver after startup.** If the receiver answers with the wrong
-content type during a reconnect, each attempt fails with `dnstap reconnect
-failed`. The service does not stop. Check that `receiver_connected` stays `false`
-and correct the collector's content type. Only the first connection at startup stops
-the service on a protocol failure.
+content type during a reconnect, each attempt fails. The service does not stop.
+Check that `receiver_connected` stays `false` and correct the collector's content
+type. Only the first connection at startup stops the service on a protocol
+failure.
+
+**The receiver was down at startup and then rejects the connection.** If the
+first attempt that reaches the receiver fails the TLS handshake or the Frame
+Streams handshake, the service logs one error (Event ID 4) that names the cause,
+and then retries with backoff. The error does not stop the service. A TLS
+rejection means that the Windows trust store does not trust the receiver
+certificate, that the certificate does not match `--tls-server-name` (or the
+receiver IP address when the option is not set), or that the receiver requires a
+client certificate. This service sends none, so a receiver that requires one
+rejects it with a TLS alert such as `received fatal alert: CertificateRequired`.
+A Frame Streams rejection means
+that the receiver does not accept the content type `protobuf:dnstap.Dnstap`.
+The `cause` field of the later `dnstap reconnect failed` lines shows `tls` or
+`protocol` too. A session that is established clears the list of causes that
+were seen, so each later outage logs each of its causes once again. A lost
+session does not clear it, and `dnstap receiver connection lost` marks each
+outage.
 
 **Shutdown while disconnected.** The service logs `shutting down while the dnstap
 receiver is disconnected; no STOP sent` and stops with exit code 0. Frames still in the
@@ -225,7 +253,7 @@ Search the Application log for the text. The fields of each event are listed in
 frame data.
 
 - **`spool folder is not usable; capture continues without a spool, so frames are dropped and counted while the receiver is down`** (Event ID 3, at startup). The `reason` field gives the check that failed. Find the reason below and follow its action:
-  - ``the spool folder path is not absolute``, ``the spool folder path has a `.` or `..` component``, ``the spool folder path is not on a local drive letter (network, device, and other path forms are not accepted)``: these checks run on the default path only. A malformed `--spool-dir` fails at command-line parsing. Inspect the default path.
+  - ``the spool folder path is not absolute``, ``the spool folder path has a `.` or `..` component``, ``the spool folder path is not on a local drive letter (network, device, and other path forms are not accepted)``: the service checks the shape of the path before this check. A malformed `--spool-dir` fails at command-line parsing, and the default path always has a valid shape. You do not expect these reasons. If you see one, report it.
   - ``the spool folder is not on a fixed local disk (drive type {code})``: the folder is on a removable, network, RAM, or unknown drive. Move it to a fixed local disk, and set `--spool-dir`.
   - ``the spool folder has no parent folder``: the folder is a drive root, such as `C:\`. Choose a folder with a parent.
   - ``the spool folder does not exist``: create the folder. See [Create the spool folder](install.md#create-the-spool-folder) or [Add the spool folder](upgrade.md#add-the-spool-folder).
@@ -236,9 +264,10 @@ frame data.
   - ``the spool folder permissions let an account other than SYSTEM, Administrators, or a service read or write it``: run `icacls` on the folder. Remove each entry that is not SYSTEM, Administrators, or `NT SERVICE\EtwDnstap`. Then run `Test-SpoolFolder` as in install.md.
   - ``cannot check the {which}: {source}``: a Windows call failed during the check. `{which}` names the check, and `{source}` gives the Windows error. Check the disk and the path.
 - **`spool could not be opened; capture continues without a spool, so frames are dropped and counted while the receiver is down`** (Event ID 3, at startup). The folder passed the checks, but the spool could not be opened. The `error` field gives the cause. Check that the disk responds, and that no other program holds `cursor.bin` open.
-- **`dnstap spool deleted its oldest segment unsent`** (Event ID 3). The size cap or the free-space floor removed a segment with unsent frames. The `frames` and `bytes` fields give the loss. Check `spool_dropped`, `spool_dropped_bytes`, `--spool-max-mib`, and the free space on the volume. A longer outage than the cap covers needs a larger cap. See [Spool sizing](tuning.md#spool-sizing). The first four warnings are logged, then every 60th. The counters are complete.
-- **`dnstap spool discarded unreadable segment data`** (Event ID 3). Segment data could not be read. This happens for a corrupt or cut-off tail, a missing START, a read error that failed after retries, and an invalid cursor that dropped the oldest segment. The `frames` and `bytes` fields give the loss. Check `spool_errors` and `spool_dropped`, and the disk. The first four warnings are logged, then every 60th.
+- **`dnstap spool deleted its oldest segment unsent`** (Event ID 3). The size cap or the free-space floor removed a segment with unsent frames. The `frames` and `bytes` fields give the loss. Check `spool_dropped`, `spool_dropped_bytes`, `--spool-max-mib`, and the free space on the volume. A longer outage than the cap covers needs a larger cap. See [Spool sizing](tuning.md#spool-sizing). The first four warnings are logged, then the 61st, 121st, and so on. The counters are complete.
+- **`dnstap spool discarded unreadable segment data`** (Event ID 3). Segment data could not be read. This happens for a corrupt or cut-off tail, a missing START, a read error that failed after retries, and an invalid cursor that dropped the oldest segment. The `frames` and `bytes` fields give the loss. Check `spool_errors` and `spool_dropped`, and the disk. The first four warnings are logged, then the 61st, 121st, and so on.
 - **`dnstap spool I/O error`** (Event ID 3). A file operation in the spool failed, such as a create, a write, a read, or a delete. The `error` field gives the cause. The spool pauses for 10 seconds, and the block counts in `spool_dropped`. Check `spool_errors`, the free space and health of the disk, any program that locks files in the folder, and the folder's ACL.
+- **`dnstap spool is refusing blocks: the volume is below the free-space floor and no older segment is left to delete`** (Event ID 3). The volume has less free space than `--spool-min-free-mib` plus one segment, and deleting older segments is not an option because only the newest one is left, or because deleting did not free space. The `free_mib` and `needed_mib` fields give the two values, and `pause_s` gives the length of the pause in seconds (10). During the pause the spool refuses every block, and each refused block counts in `spool_dropped`. The spool then checks again. The first four pauses are logged, then the 61st, 121st, and so on. Blocks refused during a pause log nothing. Free space on the volume, or lower `--spool-min-free-mib`, and check what else fills the volume.
 - **`could not seal the dnstap spool segment`** (Event ID 3, at shutdown). The last segment closed without its STOP. The next start reads it as an unsealed leftover and replays its frames. No action is needed unless the message repeats. If it repeats, check the disk.
 - **`dnstap spool backlog kept on disk for the next run`** (Event ID 2, at shutdown). Not an error. Unsent frames wait on disk. The next start replays them first. The `leftover_segments` field of `spool in use` shows how many segments there are.
 - **`spool in use`** (Event ID 2, at startup). Not an error. It shows the folder, the cap, the floor, and any leftovers from an earlier run.
@@ -319,10 +348,11 @@ difference as unexplained until you read the counters.
 ## Rate warning
 
 With the default buffer settings (the default ETW settings and the default
-`--capacity`), the service logs `received rate is above what the default buffer
-settings were validated for (about 20,000 events/s)` once per run. It logs it at
-the end of the first measurement window above 22,000 events per second. The
-warning does not mean that events were lost.
+`--capacity`), the service logs `received rate is above 22,000 events/s; the default buffer
+settings were validated at about 20,000 events/s` once per run, followed by the
+advice to raise `--capacity` and `--etw-max-buffers` if `ring_dropped` or
+`etw_lost` increase. It logs it at the end of the first measurement window above
+22,000 events per second. The warning does not mean that events were lost.
 
 Check `ring_dropped` and `etw_lost` in the `capture stats` events, or the
 Channel Full Drops and ETW Events Lost performance counters. If either rises,
@@ -355,17 +385,37 @@ combination in [High-rate settings](tuning.md#high-rate-settings).
 
 ## Rejected events
 
-- **`rejected ETW event; further errors counted`.** The first four rejections
-  are logged, and `rejected` counts every one. The message never includes
-  payloads or names.
+- **`rejected ETW event; the first four and then every 60th are logged, all are
+  counted`.** The first four rejections are logged, then the 61st, 121st, and so
+  on. The `rejected` field of the message is the running count, and the
+  `rejected` counter counts every rejection. The message never includes payloads
+  or names.
+- **`DNS event schema load failed; its events are rejected until the load is
+  retried`.** Windows could not return the metadata of an event schema. The
+  message ends with the Win32 error from `TdhGetEventInformation`, for example
+  because the provider manifest was not available yet. Every event of that
+  (event ID, version) key is rejected, and it counts in `schema_rejected` and
+  `rejected`. After 65,536 more rejected events of the key, the next event loads
+  the schema again. If the load succeeds, the key is cleared and its events
+  decode again. If it fails, the key waits for another 65,536 events, and the
+  failed load counts in `schema_rejected`. The fields `event_id`, `version`,
+  `failures` (loads that failed for the key), and `retry_after_events` (65,536)
+  are logged for the first four failures of a key, then the 61st, 121st, and so on. If the
+  events stay rejected, read the error text, check that the DNS Server role and
+  its ETW provider are healthy, and restart the service to load all schemas
+  again.
 - **`DNS event schema is unsupported and its events are rejected`.** Logged
-  once for each (event ID, version) key, with the reason. The schema could not
-  be loaded, or it does not match the single-pass decoder grammar. There is no
-  slower decoding path. Every event for that key is rejected and counted in
-  `schema_rejected` and `rejected`. Events after the first are rejected without
-  a TDH call. The cache holds eight keys and
-  is cleared when full. A new Windows build or DNS Server manifest can cause
-  this. Report the warning text. Capture of those events needs a decoder change.
+  once for each (event ID, version) key, with the reason. The line can appear
+  again for the same key after the list of rejected keys is cleared because it
+  is full, and when the retry of a load failure (above) fails as unsupported. The metadata loaded,
+  but it does not match the single-pass decoder grammar, it is not the expected
+  provider or event, or its size is invalid. There is no slower decoding path,
+  and the service does not retry the key. Every event for that key is rejected
+  and counted in `schema_rejected` and `rejected`. Events after the first are
+  rejected without a TDH call. The list of rejected keys holds eight keys. When it
+  is full, the service clears it, and a key that it dropped loads again on its
+  next event. A new Windows build or DNS Server manifest can cause this. Report
+  the warning text. Capture of those events needs a decoder change.
 
 ## No records arrive at the collector
 
@@ -414,6 +464,10 @@ Remove the cause, and then stop that session. Sessions named
 `etw-dnstap-<pid>` from earlier builds are not reclaimed automatically. Stop them
 the same way. Only stop a session you can identify as this service's.
 
+If the service tried to reclaim a session and failed, Event ID 1 says
+`query existing ETW session '<name>' failed` or `stopping stale ETW session
+'<name>' failed`, with the Win32 status.
+
 ## Watchdog aborts or stop hangs
 
 Startup has a deadline of 10 seconds plus 1 second per 16,384 channel slots of
@@ -423,22 +477,30 @@ Shutdown has a 10-second deadline. Inside shutdown, ETW waits up to 5 seconds fo
 [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
 
 If a deadline passes, the service writes Event ID 5 to the Application log and
-the process aborts. The message names the phase, for example
-`the startup deadline of 12 s expired`. The abort does not free resources that
+the process aborts. The message names the phase, `startup` or `shutdown`, for
+example `the startup deadline of 12 s expired`. Before the service reads its
+arguments, the startup deadline is 10 seconds, and the message says
+`the startup deadline of 10 s expired`. The abort does not free resources that
 native calls still use. The result can be an incomplete capture. It can also
 leave a real-time ETW session. An administrator must then inspect and stop that
 session, or restart the computer.
 
 A timeout does not prove that the native operation never completed. Check
 `logman query -ets` after an abort. The startup budget covers these steps:
-the identity checks, the receiver connection, the pool allocation, and the ETW
-start. The ETW start also has its own 10-second deadline, so the message can
+the identity checks, the receiver connection, the spool folder check, the pool
+allocation, and the ETW start. The ETW start also has its own 10-second deadline, so the message can
 name 10 s. Large `--capacity` values allocate more pool memory, so they can take
 longer to reach capture.
 
 Shutdown does not wait for a spool backlog. The sink stops writing data to the
 receiver 1 second after shutdown starts. A write in progress and the STOP/FINISH
 exchange can take about 4 seconds more.
+
+The service accepts the Stop and Shutdown controls, and only in the `RUNNING`
+state. In `START_PENDING` and `STOP_PENDING` it accepts no control, so the SCM
+refuses a stop request during startup. Wait for `RUNNING`, or for the startup
+deadline. The service treats Shutdown like Stop. It answers Interrogate and rejects every other
+control code, such as the user-defined code 200.
 
 ## A panic aborts the process
 

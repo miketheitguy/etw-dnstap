@@ -1,6 +1,6 @@
 # Provisioning scripts
 
-> **Status:** Current · **Describes:** `main` at commit `0651f9b` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** the grant script at commit `58fde72` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100), and 2026-11-03 (run by the MSI) · **Reviewed:** 2026-11-03
 >
 > See [the validation record](../../docs/history/localservice-restricted-validation.md).
 
@@ -70,7 +70,20 @@ Run from an elevated Windows PowerShell 5.1 session:
 ```
 
 Pass every `--session-name` used on the host to `-SessionName`. A grant on a
-session GUID that is not listed is removed.
+session GUID that is not listed is removed. Each name is 1 to 128 ASCII letters,
+digits, underscore, dot, or hyphen, and it does not start with a hyphen. This is
+the same rule as the service's `--session-name`. The script checks each name with
+`^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,127}\z`, and it rejects any other name before it
+changes anything. The error is the default `ValidatePattern` text.
+Spell each name exactly as `--session-name` does, including its case. The
+session GUID comes from the exact name, and a grant for `etwdnstap` does not
+cover `EtwDnstap`. If the spelling differs, the service fails to start with
+access denied.
+
+The script has `ConfirmImpact` set to `High`. It asks before each change unless
+you add `-Confirm:$false`. A host that cannot answer a prompt needs that switch.
+The MSI runs the script as SYSTEM with `-Confirm:$false`. See
+[packaging/msi/README.md](../../packaging/msi/README.md).
 
 Every run also strips ACEs for the service SID from every other descriptor
 under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. This removes two
@@ -149,7 +162,7 @@ To undo a run, preview and then run:
 
 It applies nothing until every entry passes. It writes
 the original bytes back, removes the values that the run created, and prints a
-summary of the values restored, removed, and skipped. A value that holds other
+summary of the values restored, deleted, and skipped. A value that holds other
 bytes than the run wrote was changed after the run. `-Restore` skips it with a
 warning. `-Restore -Force` overwrites or removes it. `-Restore` reminds you to
 restart the computer, because ETW applies the descriptors at boot. It does not

@@ -1,6 +1,6 @@
 # Single-pass decoder: current contract
 
-> **Status:** Current · **Describes:** `main` at commit `7f91264` (decoder added in `e59425f`, TDH fallback removed in `ee94de6`) · **Evidence dated:** not applicable (reference, local tests only) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** the code at commit `58fde72` (decoder added in `e59425f`, TDH fallback removed in `ee94de6`) · **Evidence dated:** not applicable (reference, local tests only) · **Reviewed:** 2026-11-03
 
 This page states the rules that the code enforces today. It covers the fast path
 in `src/etw/decode.rs`, the schema compiler in `src/etw/schema.rs`,
@@ -32,9 +32,9 @@ these is true:
 
 - The schema has more than 256 properties, or a property name has more than
   256 UTF-16 units.
-- A required name appears more than once. The required names are `TCP`, `Port`,
-  `InterfaceIP`, the peer name, and `PacketData`. The check covers the whole
-  schema, not only the prefix described below.
+- A required name appears more than once, or is missing. The required names are
+  `TCP`, `Port`, `InterfaceIP`, the peer name, and `PacketData`. The check for
+  a repeated name covers the whole schema, not only the prefix described below.
 - A property in the prefix is an array (count other than 1), a structure, a
   custom schema, or has a flag other than `PropertyParamLength` or
   `PropertyParamFixedLength`. Setting both of these flags also makes the
@@ -43,17 +43,30 @@ these is true:
 
 Events are rejected in these cases:
 
-- **Unsupported schema or metadata load failure.** The event is rejected and
-  counted in `schema_rejected` and in `rejected`. The cause can be one of these:
+- **Unsupported schema.** The event is rejected and counted in
+  `schema_rejected` and in `rejected`. The same metadata gives the same result,
+  so the parser does not retry the key. The cause can be one of these:
   - A schema that does not compile.
   - A schema that is not from a manifest.
   - A provider or event schema that does not match.
-  - A TDH call that fails.
-  - An invalid size.
+  - An invalid metadata size.
 
-  One warning is logged for each key. The parser remembers up to 8 keys. When
-  that list is full, the parser clears it. Later events with a remembered key
-  are rejected without a TDH call.
+  One warning is logged for each key. The parser remembers up to 8 failed keys.
+  When that list is full, the parser clears it, and a key that it dropped loads
+  again on its next event. That load can log the warning again. A retry of a
+  metadata load failure (below) that fails as unsupported logs it too. Later events with a remembered key are rejected
+  without a TDH call.
+- **Metadata load failure.** A `TdhGetEventInformation` call returns a Win32
+  error. The event is rejected and counted in the same counters, and the key is
+  remembered with a retry budget of 65,536 events (`SCHEMA_RETRY_EVENTS`).
+  Each later event of the key that the parser rejects from the list uses one
+  event of the budget. The first event after the budget is spent loads the schema
+  again. The budget is a count of events, so the reject path reads no clock. If
+  the load succeeds, the key leaves the list and the schema enters the cache. If
+  it fails again, the key gets a new budget, and the failed load counts in
+  `schema_rejected`. If the retry finds metadata that this program cannot use,
+  the key becomes an unsupported key. The warning for a load failure is logged
+  for the first four failures of each key and then the 61st, 121st, and so on.
 - **Malformed payload under a plan.** A payload that does not decode under a
   compiled plan is rejected. There is no TDH retry.
 
@@ -122,6 +135,7 @@ The parser applies these checks after the fields are read:
 | --- | --- | --- |
 | Schemas cached per parser | 8 | `src/etw/schema.rs` |
 | Failed schema keys remembered | 8 | `src/etw/schema.rs` |
+| Rejected events before a failed schema load is retried | 65,536 | `src/etw/schema.rs` |
 | Properties per plan | 256 | `src/etw/decode.rs`, `src/etw/schema.rs` |
 | Property name length | 256 UTF-16 units | `src/etw/schema.rs` |
 | Address length | 512 bytes | `src/etw/schema.rs` |
@@ -144,7 +158,9 @@ The local tests check:
 
 - The recorded event layouts (256, 257, and 258), with golden protobuf output.
 - Malformed payloads, which are rejected under a plan without TDH calls.
-- Unsupported layouts, which are rejected and counted.
+- Unsupported layouts, which are rejected and counted and not retried.
+- A failed metadata load, which is rejected until the budget is spent, then
+  retried. A retry that loads clears the key.
 - A process-local manifest: a plan compiled from real TDH metadata produces the
   same output as the plan compiled from the fixture template. It does not
   capture live DNS Server traffic.

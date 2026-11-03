@@ -13,7 +13,7 @@ evidence cutoff.
 The JSONL schemas and final samples in this reference describe historical
 binaries. The TCP-only service retains diagnostic counters but has no durable
 metrics export. See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note) before
-using a campaign harness. Stderr diagnostics cannot replace a historical final
+using a campaign harness. The live log lines cannot replace a historical final
 JSONL ledger.
 
 ## DNS work and capture records
@@ -43,7 +43,9 @@ Actual upstream operations are `RESOLVER_QUERY` (RQ) and `RESOLVER_RESPONSE`
 (RR). Repeated names and time to live (TTL) zero do not establish one upstream
 lookup per client request. Use measured upstream counts rather than assuming
 four records per recursive query. These equalities describe the checked lab
-domains, not arbitrary traffic or every timeout.
+domains, not arbitrary traffic or every timeout. The current service captures
+only events 256, 257, and 258, so it writes CQ and CR records and no RQ or RR
+records. The recursive equality applies only to a build that captured them.
 
 An RA=false response has its Recursion Available (RA) flag cleared. If the recursive
 client requires RA=true, that response fails DNS validation even though it

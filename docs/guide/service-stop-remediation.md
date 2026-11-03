@@ -1,6 +1,6 @@
 # Diagnose and remediate receiver shutdown resets
 
-> **Status:** Current (operator guide) · **Evidence dated:** the recorded failure is undated in text · **Commit:** not recorded · **Reviewed:** 2026-11-02
+> **Status:** Current (operator guide) · **Evidence dated:** the recorded failure is undated in text · **Commit:** not recorded · **Reviewed:** 2026-11-03
 
 This guide is for maintainers of the documented DNS-collector lab receiver. It
 explains an intermittent failure of the Windows service stop. The failure occurs
@@ -12,7 +12,9 @@ recorded failed connection.
 
 The recorded failure reports Windows socket error 10054 during the STOP/FINISH
 exchange. The error report combines the STOP write or flush with the FINISH
-read. The exact phase that failed is therefore unknown.
+read. The exact phase that failed is therefore unknown. A current build reports
+the phase in the error text: `final buffered data flush`, `STOP write/flush`,
+`FINISH header read`, `FINISH body read`, or `FINISH validation`.
 
 The sender's shutdown path has a shared two-second I/O deadline. It also
 requires a valid FINISH response. A failure at this stage ends the service stop

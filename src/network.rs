@@ -4,10 +4,12 @@
 //! [`Connection`] is one Frame Streams session. Any error on it is final for that
 //! session. [`NetworkSink`] owns the current session and, when it fails,
 //! reconnects with bounded exponential backoff and a fresh handshake while ETW
-//! capture keeps running. Frames that arrive while disconnected, and frames that
-//! were still buffered when the connection failed, are discarded and counted in
-//! `disconnected_dropped`; they are never resent, so the receiver sees each frame
-//! at most once and never a duplicate.
+//! capture keeps running. Frames that this sink receives while disconnected, and
+//! frames that were still buffered when the connection failed, are discarded and
+//! counted in `disconnected_dropped`; they are never resent, so the receiver sees
+//! each frame at most once and never a duplicate. When a spool is in use, the
+//! sender thread (`crate::sender`) routes frames to the spool while the link is
+//! down, so only the frames in flight at the failure reach this counter.
 
 use std::{
     io::{self, BufWriter, Read, Write},
@@ -50,7 +52,8 @@ const SEND_BUFFER_BYTES: u32 = 1024 * 1024;
 const SLOW_WRITE: Duration = Duration::from_millis(5);
 
 /// TLS settings for one receiver: the client configuration and the name that
-/// the receiver certificate must match (also sent as SNI).
+/// the receiver certificate must match. It is sent as SNI only when it is a DNS
+/// name: rustls sends no SNI for an IP address.
 #[derive(Clone)]
 pub(crate) struct TlsConfig {
     client: Arc<ClientConfig>,
@@ -155,16 +158,155 @@ impl Write for Transport {
     }
 }
 
+/// The message of a TLS setup or handshake failure. It is the payload of the
+/// `io::Error`, so the reconnect log can tell a TLS failure from a Frame Streams
+/// protocol failure of the same kind. It displays as the message alone.
+#[derive(Debug)]
+struct TlsFailure(String);
+
+impl std::fmt::Display for TlsFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TlsFailure {}
+
 /// Runs the TLS handshake to completion under the shared connect deadline.
 /// rustls reports protocol and certificate failures as `InvalidData`; the kind
 /// of every other failure is kept.
 fn complete_tls_handshake(tls: &mut StreamOwned<ClientConnection, DeadlineTcp>) -> io::Result<()> {
     while tls.conn.is_handshaking() {
-        tls.conn
-            .complete_io(&mut tls.sock)
-            .map_err(|error| io::Error::new(error.kind(), format!("TLS handshake: {error}")))?;
+        tls.conn.complete_io(&mut tls.sock).map_err(|error| {
+            io::Error::new(error.kind(), TlsFailure(format!("TLS handshake: {error}")))
+        })?;
     }
     Ok(())
+}
+
+/// The cause of a failed connection attempt, for the reconnect log. The first
+/// failure of each class in an outage is always logged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailureClass {
+    /// The TCP connection failed or was reset (receiver down or unreachable).
+    Connect,
+    /// A connect, handshake, or I/O deadline expired.
+    Timeout,
+    /// TLS setup or the TLS handshake failed, including a certificate the
+    /// client does not trust or that does not match the server name, and a TLS
+    /// alert that arrives after the client's side of the handshake (a TLS 1.3
+    /// receiver that requires a client certificate sends it then).
+    Tls,
+    /// The receiver answered but did not complete the Frame Streams handshake
+    /// (for example, it does not accept the dnstap content type).
+    Protocol,
+}
+
+impl FailureClass {
+    /// The class of `error`. A TLS failure is either the `TlsFailure` payload
+    /// of `complete_tls_handshake` and TLS setup, or the `rustls::Error`
+    /// payload that rustls gives an `InvalidData` error when it rejects a
+    /// record or receives an alert during a later read or write of the
+    /// Frame Streams handshake. The code's own Frame Streams errors carry a
+    /// text payload, so they stay `Protocol`.
+    fn of(error: &io::Error) -> Self {
+        let tls = error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<TlsFailure>() || inner.is::<rustls::Error>());
+        match error.kind() {
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Self::Timeout,
+            _ if tls => Self::Tls,
+            io::ErrorKind::InvalidData => Self::Protocol,
+            _ => Self::Connect,
+        }
+    }
+
+    /// The value of the `cause` log field.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::Timeout => "timeout",
+            Self::Tls => "tls",
+            Self::Protocol => "protocol",
+        }
+    }
+
+    /// This class's bit in a `SeenClasses` set.
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Connect => 1,
+            Self::Timeout => 2,
+            Self::Tls => 4,
+            Self::Protocol => 8,
+        }
+    }
+}
+
+/// The failure classes already seen since the last established session, so
+/// that the reconnect log reports each cause once per outage.
+///
+/// Reset: the set is emptied when a session is established (at startup or on
+/// a reconnect), so each later outage reports each of its causes once again.
+/// It is not emptied when a session is lost; the line
+/// `dnstap receiver connection lost` marks the start of each outage. A failed
+/// connection at startup adds its class, because the startup warning already
+/// reported it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SeenClasses(u8);
+
+impl SeenClasses {
+    /// Adds `class` and returns true if it was not in the set before.
+    const fn insert(&mut self, class: FailureClass) -> bool {
+        let new = self.0 & class.bit() == 0;
+        self.0 |= class.bit();
+        new
+    }
+
+    const fn clear(&mut self) {
+        self.0 = 0;
+    }
+}
+
+/// Whether a failed reconnect attempt is logged. `prior_failures` is the
+/// `reconnect_failures` count before this failure, and `new_class` is true when
+/// its class was not yet seen in this outage. The first four failures and then
+/// every 60th are logged, and so is the first failure of each class in an
+/// outage. Causes that alternate (for example `connect` and `timeout`) add at
+/// most one line per class, not one line per attempt.
+const fn reconnect_log_due(prior_failures: u64, new_class: bool) -> bool {
+    prior_failures < 4 || prior_failures.is_multiple_of(60) || new_class
+}
+
+/// Logs, at error level, that the receiver refused a reconnect attempt with
+/// `InvalidData` before any session was established, and names what to check.
+fn log_first_rejection(
+    receiver: SocketAddr,
+    class: FailureClass,
+    error: &io::Error,
+    failures: u64,
+) {
+    if class == FailureClass::Tls {
+        tracing::error!(
+            %receiver,
+            %error,
+            cause = class.name(),
+            failures,
+            "dnstap receiver failed the TLS handshake before the first session; check that \
+            the Windows trust store trusts the receiver certificate, that \
+            --tls-server-name (or the receiver IP address when it is not set) matches the \
+            certificate, and that the receiver does not require a client certificate (this \
+            client sends none); retrying with backoff"
+        );
+    } else {
+        tracing::error!(
+            %receiver,
+            %error,
+            cause = class.name(),
+            failures,
+            "dnstap receiver refused the Frame Streams handshake before the first session; \
+            check that the receiver accepts the dnstap content type; retrying with backoff"
+        );
+    }
 }
 
 /// One Frame Streams session over TCP. Any error ends the session; the caller
@@ -186,8 +328,8 @@ impl Connection {
         let mut transport = match config.tls {
             None => Transport::Plain(tcp),
             Some(tls) => {
-                let connection =
-                    ClientConnection::new(tls.client, tls.server_name).map_err(io::Error::other)?;
+                let connection = ClientConnection::new(tls.client, tls.server_name)
+                    .map_err(|error| io::Error::other(TlsFailure(error.to_string())))?;
                 let mut tls_stream = StreamOwned::new(connection, tcp);
                 complete_tls_handshake(&mut tls_stream)?;
                 tracing::debug!(
@@ -416,6 +558,13 @@ pub(crate) struct NetworkSink {
     /// Frames accepted since the last successful flush. They may sit in the
     /// write buffer, so a failure counts them as dropped.
     unflushed_frames: u64,
+    /// The failure classes seen since the last established session, so that
+    /// the first failure of each cause in an outage is logged at once.
+    seen_failures: SeenClasses,
+    /// True once a session has been established.
+    ever_connected: bool,
+    /// True once a rejection before the first session has been logged.
+    rejection_logged: bool,
 }
 
 fn clock_seed(address: SocketAddr) -> u64 {
@@ -445,6 +594,7 @@ impl NetworkSink {
         let config = config.into();
         let address = config.address;
         let mut backoff = Backoff::new(policy, clock_seed(address));
+        let mut seen_failures = SeenClasses::default();
         let initial = match Connection::connect(config.clone()) {
             Ok(mut connection) => {
                 connection.attach_stats(Arc::clone(&stats));
@@ -453,6 +603,7 @@ impl NetworkSink {
             }
             Err(error) if error.kind() == io::ErrorKind::InvalidData => return Err(error),
             Err(error) => {
+                seen_failures.insert(FailureClass::of(&error));
                 tracing::warn!(
                     receiver = %address,
                     %error,
@@ -466,12 +617,16 @@ impl NetworkSink {
                 }
             }
         };
+        let ever_connected = matches!(initial, State::Connected(_));
         Ok(Self {
             config,
             stats,
             state: initial,
             backoff,
             unflushed_frames: 0,
+            seen_failures,
+            ever_connected,
+            rejection_logged: false,
         })
     }
 
@@ -521,6 +676,9 @@ impl NetworkSink {
                     self.stats.reconnects.fetch_add(1, Ordering::Relaxed);
                     self.backoff.reset();
                     self.unflushed_frames = 0;
+                    self.ever_connected = true;
+                    // Each later outage reports each of its causes once again.
+                    self.seen_failures.clear();
                     tracing::info!(receiver = %self.config.address, "dnstap receiver reconnected");
                     self.state = State::Connected(connection);
                 }
@@ -529,18 +687,45 @@ impl NetworkSink {
                         .stats
                         .reconnect_failures
                         .fetch_add(1, Ordering::Relaxed);
+                    let class = FailureClass::of(&error);
+                    let new_class = self.seen_failures.insert(class);
                     // Bounded diagnostics; every failure stays counted.
-                    if failures < 4 || failures.is_multiple_of(60) {
-                        tracing::warn!(receiver = %self.config.address, %error, "dnstap reconnect failed");
+                    if error.kind() == io::ErrorKind::InvalidData
+                        && !self.ever_connected
+                        && !self.rejection_logged
+                    {
+                        // The receiver answers but refuses this client before any
+                        // session: a configuration problem that retries alone do
+                        // not fix. Logged once, whatever the failure count.
+                        self.rejection_logged = true;
+                        log_first_rejection(self.config.address, class, &error, failures + 1);
+                    } else if reconnect_log_due(failures, new_class) {
+                        tracing::warn!(
+                            receiver = %self.config.address,
+                            %error,
+                            cause = class.name(),
+                            failures = failures + 1,
+                            "dnstap reconnect failed"
+                        );
                     }
                     *next_attempt = now + self.backoff.next_delay();
                     *attempt = None;
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
-                    self.stats
+                    // The attempt thread ended without sending a result: it
+                    // panicked. Counted as a failed attempt and retried.
+                    let failures = self
+                        .stats
                         .reconnect_failures
                         .fetch_add(1, Ordering::Relaxed);
+                    if failures < 4 || failures.is_multiple_of(60) {
+                        tracing::error!(
+                            receiver = %self.config.address,
+                            failures = failures + 1,
+                            "dnstap reconnect thread ended without a result; retrying with backoff"
+                        );
+                    }
                     *next_attempt = now + self.backoff.next_delay();
                     *attempt = None;
                 }
@@ -558,13 +743,23 @@ impl NetworkSink {
                 // The sink may be gone by the time this finishes; ignore that.
                 let _ = send.send(Connection::connect(config));
             });
-        if spawned.is_ok() {
-            *attempt = Some(receive);
-        } else {
-            self.stats
-                .reconnect_failures
-                .fetch_add(1, Ordering::Relaxed);
-            *next_attempt = now + self.backoff.next_delay();
+        match spawned {
+            Ok(_handle) => *attempt = Some(receive),
+            Err(error) => {
+                let failures = self
+                    .stats
+                    .reconnect_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                if failures < 4 || failures.is_multiple_of(60) {
+                    tracing::warn!(
+                        receiver = %self.config.address,
+                        %error,
+                        failures = failures + 1,
+                        "could not start the dnstap reconnect thread; retrying with backoff"
+                    );
+                }
+                *next_attempt = now + self.backoff.next_delay();
+            }
         }
     }
 

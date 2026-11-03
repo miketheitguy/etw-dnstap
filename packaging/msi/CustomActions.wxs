@@ -7,7 +7,9 @@
   through CustomActionData: a type 51 action sets a property with the same name as
   the deferred action, immediately before it.
 
-  Properties in these command lines are validated by the script itself. The
+  Properties in these command lines are validated by the script itself. A launch
+  condition in Product.wxs also rejects a SESSION_NAME that starts with '-', which
+  powershell.exe -File would read as a parameter name. The
   script takes SESSION_NAME and RECEIVER only. SERVICE_ARGS never reaches a
   PowerShell command line; it is written only into the service's ServiceInstall
   Arguments (Product.wxs).
@@ -48,22 +50,30 @@
                   Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Invoke-EtwDnstapProvisioning.ps1&quot; -Action Uninstall -SessionName &quot;[SESSION_NAME]&quot;" />
 
     <InstallExecuteSequence>
-      <!-- Install, repair, and major upgrade: not on removal. -->
-      <Custom Action="SetProvisionInstall" Before="ProvisionInstall" Condition="NOT REMOVE" />
-      <Custom Action="ProvisionInstall" After="InstallServices" Condition="NOT REMOVE" />
+      <!-- Install only in a pass that installs the executable component, so that the
+           grant moves only when InstallServices writes the same SESSION_NAME into the
+           service's ImagePath. $EtwDnstapExe is the component's action state; 3 is
+           local. It is 3 on a first install, on the new product of a major upgrade,
+           and on a repair or REINSTALL=ALL. It is not 3 on a maintenance msiexec /i
+           without REINSTALL (no component action; the grant and ImagePath both stay)
+           or on a removal (2). -->
+      <Custom Action="SetProvisionInstall" Before="ProvisionInstall" Condition="NOT REMOVE AND ($EtwDnstapExe = 3)" />
+      <Custom Action="ProvisionInstall" After="InstallServices" Condition="NOT REMOVE AND ($EtwDnstapExe = 3)" />
 
       <!-- Rollback only when a first install fails, never after a failed upgrade. A
            rollback action must come before the action it undoes: Windows Installer
            runs only the rollback actions already written to the script, so one
            scheduled after ProvisionInstall would not run when ProvisionInstall
-           itself fails part way through. -->
-      <Custom Action="SetProvisionInstallRollback" Before="ProvisionInstallRollback" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
-      <Custom Action="ProvisionInstallRollback" Before="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+           itself fails part way through. The component condition matches
+           ProvisionInstall, so the rollback is scheduled only with the action it undoes. -->
+      <Custom Action="SetProvisionInstallRollback" Before="ProvisionInstallRollback" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND ($EtwDnstapExe = 3)" />
+      <Custom Action="ProvisionInstallRollback" Before="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND ($EtwDnstapExe = 3)" />
 
       <!-- Uninstall only on a real removal, not while a major upgrade removes the old
            product. It runs after StopServices and before DeleteServices (and so
-           before RemoveFiles): NT SERVICE\EtwDnstap must still resolve for the group
-           removal and for the grant script's SID check. -->
+           before RemoveFiles). The script removes the group membership by the service
+           SID and the grant script falls back to the derived SID, so a service that
+           was deleted by hand does not fail the removal. -->
       <Custom Action="SetProvisionUninstall" Before="ProvisionUninstall" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="ProvisionUninstall" Before="DeleteServices" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>

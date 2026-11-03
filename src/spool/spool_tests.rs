@@ -1,13 +1,9 @@
-use std::{
-    cell::Cell,
-    fs,
-    ops::Range,
-    os::windows::fs::OpenOptionsExt,
-    sync::{Mutex, atomic::AtomicU64},
-};
+use std::{cell::Cell, fs, ops::Range, os::windows::fs::OpenOptionsExt, sync::atomic::AtomicU64};
 
 use super::*;
-use crate::spool::test_support::{STOP, TestDir, numbered, numbers, parse_fstrm, start_bytes};
+use crate::spool::test_support::{
+    STOP, TestDir, capture_logs, numbered, numbers, parse_fstrm, start_bytes,
+};
 
 const MIB: u64 = 1024 * 1024;
 /// `FILE_SHARE_READ | FILE_SHARE_WRITE`: others may read and write but not delete.
@@ -1371,50 +1367,59 @@ fn the_free_space_floor_pause_clears_spool_available() {
 
 const DISCARD_MESSAGE: &str = "discarded unreadable segment data";
 const EVICTION_MESSAGE: &str = "deleted its oldest segment unsent";
+const LOW_SPACE_MESSAGE: &str = "below the free-space floor";
 
-/// Collects log output so a test can count messages.
-#[derive(Clone, Default)]
-struct LogLines(Arc<Mutex<Vec<u8>>>);
-
-impl LogLines {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().expect("log lock")).into_owned()
-    }
-
-    fn count(&self, needle: &str) -> usize {
-        self.text().matches(needle).count()
-    }
+#[test]
+fn the_free_space_block_is_logged_four_times_and_then_every_60th() {
+    let dir = TestDir::new("spool-floor-log");
+    let (mut spool, stats) = open_with(&dir, MIB, 10 * MIB);
+    assert_eq!(append_numbers(&mut spool, 0..1, 0), Appended::Stored);
+    // No active segment, so the next block needs a new one and checks the floor.
+    spool.seal().expect("seal");
+    set_free(5 * MIB + 7, 0);
+    let lines = capture_logs(|| {
+        for number in 0..130 {
+            // Each pass ends the pause, so each block enters the block again.
+            spool.blocked_until = None;
+            assert_eq!(
+                append_numbers(&mut spool, number..number + 1, 0),
+                Appended::Dropped
+            );
+        }
+    });
+    // Blocks 1 to 4, 61, and 121 are logged.
+    assert_eq!(lines.count(LOW_SPACE_MESSAGE), 6, "{}", lines.text());
+    let text = lines.text();
+    // 5 MiB and 7 bytes free rounds down; 10 MiB plus a 128 KiB segment
+    // needed rounds up.
+    assert!(text.contains("free_mib=5"), "{text}");
+    assert!(text.contains("needed_mib=11"), "{text}");
+    assert!(text.contains("pause_s=10"), "{text}");
+    assert_eq!(get(&stats.spool_dropped), 130);
+    assert_eq!(get(&stats.spool_errors), 0);
+    assert!(!spool.is_usable());
 }
 
-impl io::Write for LogLines {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().expect("log lock").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogLines {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-/// Runs `work` with warnings captured.
-fn capture_logs(work: impl FnOnce()) -> LogLines {
-    let lines = LogLines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(lines.clone())
-        .with_ansi(false)
-        .with_max_level(tracing::Level::WARN)
-        .finish();
-    tracing::subscriber::with_default(subscriber, work);
-    lines
+#[test]
+fn a_paused_spool_does_not_log_the_free_space_block_again() {
+    let dir = TestDir::new("spool-floor-log-paused");
+    let (mut spool, stats) = open_with(&dir, MIB, 1000);
+    assert_eq!(append_numbers(&mut spool, 0..1, 0), Appended::Stored);
+    spool.seal().expect("seal");
+    set_free(0, 0);
+    let lines = capture_logs(|| {
+        for number in 0..10 {
+            assert_eq!(
+                append_numbers(&mut spool, number..number + 1, 0),
+                Appended::Dropped
+            );
+        }
+    });
+    // Only the block that entered the pause checked the volume and logged.
+    assert_eq!(lines.count(LOW_SPACE_MESSAGE), 1, "{}", lines.text());
+    assert!(lines.text().contains("free_mib=0"), "{}", lines.text());
+    assert!(lines.text().contains("needed_mib=1"), "{}", lines.text());
+    assert_eq!(get(&stats.spool_dropped), 10);
 }
 
 #[test]

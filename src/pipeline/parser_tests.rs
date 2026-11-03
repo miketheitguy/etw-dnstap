@@ -197,3 +197,12 @@ fn consumer_failure_is_propagated() {
     .expect_err("output error must escape");
     assert_eq!(error.to_string(), "output failed");
 }
+
+#[test]
+fn rejection_log_cadence_is_first_four_then_every_sixtieth() {
+    let logged: Vec<u64> = (0..200)
+        .filter(|previous| should_log_rejection(*previous))
+        .map(|previous| previous + 1)
+        .collect();
+    assert_eq!(logged, [1, 2, 3, 4, 61, 121, 181]);
+}

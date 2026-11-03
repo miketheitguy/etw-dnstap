@@ -1,6 +1,6 @@
 # Code review remediation plan
 
-> **Status:** Approved. Phases 0 to 4 executed on the `plan/code-review-remediation` branch; the branch awaits the user's decision on merging to `main` · **Evidence dated:** 2026-11-01 · **Commit:** written at `1d66263` · **Reviewed:** 2026-11-01
+> **Status:** Executed. Phases 0 to 4 are merged to `main`; the last merge is `4bbdc21` · **Evidence dated:** 2026-11-01 · **Commit:** written at `1d66263`, executed through `4bbdc21` · **Reviewed:** 2026-11-03
 
 This plan records the findings of the 2026-11-01 Rust code review of `main` at
 `1d66263` and the steps that act on them. The review covered performance,

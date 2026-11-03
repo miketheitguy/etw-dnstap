@@ -4,6 +4,7 @@ use super::*;
 use crate::{
     etw::{TargetChange, Win32Status},
     pipeline::{config::parse_args_from, test_support::config_from},
+    spool::test_support::capture_logs_at,
 };
 use std::{
     io::{Read, Write},
@@ -196,24 +197,18 @@ fn an_unusable_spool_folder_logs_one_warning_and_returns_no_spool() {
         min_free_mib: 0,
     };
     let stats = Arc::new(SinkStats::default());
-    let lines = LogLines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(lines.clone())
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
-        .finish();
-    let spool = tracing::subscriber::with_default(subscriber, || {
-        open_spool(
+    let mut spool = None;
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        spool = open_spool(
             &settings,
             &stats,
             fsinfo::check_spool_dir,
             fsinfo::available_bytes,
-        )
+        );
     });
     assert!(spool.is_none());
     assert!(!stats.spool_available.load(Ordering::Relaxed));
-    let bytes = lines.0.lock().expect("log buffer").clone();
-    let text = String::from_utf8(bytes).expect("log text");
+    let text = lines.text();
     assert_eq!(text.lines().count(), 1, "{text}");
     assert!(text.contains("WARN"), "{text}");
     assert!(text.contains("does not exist"), "{text}");
@@ -294,14 +289,9 @@ fn a_trusted_folder_opens_the_spool_and_reports_leftovers() {
         min_free_mib: 0,
     };
     let stats = Arc::new(SinkStats::default());
-    let lines = LogLines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(lines.clone())
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
-        .finish();
-    let spool = tracing::subscriber::with_default(subscriber, || {
-        open_spool(&settings, &stats, accept_any_folder, plenty_of_space)
+    let mut spool = None;
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        spool = open_spool(&settings, &stats, accept_any_folder, plenty_of_space);
     });
     assert!(spool.is_some_and(|spool| spool.has_backlog()));
     assert!(stats.spool_available.load(Ordering::Relaxed));
@@ -310,8 +300,7 @@ fn a_trusted_folder_opens_the_spool_and_reports_leftovers() {
         stats.spool_bytes.load(Ordering::Relaxed),
         segment.len() as u64
     );
-    let bytes = lines.0.lock().expect("log buffer").clone();
-    let text = String::from_utf8(bytes).expect("log text");
+    let text = lines.text();
     assert_eq!(text.lines().count(), 1, "{text}");
     assert!(text.contains("spool in use"), "{text}");
     assert!(text.contains("leftover_segments=1"), "{text}");
@@ -452,46 +441,16 @@ impl EventProducer for QueryProducer {
     }
 }
 
-/// Collects formatted log lines for the current thread's subscriber.
-#[derive(Clone, Default)]
-struct LogLines(Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl Write for LogLines {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("log buffer").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogLines {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
 fn logged_by_first_query(status: Result<(), Win32Status>) -> String {
-    let lines = LogLines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(lines.clone())
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
-        .finish();
     let counters = Arc::new(CaptureCounters::default());
     let producer = QueryProducer {
         counters: Arc::clone(&counters),
         status,
     };
-    tracing::subscriber::with_default(subscriber, || {
+    let lines = capture_logs_at(tracing::Level::INFO, || {
         query_and_log_buffers_applied(&producer, &counters);
     });
-    let bytes = lines.0.lock().expect("log buffer").clone();
-    String::from_utf8(bytes).expect("log text")
+    lines.text()
 }
 
 #[test]
@@ -520,17 +479,10 @@ fn capture_started_logs_the_package_version() {
         fallback: false,
         failed_responses: true,
     };
-    let lines = LogLines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(lines.clone())
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
-        .finish();
-    tracing::subscriber::with_default(subscriber, || {
+    let lines = capture_logs_at(tracing::Level::INFO, || {
         log_capture_started(&config, keywords);
     });
-    let bytes = lines.0.lock().expect("log buffer").clone();
-    let text = String::from_utf8(bytes).expect("log text");
+    let text = lines.text();
     assert!(text.contains("capture started"), "{text}");
     let expected = format!("version=\"{}\"", env!("CARGO_PKG_VERSION"));
     assert!(text.contains(&expected), "{text}");
@@ -568,6 +520,14 @@ fn rate_warning_needs_defaults_and_a_rate_above_the_validated_one() {
     assert!(!default_rate_exceeded(true, 22_000.0));
     assert!(!default_rate_exceeded(true, 20_000.0));
     assert!(!default_rate_exceeded(false, 50_000.0));
+}
+
+#[test]
+fn rate_warning_text_states_the_validated_rate_and_the_threshold() {
+    assert!(RATE_WARNING.contains("validated at about 20,000 events/s"));
+    assert!(RATE_WARNING.contains("above 22,000 events/s"));
+    // The text states the figure the condition uses.
+    assert!((DEFAULTS_VALIDATED_EVENTS_PER_SEC - 22_000.0).abs() < f64::EPSILON);
 }
 
 #[test]

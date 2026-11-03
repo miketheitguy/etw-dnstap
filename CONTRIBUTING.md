@@ -26,7 +26,8 @@ Notes:
 
 - `--locked` is required. The build uses the committed `Cargo.lock`.
 - `Cargo.toml` denies all rustc warnings (`warnings = "deny"`) and the Clippy
-  lints `unwrap_used` and `undocumented_unsafe_blocks`. Clippy `pedantic` lints
+  lints `unwrap_used`, `undocumented_unsafe_blocks`, `print_stdout`,
+  `print_stderr`, and `dbg_macro`. Clippy `pedantic` lints
   are warnings, and CI runs Clippy with `-D warnings`, so they also fail CI. Do
   not add `#[allow]` to hide a warning without a comment that explains why.
 - `Cargo.toml` also enables the Clippy lints `multiple_unsafe_ops_per_block`,
@@ -40,11 +41,13 @@ Notes:
   `// SAFETY:` comment, which Clippy enforces (`undocumented_unsafe_blocks`).
 - The first build rebuilds the standard library (`build-std`). Expect it to take
   noticeably longer than an ordinary Rust build.
-- `cargo test --locked` reports 276 passed, 0 failed, and 7 ignored.
-  `cargo test --locked --features diag-timing` reports 281 passed and 7
-  ignored, and `cargo test --locked --features bench` reports 280 passed and 7
-  ignored. Five ignored tests need an elevated session or the DNS Server role.
-  The other two are manual benchmarks (`synthetic_pooled_intake_benchmark` and
+- `cargo test --locked` reports 443 passed, 0 failed, and 7 ignored in total.
+  That is 441 library tests plus the `console_output` and `version_resource`
+  integration tests. `cargo test --locked --features diag-timing` reports 448
+  passed and 7 ignored, and `cargo test --locked --features bench` reports 447
+  passed and 7 ignored. Five ignored tests need an elevated session or the DNS
+  Server role, or they register the production performance-counter provider on
+  the machine. The other two are manual benchmarks (`synthetic_pooled_intake_benchmark` and
   `parse_encode_benchmark`). The manual/scheduled `lab.yml` workflow runs all
   ignored tests on a self-hosted `etw-lab` runner. Do not un-ignore them in a
   pull request.
@@ -83,12 +86,13 @@ Notes:
   `PROPTEST_DISABLE_FAILURE_PERSISTENCE` settings. The counting allocator in
   `src/etw/test_support.rs` is compiled out under Miri.
 - Coverage and a 60-second fuzz smoke run (`fuzz/`) are report-only. They do
-  not block a merge. Local `cargo fuzz run` currently fails at build on MSVC
+  not block a merge. The smoke run covers `decoder`, `control_frame`, and
+  `plan_compiler`. It does not run `spool_segment`. Local `cargo fuzz run` currently fails at build on MSVC
   with an LLVM COMDAT error, which is why the fuzz smoke run is advisory.
 - Property tests use `proptest`. Golden byte vectors in
   `src/dnstap/golden_tests.rs` compare the encoder with the upstream
-  `dnstap.proto`. The fuzz targets (`decoder`, `control_frame`, `plan_compiler`)
-  live in the separate `fuzz/` workspace. They build with the `fuzzing` feature,
+  `dnstap.proto`. The fuzz targets (`decoder`, `control_frame`, `plan_compiler`,
+  and `spool_segment`) live in the separate `fuzz/` workspace. They build with the `fuzzing` feature,
   which exposes internal entry points. That feature is never enabled in a
   shipped build. Install the runner with `cargo install cargo-fuzz --version 0.13.2 --locked`.
   CI pins cargo-fuzz 0.13.2, cargo-deny 0.20.2 and cargo-llvm-cov 0.9.1 by hand in
@@ -102,6 +106,7 @@ The criterion benchmark in `benches/hot_path.rs` measures the per-event hot
 path on deterministic DNS records. It covers these parts:
 
 - The deep copy into a pooled slot, also on a production-sized pool.
+- One socket write on a loopback connection, with the deadline logic.
 - Decode, encode, `parse_and_encode`, and its parts.
 - A two-thread producer and consumer run.
 
@@ -175,6 +180,7 @@ The status decides the folder under `docs/`:
 | `docs/history/` | Historical and Superseded records: finished campaigns, reviews, and completed plans |
 | `docs/assets/performance/` | Generated graphs and data copies (the default output of `plot-pooled-wpr.py`) |
 | `docs/assets/pipeline/` | The data-path animation. Build it with `scripts/docs/pipeline-animation/Build-Animation.ps1` |
+| `docs/assets/loss-solutioning/` | Historical animations of the event-loss causes and fixes |
 
 When a document's status changes, move it with `git mv`, update every relative
 link to it, and update its row in [docs/README.md](docs/README.md). Do not rewrite

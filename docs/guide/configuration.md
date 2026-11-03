@@ -1,9 +1,11 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** `no-console-output` at commit `0eb9cde` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
 
 Set every option in the service binary path. The service ignores arguments that
-you give to `sc.exe start`. Install and provisioning steps are in
+you give to `sc.exe start`. An MSI install builds the binary path from MSI
+properties. See [Install with the MSI](install.md#install-with-the-msi). Install
+and provisioning steps are in
 [install.md](install.md). Symptoms are in
 [troubleshooting.md](troubleshooting.md). Values for high query rates are in
 [tuning.md](tuning.md). Log events and counters are in
@@ -12,17 +14,18 @@ you give to `sc.exe start`. Install and provisioning steps are in
 ## Options
 
 Defaults and ranges come from `CaptureArgs` in `src/pipeline/config.rs`. The service
-rejects a value outside the range at startup.
+rejects a value outside the range at startup. Repeating an option is an error. The
+last value does not win.
 
 | Option | Default | Range or format | Meaning |
 | --- | --- | --- | --- |
 | `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Frame Streams TCP receiver. The connection is TLS by default and plaintext with `--plaintext`. The option does not accept hostnames. The service starts even when the receiver is down and reconnects. See [Receiver connection](#receiver-connection). |
 | `--plaintext` | off | Flag | Disables TLS. The connection is plaintext TCP with no peer authentication. Use it only on a trusted network. See [TLS](#tls). |
-| `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | The name that the receiver certificate must match. It is also sent as SNI. Without it, the certificate must carry the receiver IP as an `iPAddress` SAN. |
+| `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | The name that the receiver certificate must match. A DNS name is also sent as SNI. An IP literal is not, because rustls sends no SNI for an IP address. Without this option, the certificate should carry the receiver IP as an `iPAddress` SAN, and the service sends no SNI. |
 | `--capacity N` | `24576` | 1,024 to 262,144 events | Event channel capacity. A full channel drops the newest event and increments `ring_dropped` and `intake_dropped`. The startup budget grows with this value. See [Startup and shutdown deadlines](#startup-and-shutdown-deadlines). |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for records with a padded payload over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Without it, capture runs until SCM stops the service or a failure occurs. |
-| `--session-name NAME` | `EtwDnstap` | 1 to 200 UTF-16 units, no NUL | Name of the real-time ETW session. At startup, the service reclaims a leaked session with the same name, shape, and session GUID. See [Session reclaim](#session-reclaim). The name also sets the session GUID that the ETW grant names. A new name therefore needs a run of the grant script with that name, and a restart of the computer. See [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
+| `--session-name NAME` | `EtwDnstap` | 1 to 128 ASCII letters, digits, underscore, dot, or hyphen. The first character must not be a hyphen. Case-sensitive. | Name of the real-time ETW session. At startup, the service reclaims a leaked session with the same name, shape, and session GUID. See [Session reclaim](#session-reclaim). The service rejects any other character, such as a space or a non-ASCII letter, a name that starts with `-`, and a longer name. For a character, the error names it and its position. The service refuses a leading hyphen because the MSI passes the name as a separate argument, where the parser would read it as an option. The name also sets the session GUID that the ETW grant names. The service derives the GUID from the exact spelling of the name, and ETW session names are not case-sensitive, so the grant must use the same spelling as `--session-name`. If it does not, the start fails with access denied. A new name needs a run of the grant script with that name, and a restart of the computer. See [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). The MSI property `SESSION_NAME` and both provisioning scripts use the same rule. The MSI tests only the leading hyphen. The scripts and the service check the rest. |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
 | `--etw-min-buffers N` | `0` | 0 to 4,096, at most `--etw-max-buffers` | Requested minimum ETW buffer count, reserved when the session starts. `0` lets ETW choose. ETW raises the value to at least two per logical processor. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
@@ -36,8 +39,9 @@ rejects a value outside the range at startup.
 
 The binary has no help or version output, so this page is the option reference.
 The service writes nothing to the console. A console launch exits with code 1 and
-prints nothing, with any arguments. To read the running version, see the
-`version` field of `capture started` in
+prints nothing, with any arguments. To read the version of the executable file,
+see its file properties, as [build.md](build.md#build-the-executable) shows. To
+read the running version, see the `version` field of `capture started` in
 [monitoring.md](monitoring.md#periodic-and-final-reports).
 
 ### Removed options
@@ -190,6 +194,26 @@ before it copies the record. The callback counts a mismatch in
   match the event's direction. The encoder preserves packet bytes verbatim. It
   does not check every name or resource record, and it does not strip or add a
   TCP length prefix.
+- **dnstap fields:** the envelope has type `MESSAGE`. Event 256 sets the message
+  type `CLIENT_QUERY`, and events 257 and 258 set `CLIENT_RESPONSE`. The
+  message sets these fields, and each is absent when the provider does not
+  report it:
+  - `socket_protocol` is `UDP` or `TCP`, from the event. `socket_family` is
+    `INET` or `INET6`, from the client or the local address. The encoder
+    rejects a record whose two addresses differ in family.
+  - `query_address` and `query_port` are the client's address and port.
+    `response_address` is the DNS Server's local interface address. The service
+    never sets `response_port`. A wildcard address and port 0 count as not
+    reported.
+  - A query sets `query_time_sec` and `query_time_nsec`. A response sets
+    `response_time_sec` and `response_time_nsec`, and no query time. The time is
+    the ETW event timestamp in UTC, at 100 ns resolution. The encoder rejects a
+    timestamp before the Unix epoch.
+  - `query_message` (event 256) or `response_message` (events 257 and 258) holds
+    the DNS packet.
+  - The envelope `identity` is the `--identity` text, and it is absent when the
+    text is empty. The service never sets `version` or `extra`.
+  The parser counts a rejected record in `rejected`.
 - **Missing or malformed packet data:** the parser rejects it. The service never
   rebuilds a packet from a query name.
 - **Standards:** the message layout follows the official
@@ -228,7 +252,22 @@ are recoverable. Protocol failures at startup are not.
   use. Without a spool, they count in `disconnected_dropped`. See [Spool](#spool).
 - **Incompatible receiver after startup.** A reconnect attempt that receives the
   wrong content type counts as a failed attempt. The service keeps running and
-  retries. Only the first connection's protocol failure stops the service.
+  retries. Only the first connection's protocol failure stops the service. If the
+  receiver was down at startup and the first attempt that reaches it fails, the
+  service logs one error (Event ID 4) that names the cause. See
+  [Failure class](#tls).
+- **Reconnect log.** Every failed attempt counts in `receiver_reconnect_failures`.
+  The service logs `dnstap reconnect failed` for the first four failures, then
+  for the 61st, 121st, and so on, and for the first failure of each `cause`
+  (`connect`, `timeout`, `tls`, or `protocol`) since a session was last
+  established. A session that is established, at startup or on a reconnect,
+  clears the list of causes that were seen. A lost session does not clear it.
+  The line `dnstap receiver connection lost` marks each outage. A failed
+  connection at startup adds its cause to the list, because the startup warning
+  already reported it. Causes that alternate add at most one extra line per
+  cause in an outage. A reconnect thread that cannot start, or that ends
+  without a result, is counted and logged too, and the service retries. See
+  [Log events and counters](monitoring.md#receiver-schema-and-rate-messages).
 - **Shutdown while disconnected.** The sink sends no STOP. The service logs a
   warning and stops with success. Frames still in the spool stay on disk for
   the next start. Without a spool, the sink has already counted the frames that
@@ -241,8 +280,10 @@ are recoverable. Protocol failures at startup are not.
 
 The Frame Streams session runs inside TLS unless you set `--plaintext`. With
 `--plaintext`, the connection is plaintext TCP with no peer authentication, as
-in earlier builds. A receiver that speaks plaintext while TLS is on fails the
-handshake. That is a protocol failure, as described below.
+in earlier builds. A receiver that answers the TLS handshake with plaintext
+fails the handshake. That is a protocol failure, as described below. A receiver
+that stays silent or closes the connection during the handshake is a network
+failure, and the service retries.
 
 - **Versions.** TLS 1.2 and TLS 1.3 only. The service offers no other version.
 - **Library.** rustls with the `ring` crypto provider. Schannel is not used for
@@ -251,8 +292,13 @@ handshake. That is a protocol failure, as described below.
   `rustls-platform-verifier`. It uses the machine store: Trusted Root
   Certification Authorities and intermediates, and roots pushed by Group
   Policy. The certificate must match `--tls-server-name`, or the receiver IP
-  as an `iPAddress` SAN when that flag is not set. The service sends the same
-  name as SNI.
+  address when that flag is not set. The service sends the name as
+  SNI only when it is a DNS name. rustls sends no SNI for an IP address, so the
+  default name and an IP literal in `--tls-server-name` send none. When the
+  name is an IP address (the default, or an IP literal), the certificate should
+  carry an `iPAddress` SAN for that address. The platform verifier does the name
+  matching. Whether it also accepts the address in a `dNSName` SAN or falls back
+  to the common name is not verified.
 - **Revocation.** The verifier checks revocation for the receiver (end-entity)
   certificate only. It does not check the intermediates. The check is best
   effort. If the verifier cannot get the status, the connection proceeds. One
@@ -272,9 +318,19 @@ handshake. That is a protocol failure, as described below.
   not a network failure. At the first connection it is fatal: the service stops
   with an error (Event ID 1). On a reconnect it is a counted failed attempt, and
   the service keeps retrying. This is the same rule as the content-type failure
-  above.
+  above. A TLS alert that the receiver sends after the handshake is handled the
+  same way, and its `cause` is `tls`. A TLS 1.3 receiver that requires a client
+  certificate sends one, and the error text is
+  `received fatal alert: CertificateRequired`. If the receiver was down at
+  startup, the first attempt that reaches it and fails the TLS handshake logs one
+  error (Event ID 4). The error tells you to check that the Windows trust store
+  trusts the receiver certificate, that `--tls-server-name`, or the receiver IP
+  address when the option is not set, matches the certificate, and that the
+  receiver does not require a client certificate. The `cause` field of each
+  later `dnstap reconnect failed` line is `tls`.
 - **No client certificate.** The service does not authenticate itself to the
-  receiver.
+  receiver and presents no client certificate. A receiver that requires one
+  rejects the connection with a TLS alert, which is a `tls` failure.
 - **No close_notify.** FINISH ends the Frame Streams session. The TCP close
   follows. The service sends no TLS close_notify alert.
 
@@ -359,13 +415,15 @@ run.
   new segment starts, and free space is below the floor plus one segment, the
   spool deletes its oldest segments. It stops when a delete does not raise the
   free space. If only the newest segment is left, the spool refuses blocks for 10
-  seconds, counts them in `spool_dropped`, and checks again.
+  seconds, counts them in `spool_dropped`, and checks again. The spool logs
+  a warning for the first four pauses and then the 61st, 121st, and so on. Blocks refused
+  during a pause log nothing. The warning gives the free and the needed MiB.
 - A segment holds up to 64 MiB, or one eighth of the cap when that is smaller.
 - The oldest data goes first. Each deletion counts in `spool_dropped` and
   `spool_dropped_bytes`. A leftover segment from an earlier run adds only bytes,
   because its frame count is not known.
-- The spool logs a warning for each eviction, the first four and then every
-  60th. The log line gives the frames and bytes lost. The counters are complete.
+- The spool logs a warning for each eviction, the first four and then the 61st,
+  121st, and so on. The log line gives the frames and bytes lost. The counters are complete.
 
 Size the cap from the outage you must cover. [Spool sizing](tuning.md#spool-sizing)
 has the figures.
@@ -406,9 +464,11 @@ can take about 4 seconds more.
   argument validation, receiver connection, spool folder check and open, pool
   allocation, and capture start.
   Capture start has its own inner 10-second deadline.
-- **SCM progress.** The service reports the startup deadline to the SCM as the
-  `START_PENDING` wait hint. It advances the checkpoint after every 16,384
-  allocated pool slots. `sc.exe query EtwDnstap` shows the values as
+- **SCM progress.** The first `START_PENDING` report has a wait hint of 10
+  seconds. That is the base budget, and it covers the identity checks and the
+  argument hand-over. After the service reads its arguments, it reports the full
+  startup deadline as the wait hint. It advances the checkpoint after every
+  16,384 allocated pool slots. `sc.exe query EtwDnstap` shows the values as
   `CHECKPOINT` and `WAIT_HINT`. The `STOP_PENDING` wait hint is the shutdown
   deadline.
 - **Shutdown.** The shutdown deadline is 10 seconds from the stop request to the

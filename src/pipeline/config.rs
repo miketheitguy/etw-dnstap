@@ -45,8 +45,9 @@ pub(crate) struct CaptureArgs {
     #[arg(long)]
     plaintext: bool,
 
-    /// Name that the receiver certificate must match, also sent as the TLS SNI.
-    /// Default: the receiver IP address.
+    /// Name that the receiver certificate must match. A DNS name is also sent as
+    /// the TLS SNI. An IP address is not, because rustls sends no SNI for one.
+    /// Default: the receiver IP address, so no SNI.
     #[arg(long, conflicts_with = "plaintext", value_parser = parse_tls_server_name)]
     tls_server_name: Option<String>,
 
@@ -62,8 +63,9 @@ pub(crate) struct CaptureArgs {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..=604_800))]
     duration: Option<u64>,
 
-    /// ETW session name. A leaked session of the same name and shape is reclaimed
-    /// at startup.
+    /// ETW session name: 1 to 128 ASCII letters, digits, underscore, dot, or hyphen,
+    /// not starting with a hyphen. A leaked session of the same name and shape is
+    /// reclaimed at startup.
     #[arg(long, default_value = DEFAULT_SESSION_NAME, value_parser = parse_session_name)]
     session_name: String,
 
@@ -183,9 +185,44 @@ fn parse_session_name(value: &str) -> Result<String, String> {
     Ok(value.into())
 }
 
+/// Longest accepted session name, in characters. The MSI and the provisioning
+/// scripts apply the same limit, so a name that starts here is one they accept.
+const MAX_SESSION_NAME_CHARS: usize = 128;
+
+/// The session-name rule, as the error messages state it.
+const SESSION_NAME_RULE: &str =
+    "1 to 128 ASCII letters, digits, underscore, dot, or hyphen, not starting with a hyphen";
+
+/// Accepts only `^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,127}$`: ASCII letters, digits,
+/// underscore, dot, and hyphen, and no hyphen first. The name is also the ETW
+/// session name and the input of the session GUID, and it appears in the ACL
+/// provisioning command, so the rule leaves nothing to quote or escape. A
+/// leading hyphen is refused because the MSI passes the name as a separate
+/// argument (`--session-name "[SESSION_NAME]"`), where the parser would read
+/// it as an option.
 fn check_session_name(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.encode_utf16().count() > 200 || value.contains('\0') {
-        return Err("session name must contain 1..=200 UTF-16 units and no NUL".into());
+    if let Some((position, character)) = value
+        .chars()
+        .enumerate()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
+    {
+        return Err(format!(
+            "session name must be {SESSION_NAME_RULE}; {character:?} at position {} is not \
+             allowed",
+            position + 1
+        ));
+    }
+    if value.starts_with('-') {
+        return Err(format!(
+            "session name must be {SESSION_NAME_RULE}; it starts with a hyphen"
+        ));
+    }
+    // Every character is ASCII here, so the byte length is the character count.
+    let length = value.len();
+    if length == 0 || length > MAX_SESSION_NAME_CHARS {
+        return Err(format!(
+            "session name must be {SESSION_NAME_RULE}; it has {length} characters"
+        ));
     }
     Ok(())
 }

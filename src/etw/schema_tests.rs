@@ -527,6 +527,46 @@ fn cached_parser_rejects_semantic_mutations_and_recovers_without_tdh() -> Result
     Ok(())
 }
 
+/// Runs while the process-local fixture manifest is loaded. A load failure
+/// whose budget is spent is retried; a retry that loads clears the key and
+/// caches the schema. Metadata that loads but does not compile is classed as
+/// unsupported, not as a load failure.
+fn retry_that_loads_clears_the_key(
+    pool: &'static PoolManager,
+    encoder: &mut Encoder,
+) -> Result<()> {
+    let mut parser = Parser::new();
+    let mut fixture = decode::tests::fixture(256, false, false, 0);
+    parser.remember_rejected(load_failed((256, 250), 1, 1));
+    TDH_CALLS.with(|calls| calls.set(0));
+    let event = pooled_fixture(&mut fixture.payload, 256, 250, pool);
+    assert!(
+        parser.parse_encode(event, encoder).is_err(),
+        "one event left"
+    );
+    assert_eq!(tdh_calls(), 0);
+    let event = pooled_fixture(&mut fixture.payload, 256, 250, pool);
+    assert!(
+        parser.parse_encode(event, encoder)?.is_some(),
+        "the retry loads"
+    );
+    assert_eq!(tdh_calls(), 2);
+    assert!(parser.rejected_keys.is_empty(), "the key is cleared");
+    assert!(cached_schema(&parser, (256, 250)).is_some());
+    assert_eq!(parser.schema_rejected_events(), 1);
+    // Event 258 has no Source property, so its schema does not compile.
+    let mut failure_fixture = decode::tests::fixture(258, false, false, 0);
+    let event = pooled_fixture(&mut failure_fixture.payload, 258, 250, pool);
+    let Err(failure) = event.with_record(|record| load_schema(record, PropertyName::Source)) else {
+        panic!("event 258 with a Source peer does not compile");
+    };
+    assert!(
+        matches!(failure, SchemaFailure::Unsupported(_)),
+        "{failure:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
@@ -548,8 +588,9 @@ fn process_local_manifest_tdh_matches_borrowed_fields_and_parser_output() -> Res
     check_status(status, "load fixture manifest")?;
     let _manifest = Manifest(path);
     let pool = PoolManager::new(1, 0)?;
-    let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"native oracle")?;
+    retry_that_loads_clears_the_key(pool, &mut encoder)?;
+    let mut parser = Parser::new();
     let fixture = decode::tests::fixture(256, false, false, 0);
     for version in 0..u8::try_from(MAX_CACHED_SCHEMAS).expect("bounded cache") {
         parser.schemas.push((
@@ -698,40 +739,243 @@ fn decodes_host_and_network_order_ports_and_binary_addresses() -> Result<()> {
     Ok(())
 }
 
+/// A rejected-key entry for a TDH load failure with `remaining` events left.
+const fn load_failed(key: (u16, u8), remaining: u32, load_failures: u32) -> RejectedKey {
+    RejectedKey {
+        key,
+        rejection: Rejection::LoadFailed { remaining },
+        load_failures,
+    }
+}
+
+fn rejection_of(parser: &Parser, key: (u16, u8)) -> Option<RejectedKey> {
+    parser
+        .rejected_keys
+        .iter()
+        .find(|rejected| rejected.key == key)
+        .copied()
+}
+
+fn tdh_calls() -> usize {
+    TDH_CALLS.with(std::cell::Cell::get)
+}
+
+/// Offers `count` events of `key` and checks that each is rejected from the
+/// cache without a TDH call.
+fn assert_cached_rejections(
+    parser: &mut Parser,
+    encoder: &mut Encoder,
+    payload: &mut [u8],
+    key: (u16, u8),
+    count: u32,
+    pool: &'static PoolManager,
+) {
+    let calls = tdh_calls();
+    for _ in 0..count {
+        let event = pooled_fixture(payload, key.0, key.1, pool);
+        let error = parser
+            .parse_encode(event, encoder)
+            .expect_err("rejected key stays rejected");
+        assert!(error.to_string().contains("rejected earlier"), "{error:#}");
+    }
+    assert_eq!(tdh_calls(), calls, "cached rejections make no TDH calls");
+}
+
 #[test]
-fn failed_schema_load_is_cached_and_not_retried() -> Result<()> {
+fn failed_schema_load_is_cached_then_retried_after_the_budget() -> Result<()> {
     let pool = PoolManager::new(1, 0)?;
     let mut parser = Parser::new();
     let mut encoder = Encoder::new(b"negative cache")?;
     let mut fixture = decode::tests::fixture(256, false, false, 0);
+    let capacity = parser.rejected_keys.capacity();
     TDH_CALLS.with(|calls| calls.set(0));
-    // No manifest exists for this provider version in the test process, so the
-    // first load fails.
-    let event = pooled_fixture(&mut fixture.payload, 256, 77, pool);
-    assert!(parser.parse_encode(event, &mut encoder).is_err());
-    let after_first = TDH_CALLS.with(std::cell::Cell::get);
+    // No manifest exists for this provider version in the test process, so
+    // TdhGetEventInformation returns a Win32 error: a load failure.
+    let lines = crate::spool::test_support::capture_logs(|| {
+        let event = pooled_fixture(&mut fixture.payload, 256, 77, pool);
+        assert!(parser.parse_encode(event, &mut encoder).is_err());
+    });
+    assert_eq!(
+        lines.count("DNS event schema load failed"),
+        1,
+        "{}",
+        lines.text()
+    );
+    assert!(
+        lines.text().contains("retry_after_events=65536"),
+        "{}",
+        lines.text()
+    );
+    assert_eq!(lines.count("unsupported"), 0, "{}", lines.text());
+    let after_first = tdh_calls();
     assert!(after_first > 0, "first load calls TDH");
     assert_eq!(parser.schema_rejected_events(), 1);
     assert!(parser.schemas.is_empty());
-    for _ in 0..3 {
+    assert_eq!(
+        rejection_of(&parser, (256, 77)).map(|rejected| rejected.rejection),
+        Some(Rejection::LoadFailed {
+            remaining: SCHEMA_RETRY_EVENTS
+        })
+    );
+    // The next 65,536 events are rejected from the cache.
+    assert_cached_rejections(
+        &mut parser,
+        &mut encoder,
+        &mut fixture.payload,
+        (256, 77),
+        SCHEMA_RETRY_EVENTS,
+        pool,
+    );
+    assert_eq!(
+        parser.schema_rejected_events(),
+        1 + u64::from(SCHEMA_RETRY_EVENTS)
+    );
+    // The event after those loads the schema again. It fails again here, so the
+    // key gets a fresh budget and its second failure is logged.
+    let lines = crate::spool::test_support::capture_logs(|| {
         let event = pooled_fixture(&mut fixture.payload, 256, 77, pool);
         let error = parser
             .parse_encode(event, &mut encoder)
-            .expect_err("rejected key stays rejected");
-        assert!(error.to_string().contains("rejected earlier"));
-    }
+            .expect_err("the retry fails");
+        assert!(!error.to_string().contains("rejected earlier"), "{error:#}");
+    });
+    assert!(lines.text().contains("failures=2"), "{}", lines.text());
+    assert_eq!(tdh_calls(), 2 * after_first, "the retry calls TDH again");
     assert_eq!(
-        TDH_CALLS.with(std::cell::Cell::get),
-        after_first,
-        "cached rejections make no TDH calls"
+        parser.schema_rejected_events(),
+        2 + u64::from(SCHEMA_RETRY_EVENTS)
     );
-    assert_eq!(parser.schema_rejected_events(), 4);
+    let rejected = rejection_of(&parser, (256, 77)).expect("still rejected");
+    assert_eq!(
+        rejected.rejection,
+        Rejection::LoadFailed {
+            remaining: SCHEMA_RETRY_EVENTS
+        }
+    );
+    assert_eq!(rejected.load_failures, 2);
+    assert_eq!(parser.rejected_keys.len(), 1, "updated in place");
+    assert_eq!(parser.rejected_keys.capacity(), capacity);
     // Another version is a different key and still reaches TDH once.
     let event = pooled_fixture(&mut fixture.payload, 256, 78, pool);
     assert!(parser.parse_encode(event, &mut encoder).is_err());
-    assert_ne!(TDH_CALLS.with(std::cell::Cell::get), after_first);
+    assert_eq!(tdh_calls(), 3 * after_first);
     assert_eq!(parser.rejected_keys.len(), 2);
     Ok(())
+}
+
+#[test]
+fn an_unsupported_schema_is_never_retried() -> Result<()> {
+    let pool = PoolManager::new(1, 0)?;
+    let mut parser = Parser::new();
+    let mut encoder = Encoder::new(b"permanent")?;
+    let mut fixture = decode::tests::fixture(256, false, false, 0);
+    let lines = crate::spool::test_support::capture_logs(|| {
+        let error = parser.reject(
+            (256, 9),
+            None,
+            SchemaFailure::Unsupported(anyhow!("TDH returned a different event schema")),
+        );
+        assert!(
+            format!("{error:#}").contains("version 9 schema"),
+            "{error:#}"
+        );
+    });
+    assert_eq!(
+        lines.count("DNS event schema is unsupported"),
+        1,
+        "{}",
+        lines.text()
+    );
+    assert_eq!(
+        rejection_of(&parser, (256, 9)).map(|rejected| rejected.rejection),
+        Some(Rejection::Unsupported)
+    );
+    TDH_CALLS.with(|calls| calls.set(0));
+    // Past the budget that a load failure gets, the key is still rejected
+    // without a TDH call.
+    assert_cached_rejections(
+        &mut parser,
+        &mut encoder,
+        &mut fixture.payload,
+        (256, 9),
+        SCHEMA_RETRY_EVENTS + 2,
+        pool,
+    );
+    assert_eq!(tdh_calls(), 0);
+    assert_eq!(
+        parser.schema_rejected_events(),
+        3 + u64::from(SCHEMA_RETRY_EVENTS)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_retry_that_fails_as_unsupported_stays_rejected() {
+    let mut parser = Parser::new();
+    parser.remember_rejected(load_failed((257, 3), 0, 2));
+    let lines = crate::spool::test_support::capture_logs(|| {
+        let _error = parser.reject(
+            (257, 3),
+            Some(0),
+            SchemaFailure::Unsupported(anyhow!("DNS provider requires a manifest schema")),
+        );
+    });
+    assert_eq!(lines.count("unsupported"), 1, "{}", lines.text());
+    let rejected = rejection_of(&parser, (257, 3)).expect("still rejected");
+    assert_eq!(rejected.rejection, Rejection::Unsupported);
+    assert_eq!(parser.rejected_keys.len(), 1);
+    assert_eq!(parser.schema_rejected_events(), 1);
+}
+
+#[test]
+fn load_failure_logs_are_bounded_per_key() {
+    let mut parser = Parser::new();
+    parser.remember_rejected(load_failed((256, 5), 0, 0));
+    let lines = crate::spool::test_support::capture_logs(|| {
+        for _ in 0..130 {
+            let _error = parser.reject(
+                (256, 5),
+                Some(0),
+                SchemaFailure::Load(anyhow!("TDH metadata size query failed")),
+            );
+        }
+    });
+    // Failures 1 to 4, 61, and 121 are logged.
+    assert_eq!(
+        lines.count("DNS event schema load failed"),
+        6,
+        "{}",
+        lines.text()
+    );
+    for failures in [1, 2, 3, 4, 61, 121] {
+        assert!(
+            lines.text().contains(&format!("failures={failures} ")),
+            "{}",
+            lines.text()
+        );
+    }
+    assert_eq!(
+        rejection_of(&parser, (256, 5)).map(|rejected| rejected.load_failures),
+        Some(130)
+    );
+}
+
+#[test]
+fn hold_counts_down_a_load_failure_and_keeps_an_unsupported_key() {
+    let mut entry = load_failed((256, 1), 2, 1);
+    assert_no_allocations(|| {
+        assert!(entry.hold());
+        assert!(entry.hold());
+        assert!(!entry.hold(), "the budget is spent");
+        assert!(!entry.hold(), "stays spent until the caller retries");
+    });
+    let mut unsupported = RejectedKey {
+        rejection: Rejection::Unsupported,
+        ..entry
+    };
+    for _ in 0..3 {
+        assert!(unsupported.hold());
+    }
 }
 
 #[test]
@@ -739,7 +983,7 @@ fn rejected_key_list_is_bounded_without_reallocating() {
     let mut parser = Parser::new();
     let capacity = parser.rejected_keys.capacity();
     for version in 0..=u8::try_from(MAX_CACHED_SCHEMAS).expect("bounded cache") {
-        parser.remember_rejected((256, version));
+        parser.remember_rejected(load_failed((256, version), SCHEMA_RETRY_EVENTS, 1));
         assert!(parser.rejected_keys.len() <= MAX_CACHED_SCHEMAS);
     }
     assert_eq!(parser.rejected_keys.len(), 1);

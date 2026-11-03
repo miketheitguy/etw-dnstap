@@ -7,26 +7,31 @@ Provisioning steps that the EtwDnstap MSI runs as SYSTEM (plan W7).
 Install: checks RECEIVER as docs/guide/install.md step 1 does, creates or checks
 ProgramData\EtwDnstap and its spool folder with the rules of install.md (the
 New-ProtectedFolder, Test-ProtectedFolder and Test-SpoolFolder functions are
-ported without loosening), adds the service SID to Performance Log Users, and
-runs Grant-EtwDnstapEtwAccess.ps1 from the install folder.
+ported without loosening), adds the service SID to Performance Log Users,
+runs Grant-EtwDnstapEtwAccess.ps1 from the install folder, and sets the service
+recovery policy with sc.exe failure (install.md step 5).
 
 Uninstall: stops the leftover ETW session, removes the service SID from
 Performance Log Users, runs the grant script with -Remove, and deletes the spool
 and backup folders that the product created. Reparse points are never followed or
-deleted, and content that the product did not create is kept and listed.
+deleted, and content that the product did not create is kept and listed. The group
+membership is read and removed by the service SID, not by the account name, so it
+works after the service was deleted by hand. If that step fails, the script prints
+a WARNING line and continues with the grant removal and the folder removal.
 
-Each change prints one line, which the MSI log keeps. The script exits 1 on the
-first failure and writes no secrets. It is run by WixQuietExec from the install
-folder, by full path, as SYSTEM, with no profile.
+Each change prints one line, which the MSI log keeps. Apart from that warning, the
+script exits 1 on the first failure and writes no secrets. It is run by WixQuietExec
+from the install folder, by full path, as SYSTEM, with no profile.
 
 .PARAMETER Action
 Install or Uninstall.
 
 .PARAMETER SessionName
-The --session-name of the service. Letters, digits, '_', '.', '-'.
+The --session-name of the service. 1 to 128 characters: ASCII letters, digits, '_', '.', '-'.
+The first character must not be '-'.
 
 .PARAMETER Receiver
-IP:port of the collector. Required for Install.
+IP:port of the collector, as IPv4 or [IPv6]:port. Required for Install.
 #>
 [CmdletBinding()]
 param(
@@ -34,8 +39,13 @@ param(
     [ValidateSet('Install', 'Uninstall')]
     [string]$Action,
 
+    # Case-sensitive and anchored with \z: the default ValidatePattern ignores case,
+    # which lets U+212A and U+0130 match [A-Za-z], and its $ accepts a trailing newline.
+    # No leading '-': the MSI passes the name on command lines (this script's
+    # powershell.exe -File line and the service's ImagePath), where a value that starts
+    # with '-' is read as a parameter or an option name. The service CLI has the same rule.
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
+    [ValidatePattern('^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,127}\z', Options = 'None')]
     [string]$SessionName,
 
     [string]$Receiver
@@ -45,6 +55,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $ServiceName = 'EtwDnstap'
+# The service SID of EtwDnstap: S-1-5-80 plus the SHA-1 of the upper-cased name, as
+# Get-ServiceSidFromName in Grant-EtwDnstapEtwAccess.ps1 derives it. Product.wxs uses the
+# same value in the install folder ACL. Test-SpoolFolder checks it against the system's
+# own lookup on every install, so a wrong value fails the install.
 $ServiceSidText = 'S-1-5-80-3892396922-4053150511-3308241269-1610546069-1753937115'
 $PerformanceLogUsersSid = 'S-1-5-32-559'
 $trustedSids = 'S-1-5-18', 'S-1-5-32-544'
@@ -203,17 +217,141 @@ function Initialize-DataFolders {
 }
 
 function Get-PerformanceLogUsersName {
-    # Get-LocalGroupMember and net.exe need the group name without the BUILTIN\ domain part.
+    # net.exe, Get-LocalGroupMember and the NetLocalGroup functions need the group name
+    # without the BUILTIN\ part.
     $account = (New-Object Security.Principal.SecurityIdentifier $PerformanceLogUsersSid).
         Translate([Security.Principal.NTAccount]).Value
     return $account.Substring($account.IndexOf([char]92) + 1)
 }
 
+# Local group membership by SID, through NetLocalGroupGetMembers and
+# NetLocalGroupDelMembers at level 0 (LOCALGROUP_MEMBERS_INFO_0, a SID only). Neither
+# looks up an account name, so a member SID that no longer resolves (the service was
+# deleted) is read and removed like any other. The alternatives fail on such a member:
+# Translate() on NT SERVICE\EtwDnstap throws IdentityNotMappedException,
+# Get-LocalGroupMember in Windows PowerShell 5.1 throws on any orphaned member SID in
+# the group, and net.exe takes account names only. The ADSI WinNT provider binds a
+# WinNT://S-1-... path as a domain name, and IsMember() with such a path returned
+# False for a real member when tested.
+#
+# Add-Type compiles this with csc.exe, which application control, antivirus, or
+# constrained language mode can block. The uninstall path uses only this, because the
+# service may be gone. The install path uses it only when the name-based check fails
+# (Test-ServiceInGroupForInstall). A failed compile is kept and thrown again, so the
+# script never compiles it twice.
+$script:LocalGroupApiError = $null
+function Initialize-LocalGroupApi {
+    if ('EtwDnstap.LocalGroup' -as [type]) { return }
+    if ($null -ne $script:LocalGroupApiError) { throw $script:LocalGroupApiError }
+    try {
+        Add-LocalGroupType
+    }
+    catch {
+        $script:LocalGroupApiError = 'Add-Type could not compile the NetLocalGroup functions: ' +
+            $_.Exception.Message
+        throw $script:LocalGroupApiError
+    }
+}
+
+function Add-LocalGroupType {
+    Add-Type -Namespace EtwDnstap -Name LocalGroup -MemberDefinition @'
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+private struct LOCALGROUP_MEMBERS_INFO_0 { public System.IntPtr Sid; }
+
+[System.Runtime.InteropServices.DllImport("netapi32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+private static extern uint NetLocalGroupGetMembers(string serverName, string localGroupName, uint level,
+    out System.IntPtr buffer, uint preferredMaximumLength, out uint entriesRead, out uint totalEntries,
+    ref System.IntPtr resumeHandle);
+
+[System.Runtime.InteropServices.DllImport("netapi32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+private static extern uint NetLocalGroupDelMembers(string serverName, string groupName, uint level,
+    LOCALGROUP_MEMBERS_INFO_0[] buffer, uint totalEntries);
+
+[System.Runtime.InteropServices.DllImport("netapi32.dll")]
+private static extern uint NetApiBufferFree(System.IntPtr buffer);
+
+private const uint ErrorMoreData = 234;
+private const uint ErrorMemberNotInAlias = 1377;
+
+// The SID text of every member of the local group. Throws Win32Exception on failure.
+public static string[] GetMemberSids(string groupName) {
+    var sids = new System.Collections.Generic.List<string>();
+    var resume = System.IntPtr.Zero;
+    int size = System.Runtime.InteropServices.Marshal.SizeOf(typeof(LOCALGROUP_MEMBERS_INFO_0));
+    uint status;
+    do {
+        System.IntPtr buffer;
+        uint read;
+        uint total;
+        status = NetLocalGroupGetMembers(null, groupName, 0, out buffer, 0xFFFFFFFF, out read, out total, ref resume);
+        try {
+            if (status != 0 && status != ErrorMoreData) {
+                throw new System.ComponentModel.Win32Exception((int)status);
+            }
+            for (uint i = 0; i < read; i++) {
+                var entry = (LOCALGROUP_MEMBERS_INFO_0)System.Runtime.InteropServices.Marshal.PtrToStructure(
+                    new System.IntPtr(buffer.ToInt64() + (long)i * size), typeof(LOCALGROUP_MEMBERS_INFO_0));
+                sids.Add(new System.Security.Principal.SecurityIdentifier(entry.Sid).Value);
+            }
+        }
+        finally {
+            if (buffer != System.IntPtr.Zero) { NetApiBufferFree(buffer); }
+        }
+    } while (status == ErrorMoreData);
+    return sids.ToArray();
+}
+
+// Removes one member by SID. Returns false if it was not a member. Throws Win32Exception
+// on any other failure.
+public static bool RemoveMemberSid(string groupName, string sidText) {
+    var sid = new System.Security.Principal.SecurityIdentifier(sidText);
+    var bytes = new byte[sid.BinaryLength];
+    sid.GetBinaryForm(bytes, 0);
+    var handle = System.Runtime.InteropServices.GCHandle.Alloc(bytes, System.Runtime.InteropServices.GCHandleType.Pinned);
+    try {
+        var entries = new LOCALGROUP_MEMBERS_INFO_0[1];
+        entries[0].Sid = handle.AddrOfPinnedObject();
+        uint status = NetLocalGroupDelMembers(null, groupName, 0, entries, 1);
+        if (status == ErrorMemberNotInAlias) { return false; }
+        if (status != 0) { throw new System.ComponentModel.Win32Exception((int)status); }
+        return true;
+    }
+    finally {
+        handle.Free();
+    }
+}
+'@
+}
+
+# By the service SID, through netapi32. Works when the service no longer exists.
 function Test-ServiceInGroup([string]$GroupName) {
-    $serviceSid = (New-Object Security.Principal.NTAccount "NT SERVICE\$ServiceName").
-        Translate([Security.Principal.SecurityIdentifier]).Value
-    $members = @(Get-LocalGroupMember -Group $GroupName | ForEach-Object { $_.SID.Value })
-    return ($members -contains $serviceSid)
+    Initialize-LocalGroupApi
+    $members = @([EtwDnstap.LocalGroup]::GetMemberSids($GroupName))
+    return ($members -contains $ServiceSidText)
+}
+
+# Install only. The service exists here (InstallServices ran, and Test-SpoolFolder
+# checked that NT SERVICE\EtwDnstap resolves to the expected SID), so the name-based
+# check works and needs no compiler. If it throws (for example on an orphaned member
+# SID in the group), the SID-based check runs once. If both fail, the install fails.
+function Test-ServiceInGroupForInstall([string]$GroupName) {
+    $nameError = $null
+    try {
+        $serviceSid = (New-Object Security.Principal.NTAccount "NT SERVICE\$ServiceName").
+            Translate([Security.Principal.SecurityIdentifier]).Value
+        $members = @(Get-LocalGroupMember -Group $GroupName -ErrorAction Stop | ForEach-Object { $_.SID.Value })
+        return ($members -contains $serviceSid)
+    }
+    catch {
+        $nameError = $_.Exception.Message
+    }
+    Write-Step "The name-based membership check on $GroupName failed ($nameError). Reading the members by SID instead."
+    try {
+        return (Test-ServiceInGroup $GroupName)
+    }
+    catch {
+        throw "Could not read the members of $GroupName. By name: $nameError By SID: $($_.Exception.Message)"
+    }
 }
 
 # The grant script has ConfirmImpact High, so it asks before each change unless
@@ -231,7 +369,7 @@ function Invoke-Install {
     Initialize-DataFolders
 
     $group = Get-PerformanceLogUsersName
-    if (Test-ServiceInGroup $group) {
+    if (Test-ServiceInGroupForInstall $group) {
         Write-Step "NT SERVICE\$ServiceName is already a member of $group."
     }
     else {
@@ -298,18 +436,33 @@ function Remove-OwnedTree {
     return $complete
 }
 
+# Uninstall only. A failure here is a warning: the grant removal and the folder removal
+# must still run, and a membership that is left behind grants nothing once the service
+# and its ETW grant are gone.
+function Remove-ServiceFromGroup {
+    try {
+        $group = Get-PerformanceLogUsersName
+        if (-not (Test-ServiceInGroup $group)) {
+            Write-Step "Service SID $ServiceSidText is not in $group."
+        }
+        elseif ([EtwDnstap.LocalGroup]::RemoveMemberSid($group, $ServiceSidText)) {
+            Write-Step "Removed service SID $ServiceSidText (NT SERVICE\$ServiceName) from $group."
+        }
+        else {
+            Write-Step "Service SID $ServiceSidText is not in $group."
+        }
+    }
+    catch {
+        Write-Step ("WARNING: could not read or remove the membership of service SID $ServiceSidText " +
+            "in Performance Log Users ($PerformanceLogUsersSid). The uninstall continues. " +
+            'Remove the SID from the group by hand. Error: ' + $_.Exception.Message)
+    }
+}
+
 function Invoke-Uninstall {
     Stop-LeftoverSession
 
-    $group = Get-PerformanceLogUsersName
-    if (Test-ServiceInGroup $group) {
-        net.exe localgroup "$group" "NT SERVICE\$ServiceName" /delete | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "net localgroup /delete failed (exit code $LASTEXITCODE)." }
-        Write-Step "Removed NT SERVICE\$ServiceName from $group."
-    }
-    else {
-        Write-Step "NT SERVICE\$ServiceName is not in $group."
-    }
+    Remove-ServiceFromGroup
 
     Invoke-Grant @{ Remove = $true }
     Write-Step 'Removed the ETW grants of the service SID.'

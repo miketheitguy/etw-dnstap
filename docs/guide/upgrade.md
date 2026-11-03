@@ -1,11 +1,16 @@
 # Repair or upgrade the service
 
-> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI sources at commit `58fde72` · **Reviewed:** 2026-11-03
 
-Use this guide to change an installed service. It covers these tasks: take a
-snapshot, restore it, move from an older build, and replace the executable or
-the counter manifest, and add the spool folder. To install a new service, see
-[Install and provision](install.md).
+Use this guide to change an installed service. It covers these tasks:
+
+- Upgrade, repair, or change the settings of an MSI install.
+- Take a snapshot, and restore it.
+- Move from an older build.
+- Replace the executable or the counter manifest.
+- Add the spool folder.
+
+To install a new service, see [Install and provision](install.md).
 
 
 For an existing installation, keep the service identity, privileges, executable
@@ -28,6 +33,33 @@ on 2026-11-03: install, a failed install and its rollback, repair, a receiver
 change, and uninstall, each with a restart. A major upgrade from an older MSI
 has not been tested. See [the plan and its results](../plans/msi-installer-plan.md).
 
+### When the install steps run
+
+The install steps are the folder checks, the Performance Log Users membership,
+the ETW grant script, and the service recovery policy. They run only in a pass
+that installs the executable component. This keeps the ETW grant and the
+service's binary path on the same `SESSION_NAME`. The uninstall steps run only
+when the product is removed for good.
+
+| Command | Install steps | Uninstall steps |
+| --- | --- | --- |
+| First install, `msiexec /i` | Run | Skip |
+| Major upgrade: a newer MSI, or a rebuild with the same version | Run, in the new product | Skip. The removal of the old product is part of the upgrade. |
+| Repair with `/fvomus` or `/fvamus`, or `REINSTALL=ALL` | Run | Skip |
+| Maintenance `msiexec /i` of the installed product with no `REINSTALL` | Skip | Skip |
+| Uninstall, `msiexec /x` | Skip | Run |
+
+The same MSI file, which has the same `ProductCode`, is a maintenance run, not
+an upgrade. A maintenance run with a new `SESSION_NAME` or `RECEIVER` and no
+`REINSTALL` changes nothing: the grant, the service's binary path, and the
+remembered value all stay. To change a setting, use `REINSTALL=ALL` or a repair,
+as in the sections below. A product that you installed from an MSI built before
+this rule keeps the old behavior until you upgrade it to an MSI that has the
+rule.
+
+The lab has not yet run the maintenance case with the current MSI. See
+[the plan](../plans/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
+
 ### Upgrade to a newer build
 
 ```powershell
@@ -39,6 +71,8 @@ msiexec.exe /i etw-dnstap-<new-version>-x64.msi /qn /norestart /l*v upgrade.log
   it starts again after the restart.
 - It reuses the remembered `RECEIVER`, `SESSION_NAME`, and `SERVICE_ARGS`, unless
   you pass them on the command line.
+- A rebuild with the same version number is also a major upgrade. See
+  [Downgrade is refused](#downgrade-is-refused).
 - It keeps the spool folder, the ETW grants, and the membership of Performance
   Log Users. The uninstall steps do not run during an upgrade, so none of these
   is removed. The install steps run again. They check the folders, add the
@@ -47,9 +81,16 @@ msiexec.exe /i etw-dnstap-<new-version>-x64.msi /qn /norestart /l*v upgrade.log
 ### Downgrade is refused
 
 An MSI with a lower version is refused with the message `A newer version of
-EtwDnstap is already installed. Uninstall it first.` To return to an older build,
-uninstall the current one, restart the computer, and install the older MSI. The
-uninstall deletes the spool. See [Uninstall with the MSI](uninstall.md#uninstall-with-the-msi).
+EtwDnstap is already installed. Uninstall it first.`
+
+A rebuilt MSI with the same version number is not refused. Every build has a new
+`ProductCode`, and `MajorUpgrade` sets `AllowSameVersionUpgrades="yes"`, so the
+rebuild replaces the installed build in place, as a major upgrade. Without that
+setting, the rebuild would install beside the installed build as a second
+product. The lab has not yet run a same-version upgrade.
+
+To return to an older build, uninstall the current one, restart the computer, and
+install the older MSI. The uninstall deletes the spool. See [Uninstall with the MSI](uninstall.md#uninstall-with-the-msi).
 
 ### Repair
 
@@ -57,10 +98,27 @@ uninstall deletes the spool. See [Uninstall with the MSI](uninstall.md#uninstall
 msiexec.exe /fvomus etw-dnstap-<version>-x64.msi /qn /norestart /l*v repair.log
 ```
 
-Repair reinstalls the files, the registry values, and the service settings from
-the MSI. It runs the install steps again, and it keeps the remembered values.
+Repair restores missing or older files, rewrites the registry values, and sets
+the service settings again. It runs the install steps again, and it keeps the
+remembered values.
 It stops the service and does not start it again. It exits with `3010`. Restart
 the computer, and the service starts with the delayed start.
+
+- **Same `ProductCode` only.** A repair applies to an installed product, so use
+  the MSI file of the installed build. An MSI that you rebuilt has a new
+  `ProductCode`. Windows Installer reports error 1605 for `/f` with that file.
+  To replace the installed build with the rebuild, run it as an upgrade: see
+  [Downgrade is refused](#downgrade-is-refused). The lab did not test the
+  error.
+- **Which files.** The `o` in `/fvomus` replaces a file only when it is missing
+  or its version is older. A damaged executable that has the same version is not
+  replaced. To force every file to be replaced, use `a` in place of `o`:
+
+  ```powershell
+  msiexec.exe /fvamus etw-dnstap-<version>-x64.msi /qn /norestart /l*v repair.log
+  ```
+
+  See the [`msiexec` repair options](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/msiexec#repair-options).
 
 ### Empty values keep the remembered value
 
@@ -83,8 +141,10 @@ msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v receiver.log `
 ```
 
 `REINSTALL=ALL` is required. Without it, `msiexec /i` on an installed product
-changes nothing that lasts: in the lab, the service's binary path and the
-remembered value stayed the same, and the run still asked for a restart.
+changes nothing that lasts, because the install steps are skipped (see
+[When the install steps run](#when-the-install-steps-run)). In the lab, the
+service's binary path and the remembered value stayed the same, and the run
+still asked for a restart.
 
 - The reinstall stops the service and does not start it again. It exits with
   `3010`. Restart the computer, and the service starts with the new receiver.
@@ -104,11 +164,20 @@ msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v session.log `
     REINSTALL=ALL REINSTALLMODE=vomus SESSION_NAME=EtwDnstap-New
 ```
 
-Do not leave out `REINSTALL=ALL`. Without it, the install steps still run the
-grant script with the new name, which moves the grant to the new GUID, but the
-service's binary path keeps the old name. After the restart, the service then
-fails with `StartTraceW: access denied`. The lab tested the reinstall form for a
-receiver change only, not for a session name change.
+The name must be 1 to 128 ASCII letters, digits, underscore, dot, or hyphen, and
+it must not start with a hyphen. A launch condition refuses a name that starts
+with `-`. The provisioning script rejects any other invalid name, and the install
+fails and rolls back. See [configuration.md](configuration.md#options).
+
+Do not leave out `REINSTALL=ALL`. Without it, the run is a maintenance run: the
+install steps are skipped, and the grant, the service's binary path, and the
+remembered name all stay as they were. A product that you installed from an MSI
+built before the skip rule still runs the install steps on that run. With such a
+product, the grant script moves the grant to the new GUID, but the service's
+binary path keeps the old name. After the restart, the service then fails with
+`StartTraceW: access denied`. Upgrade to a current MSI first. The lab tested the
+reinstall form for a receiver change only, not for a session name change, and
+not with the skip rule.
 
 The new session name has its own session GUID. The grant script grants the
 service SID on the new GUID, and it removes the service SID's grants from the
@@ -116,6 +185,9 @@ other GUIDs that it manages. Restart the computer after the install, because
 the grant applies at boot.
 
 ## Snapshot before a change
+
+The sections from here on apply to a service that you provisioned by hand.
+For an MSI install, use the MSI as above.
 
 First run the functions from
 [Create a protected snapshot folder](install.md#create-a-protected-snapshot-folder).

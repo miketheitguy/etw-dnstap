@@ -14,7 +14,10 @@
            InstallerVersion="500"
            Compressed="yes">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of EtwDnstap is already installed. Uninstall it first." />
+    <!-- AllowSameVersionUpgrades: a rebuild with the same X.Y.Z (a new ProductCode)
+         replaces the installed product instead of installing beside it. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of EtwDnstap is already installed. Uninstall it first." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- W2: Add/Remove Programs. No modify button; help link to the repository. -->
@@ -46,6 +49,13 @@
     <Launch Condition="VersionNT64" Message="EtwDnstap needs 64-bit Windows." />
     <Launch Condition="Installed OR DNS_SERVICE_TYPE" Message="The DNS Server role is not installed. Install it before EtwDnstap." />
     <Launch Condition="Installed OR RECEIVER OR RECEIVER_REMEMBERED" Message="Set RECEIVER to the collector's numeric IP address and port, for example RECEIVER=192.0.2.10:6000." />
+    <!-- The session-name rule: 1 to 128 ASCII letters, digits, '_', '.', '-', and no
+         leading '-'. The provisioning script and the service check all of it. A condition
+         cannot test the length or the character set, but it can test the leading '-',
+         which the deferred provisioning action would otherwise reject and roll the
+         install back. Not checked on a removal. LaunchConditions runs after the
+         SetProperty actions that fill SESSION_NAME. -->
+    <Launch Condition="REMOVE=&quot;ALL&quot; OR NOT (SESSION_NAME &lt;&lt; &quot;-&quot;)" Message="SESSION_NAME must not start with '-'. Use 1 to 128 ASCII letters, digits, '_', '.', or '-', and do not start with '-'." />
 
     <!-- W7: the provisioning actions live in CustomActions.wxs. Referencing them links that fragment. -->
     <CustomActionRef Id="ProvisionInstall" />
@@ -108,7 +118,7 @@
           </ServiceConfig>
           <!-- W5: the recovery policy (install.md step 5) is set by the provisioning script with
                sc.exe failure. The core ServiceConfigFailureActions row made MsiConfigureServices
-               fail with error 5 (access denied) in the lab, and util:ServiceConfig has one restart
+               fail with access denied, then error 1939, in the lab, and util:ServiceConfig has one restart
                delay for all three actions, not 5 s, 5 s, and 60 s. -->
           <!-- W5: install.md step 4 service descriptor. -->
           <PermissionEx Sddl="D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;IU)(A;;CCLCSWLORC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)" />

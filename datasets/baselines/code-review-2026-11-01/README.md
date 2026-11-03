@@ -3,7 +3,7 @@
 > **Status:** Historical · **Evidence dated:** 2026-11-02 · **Commit:** `fc983ab` (plan base; measured from the benchmark commit `8ee43a4`, see below) · **Reviewed:** 2026-11-02
 
 Phase 0 record (step 0.1) of
-[docs/plans/code-review-remediation-plan.md](../../../docs/plans/code-review-remediation-plan.md).
+[docs/history/code-review-remediation-plan.md](../../../docs/history/code-review-remediation-plan.md).
 The Phase 2 performance experiments compare against this record. Do not edit
 the results. Record a later measurement in a new directory.
 

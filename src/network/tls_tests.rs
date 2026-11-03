@@ -2,7 +2,7 @@
 //! handshake deadline. Tests trust a throwaway CA through a `RootCertStore`;
 //! the Windows platform verifier is not used here.
 
-use super::test_support::{WAIT_TIMEOUT, handshake_over, retry_policy, wait_until};
+use super::test_support::{RefusedPort, WAIT_TIMEOUT, handshake_over, retry_policy, wait_until};
 use super::*;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::{
@@ -160,6 +160,56 @@ fn tls_server_name_mismatch_is_invalid_data_and_fatal_at_startup() {
 }
 
 #[test]
+fn a_certificate_failure_after_a_start_while_down_is_logged_at_once() {
+    // The receiver was down at startup, comes back late in the outage, and
+    // presents a certificate for another name.
+    let pki = issue(&["other.example"]);
+    let config = server_config(&pki, BOTH);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = thread::spawn(move || {
+        for _ in 0..2 {
+            let mut stream = accept_tls(&listener, &config);
+            // The client rejects the certificate, so this read fails.
+            let mut byte = [0];
+            let _ = stream.read(&mut byte);
+        }
+    });
+    let stats = Arc::new(SinkStats::default());
+    let refused = RefusedPort::new();
+    let mut sink = NetworkSink::start_with(
+        receiver_config(refused.address(), &pki),
+        Arc::clone(&stats),
+        retry_policy(10, 40),
+    )
+    .expect("a refused connection starts the sink disconnected");
+    sink.config.address = address;
+    stats.reconnect_failures.store(10, Ordering::Relaxed);
+    let lines = crate::spool::test_support::capture_logs(|| {
+        wait_until(WAIT_TIMEOUT, "two failed TLS handshakes", || {
+            sink.write_frame(b"frame").expect("drops are not errors");
+            stats.reconnect_failures.load(Ordering::Relaxed) >= 12
+        });
+    });
+    receiver.join().expect("receiver ends");
+    let text = lines.text();
+    assert_eq!(lines.count("ERROR"), 1, "{text}");
+    assert!(
+        text.contains("failed the TLS handshake before the first session"),
+        "{text}"
+    );
+    assert!(text.contains("Windows trust store"), "{text}");
+    assert!(text.contains("--tls-server-name"), "{text}");
+    assert!(text.contains("cause=\"tls\""), "{text}");
+    assert!(text.contains("failures=11"), "{text}");
+    // The second failure has the same cause and is not logged.
+    assert_eq!(lines.count("dnstap reconnect failed"), 0, "{text}");
+    let mut seen = sink.seen_failures;
+    assert!(!seen.insert(FailureClass::Tls), "the tls cause is recorded");
+    assert!(!sink.is_connected(), "retries go on; nothing is fatal");
+}
+
+#[test]
 fn plaintext_receiver_with_default_tls_is_invalid_data() {
     let pki = issue(&["127.0.0.1"]);
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
@@ -250,4 +300,111 @@ fn tls_handshake_respects_the_deadline() {
     assert!(elapsed < IO_TIMEOUT * 3, "{elapsed:?}");
     release.send(()).expect("release receiver");
     receiver.join().expect("receiver ends");
+}
+
+/// A TLS 1.3 receiver that requires a client certificate issued by its CA. It
+/// sends its alert after the client's Finished, so the client sees it on the
+/// first read after its side of the handshake.
+fn client_certificate_server_config(pki: &Pki) -> Arc<ServerConfig> {
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(pki.roots.clone()),
+        provider(),
+    )
+    .build()
+    .expect("client certificate verifier");
+    Arc::new(
+        ServerConfig::builder_with_provider(provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("server versions")
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(pki.chain.clone(), pki.key.clone_key())
+            .expect("server certificate"),
+    )
+}
+
+/// Serves `count` connections that each fail for want of a client certificate.
+/// Each connection stays open until the client closes it, so the alert is read
+/// and not lost to a reset.
+fn client_certificate_receiver(
+    listener: TcpListener,
+    pki: &Pki,
+    count: usize,
+) -> thread::JoinHandle<()> {
+    let config = client_certificate_server_config(pki);
+    thread::spawn(move || {
+        for _ in 0..count {
+            let mut stream = accept_tls(&listener, &config);
+            let mut byte = [0];
+            assert!(stream.read(&mut byte).is_err(), "no client certificate");
+            let (_, mut tcp) = stream.into_parts();
+            let mut rest = [0; 4096];
+            while matches!(tcp.read(&mut rest), Ok(read) if read > 0) {}
+        }
+    })
+}
+
+#[test]
+fn an_alert_after_the_handshake_is_a_tls_failure() {
+    let pki = issue(&["127.0.0.1"]);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = client_certificate_receiver(listener, &pki, 1);
+    let error = Connection::connect(receiver_config(address, &pki))
+        .err()
+        .expect("the receiver requires a client certificate");
+    receiver.join().expect("receiver ends");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error:?}");
+    // The client finished its side of the handshake, so the alert came from a
+    // Frame Streams read and carries the rustls error, not `TlsFailure`.
+    let inner = error.get_ref().expect("an error payload");
+    assert!(
+        matches!(
+            inner.downcast_ref::<rustls::Error>(),
+            Some(rustls::Error::AlertReceived(
+                rustls::AlertDescription::CertificateRequired
+            ))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(FailureClass::of(&error), FailureClass::Tls);
+}
+
+#[test]
+fn a_required_client_certificate_before_the_first_session_names_it() {
+    let pki = issue(&["127.0.0.1"]);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = client_certificate_receiver(listener, &pki, 2);
+    let stats = Arc::new(SinkStats::default());
+    let refused = RefusedPort::new();
+    let mut sink = NetworkSink::start_with(
+        receiver_config(refused.address(), &pki),
+        Arc::clone(&stats),
+        retry_policy(10, 40),
+    )
+    .expect("a refused connection starts the sink disconnected");
+    sink.config.address = address;
+    stats.reconnect_failures.store(10, Ordering::Relaxed);
+    let lines = crate::spool::test_support::capture_logs(|| {
+        wait_until(WAIT_TIMEOUT, "two refused TLS sessions", || {
+            sink.write_frame(b"frame").expect("drops are not errors");
+            stats.reconnect_failures.load(Ordering::Relaxed) >= 12
+        });
+    });
+    receiver.join().expect("receiver ends");
+    let text = lines.text();
+    assert_eq!(lines.count("ERROR"), 1, "{text}");
+    assert!(
+        text.contains("failed the TLS handshake before the first session"),
+        "{text}"
+    );
+    assert!(
+        text.contains("does not require a client certificate"),
+        "{text}"
+    );
+    assert!(text.contains("CertificateRequired"), "{text}");
+    assert!(text.contains("cause=\"tls\""), "{text}");
+    assert!(!text.contains("dnstap content type"), "{text}");
+    assert_eq!(lines.count("dnstap reconnect failed"), 0, "{text}");
+    assert!(!sink.is_connected(), "retries go on; nothing is fatal");
 }

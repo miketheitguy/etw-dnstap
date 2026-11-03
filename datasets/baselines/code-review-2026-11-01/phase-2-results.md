@@ -7,7 +7,7 @@ comparison. They compare against the Phase 0 numbers in the
 [baseline record](README.md). Do not edit the results.
 
 The Phase 0 numbers in the [baseline record](README.md) are unchanged. Phase 2 of
-[docs/plans/code-review-remediation-plan.md](../../../docs/plans/code-review-remediation-plan.md)
+[docs/history/code-review-remediation-plan.md](../../../docs/history/code-review-remediation-plan.md)
 ran four experiments, one commit each, in the plan's order: item 9 (fat LTO and
 one codegen unit), item 10 (a leaked `&'static PoolManager` instead of an
 `Arc`), item 11 (the extended-data item tables out of the slot header), and

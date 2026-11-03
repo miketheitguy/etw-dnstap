@@ -1,15 +1,152 @@
 //! Helpers shared by the spool tests: a throwaway folder, frame builders and
-//! decoders, and an independent Frame Streams file parser.
+//! decoders, an independent Frame Streams file parser, and a log capture that
+//! other modules' tests also use.
 
 use std::{
-    fs,
+    cell::RefCell,
+    fs, io,
     ops::Range,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex, Once,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use tracing::Level;
+use tracing_subscriber::{
+    filter::LevelFilter,
+    fmt::MakeWriter,
+    layer::{Layer as _, SubscriberExt as _},
+};
+
 use crate::framestream::FrameStreamWriter;
+
+/// Collects log output so a test can count messages.
+#[derive(Clone, Default)]
+pub(crate) struct LogLines(Arc<Mutex<Vec<u8>>>);
+
+impl LogLines {
+    pub(crate) fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("log lock")).into_owned()
+    }
+
+    pub(crate) fn count(&self, needle: &str) -> usize {
+        self.text().matches(needle).count()
+    }
+}
+
+impl io::Write for LogLines {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().expect("log lock").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Runs `work` with the warnings and errors it logs on this thread captured.
+pub(crate) fn capture_logs(work: impl FnOnce()) -> LogLines {
+    capture_logs_at(Level::WARN, work)
+}
+
+/// Runs `work` with the events at `level` and above that it logs on this
+/// thread captured. `level` is at most [`Level::INFO`].
+///
+/// Every capture goes through one process-wide subscriber that writes an event
+/// to the capture of the thread that logged it. A scoped subscriber per
+/// capture (`tracing::subscriber::with_default`) is not reliable while tests
+/// run in parallel: while only one dispatcher is registered, `tracing-core`
+/// computes the cached interest of a callsite from the default dispatcher of
+/// the thread that reaches it first. A test thread without a capture then
+/// caches `Interest::never` for the callsite, and a capture open on another
+/// thread misses the event. With one global dispatcher every thread computes
+/// the same interest, and the per-event filter reads this thread's capture.
+pub(crate) fn capture_logs_at(level: Level, work: impl FnOnce()) -> LogLines {
+    assert!(
+        level <= Level::INFO,
+        "the test subscriber records INFO and above"
+    );
+    install_capture_subscriber();
+    let lines = LogLines::default();
+    let previous = CAPTURE.with(|capture| capture.replace(Some((lines.clone(), level))));
+    let _restore = RestoreCapture(previous);
+    work();
+    lines
+}
+
+thread_local! {
+    /// The capture open on this thread and the most verbose level it keeps.
+    static CAPTURE: RefCell<Option<(LogLines, Level)>> = const { RefCell::new(None) };
+}
+
+/// Puts back the capture that was open before, also when `work` panics.
+struct RestoreCapture(Option<(LogLines, Level)>);
+
+impl Drop for RestoreCapture {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        CAPTURE.with(|capture| *capture.borrow_mut() = previous);
+    }
+}
+
+fn install_capture_subscriber() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        // A dynamic filter, so the callsite interest is `sometimes` and the
+        // filter runs for each event on the thread that logs it.
+        let open_capture = tracing_subscriber::filter::dynamic_filter_fn(|metadata, _context| {
+            CAPTURE.with(|capture| {
+                capture
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(_, level)| metadata.level() <= level)
+            })
+        })
+        .with_max_level_hint(LevelFilter::INFO);
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(ThreadCapture)
+            .with_filter(open_capture);
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer))
+            .expect("no other global subscriber in the test process");
+    });
+    // A callsite first reached on another thread while the subscriber was
+    // being installed can keep the interest computed before it; recompute.
+    tracing::callsite::rebuild_interest_cache();
+}
+
+/// Makes writers to the capture of the thread that logs the event.
+struct ThreadCapture;
+
+impl<'a> MakeWriter<'a> for ThreadCapture {
+    type Writer = CaptureWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        CaptureWriter(
+            CAPTURE.with(|capture| capture.borrow().as_ref().map(|(lines, _)| lines.clone())),
+        )
+    }
+}
+
+/// Writes to a thread's capture, or discards the bytes when there is none.
+struct CaptureWriter(Option<LogLines>);
+
+impl io::Write for CaptureWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            Some(lines) => lines.write(bytes),
+            None => Ok(bytes.len()),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 /// A unique folder under the system temp folder, removed on drop.
 pub(crate) struct TestDir {
@@ -113,4 +250,32 @@ pub(crate) fn parse_fstrm(file: &[u8]) -> Vec<Vec<u8>> {
         "STOP frame"
     );
     payloads(&file[start.len()..file.len() - STOP.len()])
+}
+
+/// A capture must see an event whose callsite another thread, with no capture
+/// active, reached first while the capture was open.
+#[test]
+fn a_capture_sees_a_callsite_first_reached_on_another_thread() {
+    fn log_it() {
+        tracing::warn!("callsite first reached on another thread");
+    }
+    let (opened, wait_for_open) = std::sync::mpsc::channel();
+    let (logged, wait_for_log) = std::sync::mpsc::channel();
+    let other = std::thread::spawn(move || {
+        wait_for_open.recv().expect("capture opens");
+        log_it();
+        logged.send(()).expect("capture waits");
+    });
+    let lines = capture_logs(|| {
+        opened.send(()).expect("other thread waits");
+        wait_for_log.recv().expect("other thread logs");
+        log_it();
+    });
+    other.join().expect("other thread finishes");
+    assert_eq!(
+        lines.count("callsite first reached on another thread"),
+        1,
+        "{}",
+        lines.text()
+    );
 }

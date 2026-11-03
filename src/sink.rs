@@ -59,10 +59,12 @@ pub(crate) struct SinkStats {
 
 /// Destination for encoded dnstap frames.
 ///
-/// The parser thread owns one sink and calls it from a single thread. Frames
-/// are never resent after a failure; the implementation decides whether an
-/// error is fatal (a single connection) or recoverable (the reconnecting
-/// network sink, which discards and counts frames while disconnected).
+/// The parser thread owns one sink and calls it from a single thread. In
+/// production the sink is the `QueuedSink`, which hands frames to the
+/// `dnstap-sender` thread. Frames are never resent after a failure; the
+/// implementation decides whether an error is fatal (a single connection) or
+/// recoverable (the reconnecting network sink, which discards and counts frames
+/// while disconnected).
 pub(crate) trait FrameSink {
     /// Queues one complete dnstap frame, possibly buffering it.
     ///

@@ -58,7 +58,9 @@ The callback does these steps in order:
    `callback_errors`. A record with no free slot increments
    `pool_exhausted_regular` or `pool_exhausted_jumbo`.
 5. Send the slot to the channel with `try_send`. A full channel drops the newest
-   event and increments `ring_dropped`.
+   event and increments `ring_dropped`. A channel with no receiver drops the
+   event and increments `receiver_disconnected`. Each of these drops also
+   increments `intake_dropped`.
 
 The callback never waits and never allocates. The
 [pooled intake](pooled-intake.md#ownership-and-callback-lifecycle) reference
@@ -86,7 +88,13 @@ The parser takes slots with `try_recv`. For each slot, it does these steps:
    that does not compile, or a malformed payload, increments `rejected`. A
    schema failure also increments `schema_rejected`.
 3. Encode the record as a dnstap message. Event 256 becomes `CLIENT_QUERY`.
-   Events 257 and 258 become `CLIENT_RESPONSE`.
+   Events 257 and 258 become `CLIENT_RESPONSE`. The encoder rejects a record
+   with an unsupported event ID, a DNS message outside 12 to 65,535 bytes, a QR
+   bit that disagrees with the event, addresses of two families, a timestamp
+   before the Unix epoch, or an encoded size over 70 KiB. It counts the
+   rejection in `rejected`. The
+   [dnstap fields](../guide/configuration.md#message-and-transport-limits) are in
+   the configuration reference.
 4. Release the slot to the pool.
 5. Pass the frame to the sink.
 
@@ -166,7 +174,8 @@ Each stage has its own loss counters. Use the counter to find the stage.
 | 2 | The record is malformed. | `callback_errors` |
 | 2 | The pool has no free slot. | `pool_exhausted_regular`, `pool_exhausted_jumbo` |
 | 3 | The channel is full. | `ring_dropped` |
-| 4 | The record does not decode. | `rejected`, `schema_rejected` |
+| 3 | The channel has no receiver. | `receiver_disconnected` |
+| 4 | The record does not decode or encode. | `rejected`, `schema_rejected` |
 | 5 | The send queue is full. | `queue_dropped` |
 | 5 | The receiver is down with no spool in use, or the connection fails with frames in flight. | `disconnected_dropped` |
 | 5 | The spool refuses a block, evicts a segment, or cannot read a frame. | `spool_dropped`, `spool_dropped_bytes` |

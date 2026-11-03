@@ -162,18 +162,63 @@ fn etw_buffer_kib_must_be_a_multiple_of_four_at_validation() {
 }
 
 #[test]
-fn identity_and_session_name_byte_and_unit_limits() {
+fn identity_byte_limits_and_session_name_character_limits() {
     assert!(parse(&["--identity", &"a".repeat(1024)]).is_ok());
     assert!(parse(&["--identity", &"a".repeat(1025)]).is_err());
     // The limit counts UTF-8 bytes: 512 two-byte characters fit, 513 do not.
     assert!(parse(&["--identity", &"é".repeat(512)]).is_ok());
     assert!(parse(&["--identity", &"é".repeat(513)]).is_err());
     assert!(parse(&["--identity", ""]).is_ok());
-    // Session names count UTF-16 units; a surrogate pair is two.
-    assert!(parse(&["--session-name", &"a".repeat(200)]).is_ok());
-    assert!(parse(&["--session-name", &"a".repeat(201)]).is_err());
-    assert!(parse(&["--session-name", &"😀".repeat(100)]).is_ok());
-    assert!(parse(&["--session-name", &"😀".repeat(101)]).is_err());
+    // Session names are 1 to 128 ASCII characters from [A-Za-z0-9_.-], not
+    // starting with a hyphen.
+    assert!(parse(&["--session-name", r"ab"]).is_ok());
+    assert!(parse(&["--session-name", "a-"]).is_ok());
+    assert!(parse(&["--session-name", &"a".repeat(128)]).is_ok());
+    assert!(parse(&["--session-name", &"a".repeat(129)]).is_err());
+    assert!(parse(&["--session-name", &"a".repeat(200)]).is_err());
+    assert!(parse(&["--session-name", ""]).is_err());
+    assert!(parse(&["--session-name", "has space"]).is_err());
+    assert!(parse(&["--session-name", &"😀".repeat(10)]).is_err());
+    assert!(parse(&["--session-name", r"a\b"]).is_err());
+    assert!(parse(&["--session-name", "name\n"]).is_err());
+    assert!(parse(&["--session-name=-a"]).is_err());
+    assert!(parse(&["--session-name=-"]).is_err());
+}
+
+#[test]
+fn session_name_default_and_valid_forms_parse() {
+    assert_eq!(
+        parse(&[]).expect("default").session_name,
+        "EtwDnstap",
+        "the default name satisfies the rule"
+    );
+    for name in ["EtwDnstap-Lab", "a.b_c-D9", "_", ".", "a-", "9-"] {
+        let argument = format!("--session-name={name}");
+        assert_eq!(parse(&[&argument]).expect(name).session_name, name);
+    }
+}
+
+#[test]
+fn session_name_rejection_is_reported_as_a_value_error() {
+    let error = parse(&["--session-name", "bad name"]).expect_err("space refused");
+    assert_eq!(error.kind(), ErrorKind::ValueValidation);
+    let text = error.to_string();
+    assert!(
+        text.contains("session name must be 1 to 128 ASCII"),
+        "{text}"
+    );
+    assert!(text.contains("' ' at position 4"), "{text}");
+}
+
+#[test]
+fn a_session_name_that_starts_with_a_hyphen_is_refused_by_the_validator() {
+    // The MSI passes the name as a separate argument, where clap would read
+    // `-x` as an option. The `=` form reaches the validator, which refuses it.
+    let error = parse(&["--session-name=-x"]).expect_err("leading hyphen refused");
+    assert_eq!(error.kind(), ErrorKind::ValueValidation);
+    let text = error.to_string();
+    assert!(text.contains("not starting with a hyphen"), "{text}");
+    assert!(text.contains("it starts with a hyphen"), "{text}");
 }
 
 #[test]

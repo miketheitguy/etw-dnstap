@@ -164,8 +164,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   with the Windows machine certificate store through `rustls-platform-verifier`.
   Revocation is checked for the receiver certificate only, and the connection
   proceeds when the status cannot be obtained. `--tls-server-name NAME` sets the name the
-  certificate must match and the SNI. The default is the receiver IP as an
-  `iPAddress` SAN. `--plaintext` disables TLS and cannot be combined with
+  certificate must match. A DNS name is also sent as the SNI, and an IP address
+  is not, because rustls sends no SNI for an IP address. The default is the
+  receiver IP as an `iPAddress` SAN, so the default sends no SNI. `--plaintext` disables TLS and cannot be combined with
   `--tls-server-name`. A certificate that does not verify is a protocol failure:
   fatal at the first connection, a counted failed attempt on a reconnect. No
   client certificate. `capture started` gains `tls` and `tls_server_name`.
@@ -420,6 +421,35 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   on and a zero-sized type with empty inline methods with it off, and the
   argument-hiding `drain_queue` wrapper is gone. The feature-on log output is
   unchanged and the normal release image is the same size.
+- **Breaking.** `--session-name` accepts only 1 to 128 ASCII letters, digits,
+  underscore, dot, or hyphen, and it is case-sensitive. The earlier rule allowed
+  1 to 200 UTF-16 units, so a name with any other character, such as a space or a
+  non-ASCII letter, a name over 128 characters, or a name that starts with a
+  hyphen, is now rejected at startup. The MSI passes the name as a separate
+  argument, where a leading hyphen would read as an option. The MSI property
+  `SESSION_NAME`, the provisioning script, and `Grant-EtwDnstapEtwAccess.ps1`
+  use the same rule. The MSI also has a launch condition that refuses a
+  `SESSION_NAME` that starts with `-`. A condition cannot test the length or the
+  character set, so the scripts and the service enforce the rest. The session GUID is still
+  derived from the exact name, so the ETW grant must spell the name as
+  `--session-name` does. `Capture::start` keeps its 1,024-unit check as a
+  backstop.
+- A same-version rebuild of the MSI is now a major upgrade. `MajorUpgrade` sets
+  `AllowSameVersionUpgrades="yes"`, and every build has a new `ProductCode`, so
+  the rebuild replaces the installed build. Before, it installed beside it as a
+  second product. The WiX build reports ICE61 as warning `WIX1076`.
+- The MSI runs its install steps (folder checks, group membership, ETW grant,
+  recovery policy) only in a pass that installs the executable component. A
+  maintenance `msiexec /i` with a changed `SESSION_NAME` or `RECEIVER` and no
+  `REINSTALL` now changes nothing. Before, it moved the ETW grant to the new
+  name but left the service's binary path on the old name, so the service failed
+  every start with access denied. Use `REINSTALL=ALL` or a repair to change a
+  setting. A product installed from an older MSI keeps the old behavior until it
+  is upgraded.
+- The rate warning now reads `received rate is above 22,000 events/s; the default
+  buffer settings were validated at about 20,000 events/s; ...`, so it states
+  both the threshold and the validated rate. The text before named only the
+  validated rate while it fired at 22,000.
 
 ### Removed
 
@@ -505,6 +535,55 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - `ubuntu-parser-ramp-control.py`: recursive monitoring raised `NameError`
   because `monitor()` read a variable that only `finish()` defined. Commit
   `aa7e199`.
+- A transient failure to load an event schema no longer rejects that schema for
+  the life of the process. A Win32 error from `TdhGetEventInformation` rejects
+  the (event ID, version) key, and the parser loads the schema again after 65,536
+  further rejected events of the key. A load that succeeds clears the key. A
+  schema that cannot be decoded is still rejected for good. Before, one failed
+  load could drop all queries or all responses until a restart. The new warning
+  is `DNS event schema load failed; its events are rejected until the load is
+  retried`, logged for the first four failures of a key and then every 60th.
+  `schema_rejected` also counts each failed retry.
+- A TLS certificate failure after a start while the receiver was down is now
+  logged at once. The first rejection before any session logs one error (Event
+  ID 4) that names the Windows trust store and `--tls-server-name`, or says that
+  the receiver refused the Frame Streams handshake. `dnstap reconnect failed`
+  gains the fields `cause` (`connect`, `timeout`, `tls`, or `protocol`) and
+  `failures`, and it is also logged for the first failure of each `cause` since a
+  session was last established. A session that is established clears that list,
+  and a lost session does not, so alternating causes add at most one extra line
+  per cause in an outage. A TLS alert after the handshake, such as
+  `received fatal alert: CertificateRequired` from a receiver that requires a
+  client certificate, counts as a `tls` failure, and the first-rejection error
+  also tells you that the service sends no client certificate. Before, the
+  reason appeared only at failure 61. A reconnect thread that cannot start, or
+  that ends without a result, is now logged.
+- The spool logs a warning when the free-space floor makes it refuse blocks for
+  10 seconds: `dnstap spool is refusing blocks: the volume is below the
+  free-space floor and no older segment is left to delete`, with `free_mib`,
+  `needed_mib`, and `pause_s`. It logs the first four pauses and then every 60th.
+  Before, the spool refused blocks with no log line.
+- Watchdog and parser logs match their documentation. The deadline that guards
+  the steps before the arguments are read is now named `startup`, not `shutdown`.
+  The capture start has its own `CAPTURE_START_TIMEOUT` of 10 s, the same value
+  as before. The `rejected ETW event` warning now logs the first four and then
+  every 60th rejection, with the running `rejected` count. Before, it logged only
+  the first four.
+- The MSI uninstall no longer fails when the service was deleted by hand. The
+  provisioning script reads and removes the Performance Log Users membership by
+  the service SID, not by `NT SERVICE\EtwDnstap`. If that step fails, for
+  example because application control blocks the small `Add-Type` class that it
+  compiles, the uninstall prints a warning, continues with the grant and the
+  spool, and tells you to remove the SID by hand. On install, the script still
+  checks the membership by name first, and it reads the members by SID only if
+  that check throws. The lab has not tested these cases.
+- Documentation: the upgrade guide no longer says a same-version rebuild is
+  probably refused, and it states that `/fvomus` repair needs the same
+  `ProductCode` and replaces only missing or older files. `/fvamus` forces every
+  file. The configuration and receiver guides say that the receiver certificate
+  should carry an `iPAddress` SAN when the server name is the receiver IP. Whether
+  the platform verifier also accepts the address in a `dNSName` SAN or falls back
+  to the common name is not verified.
 
 ### Security
 

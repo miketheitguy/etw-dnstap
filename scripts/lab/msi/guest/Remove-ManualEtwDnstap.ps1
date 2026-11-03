@@ -49,7 +49,7 @@ try {
         }
         else { Write-Step 'The service is already stopped.' }
 
-        # uninstall.md does the group removal (step 3) after the service delete (step 2).
+        # uninstall.md does the group removal (step 2) before the service delete (step 3).
         # The name NT SERVICE\EtwDnstap resolves only while the service exists, so this
         # script removes the membership and the grants first, as the MSI does.
         $group = (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-559').Translate([Security.Principal.NTAccount]).Value.Split([char]92)[-1]

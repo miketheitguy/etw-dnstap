@@ -1,6 +1,6 @@
 # Build the executable
 
-> **Status:** Current · **Describes:** the MSI work at commit `1aad4d0` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the MSI sources at commit `58fde72` · **Reviewed:** 2026-11-03
 
 Use this guide to build `etw-dnstap.exe` from source and check its hardening.
 It is for the person who prepares the executable. To build the MSI installer, see
@@ -56,7 +56,8 @@ Points to know before you build:
 - **Warnings fail the build.** Under `[lints.rust]`, `Cargo.toml` sets
   `warnings` to `deny`. Any compiler warning is an error, including in a
   release build.
-- **The release profile** enables overflow checks and `panic = "abort"`.
+- **The release profile** enables overflow checks, `panic = "abort"`, fat link-time
+  optimization, and one code-generation unit. These make a release build slower.
   `.cargo/config.toml` statically links the MSVC C runtime (`+crt-static`) for
   every build of the target. The clean Server Core deployment does not need the
   Visual C++ Redistributable.
@@ -72,7 +73,9 @@ Points to know before you build:
   scripts\ci\verify-pe.ps1 -Path target\x86_64-pc-windows-msvc\release\etw-dnstap.exe
   ```
 
-  The script fails in each of these conditions:
+  The script runs `dumpbin`. It uses `dumpbin.exe` from `PATH`, or it asks
+  `vswhere` for the newest Visual Studio C++ toolset. Pass `-DumpBin <path>` to
+  name a copy. The script fails in each of these conditions:
 
   - A hardening flag is missing.
   - The image has a PDB entry.
@@ -136,8 +139,8 @@ therefore a statement about Rust-compiled code only.
 
 Use this section to build the MSI installer from the release executable. The
 build script runs the Rust release build and the CI checks on it, then the WiX
-build. The script runs on Windows only. To install the MSI, see
-[Install with the MSI](install.md#install-with-the-msi).
+build. The script runs on Windows only. CI does not build the MSI. To install the
+MSI, see [Install with the MSI](install.md#install-with-the-msi).
 
 Lab validation: passed on one lab DNS Server (Windows Server 2025, build 26100)
 on 2026-11-03: install, a failed install and its rollback, repair, a receiver
@@ -193,7 +196,12 @@ non-zero exit code.
 4. **Version resource.** Checks the executable's binary `FileVersion`
    (`X.Y.Z.0`), its `FileVersion` string (`X.Y.Z`), and its `ProductVersion`
    string (the full version).
-5. **WiX build.** Builds `packaging/msi/EtwDnstap.wixproj` in Release.
+5. **WiX build.** Builds `packaging/msi/EtwDnstap.wixproj` in Release. The
+   build reports warning `WIX1076` (ICE61) because `MajorUpgrade` sets
+   `AllowSameVersionUpgrades="yes"`, so the upgrade range includes the version
+   that is being built. This is a warning, not an error. The build does not
+   suppress it, and it does not stop the script. Every build gets a new
+   `ProductCode`. See [Downgrade is refused](upgrade.md#downgrade-is-refused).
 6. **Property table.** Reads the MSI `Property` table through Windows Installer.
    It checks `ProductVersion`, `UpgradeCode`, `ProductName`, and `Manufacturer`.
 7. **Hash.** Writes the SHA-256 hash file next to the MSI, and prints the
@@ -205,6 +213,10 @@ The output is in `target\msi\`:
 | --- | --- |
 | `etw-dnstap-X.Y.Z-x64.msi` | The installer, for the version in `Cargo.toml`. |
 | `etw-dnstap-X.Y.Z-x64.msi.sha256` | One line: the SHA-256 hash, two spaces, and the file name. |
+| `etw-dnstap-X.Y.Z-x64.wixpdb` | WiX debug data that the build writes next to the MSI. |
+| `release-build.log` | The log of the step 2 release build. Step 3 reads it. |
+
+The folder also holds `obj\`, the WiX intermediate files.
 
 `target\` is ignored by Git. The script writes nothing outside it. To check the
 MSI, compare its hash with the `.sha256` file:

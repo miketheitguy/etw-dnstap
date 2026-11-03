@@ -1,6 +1,6 @@
 # Ring capacity and shutdown
 
-> **Status:** Current · **Describes:** `main` at commit `7f91264` · **Evidence dated:** October 28-29, 2026 for the experiment, which is historical · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `src/etw/` on the `plan/msi-installer` branch (the schema retry was added after `7ec888d`) · **Evidence dated:** October 28-29, 2026 for the experiment, which is historical · **Reviewed:** 2026-11-03
 
 This note is for maintainers, and for administrators who choose a capture
 capacity. It explains the queue bounds and the shutdown contract. It describes
@@ -19,8 +19,9 @@ ETW buffer options.
 The user-mode ETW callback leases preallocated storage and copies each accepted
 event. It then calls `crossbeam_channel::Sender::try_send` on a bounded event
 channel. It does not wait for capacity or allocate callback storage. A full
-channel drops the newest event and increments `ring_dropped`. The default
-capacity is 24,576 events (it was 8192 events before 2026-11-01). `--capacity` accepts 1,024–262,144.
+channel drops the newest event and increments `ring_dropped` and
+`intake_dropped`. The default capacity is 24,576 events (it was 8192 events
+until 2026-11-01). `--capacity` accepts 1,024–262,144.
 
 ### Parser wake and polling
 
