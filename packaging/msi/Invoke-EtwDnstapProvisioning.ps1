@@ -242,6 +242,12 @@ function Invoke-Install {
 
     Invoke-Grant @{ SessionName = $SessionName }
     Write-Step "Ran the ETW grant for session '$SessionName'. Restart the computer before the service starts."
+
+    # install.md step 5. Reset after one day, restart after 5 s, 5 s, then 60 s. The
+    # non-crash failure flag is set by the ServiceConfig row in Product.wxs.
+    & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/60000 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc.exe failure failed (exit code $LASTEXITCODE)." }
+    Write-Step 'Set the recovery policy: restart after 5 s, 5 s, 60 s; reset after 86400 s.'
 }
 
 # ---- W7 uninstall steps ----------------------------------------------------------
