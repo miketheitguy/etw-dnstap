@@ -105,7 +105,7 @@ python -B scripts/performance/metrics-ledger-test.py -v
 python -B scripts/performance/pooled-intake-run-test.py -v
 ```
 
-> **Script path changed (commit `6e62b2e`):** the suites are now `scripts/performance/test_metrics_ledger.py` and `scripts/performance/test_pooled_intake_run.py`. The command above is the
+> **Script path changed (commit `f1475d8`):** the suites are now `scripts/performance/test_metrics_ledger.py` and `scripts/performance/test_pooled_intake_run.py`. The command above is the
 > recorded historical text. See [script moves and renames](../../scripts/performance/README.md#file-moves-and-renames).
 
 Sol reports 14 focused and five existing tests passed. Astra independently

@@ -171,7 +171,7 @@ the approved matrix. The wrapper calls `windows-pooled-wpr.ps1`,
 wrapper. Its completion requires the independent stable receiver end-marker and
 exact all-category gate before another run.
 
-> **Script path changed (commit `6e62b2e`):** `windows-pooled-stage.ps1` and
+> **Script path changed (commit `f1475d8`):** `windows-pooled-stage.ps1` and
 > `windows-pooled-wpr.ps1` are now under `scripts/performance/archive/`.
 > `windows-pooled-campaign.ps1` is now
 > `scripts/performance/archive/windows-service-campaign.ps1 -Variant Pooled`, which

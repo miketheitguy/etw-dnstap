@@ -1,6 +1,6 @@
 # Pooled ETW intake
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `7f91264` (pooled intake present by `2c62a9f`) · **Evidence dated:** not applicable (reference. Live results are in the historical campaign records.) · **Reviewed:** 2026-11-02
 
 This reference helps maintainers review the ownership, memory budget, and loss
 accounting of the pooled Event Tracing for Windows (ETW) intake. It describes the

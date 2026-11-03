@@ -1,6 +1,6 @@
 # LocalService restricted-SID lab validation
 
-> **Status:** Historical · **Evidence dated:** 2026-11-01 (America/Los_Angeles, timestamps in UTC) · **Commit:** the commit that adds this record (parent `6718863`) · **Reviewed:** 2026-11-01
+> **Status:** Historical · **Evidence dated:** 2026-11-01 (America/Los_Angeles, timestamps in UTC) · **Commit:** the commit that adds this record (parent `1a54272`) · **Reviewed:** 2026-11-01
 
 This record describes the first live run of the `NT AUTHORITY\LocalService`
 profile with a restricted service SID. It answers one question: which ETW
@@ -113,7 +113,7 @@ derives the GUID from `--session-name`. For `EtwDnstap-Lab` it is
   with a message that names the session GUID and the `-SessionName` to use.
 - The script was run again, and the guest restarted. Only the session GUID named
   the service SID.
-- First-version upgrade: the commit `6718863` script granted `0x423` on the
+- First-version upgrade: the commit `1a54272` script granted `0x423` on the
   default and `0x80` on the provider. The new script removed both and deleted
   the provider descriptor. The default matched the original afterwards.
 

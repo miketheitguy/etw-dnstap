@@ -75,7 +75,7 @@ powershell.exe -NoProfile -File scripts/performance/windows-1000qps-campaign.ps1
 powershell.exe -NoProfile -File scripts/performance/windows-1000qps-campaign.ps1 -Action Prepare
 ```
 
-> **Script path changed (commit `6e62b2e`):** `windows-1000qps-campaign.ps1` is now `scripts/performance/archive/windows-1000qps-campaign.ps1`. The command above is the
+> **Script path changed (commit `f1475d8`):** `windows-1000qps-campaign.ps1` is now `scripts/performance/archive/windows-1000qps-campaign.ps1`. The command above is the
 > recorded historical text. See [script moves and renames](../../scripts/performance/README.md#file-moves-and-renames).
 
 It saves the current baseline in the protected guest directory
@@ -191,5 +191,5 @@ powershell.exe -NoProfile -File scripts/performance/windows-1000qps-campaign.ps1
 powershell.exe -NoProfile -File scripts/performance/windows-1000qps-campaign.ps1 -Action Proof
 ```
 
-> **Script path changed (commit `6e62b2e`):** `windows-1000qps-campaign.ps1` is now `scripts/performance/archive/windows-1000qps-campaign.ps1`. The command above is the
+> **Script path changed (commit `f1475d8`):** `windows-1000qps-campaign.ps1` is now `scripts/performance/archive/windows-1000qps-campaign.ps1`. The command above is the
 > recorded historical text. See [script moves and renames](../../scripts/performance/README.md#file-moves-and-renames).

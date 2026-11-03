@@ -1,6 +1,6 @@
 # ETW flush removal validation
 
-> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time) · **Commit:** working tree on `ef46c85` (the flush removal) · **Reviewed:** 2026-11-01
+> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time) · **Commit:** working tree on `50523a8` (the flush removal) · **Reviewed:** 2026-11-01
 
 This record covers the lab test of the change that removes the explicit
 periodic ETW flush (`--etw-flush-ms`). It records what was tested, the client
@@ -39,7 +39,7 @@ purposes:
 | Item | Value |
 | --- | --- |
 | Guest | DNSTap-WS2025, 6 vCPU, 4 GiB fixed memory, Windows Server 2025 Standard Evaluation 10.0.26100 |
-| Service build | Release build (`cargo build --release --locked`) of the working tree on HEAD `ef46c85`, with the flush removal |
+| Service build | Release build (`cargo build --release --locked`) of the working tree on HEAD `50523a8`, with the flush removal |
 | Service executable | SHA-256 `0C3673E0801FD5431B2F44BF16734A4351DEA88E46C1BF642F7105593E486DCC`. `verify-pe.ps1`: 21 checks, 0 failed |
 | Service identity | LocalService, restricted SID |
 | Receiver | dnscollector 3.2.3 on DNSTap-Ubuntu2604, plaintext. The service ran with `--plaintext` |

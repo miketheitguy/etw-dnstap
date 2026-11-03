@@ -1,6 +1,6 @@
 # Skills evaluation lab validation
 
-> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time, America/Los_Angeles; Application log lines are UTC) · **Commit:** `77d7c47` plus an uncommitted fix to `scripts/provision/Grant-EtwDnstapEtwAccess.ps1` (see "Defect found") · **Reviewed:** 2026-11-01
+> **Status:** Historical · **Evidence dated:** 2026-11-01 (guest local time, America/Los_Angeles; Application log lines are UTC) · **Commit:** `72cc41e` plus an uncommitted fix to `scripts/provision/Grant-EtwDnstapEtwAccess.ps1` (see "Defect found") · **Reviewed:** 2026-11-01
 
 This record covers the lab run for the changes made after the skills-driven
 evaluation: the removal of the instance mutex, the GUID-checked session reclaim,
@@ -15,11 +15,11 @@ and the backup and restore of ETW and service state. It follows
 | Windows VM | `DNSTap-WS2025` (`24bafedb-0998-4430-a0c6-7e90350cd9ac`), Windows Server 2025 Standard Evaluation, build 26100, DNS Server role. Identity checked with `Get-LabVm` before every action. |
 | Receiver | DNS-collector on `DNSTap-Ubuntu2604`, `172.27.215.60:6000`. Not touched. The service reported `receiver_connected=true`. |
 | Checkpoints | `pre-localservice-acl-test-2026-11-01` (kept) and `eval-pre-2026-11-01` (new, taken before any change) |
-| Host commit | `77d7c47`. Working tree: only `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`, `docs/guide/install.md` and `docs/guide/troubleshooting.md` modified by this run. |
+| Host commit | `72cc41e`. Working tree: only `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`, `docs/guide/install.md` and `docs/guide/troubleshooting.md` modified by this run. |
 | Service | `EtwDnstap`, `--receiver 172.27.215.60:6000 --session-name EtwDnstap-Lab` (binary path unchanged from the earlier lab) |
-| Release exe (deployed) | SHA-256 `4D058D96D4E4FAC2F3BC87248C565F4E3D89A0FD06F93C09CE937B674CC44941`, built from `77d7c47` with `cargo build --locked --release` |
-| Unit-test exe (guest) | `etw_dnstap-813bad2f42f8fb88.exe`, SHA-256 `1921419E8DEE8EAB2BD2B2DAB04F78BA686E371CA97A2B83F869669EF2D95590` (`77d7c47`) |
-| Earlier builds | Test run 1 used the `700dd62` build: release `177632FDE67E181F12092B1F01036EC7FB5E080CC251A23299A33C9227EBFEFA`, test exe `744683C0E430E7B5C08AB1B6C81C1B9664C5908B79E420DB6D7E91354BF326B7`. Pre-eval installed exe: `E92DB5F185262900337686CDE874C85208173E0C3FA3BAE70E7231F1D0380156`. |
+| Release exe (deployed) | SHA-256 `4D058D96D4E4FAC2F3BC87248C565F4E3D89A0FD06F93C09CE937B674CC44941`, built from `72cc41e` with `cargo build --locked --release` |
+| Unit-test exe (guest) | `etw_dnstap-813bad2f42f8fb88.exe`, SHA-256 `1921419E8DEE8EAB2BD2B2DAB04F78BA686E371CA97A2B83F869669EF2D95590` (`72cc41e`) |
+| Earlier builds | Test run 1 used the `39c4337` build: release `177632FDE67E181F12092B1F01036EC7FB5E080CC251A23299A33C9227EBFEFA`, test exe `744683C0E430E7B5C08AB1B6C81C1B9664C5908B79E420DB6D7E91354BF326B7`. Pre-eval installed exe: `E92DB5F185262900337686CDE874C85208173E0C3FA3BAE70E7231F1D0380156`. |
 | PE check | `scripts/ci/verify-pe.ps1` on the deployed exe: 18 checks, 0 failed (x64, large-address aware, high-entropy ASLR, dynamic base, NX, CFG with 833 functions, EH continuation 11, CET marker, cookie, no PDB entry, no ASan, no dynamic CRT). |
 
 The build used `CARGO_TARGET_DIR=target\elab`. The guest is a lab host. Standard
@@ -32,7 +32,7 @@ user tests used a temporary local user (`labstd`), removed afterwards.
 
 | # | Check | Command | Expected | Observed |
 | --- | --- | --- | --- | --- |
-| 1 | Elevated ignored tests | `unit.exe --ignored --test-threads=1` (both `700dd62` and `77d7c47` builds) | all pass, including `reclaim_replaces_leaked_real_time_session` | 6 passed, 0 failed for both builds |
+| 1 | Elevated ignored tests | `unit.exe --ignored --test-threads=1` (both `39c4337` and `72cc41e` builds) | all pass, including `reclaim_replaces_leaked_real_time_session` | 6 passed, 0 failed for both builds |
 | 2 | Snapshot block | install.md "Snapshot before a change" | folder with 12 files, ACL SYSTEM and Administrators only | as expected (`qc`, `qsidtype`, `qprivs`, `qfailure`, `qfailureflag`, `sdshow`, `service.reg`, `wmi-security.reg`, `install.acl`, `plu.txt`, `exe-hash.txt`, exe copy) |
 | 3 | Replace the executable | stop, rename to `.bak`, copy, `icacls` | `NT SERVICE\EtwDnstap:(I)(RX)` on the new file | as expected, both times |
 | 4 | Pinned service descriptor | `cmd.exe /c 'sc.exe sdset ...'`, then step 6 compare | `sdshow` equals the audit string | exact match, before and after a reboot |
@@ -47,7 +47,7 @@ user tests used a temporary local user (`labstd`), removed afterwards.
 | 13 | Grant run with nothing to do | same, without `-WhatIf` | "Already granted", no backup | as expected |
 | 14 | `-Remove`, then `-Restore` (one-element `Changed`) | `-Remove`, `-Restore <dir> -WhatIf`, `-Restore <dir>` | `-WhatIf` changes nothing; the descriptor returns byte for byte; registry export equals the original | as expected; `ConvertFrom-Json` in Windows PowerShell 5.1 read the file; export diff 0 lines |
 | 15 | Grant after `-Remove`, then `-Restore` (one-element `Created`, empty `Changed`) | grant, `-Restore <dir>` | the created value is deleted | as expected. The descriptor ETW seeded had the same SDDL as the original but different bytes. |
-| 16 | **Failed first**: backup in the original script | `-Remove` on `700dd62` | backup written | `Argument types do not match` in `Write-ChangeLog`; no change was made (the backup precedes every change). See "Defect found". Passed after the fix. |
+| 16 | **Failed first**: backup in the original script | `-Remove` on `39c4337` | backup written | `Argument types do not match` in `Write-ChangeLog`; no change was made (the backup precedes every change). See "Defect found". Passed after the fix. |
 | 17 | Restore from a missing path | `-Restore C:\Lab\nonexistent` | clear error | `No changes.json at ...` |
 | 18 | `icacls /save` and `/restore` | install.md snapshot, `icacls 'C:\Program Files' /restore ...` | ACL unchanged | 0 differing lines before and after |
 | 19 | F-13 reboot | `Restart-Computer`, then export `WMI\Security` | only the session GUID value relates to the service SID | after restore and reboot, two new values (`2d0da110-...`, `4ba7efee-...`) appeared that other components create. Grant `-WhatIf` reported nothing to remove, so the service SID is only on the session GUID. |
@@ -102,7 +102,7 @@ user tests used a temporary local user (`labstd`), removed afterwards.
 
 ## Guest state at the end
 
-The service runs the `77d7c47` build (SHA-256 above) as LocalService with a
+The service runs the `72cc41e` build (SHA-256 above) as LocalService with a
 restricted SID type, only `SeChangeNotifyPrivilege`, the pinned descriptor,
 failure actions 5 s, 5 s and 60 s with the non-crash flag, a delayed automatic
 start, and a dependency on `DNS`. The `0x20` grant is on
@@ -124,7 +124,7 @@ The standard user in rows 5 and 7 was a batch logon, which `AU` covers and
 
 | Item | Value |
 | --- | --- |
-| Commit | `78d1ca0` plus uncommitted edits to `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`, `scripts/provision/README.md`, `docs/guide/install.md` and `docs/guide/uninstall.md` |
+| Commit | `9837085` plus uncommitted edits to `scripts/provision/Grant-EtwDnstapEtwAccess.ps1`, `scripts/provision/README.md`, `docs/guide/install.md` and `docs/guide/uninstall.md` |
 | Checkpoint | `eval-post-review-2026-11-01` (taken first; the two earlier checkpoints are kept) |
 | Release exe | SHA-256 `8FAD752D69B17A9CC35AFCBABDAFD181D5A612770D4F7DA868C3ADD675609A18`. `verify-pe.ps1`: 21 checks, 0 failed. |
 | Unit-test exe | SHA-256 `14FF8CC8121E2F17759A41B73B63F5A76E77480200D252AF4908CF329900F528` |
@@ -170,7 +170,7 @@ Not covered by the re-run: a root-owned-by-SYSTEM `EtwDnstap` folder (the
 owner check accepts SYSTEM, but I only created Administrator-owned ones),
 domain-joined hosts, and any build other than 26100.
 
-Guest state at the end: the `78d1ca0` build (hash above), running, delayed
+Guest state at the end: the `9837085` build (hash above), running, delayed
 automatic start, dependency on `DNS`, the `IU` and `SU` descriptor, the `0x20`
 grant only on `{43b7b2fc-777a-5214-b6ed-665c1ff9e972}`. Snapshot folders
 `20261101025017` and `20261101033112` remain under

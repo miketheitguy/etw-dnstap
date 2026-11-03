@@ -1,6 +1,6 @@
 # TDH fallback removal plan
 
-> **Status:** Historical (executed 2026-11-01) · **Evidence dated:** not applicable · **Commit:** written at `21e31c0` · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed 2026-11-01) · **Evidence dated:** not applicable · **Commit:** written at `d538e35` · **Reviewed:** 2026-11-01
 
 ## Goal
 
@@ -76,7 +76,7 @@ reprovisioning is needed.
      - Deploy the new build.
      - Confirm that the live manifest compiles: `schema_rejected=0` and
        `encoded=received`.
-     - Compare the service CPU with the currently deployed build (`0865e19`)
+     - Compare the service CPU with the currently deployed build (`9146740`)
        under the same `dns-stress` load. Alternate the runs and repeat each one.
 5. **Gate.**
    - fmt and clippy for all feature sets.
@@ -115,7 +115,7 @@ old service.
     path was not changed.
   - Unpinned runs showed a 10% gap that disappeared when the runs were pinned.
 - **Lab** (6 vCPUs, default settings, authoritative `dns-stress` at 5,000 QPS for
-  50 s, 3 alternating runs per build against `0865e19`):
+  50 s, 3 alternating runs per build against `9146740`):
   - The live Windows Server 2025 schema compiles. The new build shows
     `schema_rejected=0` and `rejected=0`.
   - ETW loses nothing: `etw_lost=0`, and `received` matches twice the number of

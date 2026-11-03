@@ -157,7 +157,7 @@ After the service starts, `spool_available` in the `output stats` line reads
   LocalSystem and back. After any `obj=` change, still run
   `sc.exe sidtype EtwDnstap restricted` and check it with
   `sc.exe qsidtype EtwDnstap`. The check costs little.
-- **Upgrading from the first version of the grant script** (commit `6718863`).
+- **Upgrading from the first version of the grant script** (commit `1a54272`).
   That version granted `0x423` on the default GUID and `0x80` on the DNS
   provider GUID, and created a descriptor of its own for the provider. Replace
   the executable, run the current script with `-SessionName`, then restart the

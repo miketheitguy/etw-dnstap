@@ -2,10 +2,10 @@
 
 > **Status:** Proposed (design analysis; no change is implemented from it) · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01
 >
-> **Note (2026-11-01):** this analysis predates `69db97d` and `dde7188`. Commit
-> `69db97d` removed the per-event TDH fallback reader: an event whose schema
+> **Note (2026-11-01):** this analysis predates `ee94de6` and `7f91264`. Commit
+> `ee94de6` removed the per-event TDH fallback reader: an event whose schema
 > does not compile into a decode plan is rejected, so there is no fallback
-> decoding to keep. Commit `dde7188` wakes the parser once per delivered ETW
+> decoding to keep. Commit `7f91264` wakes the parser once per delivered ETW
 > buffer that enqueued events, and the parser polls for up to 200 µs after data
 > before it parks. The per-event callback stays wake-free. The statements here
 > about the timed park and "supported/fallback decoding" describe the earlier
@@ -267,7 +267,7 @@ guarantee, and partial progress requires correct handling. See
 > after the receiver returns. The no-replay rule below still applies to frames in
 > flight when a connection fails.
 
-Commit `f0b51f4` superseded the fail-fast rule in this paragraph. The sink now
+Commit `b46da39` superseded the fail-fast rule in this paragraph. The sink now
 reconnects with backoff, performs a fresh handshake, and never replays frames.
 Frames lost while disconnected are counted. Keep the no-replay rule. A successful
 local write does not prove collector processing or

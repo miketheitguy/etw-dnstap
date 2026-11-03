@@ -1,6 +1,6 @@
 # Ring capacity and shutdown
 
-> **Status:** Current · **Describes:** `main` at commit `dde7188` · **Evidence dated:** October 28-29, 2026 for the experiment, which is historical · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `7f91264` · **Evidence dated:** October 28-29, 2026 for the experiment, which is historical · **Reviewed:** 2026-11-02
 
 This note is for maintainers, and for administrators who choose a capture
 capacity. It explains the queue bounds and the shutdown contract. It describes
@@ -68,7 +68,7 @@ them, the channel dropped no events up to about 44,000 queries/s. At about
 
 Earlier builds had an opt-in periodic flush. The supervisor thread asked ETW to
 flush the session at a set interval, and it woke the parser after each flush.
-The buffer wake in commit `dde7188` made it unnecessary, so the maintainer
+The buffer wake in commit `7f91264` made it unnecessary, so the maintainer
 removed it.
 The lab results below used that flush with 64 KiB × 256 buffers. They are
 history. They do not apply to the current build:

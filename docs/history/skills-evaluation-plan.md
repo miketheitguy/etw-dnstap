@@ -1,6 +1,6 @@
 # etw-dnstap evaluation plan (skills-driven)
 
-> **Status:** Historical (executed) · **Evidence dated:** November 1, 2026 · **Commit:** plan written at `e8560ac`; execution through `5f610f5` · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed) · **Evidence dated:** November 1, 2026 · **Commit:** plan written at `87c8d6d`; execution through `39a5ce4` · **Reviewed:** 2026-11-01
 
 Every line number below was read from the file at plan time.
 
@@ -68,7 +68,7 @@ Legend: **O** = observed in the file at the cited line; **V** = to verify (needs
 
 ### Versioning and docs
 
-- **F-16 (O): CHANGELOG is internally inconsistent.** `CHANGELOG.md:31` still says `Tests, fuzzing and CI: _pending_` although commit `12cce7a` added them. `:43` says the LocalService profile is "Validated on build 26100" but `:93-94` under Security says it "has not been validated on a live DNS Server". `:8` states no tags exist; `Cargo.toml:3` is `0.1.0`, the same number as the untagged `[0.1.0]` heading (`:96`) that already lists removed CLI options (`:119-124`), so `0.1.0` is not a coherent release. Per semantic-versioning, a `0.y.z` policy must be stated; recommend the first tag only after the human picks one.
+- **F-16 (O): CHANGELOG is internally inconsistent.** `CHANGELOG.md:31` still says `Tests, fuzzing and CI: _pending_` although commit `4603bc8` added them. `:43` says the LocalService profile is "Validated on build 26100" but `:93-94` under Security says it "has not been validated on a live DNS Server". `:8` states no tags exist; `Cargo.toml:3` is `0.1.0`, the same number as the untagged `[0.1.0]` heading (`:96`) that already lists removed CLI options (`:119-124`), so `0.1.0` is not a coherent release. Per semantic-versioning, a `0.y.z` policy must be stated; recommend the first tag only after the human picks one.
 
 ### Other
 
@@ -163,7 +163,7 @@ Handoff files (all outside the repo): `eval/1A-security.md`, `1B-build-ci.md`, `
 
 ## 8. Decisions (Nov 1, 2026)
 
-**Execution status: Executed** on Nov 1, 2026, through commit `5f610f5`. The lab
+**Execution status: Executed** on Nov 1, 2026, through commit `39a5ce4`. The lab
 results are in [the lab record](skills-evaluation-lab-validation.md).
 Work that the lab record lists under "Not covered" was not executed. This plan
 belongs in `docs/history/` under the status rules in CONTRIBUTING.md, and it should

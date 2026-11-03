@@ -197,7 +197,7 @@ The unit tests need no lab. Do not execute the lab scripts to "test" them.
 | `windows-pooled-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant Pooled` |
 | `windows-ring-fix-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant RingFix` |
 | `windows-pooled-stage.ps1`, `windows-pooled-wpr.ps1` | same names under `archive/` |
-| `windows-pooled-diagnostics.ps1`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | moved to `archive/` in `6e62b2e`. Deleted in `63dd477` (see git history) |
+| `windows-pooled-diagnostics.ps1`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | moved to `archive/` in `f1475d8`. Deleted in `18a29a9` (see git history) |
 | `windows-control.ps1` | `archive/windows-control.ps1` |
 | `ubuntu-service-stop-config.py`, `ubuntu-service-stop-pcap.py` | same names under `archive/` |
 | `count-parser-ramp-diagnostic.py` | `archive/count-parser-ramp-diagnostic.py` |

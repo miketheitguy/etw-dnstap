@@ -1,6 +1,6 @@
 # Provisioning scripts
 
-> **Status:** Current · **Describes:** `main` at commit `907f728` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-02
+> **Status:** Current · **Describes:** `main` at commit `0651f9b` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-02
 >
 > See [the validation record](../../docs/history/localservice-restricted-validation.md).
 
@@ -160,7 +160,7 @@ The script skips a descriptor that it cannot parse and writes a warning:
 session GUID itself exists and cannot be parsed, the script stops with an error
 and does not grant on it.
 
-**Upgrading from the first version** (commit `6718863`), which granted `0x423`
+**Upgrading from the first version** (commit `1a54272`), which granted `0x423`
 on the default GUID and `0x80` on the DNS provider GUID: run the current script
 with `-SessionName`, then restart. It removes both old grants and the
 provider descriptor that the first version created. The lab tested this path.

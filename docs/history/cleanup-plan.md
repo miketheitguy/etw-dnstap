@@ -1,6 +1,6 @@
 # Obsolete and legacy code cleanup plan
 
-> **Status:** Historical (executed Nov 1, 2026; results in [cleanup-validation.md](cleanup-validation.md)) · **Evidence dated:** 2026-11-01 · **Commit:** written at `efb47af`; executed through the commit that records the validation · **Reviewed:** 2026-11-01
+> **Status:** Historical (executed Nov 1, 2026; results in [cleanup-validation.md](cleanup-validation.md)) · **Evidence dated:** 2026-11-01 · **Commit:** written at `685f869`; executed through the commit that records the validation · **Reviewed:** 2026-11-01
 
 ## 1. Summary
 
@@ -67,7 +67,7 @@ edit docs, so run them in order.
 | ID | Question | Default if not answered |
 |---|---|---|
 | C-1 | Commit directly on main, as in the previous plan? | Yes, on main, no push |
-| C-2 | Archive scripts that docs still cite (S-2, S-3, S-4, S-6, S-9): keep, or delete and replace the doc paths with "see commit `6e62b2e`"? | Keep (wave 6 not done) |
+| C-2 | Archive scripts that docs still cite (S-2, S-3, S-4, S-6, S-9): keep, or delete and replace the doc paths with "see commit `f1475d8`"? | Keep (wave 6 not done) |
 | C-3 | JSONL-metrics and ring-fix analyzers (P-6, P-7): move to `archive/` with their tests? | Move |
 | C-4 | Remove the `diag-timing` feature (R-18)? | Keep |
 | C-5 | The 1 GiB guard that cannot fail (R-2): keep and prove it with a const assert, or delete? | Keep, add const assert |
@@ -221,7 +221,7 @@ update; R-2 and R-17 (wave 6).
 - Optional S-12: read the zone names in `New-DnsWorkload.ps1` from `lab.json`.
 
 ### Wave 7: review and lab smoke
-- code-reviewer and security-auditor review the full diff from `efb47af`. The
+- code-reviewer and security-auditor review the full diff from `685f869`. The
   security-auditor confirms that no control in the section 2 rule 1 list has
   changed.
 - Deploy the release build to DNSTap-WS2025 and run the 6 elevated tests. Check
