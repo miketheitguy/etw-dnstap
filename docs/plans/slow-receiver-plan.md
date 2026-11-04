@@ -1,6 +1,6 @@
 # Slow and saturated receiver plan
 
-> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, F, L1D, L1, and L5 complete on 2026-11-04; findings L-1, L-5, and L-7 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, F, L1D, L1, L5, and S complete on 2026-11-04; findings L-7 and L-8 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
 
 This plan covers a receiver that is connected but slow, and a link that carries less
 than the capture rate. It records what the code does today and the cost of each
@@ -205,6 +205,7 @@ the main working tree, one at a time, so they do not conflict.
 | T | deferred | Optional. Implement D3 with `TCP_INFO_v0`, and add the `SndLim*` shares only where `TCP_INFO_v1` is available (see R1). Start it only if an operator needs to know whether the receiver or the network path limits the link. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
 | F | before the next lab campaign, done | A failed FINISH no longer shows in the service exit code or in `output_errors`. Change the lab lifecycle checks to verify STOP/FINISH on the receiver side, from the receiver log or a packet capture. The affected scripts are `summarize-pooled-stage.py`, `build-pooled-report.py`, `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `windows-parser-stage.ps1`, and `windows-startup-capacity.ps1`. | `voltagent-lang:python-pro` | medium | Script changes and tests. |
 | L1, L5 | 8, done | Lab: repeat the L-1 case 14 times with the new counters, WPR traces, and guest and host counters (L1). Run risk 9 at 100,000 and 200,000 queries per second, idle and busy, unshaped (L5). | `general-purpose` (Sonnet) | high | Section "Follow-up runs L1 and L5" in `docs/history/slow-receiver-validation.md`. |
+| S | 9, done | Size the service for 200,000 queries per second and close risk 9: the send queue and the link FIFO go to 256 blocks each, the ETW defaults to `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128`, and `--capacity` to the size the lab shows is needed. Validate on the lab guest at 12 vCPUs and 8 GiB: risk 9 idle and busy at 100,000 and 200,000 queries per second, the channel size, the ETW defaults, and the L-1 case. | `voltagent-lang:rust-engineer` (Sonnet), `general-purpose` (Sonnet) | medium, high | Commit `6c8dd65` and the capacity change. Section "200,000 QPS sizing runs on 12 vCPUs" in `docs/history/slow-receiver-validation.md`. Section "S results" in this file. |
 | L1D | 7, done | Find the cause of L-1 and L-6 from the code (review V5) and the 1 s counter data. Add the counters `router_wait_max_recent_us` and `router_pass_max_recent_us`. | `voltagent-qa-sec:code-reviewer` (Fable), `voltagent-data-ai:data-analyst` (Sonnet), `voltagent-lang:rust-engineer` (Sonnet) | medium, low, medium | Section "L-1 and L-6 results" in this file. Code, tests, and guide updates. |
 | W | 5, done | Correct the counter meaning for F6 in `docs/guide/monitoring.md` and `docs/design/data-path.md`. Update `docs/design/data-path.md`, `docs/guide/configuration.md`, `docs/guide/tuning.md`, and the animation if stage 5 changes. | `voltagent-dev-exp:documentation-engineer` | medium | Guide changes. |
 
@@ -533,12 +534,13 @@ two frames, so 10,000 and 50,000 queries per second are 2.06 and 10.3 MB/s.
 
 | ID | Finding | State |
 | --- | --- | --- |
-| L-1 | One "after" control run (50,000 queries per second, 40 MB/s link) counted 10,822 frames in `queue_dropped` at the end of the load. The parser channel was full at 128 blocks, the receiver got 0.2 MB, nothing spilled, and the service used 1.5 to 3 % CPU, so the router took no block for about 1 s. Two reruns and an unshaped run counted none. | Open. Review V5 found no cause in the router code. Lab task L1 (14 runs) did not repeat the drop, but saw the stall behind it in 8 runs: the service threads were idle because events reached the service about 2 s late, then came in one burst of 17 to 26 MB. See L-7. Why the L-1 burst gave `queue_dropped` with no spill, when the L1 bursts gave a spill, is not known. |
+| L-1 | One "after" control run (50,000 queries per second, 40 MB/s link) counted 10,822 frames in `queue_dropped` at the end of the load. The parser channel was full at 128 blocks, the receiver got 0.2 MB, nothing spilled, and the service used 1.5 to 3 % CPU, so the router took no block for about 1 s. Two reruns and an unshaped run counted none. | Open. Review V5 found no cause in the router code. Lab task L1 (14 runs) did not repeat the drop, but saw the stall behind it in 8 runs: the service threads were idle because events reached the service about 2 s late, then came in one burst of 17 to 26 MB. See L-7. Why the L-1 burst gave `queue_dropped` with no spill, when the L1 bursts gave a spill, is not known. Closed by task S: with the 256-block send queue and FIFO, 4 of 4 reruns of the case had 1 to 4 stall seconds each and no `queue_dropped`, `intake_dropped`, or spill. The stall itself stays open as L-7. |
 | L-2 | In 5 of 6 shaped runs at 50,000 queries per second with a 40 MB/s link, on both builds, the receiver got nothing for about 2.5 s at load start, and 0.2 to 2.1 million frames spilled. "After" lost none. The unshaped run did not spill. | Points at the lab shaping; not proven. |
 | L-3 | `link_saturated` set 11.4 to 12 s into a silent outage, before the 15 s stall timeout ended the session. | Documented in `docs/guide/monitoring.md`. |
 | L-4 | Bytes the guest's TCP accepted that the receiver never got, at a failed connection (uncounted): up to about 1.08 MB on "before" (fixed 1 MiB send buffer), 0.58 MB on "after" on an idle host, and about 4.2 MB on "after" on a busy host (autotuned buffer). | Design risk 4, now measured. |
-| L-5 | Risk 9 (the 128-block FIFO at a Server quantum). Lab task L5: no spill and no `queue_dropped` in 8 unshaped runs, including 40.4 MB/s on an idle guest and 39.4 MB/s with 3 busy threads. With 12 busy threads the capture loses 97 % of events in ETW before the link, so 41.2 MB/s on a fully busy 6-vCPU guest cannot be produced. | Held for what the lab can produce; open for 41.2 MB/s on a fully busy host. |
-| L-7 | Events reach the service about 2 s late, then come in one burst (lab task L1: 8 of 14 runs at 50,000 queries per second, and once unshaped at 200,000). ETW lost nothing and its buffers stayed at 6 to 11 % used. The service threads were idle, and the host, memory, and paging were ruled out. The burst overflowed the event channel in 4 runs (`intake_dropped` 23,549 to 60,439) and caused a spill on a shaped link. The load-start spill of L-2 also came with `intake_dropped` in 3 runs and may be the same delay. | Open. Capture side, outside the sending path. Cause unknown; one candidate is the timestamp ordering in `ProcessTrace`. |
+| L-5 | Risk 9 (the 128-block FIFO at a Server quantum). Lab task L5: no spill and no `queue_dropped` in 8 unshaped runs, including 40.4 MB/s on an idle guest and 39.4 MB/s with 3 busy threads. With 12 busy threads the capture loses 97 % of events in ETW before the link, so 41.2 MB/s on a fully busy 6-vCPU guest cannot be produced. | Closed by task S. With the 256-block FIFO on 12 vCPUs, 22 of 22 runs had no spill and no `queue_dropped`, including 40.6 MB/s with 12 busy threads (guest 100 % busy) and 40.5 MB/s with 24 busy threads and a router wait of 198 ms, above one quantum. |
+| L-7 | Events reach the service about 2 s late, then come in one burst (lab task L1: 8 of 14 runs at 50,000 queries per second, and once unshaped at 200,000). ETW lost nothing and its buffers stayed at 6 to 11 % used. The service threads were idle, and the host, memory, and paging were ruled out. The burst overflowed the event channel in 4 runs (`intake_dropped` 23,549 to 60,439) and caused a spill on a shaped link. The load-start spill of L-2 also came with `intake_dropped` in 3 runs and may be the same delay. | Open. Capture side, outside the sending path. Cause unknown; one candidate is the timestamp ordering in `ProcessTrace`. Task S: the larger queues absorb it in the L-1 case. On 12 vCPUs it is worse; see L-8. |
+| L-8 | On the 12-vCPU guest at 100,000 queries per second, unshaped and idle, events received fell to near 0 for 1 to 3 s several times a run, then came back in a burst that overflowed the event channel in 7 of 7 runs: `intake_dropped` 7 to 12 % of events at 65,536, about half that at 131,072, and 0.2 to 1.3 % at 262,144. On 6 vCPUs the same load lost nothing. At 200,000 queries per second nothing was lost. ETW lost nothing, and the host was 47 to 51 % busy. | Open. The same late delivery as L-7, more often with more processors. One candidate: ETW delivers in timestamp order across the per-processor buffers, so a quiet processor holds delivery until its buffer is flushed (1 s). Not tested. A shorter flush or smaller buffers may help. |
 | L-6 | `send_queue_depth_max` read 33 to 61 at 10,000 queries per second in every "after" run, including the control, with no loss. | Closed by review V5: one ETW flush burst (about 2 MB, 31 to 33 blocks) waits while the idle router wakes. Not a defect. |
 
 ### L-1 and L-6 results
@@ -565,7 +567,7 @@ samples of the L run.
   10.3 MB/s. The other two 50k control runs paused for 0.2 to 0.26 s (depth 30 to 41),
   about one Windows Server quantum. A larger channel (256 blocks: 1.6 s, 8.5 MiB more)
   is the only lever within the standing decisions. It is not changed until a stall is
-  measured.
+  measured. Task S later raised it to 256 blocks for risk 9; see [S results](#s-results).
 - **L-6 is the ETW burst.** ETW delivers events about once per flush interval (1 s).
   At 10,000 queries per second one burst is about 2 MB, 31 to 33 blocks, and the
   parser encodes it in milliseconds while the idle router wakes. Two bursts give 61.
@@ -582,8 +584,42 @@ samples of the L run.
   host counters. Results:
   [follow-up runs](../history/slow-receiver-validation.md#follow-up-runs-l1-and-l5-2026-11-04).
 
+### S results
+
+Task S, 2026-11-04. Commit `6c8dd65` set the send queue and the link FIFO to 256 blocks
+each (16 MiB each, 0.41 s at 41.2 MB/s), the block pool to 516 blocks (68.5 MiB), and the
+ETW defaults to `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128`. The
+lab then ran 22 runs on the guest at 12 vCPUs and 8 GiB static memory:
+[200,000 QPS sizing runs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
+
+- **Risk 9 is closed.** 22 of 22 runs had `spooled` 0 and `queue_dropped` 0. 9 of them
+  put about 40 MB/s on the link. With 12 busy threads (guest 100 % busy) 40.6 MB/s
+  reached the link with a router wait peak of 181 ms. With 24 busy threads one run
+  reached 40.5 MB/s with a router wait peak of 198 ms, above one quantum, and the other
+  lost 10.3 million events in ETW from CPU starvation (48 of 128 buffers allocated).
+  The send queue peaked at 136 of 256 blocks. The link thread's own scheduling delay
+  is not measured; the router wait peak is the nearest counter.
+- **The channel default is 131,072.** At 200,000 queries per second, 65,536 dropped
+  nothing on an idle guest, but its peak was 94 % idle and 98 % with 12 busy threads,
+  and it dropped 12,264 events with 24 busy threads. 131,072 dropped nothing in 3 of 3
+  runs, with peaks of 21 to 22 % idle and 47 % with 12 busy threads. The coordinator chose
+  131,072 under the instruction to size "as needed". Cost: 283.03 MiB of counted
+  storage instead of 145.53 MiB, a service working set of 356 MB instead of 241 MB,
+  and a longer startup deadline.
+- **The ETW defaults hold.** `etw_lost` was 0 in every run except the starved busy-24
+  run. At most 51 of 128 buffers were allocated. ETW applies its own minimum of 2
+  buffers a processor, so `--etw-min-buffers 12` gives 24 on 12 vCPUs.
+- **L-1 is closed; L-7 stays open.** The L-1 case lost nothing in 4 of 4 runs, with
+  the channel at most 39,917 events and the send queue at most 160 blocks. The stalls
+  still happen. L-2 (spill at load start) did not recur.
+- **New finding L-8.** Late delivery at 100,000 queries per second on 12 vCPUs
+  overflows the channel at every size tried. The cause is on the capture side.
+
 ### Decisions
 
+- 2026-11-04, user: size the service for 200,000 queries per second and fix risk 9.
+  The ETW defaults are at least 12 and at most 128 buffers. The lab guest goes to 12
+  vCPUs and 8 GiB of memory.
 - 2026-11-03, user: spilling to the spool stays passive. It is driven by
   backpressure on the link (H1), not by TCP measurements. D3 (`SIO_TCP_INFO`) moves
   to the deferred, optional task T.

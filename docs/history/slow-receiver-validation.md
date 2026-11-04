@@ -627,3 +627,307 @@ host, because the capture path loses the events before they reach the link.
   logger).
 - **Checkpoints:** `slow-receiver-L1L5-pre-2026-11-04` on both guests, kept, with all
   earlier checkpoints.
+
+## 200,000 QPS sizing runs on 12 vCPUs (2026-11-04)
+
+A third lab run on the same day, after commit `6c8dd65` ("Size the sender queues and the ETW and
+channel defaults for 200,000 QPS"). That commit raised the link FIFO from 128 to 256 blocks
+(16 MiB), the parser channel from 128 to 256 blocks, and set the defaults to
+`--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128 --capacity 65536`. The run asks four
+questions:
+
+1. **Risk 9.** Does the 256-block link FIFO cover a link thread that loses a Windows Server quantum
+   (187.5 ms) at 41.2 MB/s, with no priority boost?
+2. **Channel.** Is `--capacity 65536` enough at 200,000 QPS?
+3. **ETW defaults.** Does `etw_lost` stay at 0 with the new ETW defaults?
+4. **L-1.** Do the larger channel and FIFO absorb the late-delivery bursts of finding L-7 in the case
+   `after-50k-ctl-d0`?
+
+The raw data is lab evidence under `target/performance/sizing-200k-20261104/`. It is not in the
+repository. The driver and analysis scripts are in its `scripts/` folder.
+
+Result in one line: risk 9 held. All 22 runs had `queue_dropped` 0 and `spooled` 0, including 9 runs
+that put about 40 MB/s on the link, one of them with the router wait above one quantum (198 ms). The channel
+is not the limit at 200,000 QPS on an idle guest. A different loss showed on 12 vCPUs: at 100,000 QPS
+on an idle guest, ETW delivered events in late bursts and the channel overflowed in every run, at
+every size tried.
+
+### Method differences from the earlier runs
+
+| Item | L1 and L5 | This run |
+| --- | --- | --- |
+| Guest | 6 vCPUs, 4 GiB | **12 vCPUs, 8 GiB, static memory** (Dynamic Memory off). Changed with `Stop-VM`, `Set-VMProcessor -Count 12`, `Set-VMMemory -DynamicMemoryEnabled $false -StartupBytes 8GB`, and `Start-VM`, before any build or measured run. The guest reports 12 logical processors and 8 GB. `lab.json` still says 2 vCPUs. |
+| Checkpoints | `slow-receiver-L1L5-pre-2026-11-04` | New `sizing-200k-pre-2026-11-04` on both guests, taken before any change. It holds the 6 vCPU, 4 GiB guest. All earlier checkpoints kept. |
+| Build | `1cc66d8` | `6c8dd65` (HEAD), built with `scripts/build/Build-Msi.ps1`. MSI SHA-256 `25AA22E06D9DA34C7922C12AA146840B39AC0D3CA2F149DC37C48C5153E0ED6B`, executable SHA-256 `8A800E01244D8E3B1E9128890BAFA2F112D3E6B5CC53117624E8DEDDABE2C5D1`. Installed with the three MSI properties (exit 3010, guest restarted). Later changes of `SERVICE_ARGS` used `REINSTALL=ALL REINSTALLMODE=vomus` with all three properties, then a restart. |
+| ETW session in effect | not checked | `capture started` logged `capacity=65536 etw_buffer_kib=128 etw_min_buffers=12 etw_max_buffers=128 etw_flush_seconds=1`. ETW applied `etw_min_buffers_applied=24 etw_max_buffers_applied=128 etw_buffers_allocated=24` (its own minimum is 2 buffers for each of the 12 processors). `Get-EtwTraceSession` showed buffer size 128, minimum 24, maximum 128, flush timer 1. `logman query EtwDnstap-Lab -ets` shows only buffer size 128 and flush timer 1. |
+| Counters | "Router Wait Peak" (ID 67) and "Router Pass Peak" (ID 68) listed | The manifest has 44 counters (IDs up to 68). `Get-Counter -ListSet` and `typeperf -q EtwDnstap` list 42 distinct names, including IDs 67 and 68. |
+| Host counters | VP wait, guest run time, contention, wake-up | The same four, plus `\Processor(_Total)\% Processor Time` and `\Hyper-V Hypervisor Logical Processor(_Total)\% Total Run Time` and `% Guest Run Time`, at 1 s, in every run (`host-hv.csv`). No build ran on the host during a measured run. |
+| Load | 60 s, 30 s shaped tail | 60 s load. 20 s tail on the unshaped runs, 30 s on the shaped L-1 runs. 4, 8, and 16 client threads for 50,000, 100,000, and 200,000 QPS. `dns-stress` is the binary of the earlier runs (the tool sources did not change after it was built). `metrics.jsonl` kept for every run. |
+| Busy load | 12 processes | 24, 12, or 6 `powershell.exe` processes running `while($true){}` at normal priority, from 3 s before the load to its end. 24 is 2 for each vCPU. |
+| WPR | r02 to r14 | none |
+
+Receiver checks before the first run: the collector config has only the `devnull` logger, and the
+unit has `StandardOutput=null` and `StandardError=null`. Delivery was counted from `ss -tin`
+`bytes_received` (103.015 bytes a frame). The collector wrote nothing.
+
+All runs are on the 8 GiB guest, so none had to be discarded. Run IDs: `m01` to `m11` are the
+default settings, `l1-` is the L-1 case, `c` is `--capacity 131072`, and `x` is `--capacity 262144`.
+`m09`, `m10`, and `m11` are extra runs that I added after `m01` (see Deviations and limits).
+
+### Risk 9 and the 200k matrix
+
+Link unshaped, 60 s load, default settings (`--capacity 65536`). `intake_dropped` equals `ring_dropped`
+in every run. The gap is the delivered frames less the encoded frames (the 84-byte handshake and a
+few frames in flight at the stop).
+
+| Run | Load | Busy | Encoded | Delivered (gap) | `queue_dropped` | Spooled | `intake_dropped` | `ring_dropped` | `etw_lost` | Events/s mean (min) | Rx MB/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| m01-idle-100k | 100k | 0 | 10,846,480 | 10,846,720 (+240) | 0 | 0 | 892,932 | 892,932 | 0 | 195,090 (676) | 18.4 |
+| m09-idle-100k-r2 | 100k | 0 | 9,884,485 | 9,884,639 (+154) | 0 | 0 | 1,403,492 | 1,403,492 | 0 | 186,911 (448) | 16.7 |
+| m10-idle-100k-r3 | 100k | 0 | 11,054,959 | 11,055,029 (+70) | 0 | 0 | 945,037 | 945,037 | 0 | 199,947 (0) | 18.7 |
+| m02-idle-200k | 200k | 0 | 23,770,371 | 23,770,345 (-26) | 0 | 0 | 0 | 0 | 0 | 395,851 (88,593) | 40.4 |
+| m03-idle-200k-r2 | 200k | 0 | 23,997,630 | 23,997,678 (+48) | 0 | 0 | 0 | 0 | 0 | 399,845 (392,776) | 40.7 |
+| m11-idle-200k-r3 | 200k | 0 | 23,996,714 | 23,996,753 (+39) | 0 | 0 | 0 | 0 | 0 | 399,943 (394,988) | 40.7 |
+| m04-busy24-100k | 100k | 24 | 11,999,940 | 11,999,963 (+23) | 0 | 0 | 0 | 0 | 0 | 199,502 (164,626) | 20.4 |
+| m05-busy24-200k | 200k | 24 | 23,987,726 | 23,987,812 (+86) | 0 | 0 | 12,264 | 12,264 | 0 | 399,239 (347,725) | 40.5 |
+| m06-busy24-200k-r2 | 200k | 24 | 13,234,056 | 13,233,930 (-126) | 0 | 0 | 463,305 | 463,305 | 10,302,619 | 218,530 (79,248) | 22.4 |
+| m07-busy12-200k | 200k | 12 | 23,999,966 | 24,000,012 (+46) | 0 | 0 | 0 | 0 | 0 | 400,176 (380,212) | 40.6 |
+| m08-busy6-200k | 200k | 6 | 23,998,670 | 23,998,717 (+47) | 0 | 0 | 0 | 0 | 0 | 400,004 (396,799) | 40.7 |
+
+| Run | Peak send queue (blocks) | Router wait peak (ms) | Router pass peak (ms) | Write wait peak (ms) | `link_saturated` | Guest CPU % mean (max) | Proc. queue mean (max) | Service CPU % | Min available MB | Host CPU % mean (max) | Host LP run % mean (max) | VP wait/dispatch mean (max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| m01-idle-100k | 122 | 79.3 | 61.3 | 1.6 | 0 | 55.6 (68.5) | 1.6 (6) | 11.5 | 5,852 | 49.5 (58.6) | 55.8 (64.2) | 1,755 (2,946) |
+| m09-idle-100k-r2 | 111 | 68.0 | 38.1 | 0.5 | 0 | 52.5 (68.8) | 0.9 (6) | 12.2 | 5,750 | 47.4 (63.0) | 53.3 (65.2) | 1,789 (2,880) |
+| m10-idle-100k-r3 | 27 | 65.9 | 21.7 | 2.8 | 0 | 57.8 (67.4) | 1.3 (6) | 13.4 | 5,769 | 50.7 (61.2) | 57.6 (65.6) | 1,766 (3,131) |
+| m02-idle-200k | 17 | 82.1 | 18.7 | 1.8 | 0 | 79.9 (87.3) | 2.5 (6) | 31.9 | 5,894 | 70.4 (80.0) | 75.4 (81.1) | 1,930 (2,857) |
+| m03-idle-200k-r2 | 34 | 91.1 | 22.1 | 1.3 | 0 | 79.4 (85.4) | 2.3 (6) | 32.6 | 5,926 | 70.3 (79.0) | 75.3 (80.3) | 1,937 (3,098) |
+| m11-idle-200k-r3 | 17 | 81.7 | 23.4 | 2.7 | 0 | 81.3 (87.8) | 2.7 (6) | 31.8 | 5,893 | 71.7 (80.0) | 76.0 (82.9) | 1,902 (2,971) |
+| m04-busy24-100k | 102 | 287.8 | 0.3 | 1.1 | 0 | 100.0 (100.0) | 25.8 (52) | 15.4 | 5,368 | 65.5 (72.2) | 67.9 (74.4) | 1,639 (2,417) |
+| m05-busy24-200k | 121 | 198.2 | 1.7 | 1.1 | 0 | 100.0 (100.0) | 37.6 (81) | 28.8 | 5,311 | 74.2 (80.7) | 77.6 (82.0) | 1,928 (3,103) |
+| m06-busy24-200k-r2 | 136 | 171.3 | 2.6 | 1.8 | 0 | 100.0 (100.0) | 38.7 (80) | 21.0 | 5,275 | 73.9 (81.9) | 77.3 (82.8) | 1,904 (3,306) |
+| m07-busy12-200k | 104 | 181.4 | 1.4 | 1.5 | 0 | 100.0 (100.0) | 14.6 (29) | 30.5 | 5,618 | 75.7 (82.2) | 78.9 (85.0) | 1,970 (3,112) |
+| m08-busy6-200k | 21 | 66.2 | 6.2 | 1.1 | 0 | 87.6 (91.4) | 5.5 (12) | 33.4 | 5,758 | 74.1 (81.6) | 78.4 (83.3) | 2,048 (2,879) |
+
+Every run: `spool_dropped` 0, `disconnects` 0, `link_saturated` 0, stop and FINISH confirmed. "Guest
+CPU" and "Proc. queue" are for the guest. "VP wait/dispatch" is the mean over the 12 virtual
+processors of `CPU Wait Time Per Dispatch`, with the largest single sample in brackets. The host
+columns are discussed under Host contention.
+
+Runs that put about 40 MB/s on the link: `m02`, `m03`, `m11`, `m05`, `m07`, `m08`. All have `spooled` 0
+and `queue_dropped` 0. In `m05` (24 busy) the router wait peak was 198 ms, more than one quantum,
+at 40.5 MB/s. In `m07` (12 busy) it was 181 ms at 40.6 MB/s. The peak send queue was 121 and 104
+blocks of 256. The write wait peak stayed at 1.1 to 1.8 ms in those runs.
+
+#### Findings
+
+1. **Risk 9 passed.** Every run, at every busy level, had `spooled` 0 and `queue_dropped` 0. The
+   case the earlier run could not reach now happened. With 12 busy threads on 12 vCPUs (guest 100 %
+   busy, processor queue 14.6 mean and 29 max) the capture still gave 400,000 events a second and
+   40.6 MB/s reached the link. With 24 busy threads it did in one run of two (`m05`: queue 37.6 mean,
+   81 max).
+2. **A quantum or nearly one was lost in the busy runs, and the FIFO held.** The router wait peak was
+   171 to 288 ms in the four busy 12 and busy 24 runs with the default settings, against 66 to 91 ms
+   idle. It was above one quantum (187.5 ms) in `m04` (288 ms, 20 MB/s) and `m05` (198 ms, 40.5 MB/s). The send queue peak was 102 to 136 blocks. The write wait
+   peak did not rise, because it counts the socket call, not the time the thread waits to be
+   scheduled. So the link thread's own scheduling delay is not measured. `spooled` 0 shows that the
+   send queue and FIFO together held what the router and link thread did not move. No run spilled,
+   so there is no spill to explain.
+3. **Busiest level at which 41 MB/s reached the link: 24 busy threads, in one run of two.** `m06`
+   (24 busy) lost 10.3 million events in ETW (`etw_lost`) and only 22.4 MB/s reached the link. At
+   12 busy threads 41 MB/s reached the link in both runs (`m07`, and `c03` with `--capacity 131072`).
+   At 24 the guest is the limit, not the link FIFO.
+4. **`m04` (24 busy, 100,000 QPS)** had the largest router wait peak (288 ms) at 20 MB/s, no spill,
+   and no `intake_dropped`.
+5. **The losses in the table happen before the send queue.** They are `intake_dropped` (`m01`, `m09`,
+   `m10`, `m05`, `m06`) and `etw_lost` (`m06`). See the next two sections.
+
+### Event channel size
+
+The brief said to reinstall with `--capacity 131072` if an idle 200,000 QPS run with 65,536 has
+`ring_dropped` or `intake_dropped` above 0. **It did not.** Three idle 200,000 QPS runs (`m02`, `m03`,
+`m11`) had both at 0. But the idle 100,000 QPS runs had large `intake_dropped` (table above), and
+`m05` and `m06` (busy 24) had some. So I ran the comparison anyway: at 131,072, idle 200,000 QPS
+twice, busy 12 at 200,000 QPS once, and idle 100,000 QPS twice; at 262,144, idle 100,000 QPS twice.
+
+| Run | Load | Busy | Encoded | Delivered (gap) | `queue_dropped` | Spooled | `intake_dropped` | `ring_dropped` | `etw_lost` | Events/s mean (min) | Rx MB/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| c01-cap131k-idle-200k | 200k | 0 | 23,109,607 | 23,109,549 (-58) | 0 | 0 | 0 | 0 | 0 | 384,103 (106,355) | 39.4 |
+| c02-cap131k-idle-200k-r2 | 200k | 0 | 23,999,976 | 24,000,024 (+48) | 0 | 0 | 0 | 0 | 0 | 400,010 (394,809) | 40.7 |
+| c03-cap131k-busy12-200k | 200k | 12 | 23,997,267 | 23,997,226 (-41) | 0 | 0 | 0 | 0 | 0 | 399,712 (382,832) | 40.5 |
+| c04-cap131k-idle-100k | 100k | 0 | 11,555,964 | 11,556,168 (+204) | 0 | 0 | 443,994 | 443,994 | 0 | 200,273 (165) | 19.0 |
+| c05-cap131k-idle-100k-r2 | 100k | 0 | 11,535,576 | 11,535,758 (+182) | 0 | 0 | 464,402 | 464,402 | 0 | 200,073 (1,712) | 19.5 |
+| x01-cap262k-idle-100k | 100k | 0 | 11,843,306 | 11,843,237 (-69) | 0 | 0 | 156,618 | 156,618 | 0 | 202,820 (0) | 19.8 |
+| x02-cap262k-idle-100k-r2 | 100k | 0 | 11,973,693 | 11,973,753 (+60) | 0 | 0 | 26,285 | 26,285 | 0 | 198,302 (0) | 19.7 |
+
+| Run | Peak send queue (blocks) | Router wait peak (ms) | Router pass peak (ms) | Write wait peak (ms) | `link_saturated` | Guest CPU % mean (max) | Proc. queue mean (max) | Service CPU % | Min available MB | Host CPU % mean (max) | Host LP run % mean (max) | VP wait/dispatch mean (max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| c01-cap131k-idle-200k | 18 | 82.6 | 25.9 | 4.0 | 0 | 77.4 (90.3) | 2.8 (8) | 29.8 | 5,804 | 69.4 (79.0) | 73.9 (82.6) | 1,948 (2,863) |
+| c02-cap131k-idle-200k-r2 | 18 | 86.2 | 18.6 | 0.6 | 0 | 81.1 (88.1) | 2.6 (7) | 29.9 | 5,750 | 70.7 (77.6) | 75.7 (79.9) | 1,932 (3,284) |
+| c03-cap131k-busy12-200k | 104 | 141.0 | 1.1 | 1.2 | 0 | 100.0 (100.0) | 15.9 (31) | 30.8 | 5,521 | 76.3 (87.2) | 80.1 (88.1) | 2,010 (3,908) |
+| c04-cap131k-idle-100k | 183 | 66.0 | 16.4 | 10.4 | 0 | 54.9 (65.9) | 1.3 (6) | 13.5 | 5,680 | 50.0 (56.9) | 55.9 (62.6) | 1,834 (3,281) |
+| c05-cap131k-idle-100k-r2 | 29 | 66.0 | 26.3 | 0.1 | 0 | 53.5 (68.9) | 0.8 (4) | 13.4 | 5,595 | 49.8 (58.0) | 55.4 (63.3) | 1,858 (3,102) |
+| x01-cap262k-idle-100k | 89 | 68.3 | 16.2 | 0.6 | 0 | 50.5 (67.6) | 1.3 (7) | 13.6 | 5,402 | 46.8 (57.7) | 52.9 (65.0) | 1,789 (3,004) |
+| x02-cap262k-idle-100k-r2 | 178 | 73.8 | 10.1 | 1.1 | 0 | 47.3 (66.0) | 1.9 (7) | 12.9 | 5,377 | 45.6 (63.2) | 52.9 (68.1) | 1,825 (3,506) |
+
+Peak channel depth (`Channel Peak Depth`, events), from the 1 s counters:
+
+| Capacity | Idle 200k | Busy 12, 200k | Busy 24, 200k | Idle 100k |
+| --- | --- | --- | --- | --- |
+| 65,536 | 61,903 (`m02`), 36,236 (`m03`), 24,223 (`m11`) | 63,940 (`m07`) | 65,537 (`m05`, `m06`: full) | 65,537 (`m01`, `m09`, `m10`: full) |
+| 131,072 | 27,385 (`c01`), 28,129 (`c02`) | 61,239 (`c03`) | not run | 131,073 (`c04`, `c05`: full) |
+| 262,144 | not run | not run | not run | 262,145 (`x01`: full), 262,054 (`x02`) |
+
+Total `intake_dropped` at idle 100,000 QPS: 65,536 gave 892,932, 1,403,492, and 945,037 (3 runs);
+131,072 gave 443,994 and 464,402; 262,144 gave 156,618 and 26,285. At 200,000 QPS the three idle
+runs with 65,536 and the two with 131,072 lost nothing.
+
+#### Findings
+
+1. **At 200,000 QPS, 65,536 was enough on an idle guest** (3 of 3 runs, 0 dropped) **but with little
+   margin.** The peak queue reached 61,903 in `m02` (94 % of the channel) and 63,940 in the busy 12
+   run `m07` (98 %). In the busy 24 run `m05` it was full and 12,264 events were dropped.
+2. **131,072 has a margin.** With it, the idle peaks were 27,385 and 28,129 and the busy 12 peak was
+   61,239 (47 % of the channel). No run at 200,000 QPS dropped an event, idle or busy 12.
+3. **At 100,000 QPS on an idle guest the channel overflowed in 7 of 7 runs, at every size.**
+   `Events Received/sec` fell to between 0 and a few thousand for one to three seconds, then came back
+   as a burst. Each run had 7 to 15 sampled seconds below half of the nominal 200,000 events a second.
+   A bigger channel removes part of the loss: 131,072 halved it, and 262,144 cut it by 6 to 50 times.
+   It does not remove it. A stall of one or two seconds at 100,000 QPS holds 200,000 to 400,000
+   events. The cause is not the channel size. It is the late delivery from ETW (finding 6 of L1, and
+   L-7).
+4. **The late delivery is more frequent on 12 vCPUs.** On 6 vCPUs the idle 100,000 QPS run of L5 lost
+   nothing and its lowest second was 196,770 events. Here the three runs at the same rate lost 8 to
+   12 % at the channel. A candidate cause is the one named in L1: ETW delivers events in timestamp
+   order across the per-processor buffers, so a quiet processor holds delivery back until its buffer
+   is flushed (1 s). A guest with more processors has more quiet buffers at 100,000 QPS. At 200,000
+   QPS all 12 processors fill their buffers fast, and the idle runs had no such loss. This is not
+   tested.
+5. **Some of the dips also show in the client** (`m01` at 53 to 54 s, `m09` at 11 to 13 s with one
+   second of 0 queries sent, and at 29 to 30 s). `m10` has 7 dips and no low client second. So the
+   dips are not only the client.
+6. **The channel has a memory cost.** The service working set peaked at 241 MB (65,536, `m02`), 356 MB
+   (131,072, `c01`), and 812 MB (262,144, `x01`). Available memory stayed above 5.2 GB of 8 GB in
+   every run.
+
+### ETW defaults (`--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128`)
+
+- `etw_lost` was **0 in every idle run, in every busy 6 and busy 12 run, and in `m04` and `m05`**. It
+  was above 0 in one run: `m06` (busy 24, 200,000 QPS), 10,302,619 events, with the guest 100 %
+  busy and the processor queue at 38.7 mean and 80 max.
+- ETW allocated at most 51 buffers of 128 in any run, at most 15 were in use, and `% ETW Buffers
+  Used` peaked at 11.7 %. In `m06` the peak was 48 buffers allocated and 12 in use, so the loss
+  happened with 80 buffers still available. A larger `--etw-max-buffers` would not have helped. The
+  guest was starved of CPU there.
+- The brief said to try `--etw-max-buffers 256` only if `etw_lost` is above 0 when idle at 200,000
+  QPS. It was not, so I did not try it.
+
+### The L-1 case with the new sizes
+
+`after-50k-ctl-d0`: 50,000 QPS, 4 client threads, `tbf rate 320mbit burst 256kb latency 400ms` on the
+receiver ingress through `ifb`, no delay, 60 s load, 30 s tail, no WPR. Four runs, default settings.
+A "stall" is a sampled second with events received below half of 100,000 a second.
+
+| Run | Load | Busy | Encoded | Delivered (gap) | `queue_dropped` | Spooled | `intake_dropped` | `ring_dropped` | `etw_lost` | Events/s mean (min) | Rx MB/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| l1-r01 | 50k | 0 | 5,999,992 | 6,000,005 (+13) | 0 | 0 | 0 | 0 | 0 | 100,088 (0) | 9.8 |
+| l1-r02 | 50k | 0 | 5,999,984 | 5,999,997 (+13) | 0 | 0 | 0 | 0 | 0 | 100,228 (0) | 9.8 |
+| l1-r03 | 50k | 0 | 5,999,984 | 5,999,997 (+13) | 0 | 0 | 0 | 0 | 0 | 100,387 (2,543) | 9.8 |
+| l1-r04 | 50k | 0 | 5,999,952 | 5,999,964 (+12) | 0 | 0 | 0 | 0 | 0 | 99,209 (0) | 9.8 |
+
+| Run | Peak send queue (blocks) | Router wait peak (ms) | Router pass peak (ms) | Write wait peak (ms) | `link_saturated` | Guest CPU % mean (max) | Proc. queue mean (max) | Service CPU % | Min available MB | Host CPU % mean (max) | Host LP run % mean (max) | VP wait/dispatch mean (max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| l1-r01 | 160 | 68.0 | 0.4 | 3.4 | 0 | 18.9 (29.9) | 0.4 (7) | 5.3 | 5,836 | 22.1 (31.1) | 27.0 (36.0) | 1,975 (3,092) |
+| l1-r02 | 160 | 66.0 | 0.3 | 3.5 | 0 | 17.8 (28.3) | 1.2 (7) | 5.2 | 5,825 | 21.2 (27.6) | 26.1 (31.8) | 2,027 (5,722) |
+| l1-r03 | 154 | 66.0 | 0.5 | 4.5 | 0 | 21.9 (39.3) | 1.0 (9) | 5.4 | 5,833 | 24.5 (37.0) | 29.5 (41.4) | 1,980 (3,150) |
+| l1-r04 | 155 | 66.0 | 0.3 | 3.3 | 0 | 16.1 (27.5) | 1.1 (8) | 5.4 | 5,847 | 20.4 (28.4) | 24.2 (36.6) | 2,046 (5,606) |
+
+| Run | Stall seconds (events/s) | Peak channel depth | Peak send queue (of 256) |
+| --- | --- | --- | --- |
+| `l1-r01` | 34.9 s (0) | 37,551 | 160 |
+| `l1-r02` | 8.8 s (39,988), 28.0 s (42,734), 47.2 s (0) | 37,021 | 160 |
+| `l1-r03` | 11.9 s (6,830), 22.0 s (2,543) | 37,135 | 154 |
+| `l1-r04` | 8.9 s (0), 21.0 s (0), 43.1 s (0), 57.3 s (38,803) | 39,917 | 155 |
+
+#### Findings
+
+1. **The larger channel and FIFO absorbed the late-delivery bursts.** `queue_dropped` 0,
+   `intake_dropped` 0, and `spooled` 0 in all four runs, with 10 stall seconds in total (every run
+   had at least one). In L1 on the old sizes, the same case had `intake_dropped` in 7 of 14 runs and
+   a spill in 12 of 14.
+2. **How they were absorbed.** The channel peaked at 37,021 to 39,917 events of 65,536, and the send
+   queue at 154 to 160 blocks of 256. The old 128-block queue would have been full.
+3. **The stall rate did not change.** Every run had 1 to 4 stall seconds, as in L1 (8 of 14 runs
+   with a stall). The cause of the stall is still open.
+4. **L-2 (spill at load start) did not recur.** `spooled` was 0 in all four runs. In L1 it was a
+   spill of 150,000 to 220,000 frames in 6 of 14 runs. The larger send queue takes the load-start
+   burst.
+
+### Host contention
+
+The host has 12 cores and 24 logical processors. In this run it ran the 12 vCPU guest, the 4 vCPU
+receiver, one other VM, and the 16-thread client.
+
+| Measure (1 s samples, from 5 s into the load to its end) | Range over the 22 runs |
+| --- | --- |
+| `\Processor(_Total)\% Processor Time` (root partition) | mean 20 to 76 %, largest sample 87.2 % |
+| `\Hyper-V Hypervisor Logical Processor(_Total)\% Total Run Time` | mean 24 to 80 %, largest sample 88.1 % |
+| Guest `CPU Wait Time Per Dispatch`, mean over the 12 VPs | 1,639 to 2,048 |
+| Guest `CPU Wait Time Per Dispatch`, largest single sample | 2,417 to 5,722 |
+| `CPU Contention Time Per Dispatch`, `CPU Wake Up Time Per Dispatch` | 0 in every run |
+
+By load: idle 100,000 QPS runs 47 to 51 % (processor) and 53 to 58 % (total run time). The 200,000
+QPS runs, idle and busy, 69 to 76 % and 74 to 80 %. The L-1 runs 20 to 25 % and 24 to 30 %. The host
+never ran all 24 logical processors flat out, and no run shows contention time.
+
+- The service limits seen here are not host contention. The runs with the worst loss at idle
+  (`m01`, `m09`, `m10`) were on a host that was 47 to 51 % busy, with the VP wait at its normal mean
+  (1,755 to 1,789). The busy 24 loss (`m06`) had a host at 74 % and a VP wait mean of 1,904, the same
+  as `m05`, which did not lose events in ETW.
+- The two highest single VP wait samples (5,722 in `l1-r02`, 5,606 in `l1-r04`) came in the lightest
+  runs. I did not link them to a stall.
+
+### Deviations and limits
+
+- **Extra runs.** `m09`, `m10` (idle 100,000 QPS) and `m11` (idle 200,000 QPS) were not in the matrix.
+  I added them after `m01` lost 892,932 events at idle, to see whether it was a one-off. It was not.
+- **Capacity comparison despite the condition.** The condition was not met at 200,000 QPS (see
+  above). I ran 131,072 as asked, and also 262,144 because of the 100,000 QPS result. The 262,144
+  runs are two, both at 100,000 QPS.
+- **No `--etw-max-buffers 256` run.** The condition was not met.
+- Busy 24 was run twice at 200,000 QPS and gave opposite results (`m05` reached the link, `m06` did
+  not). Two runs do not say how often a 24-thread busy guest starves the capture.
+- No idle 100,000 QPS run on 6 vCPUs was repeated, so the comparison in Event channel finding 4 is
+  with the single L5 run on 6 vCPUs.
+- The link thread's scheduling delay is not measured. The router wait peak is the nearest counter.
+- The counters are 1 s samples. A dip of under a second does not show.
+
+### Verdicts
+
+| Question | Verdict |
+| --- | --- |
+| **Risk 9** | **Held in this lab.** 22 of 22 runs had `spooled` 0 and `queue_dropped` 0. That includes 9 runs at about 40 MB/s (`m02`, `m03`, `m11`, `m05`, `m07`, `m08`, `c01`, `c02`, `c03`), `m05` with the router wait at 198 ms, above one quantum, and `m07` at 181 ms. The 256-block FIFO held with 12 busy threads on 12 vCPUs. At 24 busy threads the capture itself fails in one run of two. |
+| **`--capacity` default** | **65,536 passes at 200,000 QPS on an idle guest but has little margin under load** (peak 94 to 98 % of the channel, and 12,264 events dropped with 24 busy threads). **131,072 is the safer default:** no drop in three 200,000 QPS runs (two idle, one busy 12), and a 47 % peak in the busy 12 run. It costs 283.03 MiB of counted storage instead of 145.53 MiB, and a longer startup deadline. It does not fix the 100,000 QPS late-delivery loss, and neither does 262,144. This run does not show that 65,536 is wrong at 200,000 QPS idle. The choice is the owner's. |
+| **ETW defaults** | **Hold.** `etw_lost` was 0 in every run except the starved busy 24 run. At most 51 of 128 buffers allocated and 15 in use. No reason to raise `--etw-max-buffers` or the buffer size. |
+| **L-1 and L-7** | **Absorbed** in 4 of 4 runs with no `queue_dropped`, `intake_dropped`, or spill. The stall itself still happens. |
+| **New finding** | **Late ETW delivery at 100,000 QPS on 12 vCPUs loses 7 to 12 % of events at the channel** (7 of 7 idle runs). The commit did not cause it. Open: the cause, and whether a shorter `--etw-flush-seconds` or smaller buffers remove it. |
+
+### Lab state after
+
+- **Guest:** 12 vCPUs, 8 GiB static memory (Dynamic Memory off). The HEAD MSI is installed with
+  exactly the three properties `RECEIVER=172.27.215.60:6000`, `SESSION_NAME=EtwDnstap-Lab`, and
+  `SERVICE_ARGS="--plaintext --stats-interval-seconds 5"`, and no extra argument. The last
+  reinstall used `REINSTALL=ALL REINSTALLMODE=vomus`, then a restart. ProductCode
+  `{6AE10CB8-0685-478E-AAF6-4D1B7CEBC372}`, MSI SHA-256
+  `25AA22E06D9DA34C7922C12AA146840B39AC0D3CA2F149DC37C48C5153E0ED6B`, executable SHA-256
+  `8A800E01244D8E3B1E9128890BAFA2F112D3E6B5CC53117624E8DEDDABE2C5D1`. The service is running as
+  `NT AUTHORITY\LocalService`, SID type restricted, recovery `restart/5000`, connected to the
+  receiver. The spool holds only `cursor.bin`. The busy processes, the samplers, WPR, and the
+  staging folder are gone.
+- **Receiver:** `tc qdisc show`, the `eth0` ingress filters, `iptables -S` (filter and mangle),
+  `ip6tables -S`, `nft list ruleset`, the link list, and the loaded traffic-control modules match the
+  step 0 record line for line. The `ifb`, `sch_tbf`, `sch_ingress`, `act_mirred`, and `cls_u32`
+  modules that the runs loaded were unloaded. The collector config and the null-output drop-in have
+  the same SHA-256 as before, the output is still `StandardOutput=null` and `StandardError=null`,
+  and the collector process is the one that was running.
+- **Checkpoints:** `sizing-200k-pre-2026-11-04` on both guests, kept, with all earlier checkpoints.
+  Restoring any checkpoint on `DNSTap-WS2025` returns the guest to 6 vCPUs and 4 GiB.
