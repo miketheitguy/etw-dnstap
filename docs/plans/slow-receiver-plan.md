@@ -1,6 +1,6 @@
 # Slow and saturated receiver plan
 
-> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, and F complete on 2026-11-04; findings L-1, L-5, and L-6 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, F, and L1D complete on 2026-11-04; findings L-1 and L-5 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
 
 This plan covers a receiver that is connected but slow, and a link that carries less
 than the capture rate. It records what the code does today and the cost of each
@@ -204,6 +204,7 @@ the main working tree, one at a time, so they do not conflict.
 | B2 | 6, done | Rewind the spool on a failure. Unsent replay data goes back to the spool instead of being lost, so the replay credit can grow to about the FIFO depth, with no loss. This fixes V3-M-A. It changes when the spool deletes a segment (only after the link has taken all of it), so it needs a design note, tests, and its own review. | `voltagent-lang:rust-engineer` | xhigh | Design note, code, and tests. |
 | T | deferred | Optional. Implement D3 with `TCP_INFO_v0`, and add the `SndLim*` shares only where `TCP_INFO_v1` is available (see R1). Start it only if an operator needs to know whether the receiver or the network path limits the link. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
 | F | before the next lab campaign, done | A failed FINISH no longer shows in the service exit code or in `output_errors`. Change the lab lifecycle checks to verify STOP/FINISH on the receiver side, from the receiver log or a packet capture. The affected scripts are `summarize-pooled-stage.py`, `build-pooled-report.py`, `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `windows-parser-stage.ps1`, and `windows-startup-capacity.ps1`. | `voltagent-lang:python-pro` | medium | Script changes and tests. |
+| L1D | 7, done | Find the cause of L-1 and L-6 from the code (review V5) and the 1 s counter data. Add the counters `router_wait_max_recent_us` and `router_pass_max_recent_us`. | `voltagent-qa-sec:code-reviewer` (Fable), `voltagent-data-ai:data-analyst` (Sonnet), `voltagent-lang:rust-engineer` (Sonnet) | medium, low, medium | Section "L-1 and L-6 results" in this file. Code, tests, and guide updates. |
 | W | 5, done | Correct the counter meaning for F6 in `docs/guide/monitoring.md` and `docs/design/data-path.md`. Update `docs/design/data-path.md`, `docs/guide/configuration.md`, `docs/guide/tuning.md`, and the animation if stage 5 changes. | `voltagent-dev-exp:documentation-engineer` | medium | Guide changes. |
 
 ## Acceptance criteria
@@ -531,12 +532,53 @@ two frames, so 10,000 and 50,000 queries per second are 2.06 and 10.3 MB/s.
 
 | ID | Finding | State |
 | --- | --- | --- |
-| L-1 | One "after" control run (50,000 queries per second, 40 MB/s link) counted 10,822 frames in `queue_dropped` at the end of the load. The parser channel was full at 128 blocks, the receiver got 0.2 MB, nothing spilled, and the service used 1.5 to 3 % CPU, so the router took no block for about 1 s. Two reruns and an unshaped run counted none. | Open. Cause unknown. |
+| L-1 | One "after" control run (50,000 queries per second, 40 MB/s link) counted 10,822 frames in `queue_dropped` at the end of the load. The parser channel was full at 128 blocks, the receiver got 0.2 MB, nothing spilled, and the service used 1.5 to 3 % CPU, so the router took no block for about 1 s. Two reruns and an unshaped run counted none. | Open. Review V5 and the 1 s counter data rule out a cause in the code: the service process did not run for about 1 s. Task L1D added counters that tell a late wake from a blocking call. |
 | L-2 | In 5 of 6 shaped runs at 50,000 queries per second with a 40 MB/s link, on both builds, the receiver got nothing for about 2.5 s at load start, and 0.2 to 2.1 million frames spilled. "After" lost none. The unshaped run did not spill. | Points at the lab shaping; not proven. |
 | L-3 | `link_saturated` set 11.4 to 12 s into a silent outage, before the 15 s stall timeout ended the session. | Documented in `docs/guide/monitoring.md`. |
 | L-4 | Bytes the guest's TCP accepted that the receiver never got, at a failed connection (uncounted): up to about 1.08 MB on "before" (fixed 1 MiB send buffer), 0.58 MB on "after" on an idle host, and about 4.2 MB on "after" on a busy host (autotuned buffer). | Design risk 4, now measured. |
 | L-5 | Risk 9 (the 128-block FIFO at a Server quantum) is not decided: at 10.3 MB/s with every CPU busy, the FIFO did not spill, but the 41 MB/s case was not run. | Open. |
-| L-6 | `send_queue_depth_max` read 33 to 61 at 10,000 queries per second in every "after" run, including the control, with no loss. | Not investigated. |
+| L-6 | `send_queue_depth_max` read 33 to 61 at 10,000 queries per second in every "after" run, including the control, with no loss. | Closed by review V5: one ETW flush burst (about 2 MB, 31 to 33 blocks) waits while the idle router wakes. Not a defect. |
+
+### L-1 and L-6 results
+
+Task L1D, 2026-11-04. Review V5 read the router loop; a data check read the 1 s counter
+samples of the L run.
+
+- **L-1: no cause in the code.** At the drop the router was in direct mode with an
+  empty spool: `spooled` stayed at 215,680 (the spill at load start, replayed in under
+  1 s, about 58 s earlier), and the spool held 0 bytes in every sample. In that state
+  a router pass makes only non-blocking channel calls and atomic reads, and its wait
+  ends after at most 50 ms. The hand-back wait needs a disconnect (there were 0). A
+  spill blocked in a file call needs a full link FIFO and would raise `spooled`; the
+  longest write wait was 3 ms and `spooled` did not move. A lock, a log write, the
+  strict order rule, and the shutdown path are ruled out as well.
+- **The whole process stalled, not only the router.** In the second before the
+  drops, events received fell from about 100,000/s to 1,900/s, the send rate to
+  0.2 MB/s, and the service to 1.5 % of a CPU, while the guest stayed 25 to 31 % busy
+  and the counter samples kept their 1 s spacing. The parser channel held 122 blocks
+  just before. A likely sequence: when the process ran again, ETW delivered its buffered events, and the
+  parser filled the channel before the router took blocks: 10,822 frames dropped. The
+  cause of the stall (host CPU, paging, or something else that holds a process) is
+  not known.
+- **What covers a router pause.** Only the 128-block parser channel: 0.8 s at
+  10.3 MB/s. The other two 50k control runs paused for 0.2 to 0.26 s (depth 30 to 41),
+  about one Windows Server quantum. A larger channel (256 blocks: 1.6 s, 8.5 MiB more)
+  is the only lever within the standing decisions. It is not changed until a stall is
+  measured.
+- **L-6 is the ETW burst.** ETW delivers events about once per flush interval (1 s).
+  At 10,000 queries per second one burst is about 2 MB, 31 to 33 blocks, and the
+  parser encodes it in milliseconds while the idle router wakes. Two bursts give 61.
+  At 50,000 with a shaped link the router hardly sleeps, and the depth is 2. A burst
+  is far below 128 blocks, so it cannot cause L-1.
+- **New counters.** `router_wait_max_recent_us` is the longest router wait (at most
+  50 ms plus jitter when the thread runs on time). `router_pass_max_recent_us` is the
+  longest pass outside the wait. They are in the `output stats` line and are
+  performance counters 67 and 68. If L-1 recurs, a large wait peak with a small pass
+  peak confirms a late wake; a large pass peak points at a blocking call.
+- **Next evidence, when the lab runs again:** the two new counters; a WPR trace (CPU
+  Usage Precise and ReadyThread) of the service across the end of the load, with the
+  host's Hyper-V virtual processor wait counters; for L-6, a 10,000 run with
+  `--etw-flush-seconds 2` should about double the depth.
 
 ### Decisions
 

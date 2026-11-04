@@ -156,6 +156,38 @@ fn the_since_start_write_maximum_is_not_touched() {
     assert_eq!(get(&stats.slow_writes), 2);
 }
 
+#[test]
+fn the_router_peaks_are_rolled_by_the_sender_like_the_write_peak() {
+    let (mut monitor, stats, base) = monitor();
+    stats
+        .router_wait_window_max_us
+        .fetch_max(52_000, Ordering::Relaxed);
+    stats
+        .router_pass_window_max_us
+        .fetch_max(700, Ordering::Relaxed);
+    stats
+        .router_pass_window_max_us
+        .fetch_max(300, Ordering::Relaxed);
+    monitor.sample(&observation(base, 1, 0));
+    assert_eq!(get(&stats.router_wait_max_recent_us), 52_000);
+    assert_eq!(get(&stats.router_pass_max_recent_us), 700);
+    assert_eq!(get(&stats.router_wait_window_max_us), 0);
+    assert_eq!(get(&stats.router_pass_window_max_us), 0);
+    // The two peaks are independent of each other and of the write peak.
+    assert_eq!(get(&stats.write_max_recent_us), 0);
+    stats
+        .router_pass_window_max_us
+        .fetch_max(50, Ordering::Relaxed);
+    for second in 2..=60 {
+        monitor.sample(&observation(base, second, 0));
+    }
+    assert_eq!(get(&stats.router_wait_max_recent_us), 52_000);
+    assert_eq!(get(&stats.router_pass_max_recent_us), 700);
+    monitor.sample(&observation(base, 61, 0));
+    assert_eq!(get(&stats.router_wait_max_recent_us), 0, "the 52 ms left");
+    assert_eq!(get(&stats.router_pass_max_recent_us), 50);
+}
+
 // ---- D1: oldest age ----
 
 #[test]

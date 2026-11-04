@@ -109,6 +109,8 @@ fn a_stalled_link_does_not_overflow_the_queue_while_the_spool_has_room() {
     // Changes with H1: this was `send_queue_depth_max == SEND_QUEUE_BLOCKS`.
     assert!(get(&stats.send_queue_depth_max) < SEND_QUEUE_BLOCKS as u64);
     assert!(get(&stats.write_max_recent_us) <= get(&stats.write_max_us));
+    // The router times its own loop: one of the two peaks is non-zero.
+    assert!(get(&stats.router_wait_max_recent_us) + get(&stats.router_pass_max_recent_us) > 0);
     assert!(get(&stats.bytes_sent) > 0);
     sink.finish().expect("clean STOP/FINISH");
     // Changes with H1: nothing was dropped, so every offered frame arrived.

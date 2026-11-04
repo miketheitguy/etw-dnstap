@@ -49,7 +49,10 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, PoisonError, atomic::Ordering},
+    sync::{
+        Arc, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime},
 };
@@ -154,6 +157,13 @@ pub(super) struct Router {
     monitor: LinkMonitor,
 }
 
+/// Raises a window accumulator to `elapsed`, in microseconds. Only the router
+/// writes the router accumulators; the monitor takes them with a swap.
+fn peak_us(accumulator: &AtomicU64, elapsed: Duration) {
+    let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    accumulator.fetch_max(micros, Ordering::Relaxed);
+}
+
 impl Router {
     pub(super) fn new(
         spool: Option<Spool>,
@@ -193,12 +203,27 @@ impl Router {
     /// Runs until the parser channel is closed and empty and everything handed to
     /// the link is out of the front list, or the shutdown link budget ends, then
     /// shuts down.
+    ///
+    /// The loop times itself with at most two clock reads per iteration. The
+    /// time from the last mark to the end of a pass is the pass; the time from
+    /// there to the end of the wait is the wait. The two cover the loop with no
+    /// gap and no overlap. The hand-back wait is inside a pass, and `seal` is
+    /// outside the loop; neither is timed.
     pub(super) fn run(mut self, parser: &Receiver<Block>) -> Result<()> {
+        let mut mark = Instant::now();
         loop {
-            match self.turn(parser) {
-                Turn::Done => break,
-                Turn::Moved => {}
-                Turn::Idle => self.wait(parser),
+            let turn = self.turn(parser);
+            if matches!(turn, Turn::Done) {
+                break;
+            }
+            let pass_end = Instant::now();
+            peak_us(&self.stats.router_pass_window_max_us, pass_end - mark);
+            mark = pass_end;
+            if matches!(turn, Turn::Idle) {
+                self.wait(parser);
+                let wait_end = Instant::now();
+                peak_us(&self.stats.router_wait_window_max_us, wait_end - mark);
+                mark = wait_end;
             }
         }
         self.seal(parser)

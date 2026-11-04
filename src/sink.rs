@@ -11,6 +11,7 @@ use std::{
 /// The sink writes them; the supervisor reads them for periodic and final
 /// reports. Every counter is monotonic except the gauges (`spool_bytes`,
 /// `spool_segments`, `send_queue_depth_max`, `write_max_recent_us`,
+/// `router_wait_max_recent_us`, `router_pass_max_recent_us`,
 /// `spool_oldest_age_ms`) and the flags (`connected`, `spool_available`,
 /// `link_saturated`).
 #[derive(Default)]
@@ -55,6 +56,26 @@ pub(crate) struct SinkStats {
     /// microseconds, in the last 60 seconds. The router recomputes it every
     /// second, so every reader sees the same value.
     pub(crate) write_max_recent_us: AtomicU64,
+    /// Accumulator for `router_wait_max_recent_us`: the longest router wait
+    /// since the router last took it. Only the router writes and resets it.
+    /// Not reported.
+    pub(crate) router_wait_window_max_us: AtomicU64,
+    /// Gauge: the longest single call of the router's wait, from entry to
+    /// return, in microseconds, in the last 60 seconds. Normally at most about
+    /// 50 ms plus scheduler jitter. A larger value means the router thread did
+    /// not run when its wait ended (a late wake). The router recomputes it every
+    /// second.
+    pub(crate) router_wait_max_recent_us: AtomicU64,
+    /// Accumulator for `router_pass_max_recent_us`: the longest router pass
+    /// since the router last took it. Only the router writes and resets it.
+    /// Not reported.
+    pub(crate) router_pass_window_max_us: AtomicU64,
+    /// Gauge: the longest router pass outside its wait, in microseconds, in the
+    /// last 60 seconds. A pass is the rest of one loop iteration: the link
+    /// thread's messages, the follow of the link, the checkpoint, routing and
+    /// replay, and the monitor sample. A large value means a call in the pass
+    /// blocked or ran long. The router recomputes it every second.
+    pub(crate) router_pass_max_recent_us: AtomicU64,
     /// Bytes that the socket accepted from the link thread, whether live or
     /// replayed. With plaintext these are the framed bytes (length prefix and
     /// payload). With TLS they are the bytes `write_tls` wrote, so they include

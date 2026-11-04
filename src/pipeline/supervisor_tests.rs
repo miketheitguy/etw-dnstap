@@ -791,6 +791,9 @@ fn the_output_report_carries_the_slow_receiver_signals() {
     );
     sink.write_max_us.store(9_000_000, Ordering::Relaxed);
     sink.write_max_recent_us.store(2_500, Ordering::Relaxed);
+    sink.router_wait_max_recent_us
+        .store(48_000, Ordering::Relaxed);
+    sink.router_pass_max_recent_us.store(310, Ordering::Relaxed);
     sink.bytes_sent.store(123_456_789, Ordering::Relaxed);
     sink.send_queue_depth_max.store(77, Ordering::Relaxed);
     sink.spool_oldest_age_ms.store(93_250, Ordering::Relaxed);
@@ -803,6 +806,8 @@ fn the_output_report_carries_the_slow_receiver_signals() {
     for field in [
         "write_max_us=9000000",
         "write_max_recent_us=2500",
+        "router_wait_max_recent_us=48000",
+        "router_pass_max_recent_us=310",
         "bytes_sent=123456789",
         "send_queue_depth_max=77",
         "spool_oldest_age_ms=93250",

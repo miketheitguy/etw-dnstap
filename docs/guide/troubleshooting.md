@@ -179,8 +179,10 @@ peaks cover the last 60 seconds ([definitions](monitoring.md#output-counters)).
 | `link_saturated` | `true` | The spool backlog is larger than 10 samples ago (at least 10 seconds), with at least 7 of the 10 steps rising, and the receiver is connected. The receiver or the network path takes fewer bytes than the service captures. It keeps its value while the receiver is down, so read it with `receiver_connected`. |
 | `bytes_sent` | Rate below the capture byte rate | The link takes less than arrives. No counter reports the capture byte rate: it is the `bytes_sent` rate plus the growth of `spool_bytes` plus the `spool_dropped_bytes` rate. |
 | `spool_oldest_age_ms` | Large, and rising | The data that the link takes now is at most this old. At the cap, the spool deletes its oldest segments, which hold the oldest data. |
-| `send_queue_depth_max` | Near 128 | The router falls behind, so the spool disk is slow, not the receiver. At 128 the parser drops frames. |
+| `send_queue_depth_max` | Near 128 | The router falls behind: the spool disk is slow, or the router thread did not run. It is not the receiver. At 128 the parser drops frames. |
 | `write_max_recent_us` | 1,000,000 or more | A socket write blocks now. A write that stalls for 2 seconds ends the session. `write_max_us` is the maximum since the start, so it cannot show this. |
+| `router_wait_max_recent_us` | Far above 50,000 | The router thread woke late from its wait of at most 50 ms. The thread did not get a processor in time: look for CPU contention in the guest or on the host. |
+| `router_pass_max_recent_us` | Large | A call in a router pass blocked or ran long, such as a spool disk write. |
 
 When `link_saturated` becomes `true`, the service writes the warning `dnstap link is
 saturated` (Event ID 3). It gives `backlog_bytes`, `oldest_age_ms`, and
@@ -205,6 +207,8 @@ Check these in order:
 4. `write_max_recent_us` and `slow_writes`. Large values point to the receiver or the
    network path. Small values with a saturated state point to the spool disk or the
    sender thread, not to a blocked socket.
+   If `queue_dropped` rose while the CPU use stayed low, compare `router_wait_max_recent_us`
+   (a late wake) with `router_pass_max_recent_us` (a blocking call).
 5. The spool disk. At 200,000 queries per second, the spool writes about 41 MB per
    second. See [Spool sizing](tuning.md#spool-sizing).
 6. The collector's CPU, disk, and input queue.

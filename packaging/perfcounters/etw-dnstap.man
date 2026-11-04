@@ -316,6 +316,22 @@
                    nameID="364" name="Link Saturated"
                    descriptionID="366" description="1 while the spool backlog trends up over 10 samples with the receiver connected, so the link carries less than the capture rate; otherwise 0. Keeps its value while the receiver is down."
                    type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="67" uri="EtwDnstap.Pipeline.RouterWaitPeakMicroseconds"
+                   nameID="368" name="Router Wait Peak (microseconds)"
+                   descriptionID="370" description="Longest single wait of the router thread for work, in microseconds, in the last 60 seconds, from entry to return. The wait ends after at most 50 milliseconds, so a larger value means the thread woke late."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="68" uri="EtwDnstap.Pipeline.RouterPassPeakMicroseconds"
+                   nameID="372" name="Router Pass Peak (microseconds)"
+                   descriptionID="374" description="Longest pass of the router thread outside its wait, in microseconds, in the last 60 seconds. A pass takes the link thread's messages, follows the link, saves the position, and routes and replays blocks. A large value means a call in the pass blocked."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
         </counterSet>
       </provider>
     </counters>

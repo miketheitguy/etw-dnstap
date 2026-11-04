@@ -304,8 +304,12 @@ frame, which is what B1 and B2 assume.
    channel was full), the receiver got 0.2 MB, `spooled` did not change, guest
    CPU was 25 to 31 %, and the service process used 1.5 to 3 % of a CPU. So the
    router took no parser block for about 1 s, and did not spill. Two reruns and
-   an unshaped run had 0. The cause is not known. A WPR trace of the service
-   threads is the next step if it recurs.
+   an unshaped run had 0. Later analysis (2026-11-04, task L1D in the
+   [plan](../plans/slow-receiver-plan.md#l-1-and-l-6-results)) found no cause in
+   the code, and found that the whole service process ran for only about 1.5 % of
+   a CPU in the second before the drops. The new counters
+   `router_wait_max_recent_us` and `router_pass_max_recent_us`, and a WPR trace,
+   are the next step if it recurs.
 2. **A spill at the start of the load, with lab shaping on.** In 5 of 6 runs at
    50,000 QPS with an `ifb` filter and a fast link, both builds, the receiver got
    no bytes for about 2.5 s after the load started, and 0.2 to 0.6 million frames
@@ -321,7 +325,8 @@ frame, which is what B1 and B2 assume.
    autotuned send buffer on a busy host (case 2). Design risk 4 predicted the
    direction, not the size.
 5. **`send_queue_depth_max` at 10,000 QPS** read 33 to 61 with no loss in every
-   run, also unshaped. Not investigated.
+   run, also unshaped. Later analysis (task L1D) traced it to one ETW flush burst
+   of about 2 MB waiting while the idle router wakes. It is not a defect.
 
 ## Deviations from the plan
 

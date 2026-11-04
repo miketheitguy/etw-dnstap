@@ -161,7 +161,7 @@ impl CounterDef {
     }
 }
 
-const COUNTER_COUNT: usize = 42;
+const COUNTER_COUNT: usize = 44;
 
 static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     // Throughput rates.
@@ -301,6 +301,12 @@ static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     }),
     by_value(66, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |v| {
         v.link_saturated
+    }),
+    by_ref(67, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.router_wait_max_recent_us
+    }),
+    by_ref(68, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.router_pass_max_recent_us
     }),
 ];
 
@@ -587,9 +593,9 @@ mod tests {
     const MANIFEST: &str = include_str!("../packaging/perfcounters/etw-dnstap.man");
 
     /// The counters that `PerfLib` reads through a pointer.
-    const REFERENCE_IDS: [u32; 30] = [
+    const REFERENCE_IDS: [u32; 32] = [
         1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 32, 51, 52, 53, 54, 55, 56, 57,
-        58, 59, 61, 62, 63, 64, 65,
+        58, 59, 61, 62, 63, 64, 65, 67, 68,
     ];
     /// The counters that the supervisor sets on each tick.
     const VALUE_IDS: [u32; 12] = [30, 31, 33, 34, 40, 41, 42, 43, 44, 50, 60, 66];
@@ -733,14 +739,14 @@ mod tests {
             [52, 53, 54, 55, 56, 57, 58, 59, 60]
         );
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(COUNTER_COUNT, 42);
+        assert_eq!(COUNTER_COUNT, 44);
     }
 
     #[test]
     fn slow_receiver_counters_are_appended_after_the_spool_counters() {
         let ids: Vec<u32> = COUNTERS.iter().map(|def| def.id).collect();
         let position = ids.iter().position(|&id| id == 60).expect("counter 60");
-        assert_eq!(ids[position + 1..], [61, 62, 63, 64, 65, 66]);
+        assert_eq!(ids[position + 1..], [61, 62, 63, 64, 65, 66, 67, 68]);
     }
 
     #[test]
@@ -827,6 +833,8 @@ mod tests {
             (63, sink.send_queue_depth_max.as_ptr()),
             (64, sink.write_max_recent_us.as_ptr()),
             (65, sink.spool_oldest_age_ms.as_ptr()),
+            (67, sink.router_wait_max_recent_us.as_ptr()),
+            (68, sink.router_pass_max_recent_us.as_ptr()),
         ];
         assert_eq!(expected.len(), REFERENCE_IDS.len());
         for (id, pointer) in expected {
@@ -1091,9 +1099,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // The set has a name and a description; 40 displayed counters have both,
+        // The set has a name and a description; 42 displayed counters have both,
         // and the 2 base counters have a name only.
-        assert_eq!(checked, 2 + 40 * 2 + 2);
+        assert_eq!(checked, 2 + 42 * 2 + 2);
     }
 
     #[test]

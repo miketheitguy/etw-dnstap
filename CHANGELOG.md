@@ -53,6 +53,13 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- Two counters that tell a late wake of the router thread from a blocking call in its
+  loop: `router_wait_max_recent_us` (the longest single wait) and
+  `router_pass_max_recent_us` (the longest pass outside the wait). They are peaks over the
+  last 60 seconds, set once a second like `write_max_recent_us`. The `output stats` and
+  `output stopped` lines carry them. New performance counters 67 and 68 are appended, and the
+  updated manifest must be registered again on upgrade. Routing does not change.
+
 - `--receiver-stall-seconds` (default 15, range 2 to 300): how long the receiver may
   accept no bytes, while the service has data to send, before the service ends the session.
   The MSI has no property for it, as for the other options. Pass it in `SERVICE_ARGS`.

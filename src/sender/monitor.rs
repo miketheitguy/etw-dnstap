@@ -226,6 +226,8 @@ pub(super) struct LinkMonitor {
     next_sample: Instant,
     queue_peak: PeakWindow,
     write_peak: PeakWindow,
+    router_wait_peak: PeakWindow,
+    router_pass_peak: PeakWindow,
     saturation: Saturation,
     /// `(time, bytes_sent)` at the last [`TREND_SAMPLES`] + 1 samples, for
     /// the send rate in a log event.
@@ -239,6 +241,8 @@ impl LinkMonitor {
             next_sample: now + SAMPLE_PERIOD,
             queue_peak: PeakWindow::new(),
             write_peak: PeakWindow::new(),
+            router_wait_peak: PeakWindow::new(),
+            router_pass_peak: PeakWindow::new(),
             saturation: Saturation::new(),
             sent: VecDeque::with_capacity(TREND_SAMPLES + 2),
         }
@@ -275,6 +279,26 @@ impl LinkMonitor {
             .write_max_recent_us
             .store(self.write_peak.peak(), Ordering::Relaxed);
         self.write_peak.roll();
+
+        let waited = self
+            .stats
+            .router_wait_window_max_us
+            .swap(0, Ordering::Relaxed);
+        self.router_wait_peak.record(waited);
+        self.stats
+            .router_wait_max_recent_us
+            .store(self.router_wait_peak.peak(), Ordering::Relaxed);
+        self.router_wait_peak.roll();
+
+        let passed = self
+            .stats
+            .router_pass_window_max_us
+            .swap(0, Ordering::Relaxed);
+        self.router_pass_peak.record(passed);
+        self.stats
+            .router_pass_max_recent_us
+            .store(self.router_pass_peak.peak(), Ordering::Relaxed);
+        self.router_pass_peak.roll();
 
         self.stats
             .send_queue_depth_max

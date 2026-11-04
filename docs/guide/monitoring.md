@@ -122,9 +122,11 @@ These fields appear on `output stats` and `output stopped`.
 | `disconnected_dropped` | Frames lost in the sink. With no spool: the live frames that the link did not hand to the socket in full when a connection failed (the cut frame and every later frame of the block in hand, and the frames in the link queue), and every live frame that arrives while the receiver is down. With a spool: only the one live block that comes back from the link at a shutdown that follows a spill, because it is older than the spool backlog and cannot go in front of it. A failed connection with a spool counts nothing here: its unsent live frames go back to the spool, and its unsent replay frames stay in it. This is not an upper bound on loss. Bytes that the kernel accepted before a failure are not counted, even if the connection then loses them. A counted frame did not reach the receiver whole, except in the TLS 1.3 key update window, where the receiver may hold it. Not in `intake_dropped`. |
 | `slow_writes`, `write_max_us` | The link thread never blocks in a send. It writes without waiting, and when the socket takes no more it waits for the socket to become writable. For each block (about 64 KiB, or one replay batch) it adds up those waits. `slow_writes` counts blocks whose wait reached 5 ms, and `write_max_us` is the longest wait of one block, in microseconds. Both count since the service started. A wait that goes on is added to `write_max_us` while it lasts. |
 | `write_max_recent_us` | Gauge: the longest wait of one block for the socket to become writable, in microseconds, in the last 60 seconds. Use it, not `write_max_us`, to see whether the receiver is slow now. See [Windows of the recent peaks](#windows-of-the-recent-peaks). |
+| `router_wait_max_recent_us` | Gauge: the longest single call of the router thread's wait for work, from entry to return, in microseconds, in the last 60 seconds. The wait ends after at most 50 ms, so a value far above 50,000 means the thread woke late: it did not get a processor in time, because of CPU contention in the guest or on the host, or because the whole process was held. The wait that the router does for the link thread during a hand-back is in `router_pass_max_recent_us`. See [Windows of the recent peaks](#windows-of-the-recent-peaks). |
+| `router_pass_max_recent_us` | Gauge: the longest router pass outside its wait, in microseconds, in the last 60 seconds. A pass takes the link thread's messages, follows the link, saves the delivered position, routes and replays blocks, and takes the monitor sample. A large value means a call in the pass blocked or ran long, for example a disk write or the hand-back wait. Read it with `router_wait_max_recent_us`: together they tell a late wake from a blocking call when `queue_dropped` rises. |
 | `bytes_sent` | Bytes that the socket of the receiver connection accepted, live and replayed. With plaintext these are the framed bytes (4-byte length and payload). With TLS they are the bytes written to the socket, so they include the record headers and tags (about 22 to 29 bytes for each 16 KiB). Includes bytes that the kernel still held when the connection failed. Excludes control frames. Take the rate between two lines and compare it with the capture rate. |
 | `queue_depth_max` | Deepest event channel depth the parser sampled. A lower bound. The parser samples after each idle poll and every 256th event. This is the channel before the parser, not the send queue. |
-| `send_queue_depth_max` | Gauge: the most blocks (about 64 KiB each) waiting in the send queue between the parser and the router in the last 60 seconds, out of 128. The router samples it each time it takes a block. A lower bound. The router never waits on the socket, so a deep queue means the spool (disk) is slow, not the receiver. The router sends blocks to the link queue, which holds 128 blocks (about 8 MiB) while the link is behind, and spills the whole link queue to the spool only when it is full. |
+| `send_queue_depth_max` | Gauge: the most blocks (about 64 KiB each) waiting in the send queue between the parser and the router in the last 60 seconds, out of 128. The router samples it each time it takes a block. A lower bound. The router never waits on the socket, so a deep queue means the spool (disk) is slow or the router thread did not run (see `router_wait_max_recent_us` and `router_pass_max_recent_us`), not the receiver. The router sends blocks to the link queue, which holds 128 blocks (about 8 MiB) while the link is behind, and spills the whole link queue to the spool only when it is full. |
 | `spool_oldest_age_ms` | Gauge: milliseconds since the oldest unsent spool segment was created, 0 with no backlog. It is an upper bound on the age of the oldest unsent frame, because a segment is older than any frame in it. For a segment from an earlier run it uses the file creation time. |
 | `link_saturated` | Flag: `true` while the spool backlog trends up with the receiver connected (larger than 10 samples ago, with at least 7 of the 10 steps rising). It clears when the backlog is empty or no longer larger than 10 samples ago. Holds its value while the receiver is down. Always `false` with no spool. See [The saturated state](#the-saturated-state). |
 | `queue_dropped` | Frames discarded because the send queue was full. Also in `encoded`. |
@@ -137,7 +139,8 @@ These fields appear on `output stats` and `output stopped`.
 
 ### Windows of the recent peaks
 
-`write_max_recent_us` and `send_queue_depth_max` are peaks over a window, not totals. The
+`write_max_recent_us`, `router_wait_max_recent_us`, `router_pass_max_recent_us`, and
+`send_queue_depth_max` are peaks over a window, not totals. The
 router thread keeps one bucket for each second of the last 60. Every second it publishes
 the largest value in the buckets and starts a new bucket. The window is the same for
 every reader, and no reader resets it: the stats log and the performance counters load
@@ -252,7 +255,7 @@ on a host, so the name is the same after each restart. `--session-name` rules ar
 [Options](configuration.md#options). The instance exists only while capture runs.
 
 Windows reads the rates, totals, and gauges that are plain atomics (IDs 1 to 3, 10 to 21, 32,
-51, 52 to 59, and 61 to 65) by reference. Each consumer therefore gets an exact rate for its own sample interval. The service
+51, 52 to 59, 61 to 65, 67, and 68) by reference. Each consumer therefore gets an exact rate for its own sample interval. The service
 publishes the other gauges (IDs 30, 31, 33, 34, 40 to 44, 50, 60, and 66) once per second.
 It runs the ETW statistics query at the same rate. ETW gauges read 0 until the first
 successful query, then keep the last successful value.
@@ -332,6 +335,8 @@ How the totals relate:
 | Socket Write Peak (microseconds) | 64 | Longest wait of one block for the receiver socket to become writable, in the last 60 seconds. The link never blocks in a send. | `write_max_recent_us` |
 | Spool Oldest Age (milliseconds) | 65 | Age of the oldest unsent spool segment, 0 with no backlog. An upper bound for the oldest frame. | `spool_oldest_age_ms` |
 | Link Saturated | 66 | 1 while the spool backlog trends up with the receiver connected. Holds its value through an outage, so read it with Receiver Connected (50). See [The saturated state](#the-saturated-state). | `link_saturated` |
+| Router Wait Peak (microseconds) | 67 | Longest single wait of the router thread for work, in the last 60 seconds. The wait ends after at most 50 ms, so a larger value means a late wake. | `router_wait_max_recent_us` |
+| Router Pass Peak (microseconds) | 68 | Longest router pass outside its wait, in the last 60 seconds. A large value means a call in the pass blocked. | `router_pass_max_recent_us` |
 
 The manifest gives these counters the Advanced detail level: IDs 14, 15, 19, 20, 51, 56,
 and 59. All other counters have the Standard detail level.
