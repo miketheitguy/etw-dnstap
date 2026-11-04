@@ -1,6 +1,6 @@
 # Slow and saturated receiver plan
 
-> **Status:** Proposed; Waves 1 to 3 complete on 2026-11-03, gate G1 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, and F open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
 
 This plan covers a receiver that is connected but slow, and a link that carries less
 than the capture rate. It records what the code does today and the cost of each
@@ -200,8 +200,10 @@ the main working tree, one at a time, so they do not conflict.
 | G2 | 3 | Gate: the user chooses the saturated-link policy, H3a, H3b, or H3c. | user | — | Decision recorded in this file. |
 | I1 | 4 | Implement the approved H1 and H2 design. Flip the C1 assertions. | `voltagent-lang:rust-engineer` | xhigh | Code and tests. |
 | I2 | 4 | Implement H4: remove the fixed `SO_SNDBUF`, so Windows send autotuning stays on. Update the comment in `src/network/sockopt.rs`, or remove the function. Never set the buffer to 0. No H3 work: G2 kept H3a. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
-| L | 5 | Lab run. Limit the rate and add delay on the Ubuntu receiver with `tc` (`tbf` and `netem`). Run at 10,000 and 50,000 queries per second, before and after. Record loss by counter, spool growth, and delivered latency. Needs explicit authorization: it changes lab state. | `general-purpose` | high | `docs/history/slow-receiver-validation.md`. |
+| L | 5 | Lab run. Limit the rate and add delay on the Ubuntu receiver with `tc` (`tbf` and `netem`). Run at 10,000 and 50,000 queries per second, before and after. Record loss by counter, spool growth, and delivered latency. Add an outage on a host with every CPU busy, to measure the replay rate (V3-M-A). Confirm that the lab collector discards a frame cut by a closed connection. Needs explicit authorization: it changes lab state. | `general-purpose` | high | `docs/history/slow-receiver-validation.md`. |
+| B2 | 6, next | Rewind the spool on a failure. Unsent replay data goes back to the spool instead of being lost, so the replay credit can grow to about the FIFO depth, with no loss. This fixes V3-M-A. It changes when the spool deletes a segment (only after the link has taken all of it), so it needs a design note, tests, and its own review. | `voltagent-lang:rust-engineer` | xhigh | Design note, code, and tests. |
 | T | deferred | Optional. Implement D3 with `TCP_INFO_v0`, and add the `SndLim*` shares only where `TCP_INFO_v1` is available (see R1). Start it only if an operator needs to know whether the receiver or the network path limits the link. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
+| F | before the next lab campaign | A failed FINISH no longer shows in the service exit code or in `output_errors`. Change the lab lifecycle checks to verify STOP/FINISH on the receiver side, from the receiver log or a packet capture. The affected scripts are `summarize-pooled-stage.py`, `build-pooled-report.py`, `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `windows-parser-stage.ps1`, and `windows-startup-capacity.ps1`. | `voltagent-lang:python-pro` | medium | Script changes and tests. |
 | W | 5 | Correct the counter meaning for F6 in `docs/guide/monitoring.md` and `docs/design/data-path.md`. Update `docs/design/data-path.md`, `docs/guide/configuration.md`, `docs/guide/tuning.md`, and the animation if stage 5 changes. | `voltagent-dev-exp:documentation-engineer` | medium | Guide changes. |
 
 ## Acceptance criteria
@@ -392,6 +394,72 @@ The coordinator checked the result: `cargo test --lib` passes (482 passed, 7
 ignored), `cargo clippy --all-targets` and `cargo fmt --check` are clean, and the
 changed files contain no host path.
 
+### I1 and I2 results
+
+Task I1 implemented the design on 2026-11-03:
+- New files: `src/sender/link.rs`, `src/sender/router.rs`, and
+  `src/network/wire.rs`.
+- `--receiver-stall-seconds` passes through the configuration and the docs. The MSI
+  passes it in `SERVICE_ARGS`, as it does `--spool-max-mib`.
+- The marked C1 assertions now hold with their new values, and 51 tests were added.
+- Each deviation from the design has an "As built" note in the design.
+
+Task I2 removed the fixed `SO_SNDBUF` and its helper. Both tasks pass the following:
+- `cargo test --lib`: 531 passed, 7 ignored.
+- `cargo clippy --all-targets -- -D warnings`, with the `bench` feature too.
+- `cargo fmt --check`.
+
+| ID | Severity | Finding | State |
+| --- | --- | --- | --- |
+| I1-1 | Blocker | The service can stop with an error, and Windows then restarts it. When the receiver is stalled at shutdown, the STOP/FINISH exchange times out, and the error reaches the service exit code. The MSI sets the non-crash failure flag and the recovery action `restart/5000`. Microsoft Learn (`SERVICE_FAILURE_ACTIONS_FLAG`) says failure actions run when the service stops with a non-zero exit code. So an operator stop, or an MSI upgrade, during a receiver stall restarts the service. | Open. Fix: log a warning, count the frames, and stop with success. |
+| I1-2 | Blocker (V2, measured) | Every block, and every 64 KiB replay batch, needs a wake between the router and the link thread. With every CPU busy, each wake can wait a scheduler slice. With 2 busy threads per logical CPU, a 41 MB/s capture delivered only 1.9 MB/s live, and the rest went to the spool. Replay drained at 2.9 MB/s. `HEAD` delivered 40.9 MB/s on the same load, with nothing spooled. | Open. Waits for a user decision: thread priority or deeper hand-offs. |
+| V2-M1 | Major | The same defect as I1-1, verified: 5 of 5 runs with a paused receiver ended with an error after 3.0 s. | Being fixed. |
+| V2-m1 to m4 | Minor | Replay can read a batch after `up` clears. `up` is set before the link enters link mode. The pool bound leaves out the front list. Some code is dead or stale. | m1, m2, and m4 being fixed; m3 waits for the I1-2 decision. |
+
+Task A amended the design for option D on 2026-11-03:
+- The link FIFO is deep, and each thread moves everything available per wake.
+- The hold is removed. The spill moves the whole FIFO to the spool, under a take lock
+  that the link also holds to take each item.
+- On a failure, the link returns only its block in hand, and the router drains the
+  FIFO itself. The front list holds at most 1 block.
+- The replay credit is 2.
+
+Coordinator review: order, the loss count, and freedom from deadlock hold under the
+races the design lists. Accepted with one change: `LINK_FIFO_BLOCKS` is 128, not 96.
+A Windows Server quantum of 187.5 ms at 41.2 MB/s needs about 118 blocks, and a spill
+sends all traffic through the disk until the backlog drains. The change costs 4.3 MiB.
+
+Task I1 implemented D on 2026-11-03:
+- `LINK_FIFO_BLOCKS` 128, replay credit 2, a front list of 1 block, and
+  `POOL_BLOCKS` 260 (34.5 MiB). As-built notes 6 to 11 record the deviations.
+- The STOP/FINISH failure at a requested stop now returns Ok and writes nothing.
+- `cargo test --lib`: 553 passed.
+- The agent's quick throughput check, with a paced 41.2 MB/s capture, delivered
+  41.1 MB/s live with nothing spooled, idle and at 1 and 2 busy threads per CPU. V2
+  had measured 1.9 MB/s at 2 busy threads per CPU.
+- Task V3 repeats the measurement with V2's harness and reviews the changes.
+
+Task V3 reviewed D and re-measured with the V2 harness on 2026-11-03. It found no
+blocker. Every V2 finding is fixed, and the acceptance target passes.
+
+| Case (MB/s) | After D | `HEAD` | Before D (V2) |
+| --- | --- | --- | --- |
+| Paced 41, 1 busy thread per CPU | 41.0, nothing spooled | 41.0 | 26 to 40, 93 to 99 % spooled |
+| Paced 41, 2 busy threads per CPU | 41.0, nothing spooled | 40.8 to 41.0 | 1.9, all spooled |
+| Replay drain, 1 busy thread per CPU | 130 to 454 | 354 to 531 | 54 to 347 |
+| Replay drain, 2 busy threads per CPU | 5.6 to 40.7 | 110 to 120 | 2.8 to 2.9 |
+
+| ID | Severity | Finding | State |
+| --- | --- | --- | --- |
+| V3-M-A | Major | Replay still waits for a router wake per 64 KiB batch. With 2 busy threads per CPU it drains below the capture rate, so after a spill on such a host the backlog grows to the cap. `HEAD` recovers on that load. A credit of 4 measured only 11 to 19 MB/s. | Accepted as a known limit (design risk 10, CHANGELOG). Task B2 fixes it. |
+| V3-m-A | Minor | Two guides said a thread panic fails the stop. Release builds abort on a panic. | Fixed by the coordinator. |
+| V3-nit | Nit | The remediation guide left out `--no-spool`. | Fixed by the coordinator. |
+
+V2 also found that the handshake test
+`accept_trickled_one_byte_at_a_time_still_completes_the_handshake` fails on `HEAD`
+under heavy load (2 of 20 runs). It is an older timing margin, not caused by this
+work.
+
 ### Decisions
 
 - 2026-11-03, user: spilling to the spool stays passive. It is driven by
@@ -399,6 +467,25 @@ changed files contain no host path.
   to the deferred, optional task T.
 - 2026-11-03, user: the stall timeout default of 15 seconds and the flag name
   `--receiver-stall-seconds` are accepted.
+- 2026-11-03, user, for finding V3-M-A: replay that is slower than capture on a host
+  with about two runnable threads per CPU is accepted as a known limit for now. B2,
+  rewinding the spool on a failure, is the next task.
+- 2026-11-03, user, for finding I1-1: a problem with the receiver never makes a
+  requested stop fail. When STOP/FINISH does not complete at shutdown, the service
+  stops with exit code 0 and writes nothing about it, so the MSI recovery action does
+  not restart it. Unsent frames stay in the spool. The service adds no output to serve
+  a test: the product sets the behavior, and the tests check it. The lab checks
+  STOP/FINISH on the receiver side, from the receiver log or a packet capture. This
+  replaces the earlier rule in `docs/guide/service-stop-remediation.md` that a failed
+  FINISH fails the stop.
+  The `capture stopped` and `output stopped` Event Log summaries stay: they record that
+  the service and the capture stopped. A receiver that rejects TLS or the protocol at startup still stops the
+  service (fail fast on a misconfiguration). A slow or dead receiver never stops a
+  running service: frames spool until it reconnects.
+- 2026-11-03, user, for finding I1-2: option D. The link FIFO becomes deep (about 96
+  blocks), each thread moves everything available per wake, and two replay batches
+  can be out at a time (loss bound under 268 KiB per failure). Raising thread priority
+  is rejected: the service must not compete with DNS Server for CPU.
 - 2026-11-03, user (gate G2): a saturated link keeps H3a, strict capture order with
   the oldest data deleted at the cap. H4 is added: remove the fixed `SO_SNDBUF`. No
   load-shedding policy is built. `link_saturated` stays observe-only, and it is the
