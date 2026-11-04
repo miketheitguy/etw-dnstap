@@ -2,26 +2,22 @@
 
 > **Status:** Current · **Describes:** `src/etw/` on the `plan/msi-installer` branch (the schema retry was added after `7ec888d`) · **Evidence dated:** October 28-29, 2026 for the experiment, which is historical · **Reviewed:** 2026-11-03
 
-This note is for maintainers, and for administrators who choose a capture
-capacity. It explains the queue bounds and the shutdown contract. It describes
-the implementation limits and the capacity experiment. It does not guarantee
-loss-free capture at every traffic rate or event size.
+This note explains the queue bounds and the shutdown contract. It does not
+guarantee loss-free capture at every traffic rate or event size.
 
 ## Capacity and memory
 
-The defaults, their low-rate limits, and the recommended high-rate settings are
-stated once, in the [tuning guide](../guide/tuning.md#low-rate-defaults).
-Read that section before you choose `--capacity`, `--etw-flush-seconds`, or the
-ETW buffer options.
+The defaults, low-rate limits, and high-rate settings are in the
+[tuning guide](../guide/tuning.md#low-rate-defaults). Read that section before you
+choose `--capacity`, `--etw-flush-seconds`, or the ETW buffer options.
 
 ### Enqueue
 
-The user-mode ETW callback leases preallocated storage and copies each accepted
-event. It then calls `crossbeam_channel::Sender::try_send` on a bounded event
-channel. It does not wait for capacity or allocate callback storage. A full
-channel drops the newest event and increments `ring_dropped` and
-`intake_dropped`. The default capacity is 24,576 events (it was 8192 events
-until 2026-11-01). `--capacity` accepts 1,024–262,144.
+The user-mode ETW callback leases preallocated storage and copies each accepted event.
+It calls `crossbeam_channel::Sender::try_send` on a bounded event channel. It never
+waits or allocates. A full channel drops the newest event and increments `ring_dropped`
+and `intake_dropped`. The default capacity is 24,576 events. It was 8192 until
+2026-11-01. `--capacity` accepts 1,024 to 262,144.
 
 ### Parser wake and polling
 
@@ -32,111 +28,75 @@ The parser takes events only with `try_recv`. It wakes in these ways:
 - After data, it polls for up to 200 µs before it parks.
 - Otherwise it parks with a timed backoff from 2 ms to 20 ms.
 
-The per-event callback does not signal the parser after enqueue. It sets a
-same-thread flag. `ProcessTrace` calls the ETW buffer callback on the consumer
-thread after each delivered buffer. That callback unparks the parser when the
-flag is set. A burst therefore starts to drain within microseconds, not after
-the parser's backed-off park. See
-[ETW buffer wake validation](../history/buffer-wake-validation.md).
-
-The channel has no registered blocking receivers or selectors. Atomic retries,
-spinning, yielding, and preemption still apply.
+The per-event callback does not signal the parser. It sets a same-thread flag.
+`ProcessTrace` calls the ETW buffer callback on the consumer thread after each
+delivered buffer. That callback unparks the parser when the flag is set, so a burst
+starts to drain within microseconds. See
+[ETW buffer wake validation](../history/buffer-wake-validation.md). The channel has no
+blocking receiver, as [Pooled ETW intake](pooled-intake.md#nonblocking-admission-and-allocation-scope)
+explains.
 
 ### Delivery batches
 
-The service does not ask ETW to flush the session. ETW delivers real-time
-events about once per `--etw-flush-seconds`, even with full buffers. It
-delivers those buffers as one batch. The buffer callback wakes the parser for
-each delivered buffer, so the parser drains the batch while it arrives.
+The service does not ask ETW to flush the session. ETW delivers real-time events about
+once per `--etw-flush-seconds`, even with full buffers, as one batch. The buffer
+callback wakes the parser for each delivered buffer, so the parser drains the batch
+while it arrives.
 
-On the 6-vCPU lab VM, ETW delivered one batch per second at 10k and 20k
-queries/s, which is about 20k and 39k events/s. It delivered buffers
-continuously at 50k queries/s and above. The threshold is not known and can
-depend on the machine.
-
-Capacity guidance: one batch holds up to about
-2 x queries/s x `--etw-flush-seconds` events, because there are 2 events per
-query. Keep `--capacity` well above that size. In the lab, the measured peak
-queue was far below that size, because the parser drains during delivery. At
-about 44,000 queries/s the rule gives 88,000 events, and the peak queue was
-30,643. The recommended high-rate settings and their lab results are in the
-[tuning guide](../guide/tuning.md#high-rate-settings). With
-them, the channel dropped no events up to about 44,000 queries/s. At about
-49,400 queries/s, one of two runs filled the 65,536-event channel. See the
-[flush removal validation](../history/flush-removal-validation.md).
+Capacity guidance: one batch holds up to about 2 x queries/s x `--etw-flush-seconds`
+events, because each query makes 2 events. Keep `--capacity` well above that size. The
+peak queue is usually far below that size, because the parser drains during delivery.
+Lab results for high rates are in the
+[flush removal validation](../history/flush-removal-validation.md) record.
 
 ### Removed periodic flush
 
-Earlier builds had an opt-in periodic flush. The supervisor thread asked ETW to
-flush the session at a set interval, and it woke the parser after each flush.
-The buffer wake in commit `7f91264` made it unnecessary, so the maintainer
-removed it.
-The lab results below used that flush with 64 KiB × 256 buffers. They are
-history. They do not apply to the current build:
-
-| Queries/s | Flush interval | Result |
-| --- | --- | --- |
-| 20,000 | 50 ms | 0 ring drops |
-| 10,000 | 100 ms | 0 ring drops |
-| 50,000 | 100 ms | 0.04 to 0.91% loss. `etw_lost` was 0. |
-
-With the same buffers and no flush, before the buffer wake, the channel dropped
-59 to 79% of events at 10,000 to 20,000 queries/s. At 20,000 queries/s with the flush,
-the largest batch was about 6,800 events with a 100 ms interval. With a 50 ms
-interval it was about 3,500 events. The flush wrote about 5 to 16% more ETW
-buffers. It cost under 0.1% of a core when idle.
+Earlier builds had an opt-in periodic flush. The supervisor thread asked ETW to flush
+the session at a set interval and woke the parser after each flush. The buffer wake in
+commit `7f91264` made the flush unnecessary, so the maintainer removed it. The current
+build does not flush. The measured results for the old flush are in
+[flush removal validation](../history/flush-removal-validation.md). They do not apply to
+the current build.
 
 ### Pools and memory budget
 
-The regular pool has `capacity + 2` slots with 2048 payload bytes each. The jumbo
-pool has 131,448-byte slots. `--jumbo-capacity` accepts 0–256, and its default is
-64. The two classes have independent admission limits. Only 64 simultaneous jumbo
-leases fit at the defaults, even if the channel has spare entries. Slot return
-uses class-specific `ArrayQueue` free lists. No pool grows during capture.
+The regular pool has `capacity + 2` slots. The jumbo pool has `--jumbo-capacity` slots
+(0 to 256, default 64). The two classes have independent admission limits, so only 64
+simultaneous jumbo leases fit at the defaults, even if the channel has spare entries.
+Slot return uses class-specific `ArrayQueue` free lists. No pool grows during capture.
 
-The counted storage includes the payload, the slot metadata, the free lists, and
-the channel elements. Its totals are:
-
-| Configuration | Bytes | MiB |
-| --- | --- | --- |
-| Defaults (24,576 events, 64 jumbo slots) | 62,486,608 | 59.59 |
-| Maximum (262,144 events, 256 jumbo slots) | 610,381,904 | 582.11 |
-
-These totals exclude allocator overhead, native ETW buffers, stacks, TDH caches,
-protobuf data, and output buffers. See [Pooled ETW intake](pooled-intake.md) for
-the detailed budget and the ownership contract. Measure the actual process
-memory and every intake loss category under the intended workload.
+At the defaults (24,576 events, 64 jumbo slots), counted storage is 62,486,608 bytes
+(59.59 MiB). The count includes payload, slot metadata, free lists, and channel
+elements. It excludes allocator overhead, native ETW buffers, stacks, TDH caches,
+protobuf data, and output buffers. The
+[slot sizes and formulas](pooled-intake.md#memory-budget-and-configuration) are in
+Pooled ETW intake. Measure the process memory and every intake loss category under the
+intended workload.
 
 ## Historical capacity experiment
 
-The earlier capacity experiment used an allocation-based `ArrayQueue`. Its results explain the former 8192 default, which is now 24,576. They are in [Ring capacity experiment (historical)](../history/ring-capacity-experiment.md).
-They do not validate the pooled implementation or its jumbo limit.
+The earlier experiment used an allocation-based `ArrayQueue`. It explains the former
+8192 default. Its results are in
+[Ring capacity experiment (historical)](../history/ring-capacity-experiment.md). They do
+not validate the pooled implementation or its jumbo limit.
 
 ## Completion and resource ownership
 
-Orderly shutdown stops capture and joins the native `ProcessTrace` worker before
-publishing `producer_done` with release ordering. No callback can enqueue after
-that publication. The supervisor then unparks and joins the parser. A startup
-failure also publishes completion and unparks the parser.
+Orderly shutdown stops capture and joins the native `ProcessTrace` worker before it
+publishes `producer_done` with release ordering. No callback can enqueue after that
+publication. The supervisor then unparks and joins the parser. A startup failure also
+publishes completion and unparks the parser.
 
-After an empty `try_recv`, the parser reads completion with acquire ordering. If
-it observes completion, it calls `try_recv` again until the channel is empty.
-This final drain keeps an event sent between the earlier empty receive and the
-completion read. The post-data linger also ends when it reads completion. The
-existing 10-second fail-stop watchdog covers native shutdown and parser
-completion. Callback state stays owned until the native worker ends. Within
-that window, native shutdown waits up to 5 seconds for `ProcessTrace` to return
-after STOP before `CloseTrace` forces it.
+After an empty `try_recv`, the parser reads completion with acquire ordering. If it
+observes completion, it calls `try_recv` again until the channel is empty. This final
+drain catches an event sent between the earlier empty receive and the completion read.
+The post-data linger also ends when it reads completion.
 
-Unit tests cover these cases:
+The 10-second fail-stop watchdog covers native shutdown and parser completion. Callback
+state stays owned until the native worker ends. In that window, native shutdown waits up
+to 5 seconds for `ProcessTrace` to return after STOP before `CloseTrace` forces it.
 
-- The default and configured capacity bounds.
-- Loss when the ring is full.
-- A final enqueue followed by joined producer completion.
-- Empty completion after a startup failure.
-- Output errors.
-
-Synthetic tests do not establish live DNS
-throughput or an installed service's token configuration.
-
-**Unverified lab notes (P3z).** The results are not in the repository, so they are not evidence here. The run used a quiet host with one 6-vCPU lab VM, 1,000 queries/s, `--etw-max-buffers 12`, and only the 1 s ETW flush timer. The smallest ETW buffer size lost no events. Smaller rings dropped events in some runs. Delivery stayed at about one batch per second for every buffer size tested. This is one lab and one rate. That run kept 8,192 for headroom (about 4 s of inflow at 1,000 queries/s). That was the default then. The default is now 24,576.
+Unit tests cover the capacity bounds and loss when the ring is full. They also cover a
+final enqueue followed by joined producer completion, empty completion after a startup
+failure, and output errors. Synthetic tests do not establish live DNS throughput or an
+installed service's token configuration.

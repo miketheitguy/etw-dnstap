@@ -2,174 +2,72 @@
 
 ## Supported versions
 
-Proposed policy, to be confirmed by the maintainer: only the current `main`
-branch is supported. There are no tagged releases yet (see
-[CHANGELOG.md](CHANGELOG.md)).
+Proposed policy, to be confirmed by the maintainer: only the current `main` branch is supported. There are no tagged releases yet (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Use GitHub's private
-vulnerability reporting for `miketheitguy/etw-dnstap`
-(the repository's **Security** tab, then **Report a vulnerability**). Include:
+Do not open a public issue for a suspected vulnerability. Use GitHub private vulnerability reporting for `miketheitguy/etw-dnstap`: the **Security** tab, then **Report a vulnerability**. Include:
 
-- The commit SHA and the exact command line. Redact the receiver address if it
-  is private.
+- The commit SHA and the exact command line. Redact the receiver address if it is private.
 - The Windows build and the DNS Server role configuration.
 - The steps to reproduce, and the observed and expected behavior.
 
-Do not include real DNS payloads, client addresses, or query names from a
-production system. Synthetic reproductions are preferred.
-
-Private reporting is the only documented channel. If it is not enabled on the
-repository, open a public issue that says only that you need a private security
-contact. Do not include details.
+Do not include real DNS payloads, client addresses, or query names. Synthetic reproductions are preferred. If private reporting is not enabled, open a public issue that says only that you need a private security contact.
 
 ## Threat model summary
 
-This is the project's own summary of what the service trusts and protects. The
-authoritative behavior is in [docs/guide/configuration.md](docs/guide/configuration.md)
-and [README.md](README.md).
+This summarizes what the service trusts and protects. The authoritative behavior is in [configuration.md](docs/guide/configuration.md) and [README.md](README.md).
 
 **Trusted or assumed**
 
-- The local Windows host, its administrators, and the DNS Server role. The
-  service reads DNS Server events from a local ETW session.
-- Any principal that can enable the DNS Server ETW provider, or create or stop
-  real-time ETW sessions. Administrators and members of Performance Log Users
-  have this ability.
+- The local Windows host, its administrators, and the DNS Server role. The service reads DNS Server events from a local ETW session.
+- Any principal that can enable the DNS Server ETW provider, or create or stop real-time ETW sessions. Administrators and Performance Log Users members have this ability.
 - The configured dnstap receiver. It receives full DNS payloads.
 
 **Producer identity (forged provider records)**
 
-- The service admits only records whose process ID is the running `DNS` service
-  process. The ETW session is filtered by that process ID
-  (`EVENT_FILTER_TYPE_PID`), and the callback checks the record's process ID
-  again before it copies the record. Records from any other process are counted
-  in `foreign_pid_rejected` and are not captured.
-- This narrows the earlier open item, in which a local process that could
-  register the same provider could inject records. A nonzero
-  `foreign_pid_rejected` shows that records from another process reached the
-  callback. Whether the ETW-side filter removes them first is unverified on a
-  live host.
-- The check does not stop code that runs inside the DNS Server process. A
-  process that can run code as the DNS Server can emit records the service
-  accepts.
-- The process ID is read at startup and checked every 5 seconds. A DNS Server
-  restart makes the service exit for SCM restart. Records from the new process
-  are not captured during that gap.
-- Any user can register the DNS provider GUID and write events, so the process
-  ID filter is the only check on the source. If the DNS Server exits and Windows
-  gives its process ID to another process before the next 5-second check, that
-  process can inject records. Holding the DNS Server process open would close
-  the window, but the restricted LocalService token is denied `OpenProcess` on
-  it (lab, build 26100). See
-  [the lab record](docs/history/skills-evaluation-lab-validation.md).
+- The service admits only records whose process ID is the running `DNS` service process. The ETW session filters on that process ID (`EVENT_FILTER_TYPE_PID`), and the callback checks it again before it copies a record. Other records are counted in `foreign_pid_rejected` and not captured.
+- This narrows the earlier open item, in which a local process that registered the same provider could inject records. A nonzero `foreign_pid_rejected` shows that such records reached the callback. Whether the ETW-side filter removes them first is unverified on a live host.
+- The check does not stop code that runs inside the DNS Server process. That code can emit records the service accepts.
+- Any user can register the DNS provider GUID, so the process ID filter is the only check on the source. The process ID is read at startup and checked every 5 seconds. If the DNS Server exits and Windows gives its process ID to another process before the next check, that process can inject records. A DNS Server restart also makes the service exit for SCM restart, so records from the new process are not captured in that gap. Holding the DNS Server process open would close the window, but the restricted LocalService token is denied `OpenProcess` on it (lab, build 26100). See [the lab record](docs/history/skills-evaluation-lab-validation.md).
 
 **Service identity**
 
-- The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with a restricted
-  service SID type (`sc.exe sidtype EtwDnstap restricted`), not as LocalSystem. It
-  refuses to start unless all of these are true:
-  - The token user is S-1-5-19.
-  - The service SID is an enabled group.
-  - The token is restricted. Its restricting SIDs include the service SID and
-    the Write Restricted SID `S-1-5-33`.
-  - Performance Log Users is an enabled group, through the service SID's
-    membership.
-  - The token holds only `SeChangeNotifyPrivilege`, and it is enabled.
+- The service runs as `NT AUTHORITY\LocalService` (`S-1-5-19`) with the restricted service SID type (`sc.exe sidtype EtwDnstap restricted`), not as LocalSystem. It refuses to start unless its token has:
+  - LocalService as the user.
+  - An enabled service SID group, and Performance Log Users as an enabled group through the service SID.
+  - Only `SeChangeNotifyPrivilege`, enabled.
+  - The service SID and the Write Restricted SID `S-1-5-33` as restricting SIDs.
 
-  The [install guide](docs/guide/install.md#provision-the-service) has the same
-  list with the provisioning commands.
-- LocalService has no network-credential identity: on the network it presents as
-  anonymous, not as the computer account, and its default local rights are low.
-  The restricted SID type adds a write-restricted token. For write-type access
-  checks, a second pass runs against the restricting SIDs (the service SID,
-  Everyone, the logon SID, and `S-1-5-33`). The service can therefore write only
-  to objects whose ACL grants one of those, such as the service SID, Everyone, or
-  Write Restricted. Reads use the normal check only.
-- The service only consumes ETW events. It holds no right to log events into
-  ETW. Its one ETW grant is `TRACELOG_CREATE_REALTIME` on its own session's
-  GUID, derived from `--session-name`, given to the service SID alone, not to
-  all LocalService processes, by
-  [`scripts/provision/Grant-EtwDnstapEtwAccess.ps1`](scripts/provision/README.md).
-  Creating a session is a change of state, so the write-restricted token needs a
-  restricting SID in the ACL for it. Enabling the provider, consuming, querying
-  and stopping need no grant. Provisioning also adds only the service SID to
-  Performance Log Users.
-- The shared default ETW descriptor is not changed. Windows provisions its own
-  restricted LocalService services the same way: `DPS`, `WdiServiceHost`,
-  `EventLog`, `BFE` and `mpssvc` hold ETW rights on specific GUIDs, never on the
-  default. A grant on the default would let the service SID create any session
-  that has no descriptor of its own. In the lab it also spread: other
-  components copy the default when they create descriptors.
-- The service's SCM security descriptor is pinned with `sc.exe sdset`. SYSTEM and
-  Administrators can change or control the service. Interactive and service
-  logons can query it, and they cannot start, stop, or reconfigure it. Network
-  and batch logons get no access. Install and repair steps are
-  in [install.md](docs/guide/install.md).
-- The profile was validated on Windows Server 2025, build 26100, on 2026-11-01.
-  See [docs/history/localservice-restricted-validation.md](docs/history/localservice-restricted-validation.md).
-  Other builds are covered by the checklist in
-  [docs/guide/install.md](docs/guide/install.md).
+  The [install guide](docs/guide/install.md#provision-the-service) has the same checks with the provisioning commands.
+- LocalService has no network-credential identity. On the network it presents as anonymous, and its default local rights are low. The write-restricted token adds a second access check for write requests, against the restricting SIDs (the service SID, Everyone, the logon SID, and `S-1-5-33`). The service can write only to objects whose ACL grants one of those. Reads use the normal check only.
+- The service only consumes ETW events, and holds no right to log events into ETW. Its one ETW grant is `TRACELOG_CREATE_REALTIME` on its own session's GUID, derived from `--session-name`. The grant goes to the service SID alone, not to all LocalService processes. [`Grant-EtwDnstapEtwAccess.ps1`](scripts/provision/README.md) applies it. Creating a session changes state, so the restricted token needs a restricting SID in the ACL for it. Enabling the provider, consuming, querying, and stopping need no grant. Provisioning also adds only the service SID to Performance Log Users.
+- The shared default ETW descriptor is not changed. Windows gives its own restricted LocalService services (`DPS`, `WdiServiceHost`, `EventLog`, `BFE`, and `mpssvc`) rights on specific GUIDs only. A grant on the default would let the service SID create any session without its own descriptor. In the lab, the grant also spread to components that copy the default.
+- The SCM security descriptor is pinned with `sc.exe sdset`. SYSTEM and Administrators can change or control the service. Interactive and service logons can query it, but cannot start, stop, or reconfigure it. Network and batch logons get no access. Install and repair steps are in [install.md](docs/guide/install.md).
+- The profile was validated on Windows Server 2025, build 26100, on 2026-11-01 ([record](docs/history/localservice-restricted-validation.md)). For other builds, use the checklist in [install.md](docs/guide/install.md).
 
 **Protected or limited**
 
-- The service accepts no inbound network connections. It holds one outbound TCP
-  connection to the receiver given by `--receiver`, and it reconnects after a
-  failure.
-- **Transport is TLS by default.** The connection uses TLS 1.2 or 1.3 (rustls,
-  `ring` provider). The receiver certificate is verified by Windows CryptoAPI
-  with the machine certificate store. Revocation is checked for the receiver
-  (end-entity) certificate only. When the revocation status cannot be obtained,
-  for example because the revocation endpoint is unreachable, the connection
-  proceeds. A certificate that names no OCSP responder and no CRL distribution
-  point is not checked for revocation. A certificate that Windows CryptoAPI
-  reports as revoked, from a CRL, an OCSP responder, or an OCSP response
-  stapled by the receiver, is rejected. Hard-fail revocation and revocation
-  checks on intermediate certificates are not provided. The certificate must
-  match the receiver IP, or the name given in `--tls-server-name`. The service
-  sends no client certificate, so the receiver does not authenticate the
-  service. A certificate that does not verify stops the service at startup. See
-  [docs/guide/configuration.md](docs/guide/configuration.md#tls).
-- **`--plaintext` disables TLS.** Frame Streams over plaintext TCP has no peer
-  authentication. Anyone on the path can read or alter DNS payloads and client
-  addresses. Use `--plaintext` only on a trusted network or behind an
-  independently protected transport such as IPsec.
-- DNS payloads can contain private names and addresses. The service does not
-  log payloads. It writes no capture or metrics files. The spool is the one
-  exception, as described in the next item. The collector is responsible for
-  retention and access control for the records it receives.
-- **Spool data at rest.** The spool keeps frames that the receiver has not
-  accepted yet, in segment files in `C:\ProgramData\EtwDnstap\spool`. Each frame
-  is a complete dnstap message, with client addresses, query names, and DNS
-  payloads. The files are not encrypted, and the service does not encrypt them.
-  The ACL of the folder is the only protection.
-  - **Who can read and write.** SYSTEM, Administrators, and the service SID. The
-    install step grants no other account access. The service refuses a folder
-    that gives any account other than SYSTEM, Administrators, or a service SID
-    read or write access. It then logs one warning and runs without a spool.
-    Check the ACL after you install it, with `icacls`.
-  - **Turning it off.** `--no-spool` stops new writes. It does not delete the
-    files. Frames already in the folder stay there until someone deletes them.
-    See [Uninstall](docs/guide/uninstall.md) and
-    [Repair or upgrade](docs/guide/upgrade.md).
-  - **Restarts and power loss.** Unsent frames stay on disk across restarts and
-    reboots. The spool does not flush data to disk, so a power loss can lose
-    recent frames.
-- The executable and its install directory must not be writable by ordinary
-  users. The service SID needs read and execute on the install directory, which
-  covers the executable. The service writes no files in this directory. Its
-  spool folder is separate, as described above.
-- The ETW session name is fixed by default (`EtwDnstap`) and is reclaimed at
-  startup when it matches the program's shape. An administrator or a member of
-  Performance Log Users can stop it.
+- The service accepts no inbound connections. It holds one outbound TCP connection to the receiver given by `--receiver`, and reconnects after a failure.
+- **Transport is TLS by default.** The connection uses TLS 1.2 or 1.3 (rustls, `ring` provider). Windows CryptoAPI verifies the receiver certificate against the machine certificate store. The certificate must match the receiver IP, or the name in `--tls-server-name`. The service sends no client certificate, so the receiver does not authenticate the service. A certificate that does not verify stops the service at startup.
+- **Revocation** is checked for the receiver (end-entity) certificate only.
+  - If the revocation status cannot be obtained, for example because the endpoint is unreachable, the connection proceeds.
+  - A certificate with no OCSP responder and no CRL distribution point is not checked.
+  - A certificate that CryptoAPI reports as revoked is rejected.
+  - The status can come from a CRL, an OCSP responder, or an OCSP response that the receiver staples.
+  - Hard-fail revocation and checks on intermediate certificates are not provided.
+
+  See [configuration.md](docs/guide/configuration.md#tls).
+- **`--plaintext` disables TLS.** Frame Streams over plaintext TCP has no peer authentication. Anyone on the path can read or alter DNS payloads and client addresses. Use it only on a trusted network, or behind an independently protected transport such as IPsec.
+- DNS payloads can contain private names and addresses. The service does not log payloads, and writes no capture or metrics files except the spool. The collector is responsible for retention and access control for the records it receives.
+- **Spool data at rest.** The spool keeps frames that the receiver has not accepted, in segment files in `C:\ProgramData\EtwDnstap\spool`. Each frame is a complete dnstap message, with client addresses, query names, and DNS payloads. The files are not encrypted. The folder ACL is the only protection.
+  - **Who can read and write.** SYSTEM, Administrators, and the service SID. The install step grants no other account access. The service refuses a folder that gives any other account read or write access, logs one warning, and runs without a spool. Check the ACL after installation with `icacls`.
+  - **Turning it off.** `--no-spool` stops new writes. It does not delete files, so frames already in the folder stay until someone deletes them. See [Uninstall](docs/guide/uninstall.md) and [Repair or upgrade](docs/guide/upgrade.md).
+  - **Restarts and power loss.** Unsent frames stay on disk across restarts and reboots. The spool does not flush data to disk, so a power loss can lose recent frames.
+- The executable and its install directory must not be writable by ordinary users. The service SID needs read and execute on the install directory, which covers the executable. The service writes no files there.
+- The ETW session name is fixed by default (`EtwDnstap`). It is reclaimed at startup when it matches the program's shape. An administrator or a Performance Log Users member can stop it.
 
 **Not provided**
 
-- No runtime process mitigations beyond the link-time flags listed in
-  [build.md](docs/guide/build.md#build-the-executable) (CFG, EH continuation
-  guard, ASLR, NX, CET-compatible marker, stack protection).
-- No resend of a lost frame. A frame in flight when a connection fails is
-  counted in `disconnected_dropped` and is not retried. A frame is never sent
-  twice. A frame held in the spool is sent once, oldest first. See
-  [docs/guide/configuration.md](docs/guide/configuration.md#spool).
+- No runtime process mitigations beyond the link-time flags in [build.md](docs/guide/build.md#build-the-executable) (CFG, EH continuation guard, ASLR, NX, CET-compatible marker, stack protection).
+- No resend of a lost frame. A frame in flight when a connection fails is counted in `disconnected_dropped` and is not retried. A frame is never sent twice. A frame held in the spool is sent once, oldest first. See [configuration.md](docs/guide/configuration.md#spool).
