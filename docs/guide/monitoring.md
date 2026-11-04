@@ -170,6 +170,11 @@ whole segment is deleted. The trend spans 10 samples, so it is at least 10 secon
   a session was lost since the last sample, the 11 samples start over and the state keeps
   its value. Growth during an outage is not a saturated link. Read `link_saturated` with
   `receiver_connected`.
+- **Silent outage.** A receiver that stops reading without closing the connection looks
+  like a saturated link until the stall timeout ends the session. With the default 15
+  seconds, the flag can set first: the lab saw it set 11.4 to 12 seconds into such an
+  outage ([lab validation](../history/slow-receiver-validation.md)). Once the session
+  ends, `receiver_connected` is 0 and the flag holds.
 
 The rule is a trend, not a run of rises, because the replay reads in 64 KiB batches: with
 a capture of 5.5 MB/s and a link of 5.3 MB/s about one sample in five is flat, and a run

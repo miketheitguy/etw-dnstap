@@ -1,6 +1,6 @@
 # Slow and saturated receiver plan
 
-> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2 complete on 2026-11-04 (review V4); L, W, and F open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, and F complete on 2026-11-04; findings L-1, L-5, and L-6 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
 
 This plan covers a receiver that is connected but slow, and a link that carries less
 than the capture rate. It records what the code does today and the cost of each
@@ -200,11 +200,11 @@ the main working tree, one at a time, so they do not conflict.
 | G2 | 3 | Gate: the user chooses the saturated-link policy, H3a, H3b, or H3c. | user | — | Decision recorded in this file. |
 | I1 | 4 | Implement the approved H1 and H2 design. Flip the C1 assertions. | `voltagent-lang:rust-engineer` | xhigh | Code and tests. |
 | I2 | 4 | Implement H4: remove the fixed `SO_SNDBUF`, so Windows send autotuning stays on. Update the comment in `src/network/sockopt.rs`, or remove the function. Never set the buffer to 0. No H3 work: G2 kept H3a. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
-| L | 5 | Lab run. Limit the rate and add delay on the Ubuntu receiver with `tc` (`tbf` and `netem`). Run at 10,000 and 50,000 queries per second, before and after. Record loss by counter, spool growth, and delivered latency. Add an outage on a host with every CPU busy, to measure the replay rate (V3-M-A). Confirm that the lab collector discards a frame cut by a closed connection. Needs explicit authorization: it changes lab state. | `general-purpose` | high | `docs/history/slow-receiver-validation.md`. |
+| L | 5, done | Lab run. Limit the rate and add delay on the Ubuntu receiver with `tc` (`tbf` and `netem`). Run at 10,000 and 50,000 queries per second, before and after. Record loss by counter, spool growth, and delivered latency. Add an outage on a host with every CPU busy, to measure the replay rate (V3-M-A). Confirm that the lab collector discards a frame cut by a closed connection. Needs explicit authorization: it changes lab state. | `general-purpose` | high | `docs/history/slow-receiver-validation.md`. |
 | B2 | 6, done | Rewind the spool on a failure. Unsent replay data goes back to the spool instead of being lost, so the replay credit can grow to about the FIFO depth, with no loss. This fixes V3-M-A. It changes when the spool deletes a segment (only after the link has taken all of it), so it needs a design note, tests, and its own review. | `voltagent-lang:rust-engineer` | xhigh | Design note, code, and tests. |
 | T | deferred | Optional. Implement D3 with `TCP_INFO_v0`, and add the `SndLim*` shares only where `TCP_INFO_v1` is available (see R1). Start it only if an operator needs to know whether the receiver or the network path limits the link. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
-| F | before the next lab campaign | A failed FINISH no longer shows in the service exit code or in `output_errors`. Change the lab lifecycle checks to verify STOP/FINISH on the receiver side, from the receiver log or a packet capture. The affected scripts are `summarize-pooled-stage.py`, `build-pooled-report.py`, `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `windows-parser-stage.ps1`, and `windows-startup-capacity.ps1`. | `voltagent-lang:python-pro` | medium | Script changes and tests. |
-| W | 5 | Correct the counter meaning for F6 in `docs/guide/monitoring.md` and `docs/design/data-path.md`. Update `docs/design/data-path.md`, `docs/guide/configuration.md`, `docs/guide/tuning.md`, and the animation if stage 5 changes. | `voltagent-dev-exp:documentation-engineer` | medium | Guide changes. |
+| F | before the next lab campaign, done | A failed FINISH no longer shows in the service exit code or in `output_errors`. Change the lab lifecycle checks to verify STOP/FINISH on the receiver side, from the receiver log or a packet capture. The affected scripts are `summarize-pooled-stage.py`, `build-pooled-report.py`, `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `windows-parser-stage.ps1`, and `windows-startup-capacity.ps1`. | `voltagent-lang:python-pro` | medium | Script changes and tests. |
+| W | 5, done | Correct the counter meaning for F6 in `docs/guide/monitoring.md` and `docs/design/data-path.md`. Update `docs/design/data-path.md`, `docs/guide/configuration.md`, `docs/guide/tuning.md`, and the animation if stage 5 changes. | `voltagent-dev-exp:documentation-engineer` | medium | Guide changes. |
 
 ## Acceptance criteria
 
@@ -502,6 +502,41 @@ repeats the replay case on the server.
 After the fixes: 584 library tests pass (553 at `7ac0c1c`), and the release tests,
 clippy with `-D warnings` (default, `bench`, `diag-timing`, `fuzzing`), fmt, and the
 link check are clean.
+
+### L, W, and F results
+
+Tasks W and F were done on 2026-11-04 (commits `9489e9b` and `ce363ca`). Task L ran on
+the lab on 2026-11-04 and is recorded in
+[Slow receiver lab validation](../history/slow-receiver-validation.md). It compared
+`a06f6fd` ("before") with `13972d8` ("after") on Windows Server 2025 (6 vCPU), with the
+receiver shaped by `tc` (ingress `tbf` through `ifb`, and `netem` delay). Each query makes
+two frames, so 10,000 and 50,000 queries per second are 2.06 and 10.3 MB/s.
+
+- **F1 confirmed on "before", fixed on "after".** "Before" counted 642 to 218,681
+  frames in `queue_dropped` in the slow and paused runs while the spool had room.
+  "After" counted none in all 7 slow or paused runs and all 3 outages.
+- **F2 confirmed for a stall only.** An 8-second receiver pause ended the "before"
+  session after a 2.01 s write. "After" waited 7.77 s, kept the session, and lost
+  nothing. Rate limits alone never ended a "before" session.
+- **F5 confirmed.** At 50,000 queries per second with a 40 MB/s link and 100 ms delay,
+  "before" spilled 2.1 million frames and lost 53,076. "After" kept up at 10.09 MB/s.
+- **V3-M-A fixed on Windows Server.** With 12 busy threads on 6 vCPU, "after" delivered
+  a 1,465 MB backlog after a 120 s cut in 2.09 s (about 700 MB/s) while capture went
+  on. Nothing was dropped or evicted.
+- **Risk 6 confirmed.** DNS-collector 3.2.3 discards a frame cut by FIN or RST and
+  prints only whole frames.
+- **Task F in use.** 34 of 34 stops gave `confirmed`, each Stopped with exit code 0.
+- **Detection.** `link_saturated` set 12 to 30 s after load start in every saturated
+  run and in no control run.
+
+| ID | Finding | State |
+| --- | --- | --- |
+| L-1 | One "after" control run (50,000 queries per second, 40 MB/s link) counted 10,822 frames in `queue_dropped` at the end of the load. The parser channel was full at 128 blocks, the receiver got 0.2 MB, nothing spilled, and the service used 1.5 to 3 % CPU, so the router took no block for about 1 s. Two reruns and an unshaped run counted none. | Open. Cause unknown. |
+| L-2 | In 5 of 6 shaped runs at 50,000 queries per second with a 40 MB/s link, on both builds, the receiver got nothing for about 2.5 s at load start, and 0.2 to 2.1 million frames spilled. "After" lost none. The unshaped run did not spill. | Points at the lab shaping; not proven. |
+| L-3 | `link_saturated` set 11.4 to 12 s into a silent outage, before the 15 s stall timeout ended the session. | Documented in `docs/guide/monitoring.md`. |
+| L-4 | Bytes the guest's TCP accepted that the receiver never got, at a failed connection (uncounted): up to about 1.08 MB on "before" (fixed 1 MiB send buffer), 0.58 MB on "after" on an idle host, and about 4.2 MB on "after" on a busy host (autotuned buffer). | Design risk 4, now measured. |
+| L-5 | Risk 9 (the 128-block FIFO at a Server quantum) is not decided: at 10.3 MB/s with every CPU busy, the FIFO did not spill, but the 41 MB/s case was not run. | Open. |
+| L-6 | `send_queue_depth_max` read 33 to 61 at 10,000 queries per second in every "after" run, including the control, with no loss. | Not investigated. |
 
 ### Decisions
 
