@@ -6,7 +6,7 @@
 //! conditions (`wait_until`) and never rely on a sleep for correctness.
 
 use super::*;
-use crate::spool::test_support::framed;
+use crate::spool::{Appended, test_support::framed};
 
 /// True when `numbers` is strictly increasing: in order, with no repeat.
 fn strictly_increasing(numbers: &[u32]) -> bool {
@@ -374,13 +374,20 @@ fn a_run_stopped_in_the_middle_of_a_replay_leaves_a_cursor_the_next_run_resumes_
     };
 
     // The second run connects, but the receiver never reads. The replay fills the
-    // socket buffers, the write times out, the link fails, and the run ends with
-    // most of the backlog still on disk.
+    // socket buffers, the receiver accepts no bytes for the (shortest) stall
+    // timeout, the link fails, and the run ends with most of the backlog still on
+    // disk.
     let server = FakeServer::up();
     server.received.paused.store(true, Ordering::Release);
     let second_stats = Arc::new(SinkStats::default());
     let second_spool = open_spool(&dir, cap, &second_stats);
-    let second = start_sink(&server, no_retry(), Some(second_spool), &second_stats);
+    let second = start_sink_with_stall(
+        &server,
+        no_retry(),
+        Some(second_spool),
+        &second_stats,
+        crate::network::MIN_STALL_TIMEOUT,
+    );
     wait_until("the stalled replay to fail the link", || {
         get(&second_stats.disconnects) >= 1
     });

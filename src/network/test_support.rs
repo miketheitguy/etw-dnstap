@@ -1,4 +1,11 @@
-//! Helpers shared by the network test modules.
+//! Helpers shared by the network test modules, and the TLS test kit that the
+//! sender tests use too.
+
+use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+use rustls::{
+    RootCertStore, ServerConfig, ServerConnection,
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+};
 
 use super::*;
 
@@ -71,5 +78,92 @@ pub(super) fn wait_until(timeout: Duration, what: &str, mut condition: impl FnMu
             "timed out after {timeout:?} waiting for {what}"
         );
         thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A CA and a server certificate for `127.0.0.1`, for in-memory TLS sessions.
+pub(crate) struct TlsKit {
+    client: Arc<ClientConfig>,
+    server: Arc<ServerConfig>,
+}
+
+impl TlsKit {
+    pub(crate) fn new() -> Arc<Self> {
+        Self::with_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+    }
+
+    /// A kit whose sessions negotiate one of `versions`.
+    pub(crate) fn with_versions(
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> Arc<Self> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("CA parameters");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let ca_key = KeyPair::generate().expect("CA key");
+        let ca_certificate = ca_params.self_signed(&ca_key).expect("CA certificate");
+        let issuer = Issuer::new(ca_params, ca_key);
+        let server_params =
+            CertificateParams::new(vec!["127.0.0.1".to_owned()]).expect("server parameters");
+        let server_key = KeyPair::generate().expect("server key");
+        let server_certificate = server_params
+            .signed_by(&server_key, &issuer)
+            .expect("server certificate");
+        let mut roots = RootCertStore::empty();
+        roots.add(ca_certificate.der().clone()).expect("trusted CA");
+        let chain: Vec<CertificateDer<'static>> = vec![server_certificate.der().clone()];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(server_key.serialize_der()));
+        let client = ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_protocol_versions(versions)
+            .expect("client versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let server = ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(versions)
+            .expect("server versions")
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .expect("server certificate");
+        Arc::new(Self {
+            client: Arc::new(client),
+            server: Arc::new(server),
+        })
+    }
+
+    /// A client connection whose handshake with a fresh server side is done in
+    /// memory, and that server side.
+    pub(crate) fn pair(&self) -> (ClientConnection, ServerConnection) {
+        let mut client = ClientConnection::new(
+            Arc::clone(&self.client),
+            ServerName::IpAddress(TlsIpAddr::from(std::net::Ipv4Addr::LOCALHOST)),
+        )
+        .expect("client connection");
+        let mut server =
+            ServerConnection::new(Arc::clone(&self.server)).expect("server connection");
+        for _ in 0..32 {
+            let mut to_server = Vec::new();
+            while client.wants_write() {
+                client.write_tls(&mut to_server).expect("client records");
+            }
+            let mut rest = &to_server[..];
+            while !rest.is_empty() {
+                server.read_tls(&mut rest).expect("server reads records");
+                server.process_new_packets().expect("server processes");
+            }
+            let mut to_client = Vec::new();
+            while server.wants_write() {
+                server.write_tls(&mut to_client).expect("server records");
+            }
+            let mut reply = &to_client[..];
+            while !reply.is_empty() {
+                client.read_tls(&mut reply).expect("client reads records");
+                client.process_new_packets().expect("client processes");
+            }
+            if !client.is_handshaking() && !server.is_handshaking() && !client.wants_write() {
+                break;
+            }
+        }
+        assert!(!client.is_handshaking(), "the in-memory handshake finished");
+        (client, server)
     }
 }

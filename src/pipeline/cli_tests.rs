@@ -95,6 +95,7 @@ fn repeated_and_conflicting_flags_are_errors_not_last_wins() {
         ["--session-name", "Other"],
         ["--identity", "other"],
         ["--etw-flush-seconds", "2"],
+        ["--receiver-stall-seconds", "30"],
         ["--duration", "5"],
     ] {
         // Supply each flag twice (the base command line already has --receiver).
@@ -287,6 +288,31 @@ fn invalid_tls_server_names_are_rejected() {
         let error = parse(&[argument.as_str()]).expect_err("an invalid name is rejected");
         assert_eq!(error.kind(), ErrorKind::ValueValidation, "{name:?}");
     }
+}
+
+#[test]
+fn receiver_stall_seconds_has_the_documented_default_and_range() {
+    assert_eq!(parse(&[]).expect("valid").receiver_stall_seconds, 15);
+    for good in ["2", "15", "300"] {
+        let argument = format!("--receiver-stall-seconds={good}");
+        let args = parse(&[argument.as_str()]).expect("in range");
+        assert_eq!(
+            args.receiver_stall_seconds,
+            good.parse::<u32>().unwrap_or(0)
+        );
+    }
+    // The space form takes the same values.
+    assert!(parse(&["--receiver-stall-seconds", "2"]).is_ok());
+    for bad in ["0", "1", "301", "4294967296", "-1", "15.5", "", "x"] {
+        // The `=` form keeps a leading `-` from being read as another option.
+        let argument = format!("--receiver-stall-seconds={bad}");
+        let error = parse(&[argument.as_str()]).expect_err("out of range");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{bad:?}");
+    }
+    assert!(
+        parse(&["--receiver-stall-seconds"]).is_err(),
+        "a value is required"
+    );
 }
 
 #[test]

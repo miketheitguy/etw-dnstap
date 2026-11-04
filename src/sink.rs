@@ -23,32 +23,46 @@ pub(crate) struct SinkStats {
     pub(crate) reconnects: AtomicU64,
     /// Reconnect attempts that failed (connect, handshake, or protocol error).
     pub(crate) reconnect_failures: AtomicU64,
-    /// Frames discarded because the transport was down: events that arrived while
-    /// disconnected plus frames buffered, and so possibly lost, when the
-    /// connection failed. Never resent. Distinct from the intake counters, which
-    /// count events dropped before reaching the parser.
+    /// Frames discarded because the transport was down or failed:
+    /// - with no spool, every live frame that the link had not fully sent when a
+    ///   connection failed (the block in hand and the link queue), and
+    ///   every frame that arrives while the link is down;
+    /// - the unsent rest of a replay batch when a connection failed;
+    /// - with TLS, the frames of the one piece whose delivery was unconfirmed;
+    /// - with a spool, at shutdown after a spill, the live block (at most 1)
+    ///   that came back from the link: it is older than the spool backlog, so it
+    ///   cannot go in front of it.
+    ///
+    /// With a spool, live frames that a failed connection did not fully accept
+    /// are not lost: they go to the spool and are sent again. A counted frame may
+    /// still have arrived, so this is an upper bound on the loss. Distinct from
+    /// the intake counters, which count events dropped before reaching the parser.
     pub(crate) disconnected_dropped: AtomicU64,
-    /// Socket writes that took at least the slow-write threshold (blocked on a
-    /// slow receiver).
+    /// Blocks (about 64 KiB of frames) whose wait for the socket to become
+    /// writable reached the slow-write threshold. The link thread's sends never
+    /// block; it waits for writability and this counts the waits that were long.
     pub(crate) slow_writes: AtomicU64,
-    /// Longest single socket write in microseconds, since the service started.
+    /// Longest wait for writability while writing one block, in microseconds,
+    /// since the service started.
     pub(crate) write_max_us: AtomicU64,
-    /// Accumulator for `write_max_recent_us`: the longest socket write since the
-    /// sender thread last took it. Only the sender thread resets it (with a
-    /// swap); no reader does. Not reported.
+    /// Accumulator for `write_max_recent_us`: the longest wait for writability
+    /// since the router last took it. Only the router resets it (with a swap);
+    /// no reader does. Not reported.
     pub(crate) write_window_max_us: AtomicU64,
-    /// Gauge: the longest single socket write, in microseconds, in the last 60
-    /// seconds. The sender thread recomputes it every second, so every reader
-    /// sees the same value.
+    /// Gauge: the longest wait for writability while writing one block, in
+    /// microseconds, in the last 60 seconds. The router recomputes it every
+    /// second, so every reader sees the same value.
     pub(crate) write_max_recent_us: AtomicU64,
-    /// Framed bytes (length prefix and payload) that the link accepted into its
-    /// write path, whether live or replayed. Bytes still buffered, and so lost
+    /// Bytes that the socket accepted from the link thread, whether live or
+    /// replayed. With plaintext these are the framed bytes (length prefix and
+    /// payload). With TLS they are the bytes `write_tls` wrote, so they include
+    /// the record headers and tags. Bytes the kernel still holds, and so lost
     /// if the connection then fails, are included. Excludes the Frame Streams
     /// control frames.
     pub(crate) bytes_sent: AtomicU64,
-    /// Gauge: the most blocks (about 64 KiB each) waiting in the send queue in
-    /// the last 60 seconds, sampled by the sender thread after each receive. A
-    /// lower bound.
+    /// Gauge: the most blocks (about 64 KiB each) waiting in the parser channel
+    /// in the last 60 seconds, sampled by the router after each receive. A lower
+    /// bound.
     pub(crate) send_queue_depth_max: AtomicU64,
     /// Gauge: milliseconds since the oldest unsent spool segment was created, 0
     /// with no backlog. Updated every second. An upper bound on the age of the

@@ -26,6 +26,15 @@ const FALLBACK_PROGRAM_DATA: &str = r"C:\ProgramData";
 const SPOOL_MAX_MIB_RANGE: std::ops::RangeInclusive<u64> = 64..=1_048_576;
 const SPOOL_MIN_FREE_MIB_RANGE: std::ops::RangeInclusive<u64> = 0..=1_048_576;
 const BYTES_PER_MIB: u64 = 1024 * 1024;
+/// Bounds of `--receiver-stall-seconds`. The shortest is the I/O timeout of the
+/// handshakes, so a handshake within its own deadline is never taken for a
+/// stall. `CaptureArgs` and [`PipelineConfig::validate`] both use them. The
+/// bounds are `i64` because clap's range check for a `u32` takes `i64` bounds.
+const RECEIVER_STALL_SECONDS_RANGE: std::ops::RangeInclusive<i64> = 2..=300;
+const _: () = assert!(
+    RECEIVER_STALL_SECONDS_RANGE.start().cast_unsigned()
+        >= crate::network::MIN_STALL_TIMEOUT.as_secs()
+);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -115,6 +124,15 @@ pub(crate) struct CaptureArgs {
     /// spool deletes its oldest segment.
     #[arg(long, default_value = "2048", conflicts_with = "no_spool", value_parser = clap::value_parser!(u64).range(SPOOL_MIN_FREE_MIB_RANGE))]
     spool_min_free_mib: u64,
+
+    /// Seconds the receiver may accept no bytes, while the service has data to
+    /// send, before the service ends the session and reconnects, 2-300. A
+    /// receiver that is slow or paused for less than this keeps its session, and
+    /// the service spools the data it cannot send (at 50,000 queries per second,
+    /// the default of 15 seconds spools about 155 MB). An idle connection never
+    /// stalls.
+    #[arg(long, default_value = "15", value_parser = clap::value_parser!(u32).range(RECEIVER_STALL_SECONDS_RANGE))]
+    receiver_stall_seconds: u32,
 
     /// Seconds between counter snapshots in the log (queue depth, drops, ETW loss,
     /// receiver connection state), 0-86400; 0 disables the snapshots. The final
@@ -253,6 +271,17 @@ fn check_spool_dir_path(dir: &Path) -> Result<(), String> {
     fsinfo::check_path_shape(dir).map_err(|reason| format!("spool-dir: {reason}"))
 }
 
+fn check_receiver_stall_seconds(seconds: u32) -> Result<u32, String> {
+    if !RECEIVER_STALL_SECONDS_RANGE.contains(&i64::from(seconds)) {
+        return Err(format!(
+            "receiver-stall-seconds must be between {} and {}",
+            RECEIVER_STALL_SECONDS_RANGE.start(),
+            RECEIVER_STALL_SECONDS_RANGE.end()
+        ));
+    }
+    Ok(seconds)
+}
+
 fn check_spool_sizes(max_mib: u64, min_free_mib: u64) -> Result<(), String> {
     if !SPOOL_MAX_MIB_RANGE.contains(&max_mib) {
         return Err(format!(
@@ -337,6 +366,9 @@ pub(crate) struct PipelineConfig {
     pub(crate) session_name: String,
     pub(crate) identity: String,
     pub(crate) session: SessionConfig,
+    /// Seconds the receiver may accept no bytes, with data waiting, before the
+    /// session is ended.
+    pub(crate) receiver_stall_seconds: u32,
     /// Seconds between counter snapshots; zero disables them.
     pub(crate) stats_interval_seconds: u32,
     /// `None` runs without a spool (`--no-spool`).
@@ -362,6 +394,7 @@ impl PipelineConfig {
         check_jumbo_capacity(self.jumbo_capacity).map_err(anyhow::Error::msg)?;
         check_session_name(&self.session_name).map_err(anyhow::Error::msg)?;
         check_identity(&self.identity).map_err(anyhow::Error::msg)?;
+        check_receiver_stall_seconds(self.receiver_stall_seconds).map_err(anyhow::Error::msg)?;
         if let Some(spool) = &self.spool {
             check_spool_dir_path(&spool.dir).map_err(anyhow::Error::msg)?;
             check_spool_sizes(spool.max_mib, spool.min_free_mib).map_err(anyhow::Error::msg)?;
@@ -373,6 +406,12 @@ impl PipelineConfig {
             self.session.flush_seconds,
         )?;
         Ok(())
+    }
+
+    /// How long the receiver may accept no bytes, while data waits, before the
+    /// link ends the session.
+    pub(crate) fn receiver_stall(&self) -> Duration {
+        Duration::from_secs(u64::from(self.receiver_stall_seconds))
     }
 
     /// The counter snapshot interval, or `None` when disabled.
@@ -413,6 +452,7 @@ impl TryFrom<CaptureArgs> for PipelineConfig {
                 args.etw_max_buffers,
                 args.etw_flush_seconds,
             )?,
+            receiver_stall_seconds: args.receiver_stall_seconds,
             stats_interval_seconds: args.stats_interval_seconds,
             spool,
             diag: DiagContext {

@@ -53,6 +53,10 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- `--receiver-stall-seconds` (default 15, range 2 to 300): how long the receiver may
+  accept no bytes, while the service has data to send, before the service ends the session.
+  The MSI has no property for it, as for the other options. Pass it in `SERVICE_ARGS`.
+  `capture started` records it.
 - An MSI installer, `etw-dnstap-<version>-x64.msi`, built with WiX v7 by
   [scripts/build/Build-Msi.ps1](scripts/build/Build-Msi.ps1). It does the work of
   [install.md](docs/guide/install.md) steps 2 to 6 and creates the spool folder.
@@ -240,6 +244,34 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- The service no longer sets `SO_SNDBUF` (it was 1 MiB). Windows dynamic send
+  buffering is on unless an application sets that option, and a fixed buffer limits
+  throughput to about the buffer size per round trip. The kernel send buffer now
+  grows with the link, so more bytes can be in it, and be lost unseen, when a session
+  ends. See [Slow receiver](docs/design/slow-receiver.md).
+- **Breaking.** Four counters change meaning (`disconnected_dropped`, `bytes_sent`, and
+  the write-time counters `slow_writes`, `write_max_us`, and `write_max_recent_us`, listed
+  below). A slow or paused receiver no longer drops frames or costs a reconnect. A new
+  `dnstap-link` thread owns the connection and writes with non-blocking sends, so the
+  `dnstap-sender` thread (now the router) never waits on the socket. The link queue
+  holds 128 blocks (8 MiB) in memory, and only a full link queue spills to the spool.
+  A session ends only when the receiver accepts no bytes for `--receiver-stall-seconds`;
+  it used to end when one write took 2 seconds. When a session ends, the live frames
+  that the socket did not fully accept go to the spool (or to the front of the next
+  session) and are sent again, so `disconnected_dropped` counts only the unsent rest of
+  the replay batches in flight (at most two) and, with TLS, one unconfirmed 16 KiB piece. `bytes_sent` counts bytes
+  the socket accepted (with TLS, the record bytes). `slow_writes`, `write_max_us`, and
+  `write_max_recent_us` measure the wait for the socket to become writable, one block at
+  a time. The block pool grows from 17.3 MiB to 34.5 MiB, and the shutdown bound falls
+  from about 5 to about 3.2 seconds. A stalled receiver ends the shutdown in about 1.1
+  seconds, with no STOP. A STOP/FINISH exchange that does not complete at a requested
+  stop no longer fails the stop: the service writes nothing about it and stops with
+  success (it used to exit with a service-specific error, and SCM restarted it). Unsent
+  frames stay in the spool. `output_errors` no longer counts it. Known limit: on a
+  host with about two runnable threads for each CPU, a backlog replays at about 6 to
+  40 MB/s, against about 110 MB/s before. After a spill on such a host, the backlog can
+  grow to `--spool-max-mib`, and the oldest frames count in `spool_dropped`. See
+  [Slow receiver](docs/design/slow-receiver.md).
 - **Breaking.** The spool is on by default. An upgrade needs the spool folder
   and the re-registered counter manifest. See
   [Add the spool folder](docs/guide/upgrade.md#add-the-spool-folder). With a

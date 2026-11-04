@@ -559,25 +559,6 @@ fn the_deadline_still_ends_a_blocked_write_when_the_timeout_was_kept() {
 }
 
 #[test]
-fn slow_socket_writes_are_counted_with_their_maximum() {
-    let stats = Arc::new(SinkStats::default());
-    let mut transport = DeadlineTcp::new(loopback_stream(), Duration::from_secs(1));
-    transport.stats = Some(Arc::clone(&stats));
-    transport.record_write(Duration::from_millis(1));
-    assert_eq!(stats.slow_writes.load(Ordering::Relaxed), 0);
-    transport.record_write(SLOW_WRITE);
-    transport.record_write(Duration::from_millis(40));
-    assert_eq!(stats.slow_writes.load(Ordering::Relaxed), 2);
-    assert_eq!(stats.write_max_us.load(Ordering::Relaxed), 40_000);
-    // The accumulator for the per-window maximum sees the same writes. Taking
-    // it (as the sender thread does) leaves the since-start maximum alone.
-    assert_eq!(stats.write_window_max_us.swap(0, Ordering::Relaxed), 40_000);
-    transport.record_write(Duration::from_millis(7));
-    assert_eq!(stats.write_window_max_us.load(Ordering::Relaxed), 7_000);
-    assert_eq!(stats.write_max_us.load(Ordering::Relaxed), 40_000);
-}
-
-#[test]
 fn deadline_clock_starts_at_the_first_io_of_each_operation() {
     let mut transport = DeadlineTcp::new(loopback_stream(), Duration::from_millis(50));
     wait_until(WAIT_TIMEOUT, "the armed window to expire", || {

@@ -1,27 +1,29 @@
-//! The one socket option std does not expose: the send buffer size.
+//! The socket call std does not expose: a wait for writability.
 
-use std::{io, net::TcpStream, os::windows::io::AsRawSocket};
+use std::{io, net::TcpStream, os::windows::io::AsRawSocket, time::Duration};
 
-use windows_sys::Win32::Networking::WinSock::{SO_SNDBUF, SOCKET_ERROR, SOL_SOCKET, setsockopt};
+use windows_sys::Win32::Networking::WinSock::{POLLWRNORM, SOCKET_ERROR, WSAPOLLFD, WSAPoll};
 
-/// Requests a kernel send buffer of `bytes` so a briefly slow receiver stalls the
-/// parser thread less. The kernel may round or cap the value.
-pub(super) fn set_send_buffer(stream: &TcpStream, bytes: u32) -> io::Result<()> {
-    let value = i32::try_from(bytes)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "send buffer exceeds i32"))?;
-    // SAFETY: The socket is a valid open socket borrowed from `stream` for this
-    // call. `value` is a live 4-byte int and the length passed is its size, as
-    // SO_SNDBUF requires.
-    let result = unsafe {
-        setsockopt(
-            usize::try_from(stream.as_raw_socket())
-                .map_err(|_| io::Error::other("socket handle exceeds usize"))?,
-            SOL_SOCKET,
-            SO_SNDBUF,
-            (&raw const value).cast(),
-            i32::try_from(size_of::<i32>()).unwrap_or(4),
-        )
+/// Waits until `stream` can take a send, or until `timeout` passes (rounded up
+/// to whole milliseconds, and capped at `i32::MAX` of them). Returns after a
+/// timeout, after readiness, and after a socket error or hang-up alike: the
+/// caller's next send reports which one it was, so this call does not.
+///
+/// This is a readiness wait, not a send, so it carries no socket timeout and
+/// queues nothing.
+pub(super) fn wait_writable(stream: &TcpStream, timeout: Duration) -> io::Result<()> {
+    let milliseconds = i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
+    let mut poll = WSAPOLLFD {
+        fd: usize::try_from(stream.as_raw_socket())
+            .map_err(|_| io::Error::other("socket handle exceeds usize"))?,
+        events: POLLWRNORM,
+        revents: 0,
     };
+    // SAFETY: `poll` is one live, initialised `WSAPOLLFD`, and the count passed
+    // is 1, so WSAPoll reads and writes exactly that element. The socket is a
+    // valid open socket borrowed from `stream` for this call. The timeout is a
+    // plain millisecond count.
+    let result = unsafe { WSAPoll(&raw mut poll, 1, milliseconds) };
     if result == SOCKET_ERROR {
         return Err(io::Error::last_os_error());
     }

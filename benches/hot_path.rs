@@ -15,8 +15,9 @@
 //! Most groups run on one thread over a small pool that stays in cache, so
 //! their numbers are best cases. `copy_record_cold` and `two_thread` use a
 //! production-sized pool, and `two_thread` adds the cross-core cache traffic of
-//! the real producer and consumer. `socket_write` times one write on a loopback
-//! connection, with the deadline logic. `decompose` splits `parse_and_encode`
+//! the real producer and consumer. `socket_write` times one non-blocking write on
+//! a loopback connection, the way the link thread writes a block (no socket
+//! timeout, no deadline logic). `decompose` splits `parse_and_encode`
 //! into its parts. See `datasets/baselines/code-review-2026-11-01/README.md` for how
 //! to compare runs.
 
@@ -153,11 +154,11 @@ fn two_thread_group(c: &mut Criterion, pool: Pool) {
     group.finish();
 }
 
-/// One socket write in a fresh deadline window on a loopback connection that a
-/// second thread drains: 64 KiB is what the frame writer's buffer flushes (the
-/// service makes one such write per 600 or so events), 103 bytes is one frame.
-/// The difference between runs is the per-write cost of the deadline logic and
-/// the `set_write_timeout` call.
+/// One non-blocking write on a loopback connection that a second thread drains,
+/// as the link thread writes a block: 64 KiB is one block (the service makes one
+/// such write per 600 or so events), 103 bytes is one frame, which the service
+/// never writes alone and which shows the per-call floor. A call that the socket
+/// cannot take at once waits for writability, as the link thread does.
 fn socket_write_group(c: &mut Criterion) {
     let mut writer = SocketWriter::new();
     let mut group = c.benchmark_group("socket_write");
@@ -165,7 +166,7 @@ fn socket_write_group(c: &mut Criterion) {
         let buffer = vec![0x5a_u8; length];
         group.throughput(Throughput::Bytes(bytes(&buffer)));
         group.bench_function(name, |b| {
-            b.iter(|| writer.write_window(black_box(&buffer)));
+            b.iter(|| writer.write_block(black_box(&buffer)));
         });
     }
     group.finish();

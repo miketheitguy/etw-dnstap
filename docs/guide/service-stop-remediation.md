@@ -14,9 +14,11 @@ combines the STOP write or flush with the FINISH read, so the failed phase is un
 current build names the phase: `final buffered data flush`, `STOP write/flush`,
 `FINISH header read`, `FINISH body read`, or `FINISH validation`.
 
-The sender's shutdown has a shared two-second I/O deadline and requires a valid FINISH. A
-failure here ends the service stop with an error, reported separately from per-record output
-failures.
+The sender's shutdown has a shared two-second I/O deadline. A STOP/FINISH exchange that does
+not complete does not fail the service stop, and the service writes nothing about it. Frames
+that were not sent stay in the spool for the next start, or count in `disconnected_dropped`
+when no spool is in use. Earlier builds ended the stop with a
+service-specific error instead, and SCM then restarted the service.
 
 The strongest receiver-side candidate is DNS-collector's reset close:
 
@@ -63,8 +65,9 @@ comparison, follow these steps:
 4. Keep the existing console output pipeline and its mode.
 5. Compare the current receiver policy with an explicit `reset-conn: false`.
 6. For each run, capture the TCP STOP, FINISH, and close sequence, including any RST.
-7. For each run, record whether the service stop succeeds. Keep lifecycle results separate
-   from record counts.
+7. For each run, record from the receiver log or a packet capture whether the receiver got
+   STOP and sent FINISH. The service stop succeeds either way, so its exit code does not show
+   a failed FINISH. Keep lifecycle results separate from record counts.
 8. Reconcile the receiver and sender counts. A lifecycle pass must not hide record loss,
    and a complete record count must not hide a failed FINISH.
 
@@ -74,9 +77,8 @@ If the change causes a regression, follow these steps:
 2. Check that its checksum matches the recorded value.
 3. Apply the restored configuration with the same receiver procedure.
 
-Do not change the sender. Do not make it ignore FINISH, add automatic resend, or extend the
-shutdown timer. A passing local test or a clean record count does not prove that the live
-problem is solved.
+Do not change the sender to add automatic resend or to extend the shutdown timer. A passing local test or a clean record count does not prove that the live problem is
+solved.
 
 ## Source versions
 

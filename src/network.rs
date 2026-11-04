@@ -1,15 +1,27 @@
 //! Bidirectional Frame Streams TCP sender, optionally over TLS 1.2 or 1.3, with
-//! whole-operation I/O deadlines and automatic reconnection.
+//! whole-operation I/O deadlines for the handshakes and automatic reconnection.
 //!
 //! [`Connection`] is one Frame Streams session. Any error on it is final for that
 //! session. [`NetworkSink`] owns the current session and, when it fails,
 //! reconnects with bounded exponential backoff and a fresh handshake while ETW
-//! capture keeps running. Frames that this sink receives while disconnected, and
-//! frames that were still buffered when the connection failed, are discarded and
-//! counted in `disconnected_dropped`; they are never resent, so the receiver sees
-//! each frame at most once and never a duplicate. When a spool is in use, the
-//! sender thread (`crate::sender`) routes frames to the spool while the link is
-//! down, so only the frames in flight at the failure reach this counter.
+//! capture keeps running.
+//!
+//! The session has two modes. The connect, the TLS and Frame Streams handshakes,
+//! and the closing STOP/FINISH exchange are blocking and run under
+//! [`IO_TIMEOUT`]. The data path is the opposite: the link thread
+//! (`crate::sender`) puts the socket in non-blocking mode and drives it through
+//! the [`Uplink`] and [`Wire`] traits, so no data send has a socket timeout and a
+//! send never ends in an indeterminate state. The link thread decides which
+//! frames count in `disconnected_dropped` and which go back to the router, from
+//! the exact byte counts the wire reports.
+//!
+//! In test builds [`NetworkSink`] also implements the blocking [`FrameSink`], for
+//! the parser tests and the reconnect tests that write frames one at a time. That
+//! path counts frames buffered when the connection fails in
+//! `disconnected_dropped` and never resends them. The service does not have it.
+//!
+//! A failure of the closing STOP/FINISH exchange never fails the service and is
+//! not reported: see [`Uplink::close`] for [`NetworkSink`].
 
 use std::{
     io::{self, BufWriter, Read, Write},
@@ -30,19 +42,31 @@ use rustls::{
 };
 use rustls_platform_verifier::BuilderVerifierExt;
 
+#[cfg(test)]
+use crate::sink::FrameSink;
 use crate::{
     framestream::{CONTENT_TYPE, FrameStreamWriter},
-    sink::{FrameSink, SinkStats},
+    sink::SinkStats,
 };
 
 #[allow(unsafe_code)]
 mod sockopt;
+mod wire;
 
+#[cfg(any(test, feature = "bench"))]
+pub(crate) use self::wire::plain_offer;
+pub(crate) use self::wire::{Moved, Uplink, Wire};
+#[cfg(test)]
+pub(crate) use self::wire::{TLS_FEED_BYTES, tls_drain, tls_offer};
+
+/// The deadline of one blocking operation: the connect, each handshake, and the
+/// STOP/FINISH exchange. A data send never has it.
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// [`IO_TIMEOUT`] for the sender tests, which check how long a stalled write lasts.
-#[cfg(test)]
-pub(crate) const TEST_IO_TIMEOUT: Duration = IO_TIMEOUT;
+/// The shortest stall timeout the link accepts: it is never shorter than
+/// [`IO_TIMEOUT`], so a handshake that is still within its own deadline is not
+/// mistaken for a stall.
+pub(crate) const MIN_STALL_TIMEOUT: Duration = IO_TIMEOUT;
 
 const CONTROL_ACCEPT: u32 = 1;
 const CONTROL_READY: u32 = 4;
@@ -51,10 +75,9 @@ const CONTENT_TYPE_FIELD: u32 = 1;
 const MAX_CONTROL_LENGTH: usize = 512;
 // Holds many typical frames per send; larger frames bypass the buffer.
 const WRITE_BUFFER_BYTES: usize = 64 * 1024;
-/// Kernel send buffer, so a briefly slow receiver stalls the parser less.
-const SEND_BUFFER_BYTES: u32 = 1024 * 1024;
-/// A socket write at least this long counts as blocked.
-const SLOW_WRITE: Duration = Duration::from_millis(5);
+/// A write, or a readiness wait for one block, of at least this long counts as
+/// blocked in `slow_writes`.
+pub(crate) const SLOW_WRITE: Duration = Duration::from_millis(5);
 
 /// TLS settings for one receiver: the client configuration and the name that
 /// the receiver certificate must match. It is sent as SNI only when it is a DNS
@@ -123,13 +146,20 @@ impl From<SocketAddr> for ReceiverConfig {
 }
 
 /// The byte stream of one session: plain TCP or TLS over it. `DeadlineTcp`
-/// stays the only owner of the I/O deadline and the write statistics.
+/// stays the only owner of the I/O deadline.
 enum Transport {
     Plain(DeadlineTcp),
     Tls(Box<StreamOwned<ClientConnection, DeadlineTcp>>),
 }
 
 impl Transport {
+    fn deadline(&self) -> &DeadlineTcp {
+        match self {
+            Self::Plain(tcp) => tcp,
+            Self::Tls(tls) => &tls.sock,
+        }
+    }
+
     fn deadline_mut(&mut self) -> &mut DeadlineTcp {
         match self {
             Self::Plain(tcp) => tcp,
@@ -318,6 +348,9 @@ fn log_first_rejection(
 /// decides whether to reconnect.
 pub(crate) struct Connection {
     writer: FrameStreamWriter<BufWriter<Transport>>,
+    /// True while the socket is in non-blocking mode for the link thread. The
+    /// session is blocking again for STOP/FINISH.
+    link_mode: bool,
 }
 
 impl Connection {
@@ -325,10 +358,9 @@ impl Connection {
         let config = config.into();
         let stream = TcpStream::connect_timeout(&config.address, IO_TIMEOUT)?;
         stream.set_nodelay(true)?;
-        if let Err(error) = sockopt::set_send_buffer(&stream, SEND_BUFFER_BYTES) {
-            // A smaller buffer only costs some slack; it is never a reason to refuse.
-            tracing::debug!(%error, "could not raise SO_SNDBUF");
-        }
+        // SO_SNDBUF is deliberately not set. Windows turns dynamic send buffering
+        // (autotuning) off for a socket that sets it, which caps throughput at the
+        // buffer size per round trip. The kernel buffer therefore grows with the link.
         let tcp = DeadlineTcp::new(stream, IO_TIMEOUT);
         let mut transport = match config.tls {
             None => Transport::Plain(tcp),
@@ -351,19 +383,45 @@ impl Connection {
         // Publish START before the service reports readiness, using the same
         // total handshake deadline as READY and ACCEPT.
         writer.flush()?;
-        Ok(Self { writer })
+        Ok(Self {
+            writer,
+            link_mode: false,
+        })
     }
 
-    /// Writes bytes that already hold complete data frames, in one deadline
-    /// window.
-    fn write_framed(&mut self, framed: &[u8]) -> io::Result<()> {
-        self.reset_deadline();
-        self.writer.write_framed(framed)
+    /// Puts the socket in non-blocking mode for the link thread, which then
+    /// writes through [`Wire`] and never through the frame writer. The write
+    /// buffer must be empty, as it is after the handshake.
+    fn enter_link_mode(&mut self) -> io::Result<()> {
+        if self.link_mode {
+            return Ok(());
+        }
+        if !self.writer.get_ref().buffer().is_empty() {
+            return Err(io::Error::other("the session write buffer is not empty"));
+        }
+        self.writer
+            .get_mut()
+            .get_mut()
+            .deadline_mut()
+            .stream
+            .set_nonblocking(true)?;
+        self.link_mode = true;
+        Ok(())
     }
 
-    /// Starts timing socket writes into `stats`.
-    fn attach_stats(&mut self, stats: Arc<SinkStats>) {
-        self.writer.get_mut().get_mut().deadline_mut().stats = Some(stats);
+    /// Puts the socket back in blocking mode for STOP/FINISH.
+    fn leave_link_mode(&mut self) -> io::Result<()> {
+        if !self.link_mode {
+            return Ok(());
+        }
+        self.writer
+            .get_mut()
+            .get_mut()
+            .deadline_mut()
+            .stream
+            .set_nonblocking(false)?;
+        self.link_mode = false;
+        Ok(())
     }
 
     /// The next socket operation starts a new deadline window; the clock is read
@@ -371,8 +429,54 @@ impl Connection {
     fn reset_deadline(&mut self) {
         self.writer.get_mut().get_mut().deadline_mut().rearm();
     }
+
+    /// Ends the stream: flushes, sends STOP, and waits for FINISH, all under one
+    /// fresh deadline. The socket must be in blocking mode.
+    fn finish(mut self) -> Result<()> {
+        self.reset_deadline();
+        finish_stream(self.writer)
+    }
 }
 
+impl Wire for Connection {
+    fn piece_limit(&self) -> Option<usize> {
+        match self.writer.get_ref().get_ref() {
+            Transport::Plain(_) => None,
+            Transport::Tls(_) => Some(wire::TLS_FEED_BYTES),
+        }
+    }
+
+    fn offer(&mut self, bytes: &[u8]) -> io::Result<Moved> {
+        match self.writer.get_mut().get_mut() {
+            Transport::Plain(tcp) => wire::plain_offer(&mut &tcp.stream, bytes),
+            Transport::Tls(tls) => wire::tls_offer(&mut tls.conn, bytes),
+        }
+    }
+
+    fn pending(&self) -> bool {
+        match self.writer.get_ref().get_ref() {
+            Transport::Plain(_) => false,
+            Transport::Tls(tls) => tls.conn.wants_write(),
+        }
+    }
+
+    fn drain(&mut self) -> io::Result<Moved> {
+        match self.writer.get_mut().get_mut() {
+            Transport::Plain(_) => Ok(Moved::NONE),
+            Transport::Tls(tls) => {
+                let StreamOwned { conn, sock } = &mut **tls;
+                wire::tls_drain(conn, &mut &sock.stream)
+            }
+        }
+    }
+
+    fn wait_writable(&mut self, timeout: Duration) -> io::Result<()> {
+        sockopt::wait_writable(&self.writer.get_ref().get_ref().deadline().stream, timeout)
+    }
+}
+
+/// The blocking frame-at-a-time sink, for the parser and reconnect tests.
+#[cfg(test)]
 impl FrameSink for Connection {
     fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
         self.reset_deadline();
@@ -384,83 +488,8 @@ impl FrameSink for Connection {
         self.writer.flush()
     }
 
-    fn finish(mut self) -> Result<()> {
-        self.reset_deadline();
-        finish_stream(self.writer)
-    }
-}
-
-/// The most bytes of one chunk of a pre-framed write, unless one frame is larger.
-const WRITE_CHUNK_BYTES: usize = 64 * 1024;
-
-/// The length of the first chunk of `bytes` (data frames, each a 4-byte
-/// big-endian length and its payload) and the frames in it. The chunk ends at a
-/// frame boundary, holds at least one frame, and holds at most
-/// `WRITE_CHUNK_BYTES` unless its one frame is larger. Bytes that do not parse as
-/// frames form one chunk with 0 frames.
-fn next_chunk(bytes: &[u8]) -> (usize, u32) {
-    let mut end = 0;
-    let mut frames = 0_u32;
-    while let Some(header) = bytes[end..].first_chunk::<4>() {
-        let next = usize::try_from(u32::from_be_bytes(*header))
-            .ok()
-            .and_then(|length| end.checked_add(4)?.checked_add(length));
-        let Some(next) = next.filter(|next| *next <= bytes.len()) else {
-            break;
-        };
-        if frames > 0 && next > WRITE_CHUNK_BYTES {
-            break;
-        }
-        end = next;
-        frames += 1;
-        if end >= WRITE_CHUNK_BYTES {
-            break;
-        }
-    }
-    if end == 0 {
-        (bytes.len(), 0)
-    } else {
-        (end, frames)
-    }
-}
-
-#[cfg(test)]
-mod chunk_tests {
-    use super::*;
-
-    fn framed(lengths: &[usize]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for length in lengths {
-            bytes.extend_from_slice(&u32::try_from(*length).expect("small").to_be_bytes());
-            bytes.resize(bytes.len() + length, 7);
-        }
-        bytes
-    }
-
-    #[test]
-    fn chunks_end_at_frame_boundaries_and_cover_every_frame_once() {
-        let lengths = [30_000, 30_000, 30_000, 70_000, 10, 65_000];
-        let mut rest = framed(&lengths);
-        let mut chunks = Vec::new();
-        while !rest.is_empty() {
-            let (length, frames) = next_chunk(&rest);
-            assert!(frames >= 1 && length > 0);
-            assert!(length <= WRITE_CHUNK_BYTES || frames == 1);
-            chunks.push(frames);
-            rest.drain(..length);
-        }
-        assert_eq!(chunks, [2, 1, 1, 2]);
-        assert_eq!(chunks.iter().sum::<u32>(), 6);
-    }
-
-    #[test]
-    fn bytes_that_are_not_frames_form_one_chunk_without_frames() {
-        assert_eq!(next_chunk(&[0, 0, 0, 9, 1]), (5, 0));
-        assert_eq!(next_chunk(&[1, 2]), (2, 0));
-        let mut bytes = framed(&[4]);
-        bytes.extend_from_slice(&[0, 0, 1]);
-        assert_eq!(next_chunk(&bytes), (8, 1));
-        assert_eq!(next_chunk(&bytes[8..]), (3, 0));
+    fn finish(self) -> Result<()> {
+        Connection::finish(self)
     }
 }
 
@@ -560,8 +589,10 @@ pub(crate) struct NetworkSink {
     stats: Arc<SinkStats>,
     state: State,
     backoff: Backoff,
-    /// Frames accepted since the last successful flush. They may sit in the
-    /// write buffer, so a failure counts them as dropped.
+    /// Frames accepted since the last successful flush, on the blocking
+    /// [`FrameSink`] path of the tests. They may sit in the write buffer, so a
+    /// failure counts them as dropped.
+    #[cfg(test)]
     unflushed_frames: u64,
     /// The failure classes seen since the last established session, so that
     /// the first failure of each cause in an outage is logged at once.
@@ -601,8 +632,7 @@ impl NetworkSink {
         let mut backoff = Backoff::new(policy, clock_seed(address));
         let mut seen_failures = SeenClasses::default();
         let initial = match Connection::connect(config.clone()) {
-            Ok(mut connection) => {
-                connection.attach_stats(Arc::clone(&stats));
+            Ok(connection) => {
                 stats.connected.store(true, Ordering::Relaxed);
                 State::Connected(connection)
             }
@@ -628,6 +658,7 @@ impl NetworkSink {
             stats,
             state: initial,
             backoff,
+            #[cfg(test)]
             unflushed_frames: 0,
             seen_failures,
             ever_connected,
@@ -635,19 +666,28 @@ impl NetworkSink {
         })
     }
 
+    #[cfg(test)]
     fn drop_frames(&self, count: u64) {
         self.stats
             .disconnected_dropped
             .fetch_add(count, Ordering::Relaxed);
     }
 
-    /// Abandons the failed connection. The write buffer is discarded with it, so
-    /// nothing from the failed stream is ever resent.
-    fn connection_lost(&mut self, error: &io::Error, current_frame: u64) {
-        self.stats.connected.store(false, Ordering::Relaxed);
-        self.stats.disconnects.fetch_add(1, Ordering::Relaxed);
+    /// [`Self::connection_lost`] for the blocking [`FrameSink`] path of the
+    /// tests: the frames written since the last flush, and `current_frame`, count
+    /// as dropped.
+    #[cfg(test)]
+    fn connection_lost_counting(&mut self, error: &io::Error, current_frame: u64) {
         self.drop_frames(self.unflushed_frames + current_frame);
         self.unflushed_frames = 0;
+        self.connection_lost(error);
+    }
+
+    /// Abandons the failed connection and starts the backoff. It counts no
+    /// frames: the link thread knows exactly which were not accepted.
+    fn connection_lost(&mut self, error: &io::Error) {
+        self.stats.connected.store(false, Ordering::Relaxed);
+        self.stats.disconnects.fetch_add(1, Ordering::Relaxed);
         let delay = self.backoff.next_delay();
         tracing::warn!(
             receiver = %self.config.address,
@@ -675,12 +715,14 @@ impl NetworkSink {
         };
         if let Some(receiver) = attempt {
             match receiver.try_recv() {
-                Ok(Ok(mut connection)) => {
-                    connection.attach_stats(Arc::clone(&self.stats));
+                Ok(Ok(connection)) => {
                     self.stats.connected.store(true, Ordering::Relaxed);
                     self.stats.reconnects.fetch_add(1, Ordering::Relaxed);
                     self.backoff.reset();
-                    self.unflushed_frames = 0;
+                    #[cfg(test)]
+                    {
+                        self.unflushed_frames = 0;
+                    }
                     self.ever_connected = true;
                     // Each later outage reports each of its causes once again.
                     self.seen_failures.clear();
@@ -772,48 +814,77 @@ impl NetworkSink {
     pub(crate) const fn is_connected(&self) -> bool {
         matches!(self.state, State::Connected(_))
     }
+}
 
-    /// Writes bytes that hold `frames` complete data frames (a 4-byte big-endian
-    /// length and the payload each), as the queued sink and the spool hold them.
-    /// Returns whether the session took them; they may still sit in the write
-    /// buffer until [`FrameSink::flush`].
-    ///
-    /// On a write failure the session is abandoned as in [`FrameSink::write_frame`]:
-    /// these frames and the unflushed ones are counted in `disconnected_dropped`.
-    /// While disconnected the frames are counted there at once.
-    pub(crate) fn write_framed(&mut self, bytes: &[u8], frames: u32) -> bool {
-        let mut remaining = u64::from(frames);
-        let State::Connected(connection) = &mut self.state else {
-            self.drop_frames(remaining);
-            return false;
+impl Uplink for NetworkSink {
+    /// Advances the reconnect and puts a new session in non-blocking mode for
+    /// the link thread.
+    fn poll(&mut self, now: Instant) {
+        Self::poll(self, now);
+        let failed = match &mut self.state {
+            State::Connected(connection) => connection.enter_link_mode().err(),
+            State::Disconnected { .. } => None,
         };
-        // Whole frames in chunks, each with its own I/O deadline, so a large
-        // batch does not share one deadline and a failure's count stays exact.
-        let mut rest = bytes;
-        while !rest.is_empty() {
-            let (length, whole) = next_chunk(rest);
-            let in_chunk = if whole == 0 {
-                remaining
-            } else {
-                u64::from(whole).min(remaining)
-            };
-            let (chunk, tail) = rest.split_at(length);
-            if let Err(error) = connection.write_framed(chunk) {
-                // This chunk and every chunk after it were not delivered.
-                self.connection_lost(&error, remaining);
-                return false;
-            }
-            self.unflushed_frames += in_chunk;
-            self.stats
-                .bytes_sent
-                .fetch_add(length as u64, Ordering::Relaxed);
-            remaining -= in_chunk;
-            rest = tail;
+        if let Some(error) = failed {
+            self.connection_lost(&error);
         }
-        true
+    }
+
+    fn is_connected(&self) -> bool {
+        Self::is_connected(self)
+    }
+
+    fn wire(&mut self) -> Option<&mut dyn Wire> {
+        match &mut self.state {
+            State::Connected(connection) if connection.link_mode => Some(connection),
+            _ => None,
+        }
+    }
+
+    fn lost(&mut self, error: &io::Error) {
+        // The link thread has counted the frames; none is counted here.
+        self.connection_lost(error);
+    }
+
+    /// Ends the stream. A failure of the closing exchange (the socket does not
+    /// return to blocking mode, the final flush or the STOP write fails or times
+    /// out, or FINISH does not arrive) never fails the service, and the service
+    /// writes nothing about it. Every data frame was already accepted by the
+    /// socket, handed back to the router, or counted, so the exchange only says
+    /// goodbye. This returns `Ok`.
+    fn close(self, clean: bool) -> Result<()> {
+        match self.state {
+            State::Connected(mut connection) => {
+                if !clean {
+                    // A data frame was cut: the connection closes with no STOP,
+                    // and the service writes nothing about it.
+                    return Ok(());
+                }
+                // A requested stop does not fail because the receiver would not
+                // answer: the result of the exchange is dropped on purpose.
+                let _closed = connection
+                    .leave_link_mode()
+                    .context("return the socket to blocking mode")
+                    .and_then(|()| connection.finish());
+                Ok(())
+            }
+            State::Disconnected { .. } => {
+                log_shutdown_disconnected(self.config.address);
+                Ok(())
+            }
+        }
     }
 }
 
+fn log_shutdown_disconnected(receiver: SocketAddr) {
+    tracing::warn!(
+        %receiver,
+        "shutting down while the dnstap receiver is disconnected; no STOP sent"
+    );
+}
+
+/// The blocking frame-at-a-time sink, for the parser and reconnect tests.
+#[cfg(test)]
 impl FrameSink for NetworkSink {
     fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
         if !self.is_connected() {
@@ -830,7 +901,7 @@ impl FrameSink for NetworkSink {
                     .bytes_sent
                     .fetch_add(payload.len() as u64 + 4, Ordering::Relaxed);
             }
-            Err(error) => self.connection_lost(&error, 1),
+            Err(error) => self.connection_lost_counting(&error, 1),
         }
         Ok(())
     }
@@ -842,7 +913,7 @@ impl FrameSink for NetworkSink {
         if let State::Connected(connection) = &mut self.state {
             match connection.flush() {
                 Ok(()) => self.unflushed_frames = 0,
-                Err(error) => self.connection_lost(&error, 0),
+                Err(error) => self.connection_lost_counting(&error, 0),
             }
         }
         Ok(())
@@ -861,10 +932,7 @@ impl FrameSink for NetworkSink {
             // Nothing to flush and no one to tell; an in-flight attempt is
             // abandoned and its thread ends on its own within the I/O timeouts.
             State::Disconnected { .. } => {
-                tracing::warn!(
-                    receiver = %self.config.address,
-                    "shutting down while the dnstap receiver is disconnected; no STOP sent"
-                );
+                log_shutdown_disconnected(self.config.address);
                 Ok(())
             }
         }
@@ -900,11 +968,15 @@ fn read_finish(reader: &mut impl Read) -> Result<()> {
 
 #[cfg(test)]
 #[path = "network/test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "network/shutdown_tests.rs"]
 mod shutdown_tests;
+
+#[cfg(test)]
+#[path = "network/closing_tests.rs"]
+mod closing_tests;
 
 #[cfg(test)]
 #[path = "network/reconnect_tests.rs"]
@@ -952,7 +1024,6 @@ struct DeadlineTcp {
     read_applied: Option<Duration>,
     write_applied: Option<Duration>,
     slack: Duration,
-    stats: Option<Arc<SinkStats>>,
 }
 
 impl DeadlineTcp {
@@ -965,7 +1036,6 @@ impl DeadlineTcp {
             read_applied: None,
             write_applied: None,
             slack: (timeout / 32).min(TIMEOUT_SLACK),
-            stats: None,
         }
     }
 
@@ -983,19 +1053,6 @@ impl DeadlineTcp {
             .checked_duration_since(Instant::now())
             .filter(|duration| !duration.is_zero())
             .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "Frame Streams I/O deadline"))
-    }
-
-    fn record_write(&self, elapsed: Duration) {
-        if let Some(stats) = &self.stats {
-            let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-            stats.write_max_us.fetch_max(micros, Ordering::Relaxed);
-            stats
-                .write_window_max_us
-                .fetch_max(micros, Ordering::Relaxed);
-            if elapsed >= SLOW_WRITE {
-                stats.slow_writes.fetch_add(1, Ordering::Relaxed);
-            }
-        }
     }
 }
 
@@ -1017,10 +1074,7 @@ impl Write for DeadlineTcp {
             self.stream.set_write_timeout(Some(remaining))?;
             self.write_applied = Some(remaining);
         }
-        let started = Instant::now();
-        let written = self.stream.write(bytes);
-        self.record_write(started.elapsed());
-        written
+        self.stream.write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -1033,18 +1087,20 @@ impl Write for DeadlineTcp {
 #[cfg(feature = "bench")]
 pub(crate) mod bench {
     use std::{
-        io::{Read, Write},
+        io::Read,
         net::{Shutdown, TcpListener, TcpStream},
         thread::{self, JoinHandle},
+        time::Duration,
     };
 
-    use super::{DeadlineTcp, IO_TIMEOUT};
+    use super::{Moved, plain_offer, sockopt};
 
-    /// A `DeadlineTcp` connected over loopback to a thread that reads and
-    /// discards everything, so a write costs the deadline logic, the
-    /// `set_write_timeout` call (when it runs), and the loopback send.
+    /// A non-blocking socket connected over loopback to a thread that reads and
+    /// discards everything, written the way the link thread writes a plaintext
+    /// block: `plain_offer`, and a wait for writability when the socket takes
+    /// nothing.
     pub struct SocketWriter {
-        writer: DeadlineTcp,
+        stream: TcpStream,
         receiver: Option<JoinHandle<()>>,
     }
 
@@ -1061,23 +1117,33 @@ pub(crate) mod bench {
                 while stream.read(&mut sink).is_ok_and(|read| read != 0) {}
             });
             let stream = TcpStream::connect(address).expect("connect to the loopback listener");
+            stream
+                .set_nonblocking(true)
+                .expect("the socket enters non-blocking mode");
             Self {
-                writer: DeadlineTcp::new(stream, IO_TIMEOUT),
+                stream,
                 receiver: Some(receiver),
             }
         }
 
-        /// One socket write in a fresh deadline window, as the frame writer
-        /// makes one per buffered flush. Returns the bytes the socket took.
+        /// Writes all of `bytes`, in as many non-blocking sends as the socket
+        /// needs. Returns the bytes written.
         ///
         /// # Panics
         /// Panics if the write fails.
         #[inline(never)]
-        pub fn write_window(&mut self, bytes: &[u8]) -> usize {
-            self.writer.rearm();
-            self.writer
-                .write(bytes)
-                .expect("the loopback write succeeds")
+        pub fn write_block(&mut self, bytes: &[u8]) -> usize {
+            let mut written = 0;
+            while written < bytes.len() {
+                let moved = plain_offer(&mut &self.stream, &bytes[written..])
+                    .expect("the loopback write succeeds");
+                if moved == Moved::NONE {
+                    sockopt::wait_writable(&self.stream, Duration::from_millis(50))
+                        .expect("the wait succeeds");
+                }
+                written += moved.written;
+            }
+            written
         }
     }
 
@@ -1090,7 +1156,7 @@ pub(crate) mod bench {
     impl Drop for SocketWriter {
         fn drop(&mut self) {
             // The receiver thread ends when the connection closes.
-            let _ = self.writer.stream.shutdown(Shutdown::Both);
+            let _ = self.stream.shutdown(Shutdown::Both);
             if let Some(receiver) = self.receiver.take() {
                 let _ = receiver.join();
             }

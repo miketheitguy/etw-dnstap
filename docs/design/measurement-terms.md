@@ -71,7 +71,7 @@ The service distinguishes these loss units and the related counters:
 | `etw_events_lost` | Events lost by the enabled ETW session. Its event-ID domain can exceed the supported IDs. |
 | `etw_realtime_buffers_lost` | Lost ETW buffers, not lost events. Never add this count to event counts. |
 | `output_failed_events` | Dequeued events whose frame-output operation failed. |
-| `output_errors` | Failed output operations, including a final STOP/FINISH failure after all encoded records were delivered. |
+| `output_errors` | Failed output operations. A final STOP/FINISH failure counted here in builds before the link thread. Now a STOP/FINISH that does not complete at a requested stop does not fail the stop, and the service writes nothing about it. |
 | `received` | Supported provider records that enter the callback, including rejected records. |
 | `dequeued` | Records the parser removes before parsing or output. |
 | `queue_backlog` | Records that remain in the channel. The live log has no such field. It reports `queue_depth_max` instead. |
@@ -110,8 +110,10 @@ The pooled campaign records these outcomes separately:
 
 A zero-loss WPR trace can describe a stage that drops application capture records.
 Exact receiver delivery can describe a correctly reconciled, lossy capture stage. A
-final-only STOP/FINISH reset can fail lifecycle even when every encoded record
-reached the receiver. Preserve each outcome. A continuation exception does not turn a
+final-only STOP/FINISH reset failed lifecycle in builds before the link thread, even when
+every encoded record reached the receiver. Now a STOP/FINISH that does not
+complete at a requested stop does not fail the stop, and the service writes nothing about it.
+Preserve each outcome. A continuation exception does not turn a
 strict failure into a pass.
 
 ## CPU, memory, and time units

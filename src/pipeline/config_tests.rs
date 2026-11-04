@@ -297,6 +297,35 @@ fn stats_interval_flag_defaults_to_60_and_zero_disables() {
 }
 
 #[test]
+fn receiver_stall_flag_reaches_the_config_as_a_duration_and_validates_its_range() {
+    assert_eq!(config_from(&[]).receiver_stall(), Duration::from_secs(15));
+    for seconds in [2, 300] {
+        let argument = format!("--receiver-stall-seconds={seconds}");
+        let config = config_from(&[argument.as_str()]);
+        assert_eq!(config.receiver_stall_seconds, seconds);
+        assert_eq!(
+            config.receiver_stall(),
+            Duration::from_secs(u64::from(seconds))
+        );
+    }
+    // A config built without clap is held to the same bounds.
+    let mut config = config_from(&[]);
+    for seconds in [0, 1, 301] {
+        config.receiver_stall_seconds = seconds;
+        assert!(config.validate().is_err(), "{seconds}");
+    }
+    for seconds in [2, 15, 300] {
+        config.receiver_stall_seconds = seconds;
+        assert!(config.validate().is_ok(), "{seconds}");
+    }
+    // The shortest value is the I/O timeout of the handshakes.
+    assert_eq!(
+        Duration::from_secs(RECEIVER_STALL_SECONDS_RANGE.start().cast_unsigned()),
+        crate::network::MIN_STALL_TIMEOUT
+    );
+}
+
+#[test]
 fn default_etw_settings_are_detected() {
     assert!(config_from(&[]).uses_default_etw_settings());
     assert!(!config_from(&["--etw-min-buffers", "8"]).uses_default_etw_settings());

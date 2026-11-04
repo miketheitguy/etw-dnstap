@@ -1,82 +1,132 @@
-//! The queued sink and the `dnstap-sender` thread.
+//! The queued sink and the threads behind it.
 //!
 //! [`QueuedSink`] is the [`FrameSink`] the parser thread writes to. It appends
 //! each frame to a [`Block`] of pre-framed bytes and hands full blocks to the
-//! sender thread through a bounded channel. The parser thread never blocks and,
+//! router thread through a bounded channel. The parser thread never blocks and,
 //! after startup, never allocates: blocks come from a fixed pool, and a block
 //! that does not fit in the channel is discarded and counted in
 //! `queue_dropped`.
 //!
-//! The sender thread is the only thread that does socket or spool I/O. It owns
-//! the link ([`NetworkSink`]) and the optional [`Spool`]. With a spool, a block
-//! goes to the spool while the spool holds a backlog, the link is down, or the
-//! channel is nearly full (so frames stay in order and a slow receiver spills to
-//! disk), and to the link otherwise. While the link is up it replays the
-//! backlog, oldest first. Delivery is at most once: a frame handed to a failed
-//! connection is lost and counted in `disconnected_dropped`.
+//! Two threads sit behind the channel, so that no socket wait ever stops the
+//! spill to disk:
+//!
+//! - The **router** (`dnstap-sender`, [`router`]) owns the optional [`Spool`] and
+//!   never waits on the socket. It sends blocks to a FIFO of
+//!   [`LINK_FIFO_BLOCKS`] blocks, which is the in-memory slack that absorbs a
+//!   slow link or a link thread that the scheduler has not run for a while. Only a
+//!   full FIFO spills to the spool: the router takes the blocks out of the FIFO and
+//!   appends them to the spool, oldest first. Once the spool holds a backlog,
+//!   every block goes to it until the router has replayed the backlog, so frames
+//!   stay in order.
+//! - The **link thread** (`dnstap-link`, [`link`]) owns the [`NetworkSink`]. It
+//!   writes with non-blocking sends and a readiness wait, ends the session only
+//!   when the receiver accepts no bytes for the stall timeout, and on any failure
+//!   hands the unsent live data back to the router.
+//!
+//! Each thread moves everything that is available each time it runs: the link
+//! thread takes the next block as soon as it finishes one, and the router routes
+//! every block in the parser channel before it waits.
+//!
+//! Delivery is at most once: a frame the socket accepted is never resent. A live
+//! frame the socket did not fully accept goes back to the router and is sent
+//! again on the next session; the receiver saw only a truncated copy of it. Only
+//! the unsent rest of one replay batch (whose spool cursor has moved) and, with
+//! TLS, the frames of one unconfirmed piece are lost, and they are counted in
+//! `disconnected_dropped`.
+//! See `docs/design/slow-receiver.md`.
 
 use std::{
     io, mem,
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
-use crossbeam_channel::{
-    Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
-};
+use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TrySendError, bounded};
 use crossbeam_queue::ArrayQueue;
 
-use self::monitor::{LinkMonitor, Observation};
+use self::{link::LinkThread, router::Router};
 use crate::{
     dnstap::MAX_ENCODED_LENGTH,
-    network::NetworkSink,
+    network::{NetworkSink, Uplink},
     sink::{FrameSink, SinkStats},
-    spool::{Appended, Spool},
+    spool::Spool,
 };
 
 /// Capacity of a block. A block holds less than [`BLOCK_SEND_BYTES`] before a
 /// frame is appended, and a frame adds at most `MAX_ENCODED_LENGTH` plus its
-/// 4-byte length, so a frame always fits and the buffer never grows.
+/// 4-byte length, so a frame always fits and the buffer never grows. A replay
+/// batch is below [`REPLAY_BATCH_BYTES`] plus one frame, so it fits too.
 const BLOCK_CAPACITY: usize = 136 * 1024;
 /// The parser sends a block once it holds at least this many bytes.
 const BLOCK_SEND_BYTES: usize = 64 * 1024;
-/// Blocks the channel holds.
+/// Blocks the parser channel holds.
 const SEND_QUEUE_BLOCKS: usize = 128;
-/// With a spool, blocks go to it instead of the link while the channel holds at
-/// least this many, so a slow receiver spills to disk before the queue fills.
-const SPILL_BLOCKS: usize = 96;
-/// Blocks in circulation: the channel, the one the sender thread is handling,
-/// and the one the parser is filling.
-const POOL_BLOCKS: usize = SEND_QUEUE_BLOCKS + 2;
-/// The most spool bytes read in one replay step.
-const REPLAY_BATCH_BYTES: usize = 256 * 1024;
-/// How long the sender thread waits for a block when it has nothing else to do.
-/// It also bounds the delay before a reconnect or a paused spool read is retried.
+/// Blocks the link FIFO holds (8 MiB of frames). It is the only in-memory slack
+/// between the router and the socket, and the router spills to the spool only
+/// when it is full. A thread that waits for work can lose a scheduler quantum on a
+/// busy host: 12 clock ticks (187.5 ms) on Windows Server, which is about 118
+/// blocks at 41.2 MB/s. The FIFO holds that with margin and without a priority
+/// boost. With the replay credit, at most [`REPLAY_CREDIT`] of its blocks are
+/// replay batches.
+const LINK_FIFO_BLOCKS: usize = 128;
+/// Replay batches the router can have out at once, in the FIFO or in the link
+/// thread's hand. A second batch keeps the link busy while the router reads the
+/// next, and bounds the replay data lost at a failure.
+const REPLAY_CREDIT: u8 = 2;
+/// Live blocks the router can keep for the next session after a failure while
+/// the spool holds a backlog: the one block that the link thread had in hand.
+/// Every other live block is in the spool already, or is not older than it.
+const FRONT_LIST_BLOCKS: usize = 1;
+/// Blocks in circulation: the parser channel, the link FIFO, the front list, and
+/// one block each in the hands of the parser, the router, and the link thread.
+/// The blocks the router takes out of the FIFO to spill it, or at a hand-back,
+/// were in the FIFO, and the block that came back from the link thread was in its
+/// hand, so they add none. 260 blocks of 136 KiB are 34.5 MiB.
+const POOL_BLOCKS: usize = SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLOCKS + 3;
+/// The most spool bytes read in one replay step. A batch ends after the frame
+/// that crosses the limit. The router has at most [`REPLAY_CREDIT`] batches out.
+const REPLAY_BATCH_BYTES: usize = 64 * 1024;
+/// How long the router waits for something to do. It bounds the delay before the
+/// router notices that the link went down, that a paused spool read can be
+/// retried, and that shutdown began.
 const SENDER_POLL: Duration = Duration::from_millis(50);
-/// Data written to the link is flushed at least this often while blocks keep
-/// arriving; it is flushed at once when the channel is empty.
-const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+/// The longest the link thread waits for a block, or for the socket to become
+/// writable, before it checks the stall timer, the shutdown deadline, and the
+/// reconnect. It is also how often a down link is polled for a reconnect.
+const LINK_POLL: Duration = Duration::from_millis(50);
+/// Messages the link thread can have waiting for the router: a `ReplayDone` for
+/// each replay credit, the live block in hand at a failure, and `HandBackDone`.
+const RETURN_MESSAGES: usize = REPLAY_CREDIT as usize + 2;
 /// How long `finish` waits for room in the channel for the last partial block.
 const FINAL_SEND_TIMEOUT: Duration = Duration::from_millis(100);
 /// Consecutive replay steps that return nothing although reads are not paused
-/// (control frames skipped) before the sender waits for a block instead.
+/// (control frames skipped) before the router waits for a block instead.
 const MAX_IDLE_READS: u8 = 3;
-/// Once shutdown starts, the sender stops writing to the link after this long and
-/// routes the blocks still queued as if the link were down. The worst case from
-/// `QueuedSink::finish` to the end of the thread is this budget, plus one link
-/// write that started just inside it (the 2 s I/O deadline), plus the
-/// STOP/FINISH exchange (another 2 s), plus sealing the spool: about 5 s, inside
-/// the 10 s watchdog.
+/// Once shutdown starts, the link thread stops writing after this long and hands
+/// the unsent blocks back, and the router sends everything still queued to the
+/// spool. The worst case from `QueuedSink::finish` to the end of the threads is
+/// the last partial block (0.1 s), this budget, one `LINK_POLL`, and the
+/// STOP/FINISH exchange (`IO_TIMEOUT`, 2 s), which runs at the same time as the
+/// spool seal: about 3.2 s, inside the 10 s watchdog.
 const SHUTDOWN_LINK_BUDGET: Duration = Duration::from_secs(1);
 const _: () = assert!(BLOCK_SEND_BYTES + MAX_ENCODED_LENGTH + 4 <= BLOCK_CAPACITY);
-const _: () = assert!(SPILL_BLOCKS < SEND_QUEUE_BLOCKS);
+const _: () = assert!(REPLAY_BATCH_BYTES + MAX_ENCODED_LENGTH + 4 <= BLOCK_CAPACITY);
+const _: () = assert!(LINK_FIFO_BLOCKS >= 2 && REPLAY_CREDIT > 0);
+// The FIFO must have room for the front list and every replay batch, so a send
+// that the router has checked never waits.
+const _: () = assert!(FRONT_LIST_BLOCKS + REPLAY_CREDIT as usize <= LINK_FIFO_BLOCKS);
 
+pub(crate) use self::link::LinkSettings;
+
+mod link;
 mod monitor;
+mod router;
 
 /// Complete Frame Streams data frames (a 4-byte big-endian length, then the
 /// payload) and how many there are.
@@ -107,7 +157,84 @@ fn release(free: &ArrayQueue<Block>, mut block: Block) {
     let _ = free.push(block);
 }
 
-/// When shutdown began, shared by the parser end and the sender thread.
+/// What the router sends the link thread through the FIFO.
+enum Item {
+    /// A block of live frames, older than every block the router sends later.
+    Live(Block),
+    /// A batch read from the spool. The router has at most [`REPLAY_CREDIT`] out.
+    Replay(Block),
+}
+
+impl Item {
+    /// The block, whichever kind it is.
+    fn into_block(self) -> Block {
+        match self {
+            Self::Live(block) | Self::Replay(block) => block,
+        }
+    }
+}
+
+/// What the link thread tells the router.
+enum Return {
+    /// Live frames that the socket did not fully accept, in order, to be sent
+    /// again before anything newer. Only the block in hand comes back this way;
+    /// the router takes the FIFO itself.
+    Returned(Block),
+    /// A replay batch is written or counted: the router has a credit back.
+    ReplayDone,
+    /// The link thread has ended its session and returned its block in hand. It
+    /// takes nothing from the FIFO and publishes `up` again only after the router
+    /// answers with a fence.
+    HandBackDone,
+}
+
+/// The router's ends of its channels to the link thread.
+struct RouterPorts {
+    /// The only producer of the link FIFO.
+    fifo: Sender<Item>,
+    /// The router's own consumer end of the link FIFO. The channel is
+    /// multi-consumer, so each item reaches exactly one of the router and the
+    /// link thread. The router takes items only under the take lock, to spill the
+    /// FIFO, and when the link thread is not taking, to hand back.
+    fifo_end: Receiver<Item>,
+    /// Answers a `HandBackDone`: everything older is placed and the FIFO is
+    /// empty, so the link thread may use its next session. Its own channel,
+    /// because the link thread must not look into the FIFO before the router has
+    /// emptied it. Closing it ends the link thread's wait.
+    fences: Sender<()>,
+    returns: Receiver<Return>,
+}
+
+/// The link thread's ends of the same channels.
+struct LinkPorts {
+    fifo: Receiver<Item>,
+    fences: Receiver<()>,
+    returns: Sender<Return>,
+}
+
+/// Opens the channels between the router and the link thread. The FIFO holds
+/// `fifo_blocks` items; production uses [`LINK_FIFO_BLOCKS`].
+fn link_channels(fifo_blocks: usize) -> (RouterPorts, LinkPorts) {
+    let (fifo, link_fifo) = bounded(fifo_blocks);
+    let (fences, link_fences) = bounded(1);
+    let (link_returns, returns) = bounded(RETURN_MESSAGES);
+    (
+        RouterPorts {
+            fifo,
+            fifo_end: link_fifo.clone(),
+            fences,
+            returns,
+        },
+        LinkPorts {
+            fifo: link_fifo,
+            fences: link_fences,
+            returns: link_returns,
+        },
+    )
+}
+
+/// When shutdown began, shared by the parser end, the router, and the link
+/// thread.
 struct Shutdown {
     base: Instant,
     /// Nanoseconds from `base` to the start of shutdown, plus one; 0 until it
@@ -140,6 +267,81 @@ impl Shutdown {
     }
 }
 
+/// State shared by the parser end, the router, and the link thread.
+struct LinkShared {
+    /// True while the link thread can take blocks. Only the link thread writes
+    /// it: it clears it when a session ends, and sets it again only after the
+    /// router's fence and a session are established. The router reads it.
+    up: AtomicBool,
+    /// The take lock. The link thread takes a FIFO item only while it holds the
+    /// lock. The router holds the lock while it takes every item out of the FIFO
+    /// to spill it, so no item can slip to the link thread between two of the
+    /// router's pops and reach the socket ahead of an older item that is on its
+    /// way to the spool.
+    take: Mutex<()>,
+    shutdown: Shutdown,
+    /// Times the pool was empty when a block was needed, and a new one was
+    /// allocated instead. The pool bound makes this zero.
+    #[cfg(test)]
+    pool_fallbacks: AtomicU64,
+    /// What the router publishes for tests to wait on.
+    #[cfg(test)]
+    probe: Probe,
+}
+
+/// The router's state, published at the end of each pass so a test can wait for
+/// a state instead of a time.
+#[cfg(test)]
+#[derive(Default)]
+struct Probe {
+    /// Blocks in the front list.
+    front: std::sync::atomic::AtomicUsize,
+    /// The most blocks the front list has held.
+    front_max: std::sync::atomic::AtomicUsize,
+    /// Items in the link FIFO.
+    fifo: std::sync::atomic::AtomicUsize,
+    /// Replay batches in the FIFO or in the link thread's hand.
+    replay_out: std::sync::atomic::AtomicUsize,
+    /// Times the router took the FIFO to spill it.
+    spills: std::sync::atomic::AtomicUsize,
+    /// Passes the router has finished. A pass that starts after a test saw the
+    /// channel empty has routed every block taken before it.
+    turns: std::sync::atomic::AtomicUsize,
+    /// Hand-backs the router has finished: the FIFO is taken, the blocks are
+    /// placed, and the fence is sent (or the link thread has vanished).
+    hand_backs: std::sync::atomic::AtomicUsize,
+    /// Passes of the hand-back loop, which waits for the link thread.
+    hand_back_polls: std::sync::atomic::AtomicUsize,
+}
+
+impl LinkShared {
+    fn new(up: bool) -> Self {
+        Self {
+            up: AtomicBool::new(up),
+            take: Mutex::new(()),
+            shutdown: Shutdown::new(),
+            #[cfg(test)]
+            pool_fallbacks: AtomicU64::new(0),
+            #[cfg(test)]
+            probe: Probe::default(),
+        }
+    }
+
+    /// A block of the pool, or a new one if the pool is empty (a bug in the
+    /// pool bound, so tests count it).
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "only the test counter reads `self`")
+    )]
+    fn take_block(&self, free: &ArrayQueue<Block>) -> Block {
+        free.pop().unwrap_or_else(|| {
+            #[cfg(test)]
+            self.pool_fallbacks.fetch_add(1, Ordering::Relaxed);
+            Block::new()
+        })
+    }
+}
+
 /// The parser-thread end of the send queue.
 pub(crate) struct QueuedSink {
     /// The block being filled.
@@ -148,58 +350,91 @@ pub(crate) struct QueuedSink {
     queue: Option<Sender<Block>>,
     free: Arc<ArrayQueue<Block>>,
     stats: Arc<SinkStats>,
-    shutdown: Arc<Shutdown>,
+    shared: Arc<LinkShared>,
     thread: Option<JoinHandle<Result<()>>>,
 }
 
 impl QueuedSink {
-    /// Allocates the block pool and starts the `dnstap-sender` thread, which
-    /// takes over the link and the spool. `stats` is the counter set the link and
-    /// the spool already write to.
+    /// Allocates the block pool and starts the `dnstap-link` thread, which takes
+    /// over the link, and the `dnstap-sender` thread, which routes blocks and
+    /// owns the spool. `stats` is the counter set the link and the spool already
+    /// write to. A session that accepts no bytes for `stall_timeout` while the
+    /// link has bytes to write is ended.
     ///
     /// # Errors
-    /// Returns the error if the thread cannot be started.
+    /// Returns the error if a thread cannot be started.
     pub(crate) fn start(
         link: NetworkSink,
         spool: Option<Spool>,
         stats: Arc<SinkStats>,
+        stall_timeout: Duration,
     ) -> io::Result<Self> {
-        let (queue, receiver) = bounded(SEND_QUEUE_BLOCKS);
+        Self::start_with(link, spool, stats, LinkSettings::new(stall_timeout))
+    }
+
+    /// [`Self::start`] over any [`Uplink`] and link settings, so tests can run
+    /// the threads against a scripted transport and a manual clock.
+    fn start_with<U: Uplink>(
+        link: U,
+        spool: Option<Spool>,
+        stats: Arc<SinkStats>,
+        settings: LinkSettings,
+    ) -> io::Result<Self> {
+        let (queue, parser_end) = bounded(SEND_QUEUE_BLOCKS);
         let free = Arc::new(ArrayQueue::new(POOL_BLOCKS));
         for _ in 0..POOL_BLOCKS - 1 {
             release(&free, Block::new());
         }
-        let shutdown = Arc::new(Shutdown::new());
-        let worker = SenderThread {
+        // `up` starts clear. The link thread enters link mode on the first session
+        // and then sets it; a session that cannot enter link mode is lost, `up`
+        // stays clear, and the router sends the blocks to the spool.
+        let shared = Arc::new(LinkShared::new(false));
+        let (router_ports, link_ports) = link_channels(LINK_FIFO_BLOCKS);
+        let (ready_sender, ready) = mpsc::channel();
+        let link_thread = LinkThread::new(
             link,
+            link_ports,
+            Arc::clone(&shared),
+            Arc::clone(&stats),
+            Arc::clone(&free),
+            settings,
+        )
+        .with_ready(ready_sender);
+        let link_handle = thread::Builder::new()
+            .name("dnstap-link".into())
+            .spawn(move || link_thread.run())?;
+        // The router starts from the state the link thread published, so a block
+        // that arrives at once is not sent to a link that is not in link mode. The
+        // wait ends at once if the link thread has ended.
+        let _ = ready.recv();
+        // If the router cannot start, dropping it closes the FIFO and the fence
+        // channel, and the link thread ends itself.
+        let router = Router::new(
             spool,
-            stats: Arc::clone(&stats),
-            free: Arc::clone(&free),
-            shutdown: Arc::clone(&shutdown),
-            replay: Vec::with_capacity(REPLAY_BATCH_BYTES + MAX_ENCODED_LENGTH + 4),
-            idle_reads: 0,
-            dirty: false,
-            last_flush: Instant::now(),
-            monitor: LinkMonitor::new(Arc::clone(&stats), Instant::now()),
-        };
+            Arc::clone(&stats),
+            Arc::clone(&free),
+            Arc::clone(&shared),
+            router_ports,
+            link_handle,
+        );
         let thread = thread::Builder::new()
             .name("dnstap-sender".into())
-            .spawn(move || worker.run(&receiver))?;
+            .spawn(move || router.run(&parser_end))?;
         Ok(Self {
             current: Block::new(),
             queue: Some(queue),
             free,
             stats,
-            shutdown,
+            shared,
             thread: Some(thread),
         })
     }
 
-    /// Hands the current block to the sender thread without blocking. A full
-    /// queue discards the block's frames and counts them in `queue_dropped`; the
-    /// block is then reused.
+    /// Hands the current block to the router without blocking. A full queue
+    /// discards the block's frames and counts them in `queue_dropped`; the block
+    /// is then reused.
     ///
-    /// If the sender thread has stopped, the block is discarded and an error is
+    /// If the router has stopped, the block is discarded and an error is
     /// returned. The last `uncounted` frames of the block are not counted then,
     /// because the caller reports them as failed (the parser counts a failed
     /// `write_frame` itself).
@@ -215,13 +450,9 @@ impl QueuedSink {
         match queue.try_send(block) {
             Ok(()) => {
                 // The pool holds a spare while fewer than `POOL_BLOCKS` are in
-                // flight, which the queue bound guarantees; allocating here would
-                // mean that invariant broke.
-                if let Some(spare) = self.free.pop() {
-                    self.current = spare;
-                } else {
-                    self.current = Block::new();
-                }
+                // circulation, which the channel, FIFO, and front list bounds
+                // guarantee; allocating here would mean that bound broke.
+                self.current = self.shared.take_block(&self.free);
                 Ok(())
             }
             Err(TrySendError::Full(mut block)) => {
@@ -253,7 +484,7 @@ impl FrameSink for QueuedSink {
     ///
     /// # Errors
     /// Returns `InvalidInput` for an empty or oversized frame, leaving the block
-    /// unchanged, and an error if the sender thread has stopped.
+    /// unchanged, and an error if the router has stopped.
     fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
         if payload.is_empty() || payload.len() > MAX_ENCODED_LENGTH {
             return Err(io::Error::new(
@@ -272,15 +503,17 @@ impl FrameSink for QueuedSink {
         Ok(())
     }
 
-    /// Sends the partial block. The sender thread flushes the link.
+    /// Sends the partial block. The link thread writes it when the socket is
+    /// ready; there is nothing to flush.
     fn flush(&mut self) -> io::Result<()> {
         self.send_current(0)
     }
 
-    /// Sends the last partial block, closes the channel, and waits for the sender
-    /// thread to finish. The thread routes the blocks already queued, seals the
-    /// spool segment, and runs the STOP/FINISH exchange if the link is up. It
-    /// does not drain a spool backlog: that stays on disk for the next run.
+    /// Sends the last partial block, closes the channel, and waits for the router
+    /// to finish. The router and the link thread route the blocks already
+    /// queued, seal the spool segment, and run the STOP/FINISH exchange if the
+    /// link is up. They do not drain a spool backlog: that stays on disk for the
+    /// next run.
     fn finish(mut self) -> Result<()> {
         let last = mem::take(&mut self.current);
         if last.frames > 0 {
@@ -296,7 +529,7 @@ impl FrameSink for QueuedSink {
                 self.count_queue_dropped(last.frames);
             }
         }
-        self.shutdown.begin();
+        self.shared.shutdown.begin();
         drop(self.queue.take());
         match self.thread.take() {
             Some(thread) => thread
@@ -310,234 +543,9 @@ impl FrameSink for QueuedSink {
 impl Drop for QueuedSink {
     /// Starts the shutdown clock when the sink is dropped without `finish`, for
     /// example when the parser stops on an error. The channel then closes and the
-    /// detached sender thread ends itself within the link budget. Does not join.
+    /// detached threads end themselves within the link budget. Does not join.
     fn drop(&mut self) {
-        self.shutdown.begin();
-    }
-}
-
-/// Where the sender thread sends a block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Route {
-    /// Append to the spool.
-    Spool,
-    /// Write to the link.
-    Link,
-    /// Count in `disconnected_dropped`.
-    Discard,
-}
-
-/// The state of the `dnstap-sender` thread.
-struct SenderThread {
-    link: NetworkSink,
-    spool: Option<Spool>,
-    stats: Arc<SinkStats>,
-    free: Arc<ArrayQueue<Block>>,
-    shutdown: Arc<Shutdown>,
-    /// Scratch buffer for one replay batch.
-    replay: Vec<u8>,
-    /// Consecutive replay steps that returned no frames.
-    idle_reads: u8,
-    /// Data was written to the link since the last flush.
-    dirty: bool,
-    last_flush: Instant,
-    /// Observes the link and the spool for the operator. It changes no routing.
-    monitor: LinkMonitor,
-}
-
-impl SenderThread {
-    /// Runs until the channel is closed and empty, then shuts down.
-    fn run(mut self, receiver: &Receiver<Block>) -> Result<()> {
-        // False after a replay step found nothing to read; the loop then waits
-        // for a block instead of polling the spool in a tight loop.
-        let mut replay_progress = true;
-        'serve: loop {
-            self.link.poll(Instant::now());
-            if let Some(spool) = &self.spool {
-                // Keeps the `spool_available` flag current.
-                let _usable = spool.is_usable();
-            }
-            let deadline = self.shutdown.link_deadline();
-            let shutting_down = deadline.is_some();
-            let draining = !shutting_down && self.link_up(deadline) && self.has_backlog();
-            let next = if draining && replay_progress {
-                match receiver.try_recv() {
-                    Ok(block) => Some(block),
-                    Err(TryRecvError::Empty) => None,
-                    Err(TryRecvError::Disconnected) => break 'serve,
-                }
-            } else {
-                match receiver.recv_timeout(SENDER_POLL) {
-                    Ok(block) => Some(block),
-                    Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => break 'serve,
-                }
-            };
-            if let Some(block) = next {
-                self.monitor.note_queue_depth(receiver.len() + 1);
-                // The link state may have changed while waiting.
-                let link_up = self.link_up(deadline);
-                self.route(block, link_up, receiver.len());
-            }
-            if !shutting_down && self.link_up(deadline) && self.has_backlog() {
-                // Live data never waits behind replay: everything queued goes to
-                // the spool (it has a backlog) before the next batch is read.
-                for _ in 0..SEND_QUEUE_BLOCKS {
-                    match receiver.try_recv() {
-                        Ok(block) => {
-                            self.monitor.note_queue_depth(receiver.len() + 1);
-                            let link_up = self.link_up(deadline);
-                            self.route(block, link_up, receiver.len());
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => break 'serve,
-                    }
-                }
-                replay_progress = self.replay_step();
-            } else {
-                replay_progress = true;
-                self.idle_reads = 0;
-            }
-            self.sample_monitor();
-            // Past the link budget the flush is skipped; `finish` flushes anyway.
-            if self.dirty
-                && self.link_up(deadline)
-                && (receiver.is_empty() || self.last_flush.elapsed() >= FLUSH_INTERVAL)
-            {
-                self.flush_link();
-            }
-        }
-        self.shut_down()
-    }
-
-    /// True when the session is established and, during shutdown, the link
-    /// budget has not run out.
-    fn link_up(&self, deadline: Option<Instant>) -> bool {
-        self.link.is_connected() && deadline.is_none_or(|deadline| Instant::now() < deadline)
-    }
-
-    /// Takes a monitor sample when one is due. Reads the spool and the link
-    /// state only; routing never looks at the result.
-    fn sample_monitor(&mut self) {
-        let at = Instant::now();
-        if !self.monitor.due(at) {
-            return;
-        }
-        let (backlog_bytes, oldest_age, reads_paused) =
-            self.spool
-                .as_ref()
-                .map_or((0, Duration::ZERO, false), |spool| {
-                    (
-                        spool.unread_bytes(),
-                        spool.oldest_age(at, SystemTime::now()),
-                        spool.reads_paused(),
-                    )
-                });
-        self.monitor.sample(&Observation {
-            at,
-            link_up: self.link.is_connected(),
-            reads_paused,
-            backlog_bytes,
-            disconnects: self.stats.disconnects.load(Ordering::Relaxed),
-            oldest_age,
-        });
-    }
-
-    fn has_backlog(&self) -> bool {
-        self.spool.as_ref().is_some_and(Spool::has_backlog)
-    }
-
-    /// Chooses where a block goes. `queued` is the number of blocks still in the
-    /// channel. With a spool, a block joins it while the spool holds a backlog
-    /// (frames stay in order, even if the spool then refuses the block), while the
-    /// link is down, and while the channel is nearly full (a slow receiver
-    /// spills to disk instead of filling the queue).
-    fn destination(&self, link_up: bool, queued: usize) -> Route {
-        match &self.spool {
-            Some(spool) if spool.has_backlog() || !link_up || queued >= SPILL_BLOCKS => {
-                Route::Spool
-            }
-            _ if link_up => Route::Link,
-            _ => Route::Discard,
-        }
-    }
-
-    /// Sends one block to its destination and returns the block to the pool.
-    fn route(&mut self, block: Block, link_up: bool, queued: usize) {
-        if block.frames > 0 {
-            match self.destination(link_up, queued) {
-                Route::Spool => {
-                    if let Some(spool) = self.spool.as_mut() {
-                        match spool.append(&block.bytes, block.frames) {
-                            // The spool has counted refused frames in `spool_dropped`.
-                            Appended::Stored | Appended::Dropped => {}
-                        }
-                    }
-                }
-                Route::Link => {
-                    if self.link.write_framed(&block.bytes, block.frames) {
-                        self.dirty = true;
-                    }
-                }
-                Route::Discard => {
-                    self.stats
-                        .disconnected_dropped
-                        .fetch_add(u64::from(block.frames), Ordering::Relaxed);
-                }
-            }
-        }
-        release(&self.free, block);
-    }
-
-    /// Reads one batch from the spool head and writes it to the link. Returns
-    /// whether to call again at once: false when the spool has nothing to read
-    /// now (reads are paused after an error, which the spool has counted and
-    /// logged), so the loop waits for a block first.
-    fn replay_step(&mut self) -> bool {
-        let Some(spool) = self.spool.as_mut() else {
-            return false;
-        };
-        self.replay.clear();
-        let read = spool.read_batch(&mut self.replay, REPLAY_BATCH_BYTES);
-        if let Ok(frames @ 1..) = read {
-            self.idle_reads = 0;
-            // The spool consumed the batch when it returned it; a failed write
-            // counts these frames in `disconnected_dropped`.
-            if self.link.write_framed(&self.replay, frames) {
-                self.dirty = true;
-            }
-            return true;
-        }
-        // Nothing read: an error, a pause, or only control frames skipped. Call
-        // again only in the last case, and not forever.
-        self.idle_reads = self.idle_reads.saturating_add(1);
-        self.spool.as_ref().is_none_or(|current| {
-            !current.has_backlog() || (!current.reads_paused() && self.idle_reads < MAX_IDLE_READS)
-        })
-    }
-
-    fn flush_link(&mut self) {
-        // The link counts and logs a failed flush itself.
-        if let Err(error) = self.link.flush() {
-            tracing::debug!(%error, "dnstap link flush failed");
-        }
-        self.dirty = false;
-        self.last_flush = Instant::now();
-    }
-
-    /// Seals the spool segment and ends the link session. A backlog stays on disk.
-    fn shut_down(mut self) -> Result<()> {
-        if let Some(spool) = self.spool.as_mut() {
-            let backlog = spool.has_backlog();
-            if let Err(error) = spool.seal() {
-                tracing::warn!(%error, "could not seal the dnstap spool segment");
-            } else if backlog {
-                tracing::info!("dnstap spool backlog kept on disk for the next run");
-            }
-        }
-        // Flushes buffered data, then runs STOP/FINISH when connected. When
-        // disconnected it logs the shutdown warning.
-        self.link.finish()
+        self.shared.shutdown.begin();
     }
 }
 
@@ -552,3 +560,10 @@ mod saturation_tests;
 #[cfg(test)]
 #[path = "sender/observation_tests.rs"]
 mod observation_tests;
+
+#[cfg(test)]
+mod script;
+
+#[cfg(test)]
+#[path = "sender/fault_tests.rs"]
+mod fault_tests;

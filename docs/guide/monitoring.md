@@ -34,6 +34,9 @@ Each snapshot first asks ETW for its loss counters. Shutdown always writes
   `tls_server_name` when set.
 - `capacity`, `etw_buffer_kib`, `etw_flush_seconds`, and the requested
   `etw_min_buffers` and `etw_max_buffers`.
+- `receiver_stall_seconds`: how long the receiver may accept no bytes, while the service
+  has data to send, before the service ends the session. See
+  [`--receiver-stall-seconds`](configuration.md#options).
 - `match_any_keyword` and `match_all_keyword` (hexadecimal), `keyword_fallback`, and
   `failed_responses_captured`.
 
@@ -111,17 +114,17 @@ These fields appear on `output stats` and `output stopped`.
 | Counter | Meaning |
 | --- | --- |
 | `output_failed_events` | Dequeued records whose frame could not be queued after the sender stopped. Otherwise 0. |
-| `output_errors` | Output failures: one per `output_failed_events`, a failed queue flush, a sender panic at `finish`, or a failed shutdown STOP/FINISH exchange. |
+| `output_errors` | Output failures: one per `output_failed_events`, or a failed queue flush. A STOP/FINISH exchange that does not complete at a requested stop is not an output error: it does not fail the stop, and the service writes nothing about it. |
 | `receiver_connected` | Flag: `true` while a Frame Streams session exists. |
-| `receiver_disconnects` | Established sessions lost. |
+| `receiver_disconnects` | Established sessions lost: a socket error, or no bytes accepted for `--receiver-stall-seconds` while data waited. A receiver that is only slow does not end the session. |
 | `receiver_reconnects` | Successful reconnects after the first session. |
 | `receiver_reconnect_failures` | Failed reconnect attempts at connect, handshake, or protocol. Also counts a reconnect thread that did not start or ended without a result. |
-| `disconnected_dropped` | Frames lost in the sink: in flight when a connection failed, or arrived while the receiver was down with no spool. Never resent. Frames in a failed replay batch count here too, after `replayed`. Not in `intake_dropped`. |
-| `slow_writes`, `write_max_us` | Socket writes of at least 5 ms, and the longest socket write, in microseconds. Both count since the service started. |
-| `write_max_recent_us` | Gauge: the longest socket write, in microseconds, in the last 60 seconds. Use it, not `write_max_us`, to see whether writes block now. See [Windows of the recent peaks](#windows-of-the-recent-peaks). |
-| `bytes_sent` | Framed bytes (4-byte length and payload) that the receiver connection accepted, live and replayed. Includes bytes that the connection may still lose if it fails. Excludes control frames. Take the rate between two lines and compare it with the capture rate. |
+| `disconnected_dropped` | Frames lost in the sink. With no spool: every live frame the link had not fully sent when a connection failed (the block in hand and the link queue), and every frame that arrives while the receiver is down. With or without a spool: the unsent rest of a replay batch when a connection failed (after `replayed`), and with TLS the frames of the one 16 KiB piece whose delivery the service could not confirm. With a spool, at a shutdown that follows a spill: the one live block that came back from the link, because it is older than the spool backlog and cannot go in front of it. With a spool, live frames that a failed connection did not fully accept are not lost: they go to the spool and are sent again. A counted frame may still have arrived, so this is an upper bound. Not in `intake_dropped`. |
+| `slow_writes`, `write_max_us` | The link thread never blocks in a send. It writes without waiting, and when the socket takes no more it waits for the socket to become writable. For each block (about 64 KiB, or one replay batch) it adds up those waits. `slow_writes` counts blocks whose wait reached 5 ms, and `write_max_us` is the longest wait of one block, in microseconds. Both count since the service started. A wait that goes on is added to `write_max_us` while it lasts. |
+| `write_max_recent_us` | Gauge: the longest wait of one block for the socket to become writable, in microseconds, in the last 60 seconds. Use it, not `write_max_us`, to see whether the receiver is slow now. See [Windows of the recent peaks](#windows-of-the-recent-peaks). |
+| `bytes_sent` | Bytes that the socket of the receiver connection accepted, live and replayed. With plaintext these are the framed bytes (4-byte length and payload). With TLS they are the bytes written to the socket, so they include the record headers and tags (about 22 to 29 bytes for each 16 KiB). Includes bytes that the kernel still held when the connection failed. Excludes control frames. Take the rate between two lines and compare it with the capture rate. |
 | `queue_depth_max` | Deepest event channel depth the parser sampled. A lower bound. The parser samples after each idle poll and every 256th event. This is the channel before the parser, not the send queue. |
-| `send_queue_depth_max` | Gauge: the most blocks (about 64 KiB each) waiting in the send queue in the last 60 seconds, out of 128. The sender thread samples it each time it takes a block. A lower bound. At 96 blocks the sender writes new blocks to the spool. |
+| `send_queue_depth_max` | Gauge: the most blocks (about 64 KiB each) waiting in the send queue between the parser and the router in the last 60 seconds, out of 128. The router samples it each time it takes a block. A lower bound. The router never waits on the socket, so a deep queue means the spool (disk) is slow, not the receiver. The router sends blocks to the link queue, which holds 128 blocks (about 8 MiB) while the link is behind, and spills the whole link queue to the spool only when it is full. |
 | `spool_oldest_age_ms` | Gauge: milliseconds since the oldest unsent spool segment was created, 0 with no backlog. It is an upper bound on the age of the oldest unsent frame, because a segment is older than any frame in it. For a segment from an earlier run it uses the file creation time. |
 | `link_saturated` | Flag: `true` while the spool backlog trends up with the receiver connected (larger than 10 samples ago, with at least 7 of the 10 steps rising). It clears when the backlog is empty or no longer larger than 10 samples ago. Holds its value while the receiver is down. Always `false` with no spool. See [The saturated state](#the-saturated-state). |
 | `queue_dropped` | Frames discarded because the send queue was full. Also in `encoded`. |
@@ -135,7 +138,7 @@ These fields appear on `output stats` and `output stopped`.
 ### Windows of the recent peaks
 
 `write_max_recent_us` and `send_queue_depth_max` are peaks over a window, not totals. The
-sender thread keeps one bucket for each second of the last 60. Every second it publishes
+router thread keeps one bucket for each second of the last 60. Every second it publishes
 the largest value in the buckets and starts a new bucket. The window is the same for
 every reader, and no reader resets it: the stats log and the performance counters load
 the same published value. `--stats-interval-seconds` does not change it. With the
@@ -144,15 +147,16 @@ interval, a peak older than a minute is not in the line. A value appears up to a
 after the event.
 
 The window is 60 samples, not 60 seconds. Samples are at least 1 second apart, and a
-blocking socket write on the sender thread delays the next sample by up to 2 seconds
-(the write deadline), so the window can span more than a minute under a stall.
+disk append on the router thread can delay the next sample, so the window can span more
+than a minute when the disk is slow.
 
-`write_max_us` and `slow_writes` keep their meaning: one blocking socket write, counted
-since the service started.
+`write_max_us` and `slow_writes` count since the service started, and they measure the
+link thread's wait for the socket to become writable, one block at a time (see above).
+Before the link thread existed they measured one blocking socket write.
 
 ### The saturated state
 
-The sender thread samples the spool on its own clock, at least 1 second apart. It keeps
+The router thread samples the spool on its own clock, at least 1 second apart. It keeps
 the last 11 samples of the unread backlog: the spool bytes not yet handed to the link. The
 unread backlog falls as the replay reads, unlike `spool_bytes`, which falls only when a
 whole segment is deleted. The trend spans 10 samples, so it is at least 10 seconds.
@@ -167,7 +171,7 @@ whole segment is deleted. The trend spans 10 samples, so it is at least 10 secon
   its value. Growth during an outage is not a saturated link. Read `link_saturated` with
   `receiver_connected`.
 
-The rule is a trend, not a run of rises, because the replay reads in 256 KiB batches: with
+The rule is a trend, not a run of rises, because the replay reads in 64 KiB batches: with
 a capture of 5.5 MB/s and a link of 5.3 MB/s about one sample in five is flat, and a run
 would never complete while the spool fills to the cap. Seven of ten allows three flat
 steps and rejects one burst. A backlog that drains after an outage is not larger than 10
@@ -200,7 +204,7 @@ dequeued       = encoded + ignored + rejected + output_failed_events
 - Leftover frames count in `replayed` when read, never in `encoded`. A leftover segment
   removed unsent adds only to `spool_dropped_bytes`. A cut-off final frame adds one to
   `spool_dropped`.
-- `bytes_sent` counts what the link accepted, not what the receiver read. No counter reports
+- `bytes_sent` counts what the socket accepted (with TLS, the record bytes), not what the receiver read. No counter reports
   the capture rate in bytes. Over a few minutes it is the `bytes_sent` rate, plus the growth
   of `spool_bytes`, plus the `spool_dropped_bytes` rate (bytes removed at the cap). In a steady
   state with no backlog it equals the `bytes_sent` rate. A rising backlog means a saturated
@@ -261,7 +265,7 @@ field in [Capture counters](#capture-counters) or [Output counters](#output-coun
 | Events Received/sec | 1 | Accepted DNS events per second. | `received` |
 | Frames Sent/sec | 2 | Frames handed to the sink per second. Not a delivery rate. Excludes replays. | `encoded` |
 | Events Dropped/sec | 3 | Dropped at admission per second. | `intake_dropped` |
-| Bytes Sent/sec | 62 | Framed bytes per second that the receiver connection accepted. Add the growth of `spool_bytes` to get the capture rate in bytes ([relationships](#counter-relationships)). | `bytes_sent` |
+| Bytes Sent/sec | 62 | Bytes per second that the socket of the receiver connection accepted (with TLS, including record headers and tags). Add the growth of `spool_bytes` to get the capture rate in bytes ([relationships](#counter-relationships)). | `bytes_sent` |
 
 The `/sec` values are computed by the reader from the change over time. All values are
 64-bit with scale 0. IDs 1 to 3 and 62 are `PERF_COUNTER_BULK_COUNT`. IDs 33 and 43 are
@@ -280,7 +284,7 @@ totals and gauges are `PERF_COUNTER_LARGE_RAWCOUNT`.
 | Jumbo Pool Exhausted Drops | 15 | No free jumbo slot, or `--jumbo-capacity` is 0. | `pool_exhausted_jumbo` |
 | ETW Events Lost | 16 | Events ETW reports lost. | `etw_lost` |
 | ETW Buffers Lost | 17 | Buffers ETW reports lost. Not an event count. | `etw_buffers_lost` |
-| Receiver Down Drops | 18 | Frames lost in the sink while the receiver was down, or in flight at a failure. | `disconnected_dropped` |
+| Receiver Down Drops | 18 | Frames lost in the sink: with no spool, the live frames the link had not fully sent at a failure and the frames that arrive while the receiver is down; the unsent rest of a replay batch at a failure; with TLS one unconfirmed piece; with a spool, the one live block handed back at a shutdown that follows a spill. A counted frame may still have arrived. | `disconnected_dropped` |
 | Events Rejected | 19 | Dequeued events rejected by the parser. | `rejected` |
 | Callback Errors | 20 | Events the callback could not copy or hand off. | `callback_errors` |
 | Receiver Disconnects | 21 | Lost receiver connections. | `receiver_disconnects` |
@@ -289,7 +293,7 @@ totals and gauges are `PERF_COUNTER_LARGE_RAWCOUNT`.
 | Frames Replayed | 54 | Frames read back from the spool, including leftovers. | `replayed` |
 | Spool Dropped Frames (55) / Spool Dropped Bytes (56) | 55 / 56 | Frames (55) or bytes (56) removed, skipped, or refused unsent. Causes as for `spool_dropped`. ID 56 is Advanced detail. | `spool_dropped` / `spool_dropped_bytes` |
 | Spool Errors | 57 | Spool I/O errors. | `spool_errors` |
-| Bytes Sent | 61 | Framed bytes the receiver connection accepted, live and replayed. ID 62 is its rate. | `bytes_sent` |
+| Bytes Sent | 61 | Bytes the socket of the receiver connection accepted, live and replayed (with TLS, including record headers and tags). ID 62 is its rate. | `bytes_sent` |
 
 How the totals relate:
 
@@ -317,8 +321,8 @@ How the totals relate:
 | Receiver Reconnects | 51 | Successful reconnects after the first session. A startup connection counts too. | `receiver_reconnects` |
 | Spool Bytes / Spool Segments | 58 / 59 | Bytes and segment files now on disk. ID 59 is Advanced detail. | `spool_bytes` / `spool_segments` |
 | Spool Available | 60 | 1 while a spool accepts data, else 0. See `spool_available`. | `spool_available` |
-| Send Queue Peak Depth | 63 | Most blocks in the send queue in the last 60 seconds, out of 128. A lower bound. | `send_queue_depth_max` |
-| Socket Write Peak (microseconds) | 64 | Longest socket write in the last 60 seconds. | `write_max_recent_us` |
+| Send Queue Peak Depth | 63 | Most blocks in the send queue between the parser and the router in the last 60 seconds, out of 128. A lower bound. | `send_queue_depth_max` |
+| Socket Write Peak (microseconds) | 64 | Longest wait of one block for the receiver socket to become writable, in the last 60 seconds. The link never blocks in a send. | `write_max_recent_us` |
 | Spool Oldest Age (milliseconds) | 65 | Age of the oldest unsent spool segment, 0 with no backlog. An upper bound for the oldest frame. | `spool_oldest_age_ms` |
 | Link Saturated | 66 | 1 while the spool backlog trends up with the receiver connected. Holds its value through an outage, so read it with Receiver Connected (50). See [The saturated state](#the-saturated-state). | `link_saturated` |
 

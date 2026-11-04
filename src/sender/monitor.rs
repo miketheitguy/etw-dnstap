@@ -1,8 +1,7 @@
 //! What the operator sees of a slow or saturated receiver.
 //!
 //! [`LinkMonitor`] only observes. Nothing it computes feeds back into routing:
-//! the spill to the spool stays passive, driven by the send queue and the link
-//! alone. The sender thread owns the monitor and samples it on its own clock,
+//! the spill to the spool stays passive, driven by the link queue alone. The router thread owns the monitor and samples it on its own clock,
 //! once per [`SAMPLE_PERIOD`], whatever `--stats-interval-seconds` is. At each
 //! sample it
 //!
@@ -29,7 +28,7 @@ use std::{
 
 use crate::sink::SinkStats;
 
-/// How often the sender thread samples. This is the unit of every window below.
+/// How often the router thread samples. This is the unit of every window below.
 pub(super) const SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
 /// Samples in the window of a published peak: about a minute. It matches the
@@ -41,8 +40,10 @@ pub(super) const PEAK_WINDOW: usize = 60;
 /// with the backlog this many samples ago (at least this many seconds).
 ///
 /// Ten samples are longer than the memory slack that absorbs a receiver pause
-/// before the spool starts (about 0.2 s at 50,000 queries per second to about
-/// 4 s at 10,000), so a hiccup that the queue absorbs does not count. They are
+/// before the spool starts (about 0.9 s at 50,000 queries per second to about
+/// 4.6 s at 10,000: the 8 MiB link queue and the kernel send buffer, taken as
+/// 1 MiB, which Windows can grow), so a hiccup that the link queue absorbs does
+/// not count. They are
 /// short against the minutes a saturated link needs to fill the spool to
 /// `--spool-max-mib` (about 14 minutes at the 4 GiB default and a 5 MB/s link).
 pub(super) const TREND_SAMPLES: usize = 10;
@@ -50,8 +51,8 @@ pub(super) const TREND_SAMPLES: usize = 10;
 /// Steps of the [`TREND_SAMPLES`] that must show a larger backlog for the state
 /// to set, besides a larger backlog than [`TREND_SAMPLES`] samples ago.
 ///
-/// The replay reads in 256 KiB batches and the sender thread appends 64 KiB
-/// blocks, so a backlog that grows slowly has flat or falling samples between
+/// The replay reads in 64 KiB batches, one at a time, and the router appends
+/// 64 KiB blocks, so a backlog that grows slowly has flat or falling samples between
 /// the rises. With a capture of 5.5 MB/s and a link of 5.3 MB/s about one step
 /// in five is flat, so 8 of 10 rise. Seven leaves room for three flat steps,
 /// and it still rejects one burst (a single jump, then flat). A draining
@@ -92,7 +93,7 @@ impl PeakWindow {
     }
 }
 
-/// What the sender thread reads at a sample.
+/// What the router thread reads at a sample.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Observation {
     /// The sample time.
@@ -262,7 +263,7 @@ impl LinkMonitor {
 
     /// Takes a sample: publishes the peaks and the oldest age, updates the
     /// `link_saturated` state, and logs a change of it. The next sample is due
-    /// one period after this one, so a long block on the sender thread delays
+    /// one period after this one, so a long block on the router thread delays
     /// samples but never makes them run in a burst.
     pub(super) fn sample(&mut self, observation: &Observation) {
         self.next_sample = observation.at + SAMPLE_PERIOD;

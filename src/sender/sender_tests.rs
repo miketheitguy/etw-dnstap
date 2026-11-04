@@ -20,6 +20,10 @@ use crate::{
     },
 };
 
+/// The stall timeout of the tests that do not test it: far longer than any pause
+/// they hold, so only a test that means to end a session by a stall does.
+pub(super) const TEST_STALL: Duration = Duration::from_secs(60);
+
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const MIB: u64 = 1024 * 1024;
 
@@ -67,6 +71,9 @@ pub(super) struct Received {
     pub(super) stopped: AtomicBool,
     /// While set, the receiver stops reading but keeps the connection.
     pub(super) paused: AtomicBool,
+    /// While set, the receiver never answers STOP with FINISH. It keeps the
+    /// connection open until the server is dropped.
+    pub(super) silent_finish: AtomicBool,
     /// While set, the receiver sleeps after each large frame.
     slow: AtomicBool,
     /// Milliseconds the receiver sleeps after each large frame, on top of
@@ -273,6 +280,12 @@ fn serve(mut stream: TcpStream, received: &Received, quit: &AtomicBool) -> io::R
                 }
             }
             Item::Control(body) if control_kind(&body) == CONTROL_STOP => {
+                if received.silent_finish.load(Ordering::Acquire) {
+                    while !quit.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    return Ok(());
+                }
                 write_control(&mut stream, CONTROL_FINISH, false)?;
                 received.stopped.store(true, Ordering::Release);
                 return Ok(());
@@ -310,9 +323,19 @@ pub(super) fn start_sink(
     spool: Option<Spool>,
     stats: &Arc<SinkStats>,
 ) -> QueuedSink {
+    start_sink_with_stall(server, policy, spool, stats, TEST_STALL)
+}
+
+pub(super) fn start_sink_with_stall(
+    server: &FakeServer,
+    policy: BackoffPolicy,
+    spool: Option<Spool>,
+    stats: &Arc<SinkStats>,
+    stall: Duration,
+) -> QueuedSink {
     let link =
         NetworkSink::start_with(server.address, Arc::clone(stats), policy).expect("link starts");
-    QueuedSink::start(link, spool, Arc::clone(stats)).expect("sender thread starts")
+    QueuedSink::start(link, spool, Arc::clone(stats), stall).expect("sender threads start")
 }
 
 pub(super) fn frame(number: u32) -> [u8; 4] {
@@ -343,40 +366,57 @@ fn wait_drained(sink: &QueuedSink) {
     wait_until("the send queue to empty", || queued(sink) == 0);
 }
 
-/// Sends large frames until the sender thread is blocked writing to a receiver
-/// that stopped reading (the queue stays at least 10 blocks long for 100 ms),
-/// then queues `tiny` one-frame blocks behind them. Returns the number of frames
-/// offered.
-pub(super) fn stall_the_sender(sink: &mut QueuedSink, tiny: u32) -> u32 {
+/// How long the link's own wait for the socket must last before the stall is
+/// taken as real: 50 ms, one `LINK_POLL`.
+const REAL_STALL_US: u64 = 50_000;
+/// The bytes of one large frame on the wire, which is also one block.
+const LARGE_FRAME_BYTES: u64 = MAX_ENCODED_LENGTH as u64 + 4;
+
+/// Offers large frames (one block each) until the link is stalled for real and
+/// the router has spilled to the spool. Returns the number of frames offered.
+///
+/// The router spills only when the link FIFO is full. A link thread that a busy
+/// machine schedules late looks the same to the router, and the spill could then
+/// start before any stall, with the link taking blocks again afterwards. So the
+/// first phase offers a frame only while at most 3 blocks are ahead of what the
+/// link has written, until the link's own readiness wait on the socket has lasted
+/// [`REAL_STALL_US`]: a link that is merely late cannot make that wait. From then
+/// on the receiver, which is paused, takes nothing, so the second phase fills the
+/// FIFO and spills, and the FIFO never has room again. The parser channel is
+/// kept short throughout, as a router that never waits on the socket allows.
+pub(super) fn stall_the_link(sink: &mut QueuedSink) -> u32 {
+    let stats = Arc::clone(&sink.stats);
     let mut offered = 0;
-    for _ in 0..300 {
-        while queued(sink) < 10 {
-            assert!(offered < 3000, "kernel buffering absorbed {offered} frames");
-            sink.write_frame(&sized_frame(offered, MAX_ENCODED_LENGTH))
-                .expect("frame is queued");
-            offered += 1;
-        }
-        let accepted = get(&sink.stats.bytes_sent);
-        thread::sleep(Duration::from_millis(100));
-        // A sender that the CPU starves also leaves the queue long for 100 ms.
-        // A blocked socket write is different: the link has accepted at least
-        // the 1 MiB send buffer, and it accepts nothing more.
-        if queued(sink) >= 10
-            && accepted >= STALL_MIN_BYTES
-            && get(&sink.stats.bytes_sent) == accepted
-        {
-            return queue_tiny_blocks(sink, tiny, offered);
-        }
+    while get(&stats.write_max_us) < REAL_STALL_US {
+        assert!(offered < 3000, "no stall after {offered} frames");
+        wait_until("the link to keep up or wait on the socket", || {
+            u64::from(offered) <= get(&stats.bytes_sent) / LARGE_FRAME_BYTES + 3
+                || get(&stats.write_max_us) >= REAL_STALL_US
+        });
+        sink.write_frame(&sized_frame(offered, MAX_ENCODED_LENGTH))
+            .expect("frame is queued");
+        offered += 1;
     }
-    panic!("the sender never stalled after {offered} frames");
+    // The spill moves the whole FIFO and the block that did not fit.
+    while get(&stats.spooled) <= LINK_FIFO_BLOCKS as u64 {
+        assert!(offered < 3000, "no spill after {offered} frames");
+        wait_until("room in the send queue", || {
+            queued(sink) < SEND_QUEUE_BLOCKS - 8
+        });
+        sink.write_frame(&sized_frame(offered, MAX_ENCODED_LENGTH))
+            .expect("frame is queued");
+        offered += 1;
+    }
+    offered
 }
 
-/// The link must have accepted this many bytes before a stall counts: half the
-/// 1 MiB send buffer, so a sender that has not yet filled it is not stalled.
-const STALL_MIN_BYTES: u64 = 512 * 1024;
-
-fn queue_tiny_blocks(sink: &mut QueuedSink, tiny: u32, mut offered: u32) -> u32 {
+pub(super) fn queue_tiny_blocks(sink: &mut QueuedSink, tiny: u32, mut offered: u32) -> u32 {
     for _ in 0..tiny {
+        // The router appends to the spool at disk speed, so keep the channel
+        // short: a full channel drops, and these tests count no drop.
+        wait_until("room in the send queue", || {
+            queued(sink) < SEND_QUEUE_BLOCKS - 8
+        });
         sink.write_frame(&frame(offered)).expect("frame is queued");
         sink.flush().expect("block is sent");
         offered += 1;
@@ -395,7 +435,7 @@ fn segment_files(dir: &TestDir) -> Vec<String> {
     names
 }
 
-fn numbers_of(payloads: &[Vec<u8>]) -> Vec<u32> {
+pub(super) fn numbers_of(payloads: &[Vec<u8>]) -> Vec<u32> {
     payloads
         .iter()
         .map(|payload| u32::from_be_bytes(payload[..4].try_into().expect("numbered payload")))
@@ -493,15 +533,35 @@ fn a_full_queue_counts_queue_dropped_and_never_blocks_the_parser() {
     // Every dropped block held one frame.
     assert!(get(&stats.queue_dropped) <= offered);
 
+    let shared = Arc::clone(&sink.shared);
     let started = Instant::now();
-    sink.finish()
-        .expect("shutdown with a stalled link is clean");
+    let result = sink.finish();
+    let elapsed = started.elapsed();
+    eprintln!("shutdown with a stalled receiver, no spool: {elapsed:?}");
+    // The budget (1 s) and a poll. The deadline interrupts the block in hand, so
+    // the link sends no STOP into the full buffer. The margin is for a busy
+    // machine; the watchdog allows 10 s.
     assert!(
-        started.elapsed() < Duration::from_secs(9),
-        "shutdown took {:?}",
-        started.elapsed()
+        elapsed < Duration::from_secs(4),
+        "shutdown took {elapsed:?}"
     );
-    assert_eq!(get(&stats.disconnects), 1, "the stalled write timed out");
+    // A stalled receiver at shutdown never fails the service: SCM would restart it.
+    result.expect("shutdown with a stalled link is clean");
+    assert!(!server.received.stopped.load(Ordering::Acquire));
+    // The stall timeout (60 s here) was never reached, so the session was not
+    // ended for a stall: the shutdown deadline stopped the link, which gave its
+    // unsent blocks back, and with no spool the router counted them.
+    assert_eq!(get(&stats.disconnects), 0);
+    assert!(get(&stats.disconnected_dropped) >= 1);
+    assert!(
+        get(&stats.queue_dropped) + get(&stats.disconnected_dropped) <= offered,
+        "no frame is counted twice"
+    );
+    assert_eq!(
+        get(&shared.pool_fallbacks),
+        0,
+        "the parser never allocated a block"
+    );
 }
 
 #[test]
@@ -513,10 +573,12 @@ fn a_slow_receiver_spills_to_the_spool_instead_of_dropping() {
     let spool = open_spool(&dir, 64 * MIB, &stats);
     let mut sink = start_sink(&server, no_retry(), Some(spool), &stats);
 
-    // The sender blocks writing to the receiver that stopped reading; more than
-    // SPILL_BLOCKS blocks queue behind it, still within the queue's capacity.
-    let offered = stall_the_sender(&mut sink, 100);
-    assert!(queued(&sink) >= SPILL_BLOCKS);
+    // The link blocks on the receiver that stopped reading. The router never
+    // waits on the socket, so the parser channel stays short, and once the link
+    // FIFO is full the router spills to the spool.
+    let offered = stall_the_link(&mut sink);
+    assert!(get(&stats.spooled) > LINK_FIFO_BLOCKS as u64);
+    let offered = queue_tiny_blocks(&mut sink, 100, offered);
     server.received.paused.store(false, Ordering::Release);
 
     let total = usize::try_from(offered).expect("small");
@@ -530,6 +592,7 @@ fn a_slow_receiver_spills_to_the_spool_instead_of_dropping() {
         "the backlog went through the spool"
     );
     assert_eq!(get(&stats.disconnected_dropped), 0);
+    assert_eq!(get(&stats.spool_dropped), 0);
 }
 
 #[test]
@@ -563,6 +626,12 @@ fn live_data_does_not_wait_behind_a_replay() {
     });
     let live = 600_u32;
     for number in backlog..backlog + live {
+        // The router appends to the spool at disk speed. On a busy machine it can
+        // be descheduled for longer than the 128-block channel lasts at this rate,
+        // so wait for room, as a stalled router would make this wait time out.
+        wait_until("room in the send queue", || {
+            queued(&sink) < SEND_QUEUE_BLOCKS - 8
+        });
         sink.write_frame(&frame(number)).expect("frame is queued");
         sink.flush().expect("block is sent");
         let paced = Instant::now();
@@ -570,6 +639,8 @@ fn live_data_does_not_wait_behind_a_replay() {
             std::hint::spin_loop();
         }
     }
+    // A drop would leave the wait below to time out, so check it first.
+    assert_eq!(get(&stats.queue_dropped), 0, "live data was not dropped");
     let total = usize::try_from(backlog + live).expect("small");
     wait_until("all frames to arrive", || server.received.len() >= total);
     sink.finish().expect("clean STOP/FINISH");
@@ -591,40 +662,38 @@ fn shutdown_with_a_stalled_link_and_queued_blocks_is_bounded_and_accounted() {
     let stats = Arc::new(SinkStats::default());
     let spool = open_spool(&dir, 64 * MIB, &stats);
     let mut sink = start_sink(&server, no_retry(), Some(spool), &stats);
-    let offered = stall_the_sender(&mut sink, 100);
+    let offered = stall_the_link(&mut sink);
+    let offered = queue_tiny_blocks(&mut sink, 20, offered);
 
     let started = Instant::now();
     let result = sink.finish();
     let elapsed = started.elapsed();
+    eprintln!("shutdown with a stalled receiver and a spool: {elapsed:?}");
+    // About 1.1 s: the budget and a poll. Windows non-blocking sends take a whole
+    // block or nothing, so the link usually stops at a block boundary, but the
+    // deadline interrupts the block in hand either way, and no STOP follows. The
+    // margin is for a busy machine; the watchdog allows 10 s.
     assert!(
-        elapsed < Duration::from_secs(6),
+        elapsed < Duration::from_secs(4),
         "shutdown took {elapsed:?}"
     );
 
-    // `stall_the_sender` makes the stall very likely, but a CPU-starved machine
-    // can still leave the sender short of a blocked write, and the outcome then
-    // differs. Both are bounded and accounted.
-    match result {
-        // The stalled write timed out and lost its frames; the blocks queued
-        // behind it went to the spool, which sealed its segment.
-        Ok(()) => {
-            assert_eq!(get(&stats.disconnects), 1);
-            assert!(get(&stats.disconnected_dropped) >= 1);
-        }
-        // The write was not blocked: the session was still up at the end, and
-        // the receiver that reads nothing never answered the closing exchange.
-        Err(error) => {
-            let text = format!("{error:#}");
-            assert!(
-                ["FINISH", "STOP", "final buffered data flush"]
-                    .iter()
-                    .any(|phase| text.contains(phase)),
-                "{text}"
-            );
-        }
-    }
+    // A stalled receiver at shutdown never fails the service: SCM would restart
+    // it. The receiver got no STOP.
+    result.expect("shutdown with a stalled link is clean");
+    assert!(!server.received.stopped.load(Ordering::Acquire));
+    assert_eq!(get(&stats.disconnects), 0, "no stall timeout was reached");
     assert_eq!(get(&stats.queue_dropped), 0);
     assert_eq!(get(&stats.spool_dropped), 0);
+    // The spool held a backlog, so the live block the link gave back (the one in
+    // hand) was older than it and could not go in front: it is counted, one large
+    // frame. The replay batches in the FIFO (at most two) are counted too, because
+    // their cursor moved.
+    assert!(
+        get(&stats.disconnected_dropped) <= 4,
+        "{} frames counted",
+        get(&stats.disconnected_dropped)
+    );
     let mut on_disk = Vec::new();
     for name in segment_files(&dir) {
         let file = fs::read(dir.path().join(name)).expect("segment is readable");
@@ -636,6 +705,34 @@ fn shutdown_with_a_stalled_link_and_queued_blocks_is_bounded_and_accounted() {
         get(&stats.spooled) + get(&stats.disconnected_dropped) <= u64::from(offered),
         "no frame is counted twice"
     );
+}
+
+#[test]
+fn a_receiver_that_never_answers_finish_does_not_fail_the_shutdown() {
+    let server = FakeServer::up();
+    server.received.silent_finish.store(true, Ordering::Release);
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = start_sink(&server, no_retry(), None, &stats);
+    send(&mut sink, 0..100);
+    wait_until("all frames to arrive", || server.received.len() >= 100);
+
+    let started = Instant::now();
+    let result = sink.finish();
+    let elapsed = started.elapsed();
+    eprintln!("shutdown with a receiver that never answers FINISH: {elapsed:?}");
+    // The FINISH wait ends at the 2-second I/O deadline.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "shutdown took {elapsed:?}"
+    );
+    result.expect("a missing FINISH is not a shutdown failure");
+    // The failed closing exchange is neither reported nor counted. No frame is
+    // lost or counted: all 100 arrived before the STOP.
+    assert_eq!(get(&stats.disconnects), 0);
+    assert_eq!(server.received.frames(), (0..100).collect::<Vec<_>>());
+    assert_eq!(get(&stats.queue_dropped), 0);
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+    assert_eq!(get(&stats.spool_dropped), 0);
 }
 
 #[test]
@@ -710,82 +807,6 @@ fn write_frame_rejects_bad_lengths_without_changing_the_block() {
     assert!(sink.current.bytes.capacity() >= BLOCK_CAPACITY);
     sink.finish().expect("shutdown while disconnected is clean");
     assert_eq!(get(&stats.disconnected_dropped), 2);
-}
-
-/// A sender thread that is not running, for tests of its routing rules. Its link
-/// is up when `server` serves and down when it does not.
-pub(super) fn idle_sender(
-    spool: Option<Spool>,
-    stats: &Arc<SinkStats>,
-    server: &FakeServer,
-) -> SenderThread {
-    let link = NetworkSink::start_with(server.address, Arc::clone(stats), no_retry())
-        .expect("link starts");
-    SenderThread {
-        link,
-        spool,
-        stats: Arc::clone(stats),
-        free: Arc::new(ArrayQueue::new(POOL_BLOCKS)),
-        shutdown: Arc::new(Shutdown::new()),
-        replay: Vec::new(),
-        idle_reads: 0,
-        dirty: false,
-        last_flush: Instant::now(),
-        monitor: LinkMonitor::new(Arc::clone(stats), Instant::now()),
-    }
-}
-
-#[test]
-fn routing_follows_the_backlog_the_link_and_the_queue_depth() {
-    let server = FakeServer::down();
-    let stats = Arc::new(SinkStats::default());
-    // No spool: the link, or a counted discard.
-    let none = idle_sender(None, &stats, &server);
-    assert_eq!(none.destination(true, 0), Route::Link);
-    assert_eq!(none.destination(true, SEND_QUEUE_BLOCKS), Route::Link);
-    assert_eq!(none.destination(false, 0), Route::Discard);
-
-    // A spool without a backlog: the link while it is up and the queue is short.
-    let empty_dir = TestDir::new("routing-empty");
-    let empty = idle_sender(
-        Some(open_spool(&empty_dir, 8 * MIB, &stats)),
-        &stats,
-        &server,
-    );
-    assert_eq!(empty.destination(true, 0), Route::Link);
-    assert_eq!(empty.destination(true, SPILL_BLOCKS - 1), Route::Link);
-    assert_eq!(empty.destination(true, SPILL_BLOCKS), Route::Spool);
-    assert_eq!(empty.destination(false, 0), Route::Spool);
-
-    // A backlog keeps every block in the spool.
-    let dir = TestDir::new("routing");
-    let mut spool = open_spool(&dir, 8 * MIB, &stats);
-    assert_eq!(spool.append(&[0, 0, 0, 1, 9], 1), Appended::Stored);
-    let backlog = idle_sender(Some(spool), &stats, &server);
-    assert_eq!(backlog.destination(true, 0), Route::Spool);
-    assert_eq!(backlog.destination(false, 0), Route::Spool);
-}
-
-#[test]
-fn a_block_the_spool_refuses_during_a_backlog_is_counted_once_as_spool_dropped() {
-    let dir = TestDir::new("refused");
-    let server = FakeServer::down();
-    let stats = Arc::new(SinkStats::default());
-    // Room for one tiny block, not for the large one below.
-    let mut spool = open_spool(&dir, 400, &stats);
-    assert_eq!(spool.append(&[0, 0, 0, 1, 9], 1), Appended::Stored);
-    let mut sender = idle_sender(Some(spool), &stats, &server);
-
-    let mut block = Block::new();
-    block.bytes.resize(1000, 0);
-    block.frames = 5;
-    // The link is up, but the backlog forces the block to the spool, which
-    // refuses it and counts its frames.
-    sender.route(block, true, 0);
-    assert_eq!(get(&stats.spool_dropped), 5);
-    assert_eq!(get(&stats.disconnected_dropped), 0);
-    assert_eq!(get(&stats.queue_dropped), 0);
-    assert!(!sender.dirty, "nothing was written to the link");
 }
 
 #[path = "e2e_tests.rs"]

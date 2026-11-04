@@ -19,6 +19,7 @@ fails at startup. Repeating an option is an error, so the last value does not wi
 | `--receiver IP:PORT` | none (required) | Numeric unicast IP and nonzero port. IPv6 as `[addr]:port`. | Frame Streams receiver. TLS unless `--plaintext`. See [Receiver connection](#receiver-connection). |
 | `--plaintext` | off | Flag | Disables TLS and peer authentication. Use only on a trusted network. See [TLS](#tls). |
 | `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | Name the receiver certificate must match. See [TLS](#tls). |
+| `--receiver-stall-seconds SECONDS` | `15` | 2 to 300 | How long the receiver may accept no bytes, while the service has data to send, before the service ends the session and reconnects. A receiver that is slow, or paused for less than this, keeps its session: the service holds the data in memory, then spools it. An idle connection never stalls. With `--no-spool`, a longer stall means more `queue_dropped`. See [Receiver connection](#receiver-connection). |
 | `--capacity N` | `24576` | 1,024 to 262,144 events | Event channel size. A full channel drops the newest event and counts it in `ring_dropped` and `intake_dropped`. |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for padded payloads over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Otherwise capture runs until SCM stops the service or a failure occurs. |
@@ -74,8 +75,10 @@ See [pooled-intake.md](../design/pooled-intake.md).
 | 262,144 | 64 | 558.03 MiB |
 | 262,144 | 256 (maximum) | 582.11 MiB |
 
-The send queue adds about 17.3 MiB at startup (130 blocks of 136 KiB). The replay buffer adds
-about 0.3 MiB. Neither is in the totals.
+The block pool adds about 34.5 MiB at startup (260 blocks of 136 KiB): the send queue of 128
+blocks, the 128-block link queue that absorbs a slow receiver before the spool starts, one block
+for the front list that waits for the next session after a failure, and one block each in the
+hands of the parser, the router, and the link thread. The pool is not in the totals.
 
 ## Subscription
 
@@ -154,16 +157,19 @@ in `rejected`.
 - **Encoding:** Content type `protobuf:dnstap.Dnstap`. Control payloads up to 512 bytes,
   content-type fields up to 256 bytes, and encoded messages up to 70 KiB.
 - **Deadlines:** The TCP connect has a 2-second timeout. The handshake has one 2-second deadline
-  from TCP open, covering the TLS handshake, READY, ACCEPT, and START. Each write and flush has its
-  own 2-second deadline, and the final flush, STOP, and FINISH share one. Partial socket calls
-  count, so a peer cannot extend a deadline by trickling bytes. Certificate verification is not interrupted, but its time counts. A verifier that runs past the remaining time fails the handshake with a timeout.
-- **Socket send buffer:** The connection requests a 1 MiB `SO_SNDBUF`, or the default buffer if
-  that request fails.
+  from TCP open, covering the TLS handshake, READY, ACCEPT, and START. STOP and FINISH share one
+  2-second deadline. Partial socket calls count, so a peer cannot extend a deadline by trickling
+  bytes. Certificate verification is not interrupted, but its time counts. A verifier that runs past the remaining time fails the handshake with a timeout. A data write has no
+  deadline: see **Stall** under [Receiver connection](#receiver-connection).
+- **Socket send buffer:** The service does not set `SO_SNDBUF`. Windows tunes the send buffer
+  by itself (dynamic send buffering), and setting the option would turn that off.
 - **Flush:** An idle parser sends its partial block once the last send is 100 ms old. A busy parser
-  sends at least once a second, and the sender flushes at least every 100 ms while blocks arrive.
-  The parser reads the clock every 64 events, so the busy bound is approximate.
-- **Failure:** The sink abandons the session and counts the frames in flight. No STOP follows a
-  partial frame. Capture continues, and the sink reconnects.
+  sends at least once a second. The link thread writes each block as soon as it takes it, so no
+  further flush follows. The parser reads the clock every 64 events, so the busy bound is
+  approximate.
+- **Failure:** The link thread abandons the session and hands the unsent live frames back to the
+  router (see **Loss** above). No STOP follows a partial frame. Capture continues, and the sink
+  reconnects.
 - **DNS envelope:** The DNS message is 12 to 65,535 bytes, and its QR bit must match the event
   direction. Packet bytes are kept verbatim. Names and resource records are not checked. No TCP
   length prefix is added or stripped. A malformed packet is rejected, and the service never
@@ -186,8 +192,20 @@ Protocol failures at startup are not.
   timed out, or reset) logs a warning, and the service starts disconnected and retries. A protocol
   failure stops the service, including a receiver that rejects the `protobuf:dnstap.Dnstap`
   content type or sends a malformed control frame.
-- **Loss:** A failed write, flush, or deadline counts the frames in flight in
-  `disconnected_dropped`. The sink logs a warning and reconnects.
+- **Stall:** The link thread writes data without blocking. When the socket takes no more, it waits
+  for the socket to become writable and checks the clock. A session ends only if the socket
+  accepted no byte for `--receiver-stall-seconds` while the link had data to write. A write that
+  accepts any byte is progress. With TLS only bytes written to the socket count. An idle
+  connection never stalls. A receiver that is slow or paused for less than the stall time loses
+  nothing and costs no reconnect: the service holds up to about 8 MiB in the link queue, and then
+  the spool takes the data.
+- **Loss:** A failed write or a stall ends the session. The sink logs a warning and reconnects.
+  The link thread gives the live frames that the socket did not fully accept back to the router,
+  which puts them at the head of the spool (or at the front of the next session when the spool
+  already holds a backlog), and the service sends them again. A frame cut in the middle is sent
+  again in full; the receiver saw only a truncated copy, which Frame Streams readers discard.
+  Only the unsent rest of one replay batch (under 134 KiB), and with TLS the frames of the one
+  16 KiB piece whose delivery is unknown, count in `disconnected_dropped`.
 - **Retry:** Each attempt runs on a helper thread, so a blackholed receiver never blocks the parser.
   Each wait is uniform between half of a base delay and the base. The base starts at 250 ms,
   doubles, and caps at 30 seconds. A successful reconnect resets it. Every new session repeats
@@ -205,8 +223,13 @@ Protocol failures at startup are not.
   [Log events and counters](monitoring.md#receiver-schema-and-rate-messages).
 - **Shutdown while disconnected:** The sink sends no STOP. The service logs a warning and stops
   with success. Spooled frames stay on disk for the next start.
-- **Shutdown while connected:** The sink sends STOP and waits for FINISH within the 2-second
-  deadline. A missing or invalid FINISH stops the service with an error.
+- **Shutdown while connected:** If the link finished its data, the sink sends STOP and waits for
+  FINISH within the 2-second deadline. A STOP or FINISH that does not complete (a stalled
+  receiver, a reset, a missing or invalid FINISH) does not fail the stop: the service writes
+  nothing about it and stops with success. Every data frame was already accepted by the socket,
+  handed back to the spool, or counted, so the exchange only says goodbye. If the 1-second link
+  budget ends while the link is writing a block (the receiver is not keeping up), the sink closes
+  the connection with no STOP, and the unsent frames stay in the spool.
 
 ### TLS
 
@@ -280,23 +303,24 @@ out afterward.
 
 ### Routing
 
-For each block of frames, the sender thread chooses one destination:
+For each block of frames, the router thread chooses one destination:
 
-- **Spool:** The receiver is down, the spool holds unsent frames, or the send queue holds 96 or
-  more of its 128 blocks. A slow receiver spills to disk before the queue fills.
+- **Spool:** The receiver is down, the spool holds unsent frames, or the link queue is full. The
+  link queue holds 128 blocks (about 8 MiB) in memory. When it is full, the router moves the whole
+  queue to the spool, oldest first, and then the new block.
 - **Receiver:** The receiver is connected, and the spool is empty or not in use.
 - **Dropped:** No spool is in use, and the receiver is down. The frames count in
   `disconnected_dropped`.
 
-If the spool refuses a block, the frames count in `spool_dropped`. The send queue is in memory and
-absorbs short sender delays, not an outage. A socket write that stalls longer than the queue lasts
-drops frames, counted in `queue_dropped`. With a spool in use, `queue_dropped` means a slow socket
-write or slow disk blocked the sender.
+If the spool refuses a block, the frames count in `spool_dropped`. The link queue is in memory and
+absorbs a slow receiver, not an outage. The send queue between the parser and the router absorbs
+short delays of the router. When it is full, the parser drops frames, counted in `queue_dropped`.
+With a spool in use, `queue_dropped` means a slow disk held up the router.
 
 ### Order
 
 While the spool holds frames, every new block goes to the spool, even when the receiver is
-connected. Frames therefore reach the receiver in capture order. After a reconnect, the sender replays the oldest frames in batches of up to 256 KiB. Before each batch, it moves queued blocks to the spool. Frames
+connected. Frames therefore reach the receiver in capture order. After a reconnect, the router replays the oldest frames in batches of up to 64 KiB, two at a time. Before each batch, it moves queued blocks to the spool. Frames
 from an earlier run replay first. The file `cursor.bin` records the read position. Each run writes
 new segment files and never appends to an earlier run's.
 
@@ -319,21 +343,24 @@ figures.
 
 ### Delivery is at most once
 
-- A frame is never sent twice. The sender moves the `cursor.bin` read position before it writes a
-  batch, so a failure after that point loses the batch.
+- A frame that the socket accepted is never sent twice. The router moves the `cursor.bin` read
+  position before it hands a replay batch to the link thread, so a failure after that point loses
+  the unsent rest of the batch.
 - Loss per failed connection is bounded:
-  - The batch in progress, up to 256 KiB (about 2,500 frames at 103 bytes each). It counts in
-    `replayed` and `disconnected_dropped`.
-  - The block being written, up to 64 KiB (about 636 frames), and the frames written since the
-    last flush. These count in `disconnected_dropped`.
+  - The unsent rest of the replay batches in flight: at most two, each up to 64 KiB plus one frame
+    (under 268 KiB in all, about 2,600 frames at 103 bytes each). They count in `replayed` and
+    `disconnected_dropped`.
+  - With TLS, the frames of the one piece (up to 16 KiB) that the TLS layer took and the socket
+    did not confirm. They count in `disconnected_dropped`.
 
-  The lab saw one 64 KiB block lost per outage at 1,000 and 50,000 queries per second. Up to 1 MiB
-  in the socket send buffer is also lost, uncounted.
+  Live frames are not lost at a failure: the unsent ones go back to the spool, or to the front of
+  the next session. Data in the socket send buffer is lost, uncounted. Windows sizes that buffer,
+  and it can grow to several MiB on a fast link.
 - The spool does not flush data to disk. It protects against a receiver outage, not a power loss.
 
 ### Shutdown
 
-At shutdown, the sender routes the queued blocks and seals the active segment. The `cursor.bin`
+At shutdown, the router routes the queued blocks and seals the active segment. The `cursor.bin`
 read position is already current. The backlog stays on disk for the next run, and the service does
 not send it before exit. For the receiver write cutoff, see
 [Startup and shutdown deadlines](#startup-and-shutdown-deadlines).
@@ -351,10 +378,12 @@ not send it before exit. For the receiver write cutoff, see
   The `STOP_PENDING` wait hint is the shutdown deadline.
 - **Shutdown:** The deadline is 10 seconds from the stop request to the final report. After the
   session stops, the service waits up to 5 seconds for `ProcessTrace` to return. Only then does it
-  close the trace handle to force the worker out. The sender routes queued blocks, seals the spool
-  segment, and runs STOP/FINISH. The service stops writing to the receiver 1 second after shutdown
-  starts. A write in progress and STOP/FINISH can take about 4 seconds more, so the sink ends in
-  about 5 seconds at most. See [Spool](#spool).
+  close the trace handle to force the worker out. The router routes queued blocks and seals the
+  spool segment, and the link thread runs STOP/FINISH at the same time. The service stops writing
+  to the receiver 1 second after shutdown starts and gives the unsent blocks to the spool. The
+  link thread stops within 50 ms, and STOP/FINISH can take 2 seconds more, so the sink ends in
+  about 3.2 seconds at most. With a stalled receiver there is no STOP, and it ends in about 1.1
+  seconds. See [Spool](#spool).
 - **Expiry:** The process writes Event ID 5 to the Application log and aborts, so SCM recovery
   applies. See [Watchdog aborts](troubleshooting.md#watchdog-aborts-or-stop-hangs).
 

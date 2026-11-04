@@ -9,6 +9,7 @@ pub(crate) const CONTROL_START: u32 = 2;
 pub(crate) const CONTROL_STOP: u32 = 3;
 pub(crate) const FIELD_CONTENT_TYPE: u32 = 1;
 /// Resource limit, comfortably above a maximum DNS message plus metadata.
+#[cfg(test)]
 const MAX_FRAME_LENGTH: usize = 1_048_576;
 
 /// A single dnstap stream. Call [`Self::finish`] to emit STOP and flush.
@@ -39,6 +40,9 @@ impl<W: Write> FrameStreamWriter<W> {
     }
 
     /// Write one nonempty protobuf payload, without protobuf length delimiting.
+    /// Only the tests write a frame at a time; the service writes pre-framed
+    /// bytes.
+    #[cfg(test)]
     pub(crate) fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
         self.check_healthy()?;
         if payload.is_empty() || payload.len() > MAX_FRAME_LENGTH {
@@ -59,7 +63,8 @@ impl<W: Write> FrameStreamWriter<W> {
     /// Write bytes that already hold complete data frames (each a 4-byte
     /// big-endian length and its payload), as the spool and the queued sink hold
     /// them. The caller guarantees the framing; this method does not parse it.
-    /// A failure poisons the stream, as in [`Self::write_frame`].
+    /// An I/O failure poisons the stream: later calls cannot append a misleading
+    /// STOP after a partial data frame.
     pub(crate) fn write_framed(&mut self, framed: &[u8]) -> io::Result<()> {
         self.check_healthy()?;
         self.failed = true;
@@ -71,6 +76,11 @@ impl<W: Write> FrameStreamWriter<W> {
     /// Access the transport to set an operation deadline before writing.
     pub(crate) const fn get_mut(&mut self) -> &mut W {
         &mut self.writer
+    }
+
+    /// Read access to the transport.
+    pub(crate) const fn get_ref(&self) -> &W {
+        &self.writer
     }
 
     /// Flush buffered output and poison the stream if flushing fails.

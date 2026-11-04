@@ -1,37 +1,32 @@
-//! Characterization tests for a receiver that stays connected but is slow or
-//! stalled. They pin down what the sender does today, so a later change can flip
-//! single assertions on purpose.
+//! Tests for a receiver that stays connected but is slow or stalled, on real
+//! loopback sockets. They began as characterization tests of the sender before
+//! the link thread (task C1): each assertion that the link thread (H1) or the
+//! progress rule (H2) changes now holds its new value, and a comment that starts
+//! with `Changes with H1:` or `Changes with H2:` says what it was.
 //!
-//! The sender thread does every socket write and every spool append. While one
-//! socket write blocks, it routes no block, so it cannot spill. Each assertion
-//! that the planned changes alter carries a comment that starts with
-//! `Changes with H1:` (the sender thread no longer waits on the socket) or
-//! `Changes with H2:` (a session ends only after a long stall with no progress),
-//! and says the expected new value.
+//! The router never waits on the socket and the link thread ends a session only
+//! when the receiver accepts no bytes for the stall timeout. The tests that
+//! stall the link find the stall from the router's own spill: it spills only when
+//! the link FIFO is full, which needs a link that has stopped taking blocks
+//! (`stall_the_link`). They wait on conditions. The pauses that
+//! must last (longer than the old 2-second I/O deadline) are conditions too: the
+//! link's own wait for the blocked block reaches the length.
 //!
 //! Every frame carries its sequence number in its first four bytes. The large
 //! frames (`MAX_ENCODED_LENGTH`) each fill one block, so a block holds exactly one
-//! frame and the block counters equal the frame counters. The tests wait for
-//! conditions. Two of them find the stall with `stall_the_sender`, as the
-//! existing tests do: the queue stays long for 100 ms while the receiver is
-//! paused. They also assume that the test thread is not held up for about a
-//! second while it holds a stall, which would let the 2-second write deadline
-//! end the session early. The session-loss test offers frames until the session
-//! ends instead, so it needs no stall detector.
+//! frame and the block counters equal the frame counters.
 
 use super::{
     sender_tests::{
         FakeServer, MIB, fast_policy, get, no_retry, open_spool, queued, send, sized_frame,
-        stall_the_sender, start_sink, wait_until,
+        stall_the_link, start_sink, start_sink_with_stall, wait_until,
     },
     *,
 };
-use crate::{network::TEST_IO_TIMEOUT, spool::test_support::TestDir};
+use crate::{network::MIN_STALL_TIMEOUT, spool::test_support::TestDir};
 
 /// Spool size that holds every frame these tests offer many times over.
 const SPOOL_MIB: u64 = 64;
-/// The bytes of one large frame in a block: the payload and its 4-byte length.
-const BLOCK_BYTES: u64 = MAX_ENCODED_LENGTH as u64 + 4;
 
 /// True when `numbers` is strictly increasing: in order, with no repeat.
 fn strictly_increasing(numbers: &[u32]) -> bool {
@@ -43,8 +38,11 @@ fn counted_lost(stats: &SinkStats) -> u64 {
     get(&stats.queue_dropped) + get(&stats.disconnected_dropped) + get(&stats.spool_dropped)
 }
 
-/// Offers one large frame numbered `number`.
+/// Offers one large frame numbered `number`, once the channel has room.
 fn offer_large(sink: &mut QueuedSink, number: u32) {
+    wait_until("room in the send queue", || {
+        queued(sink) < SEND_QUEUE_BLOCKS - 8
+    });
     sink.write_frame(&sized_frame(number, MAX_ENCODED_LENGTH))
         .expect("a full queue is not an error");
 }
@@ -54,151 +52,161 @@ fn resume(server: &FakeServer) {
 }
 
 #[test]
-fn a_stalled_write_overflows_the_queue_while_the_spool_has_room() {
+fn a_stalled_link_does_not_overflow_the_queue_while_the_spool_has_room() {
     let dir = TestDir::new("sat-queue");
     let server = FakeServer::up();
     // The receiver keeps the connection but reads nothing, so the kernel buffers
-    // fill and the sender thread blocks in a socket write. A receiver that reads
-    // very slowly blocks the sender thread the same way, for as long as one
-    // chunk takes; this is the limiting case.
+    // fill and the link thread waits for the socket to become writable. A
+    // receiver that reads very slowly stalls the link the same way, for as long
+    // as one block takes; this is the limiting case.
     server.received.paused.store(true, Ordering::Release);
     let stats = Arc::new(SinkStats::default());
     let spool = open_spool(&dir, SPOOL_MIB * MIB, &stats);
     let mut sink = start_sink(&server, no_retry(), Some(spool), &stats);
 
-    let mut offered = stall_the_sender(&mut sink, 0);
-    // The parser goes on producing. The sender thread is blocked, so it takes no
-    // block from the queue and spills none.
-    while get(&stats.queue_dropped) == 0 {
-        assert!(offered < 3000, "no drop after {offered} frames");
-        offer_large(&mut sink, offered);
-        offered += 1;
-    }
-    let first_drop = get(&stats.queue_dropped);
+    let mut offered = stall_the_link(&mut sink);
+    // The parser goes on producing. The router is free, so it takes every block
+    // and spills it to the spool.
     for _ in 0..50 {
         offer_large(&mut sink, offered);
         offered += 1;
     }
+    // Hold the stall for 100 ms by the link's own clock.
+    wait_until("the link to wait for the blocked socket", || {
+        get(&stats.write_max_us) >= 100_000
+    });
 
-    // The stall has lasted well under the 2-second write deadline: the session
-    // is intact and nothing has gone to the spool, which is empty.
+    // The stall is far shorter than the stall timeout: the session is intact.
     assert_eq!(get(&stats.disconnects), 0);
-    assert_eq!(queued(&sink), SEND_QUEUE_BLOCKS, "the queue is full");
-    // Each dropped block held one frame, and every frame offered after the queue
-    // filled was dropped: the first offer to a full queue, then the 50 more.
-    assert_eq!(first_drop, 1);
-    // Changes with H1: queue_dropped == 0 here. The sender thread keeps routing
-    // while the link write blocks, so it spills the queue to the spool instead.
-    assert_eq!(get(&stats.queue_dropped), first_drop + 50);
-    // Changes with H1: spooled > 0 here, the blocks the link writer could not take.
-    assert_eq!(get(&stats.spooled), 0);
-    assert_eq!(get(&stats.spool_bytes), 0);
+    // Changes with H1: this was `queue_dropped == first_drop + 50` and
+    // `spooled == 0`. The router keeps routing while the link waits, so the
+    // blocks the link could not take went to the spool and none was dropped.
+    assert_eq!(get(&stats.queue_dropped), 0);
+    // The 50 frames are in the parser channel or on their way to the spool; the
+    // router takes them at disk speed.
+    wait_until("the router to spool the 50 later frames", || {
+        get(&stats.spooled) >= LINK_FIFO_BLOCKS as u64 + 50
+    });
+    assert!(get(&stats.spool_bytes) > 0);
     assert_eq!(get(&stats.spool_dropped), 0);
     assert_eq!(get(&stats.spool_errors), 0);
     assert!(
         stats.spool_available.load(Ordering::Relaxed),
         "the spool is in use and accepting data"
     );
-    // The spool had room for everything that was dropped, many times over.
-    assert!((first_drop + 50) * BLOCK_BYTES < SPOOL_MIB * MIB);
 
-    // The receiver reads again before the deadline: no session was lost. The
-    // blocks that waited in the queue now go to the spool (the queue is deep),
-    // then replay in order.
+    // The receiver reads again before any stall timeout: no session was lost.
+    // The spooled blocks replay in order.
     resume(&server);
-    let dropped = get(&stats.queue_dropped);
-    let delivered = u64::from(offered) - dropped;
-    let delivered_count = usize::try_from(delivered).expect("small");
-    wait_until("every queued frame to arrive", || {
-        server.received.len() >= delivered_count
-    });
-    // The monitor shows the stall: the send queue was full when the sender
-    // thread came back, and the blocked write is the longest of the window.
-    // Wait for the stall's own values: a peak from before the stall (the queue
-    // stood at 10 blocks or more when it began) would end a wait for any value.
-    wait_until("the monitor to publish the full queue", || {
-        get(&stats.send_queue_depth_max) == SEND_QUEUE_BLOCKS as u64
-    });
+    let total = usize::try_from(offered).expect("small");
+    wait_until("every frame to arrive", || server.received.len() >= total);
+    // The monitor shows the stall: the longest readiness wait of the window is
+    // the blocked block's. The parser channel never filled. Wait for a published
+    // sample: the monitor samples once a second.
     wait_until("the monitor to publish the blocked write", || {
-        get(&stats.write_max_recent_us) >= 50_000
+        get(&stats.write_max_recent_us) >= 100_000 && get(&stats.send_queue_depth_max) >= 1
     });
+    // Changes with H1: this was `send_queue_depth_max == SEND_QUEUE_BLOCKS`.
+    assert!(get(&stats.send_queue_depth_max) < SEND_QUEUE_BLOCKS as u64);
     assert!(get(&stats.write_max_recent_us) <= get(&stats.write_max_us));
     assert!(get(&stats.bytes_sent) > 0);
     sink.finish().expect("clean STOP/FINISH");
-    // The dropped frames are the newest ones: the queue refused them after it
-    // filled. Everything older arrived, in order.
+    // Changes with H1: nothing was dropped, so every offered frame arrived.
     assert_eq!(
         server.received.frames(),
-        (0..u32::try_from(delivered).expect("small")).collect::<Vec<_>>()
-    );
-    // Changes with H1: the spool absorbs the queue, so queue_dropped stays 0 and
-    // delivered == offered. The exact spooled count then depends on the design.
-    assert_eq!(
-        get(&stats.spooled),
-        SEND_QUEUE_BLOCKS as u64,
-        "the full queue was spilled once the write returned"
+        (0..offered).collect::<Vec<_>>(),
+        "frames arrive in capture order"
     );
     assert_eq!(get(&stats.replayed), get(&stats.spooled));
     assert_eq!(get(&stats.disconnects), 0);
-    assert_eq!(get(&stats.disconnected_dropped), 0);
-    assert_eq!(get(&stats.spool_dropped), 0);
-    // Every offered frame is accounted exactly once.
-    assert_eq!(
-        delivered + counted_lost(&stats),
-        u64::from(offered),
-        "delivered + queue_dropped + disconnected_dropped + spool_dropped == offered"
-    );
+    assert_eq!(counted_lost(&stats), 0);
 }
 
 #[test]
-fn a_receiver_that_accepts_nothing_for_the_io_deadline_loses_the_session() {
+fn a_stall_shorter_than_the_stall_timeout_keeps_the_session() {
+    let dir = TestDir::new("sat-session-kept");
+    let server = FakeServer::up();
+    server.received.paused.store(true, Ordering::Release);
+    let stats = Arc::new(SinkStats::default());
+    let spool = open_spool(&dir, SPOOL_MIB * MIB, &stats);
+    let mut sink = start_sink(&server, fast_policy(), Some(spool), &stats);
+
+    let mut offered = stall_the_link(&mut sink);
+    // Hold the stall longer than the old 2-second I/O deadline, which ended the
+    // session. The link's own wait for the blocked block measures it.
+    wait_until("a stall longer than the old I/O deadline", || {
+        get(&stats.write_max_us) >= 2_500_000
+    });
+    // Changes with H2: this was `disconnects == 1` and `disconnected_dropped >= 1`.
+    assert_eq!(get(&stats.disconnects), 0);
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+
+    resume(&server);
+    let newest = offered + 20;
+    send(&mut sink, offered..newest + 1);
+    offered = newest + 1;
+    wait_until("the newest frame to arrive", || {
+        server.received.frames().last() == Some(&newest)
+    });
+    sink.finish().expect("clean STOP/FINISH");
+
+    assert_eq!(
+        server.received.frames(),
+        (0..offered).collect::<Vec<_>>(),
+        "every frame arrives, in order"
+    );
+    // Changes with H2: this was `reconnects == 1`. The session was never lost.
+    assert_eq!(get(&stats.disconnects), 0);
+    assert_eq!(get(&stats.reconnects), 0);
+    assert_eq!(counted_lost(&stats), 0);
+    assert_eq!(get(&stats.replayed), get(&stats.spooled));
+}
+
+#[test]
+fn a_receiver_that_accepts_nothing_for_the_stall_timeout_loses_the_session_and_only_the_replay_in_flight()
+ {
     let dir = TestDir::new("sat-session");
     let server = FakeServer::up();
     server.received.paused.store(true, Ordering::Release);
     let stats = Arc::new(SinkStats::default());
     let spool = open_spool(&dir, SPOOL_MIB * MIB, &stats);
-    // A fast reconnect policy, so the session returns soon after the stall ends.
-    let mut sink = start_sink(&server, fast_policy(), Some(spool), &stats);
-
-    // The parser keeps offering large frames, a few queued at a time, until the
-    // kernel buffers are full and a write blocks, and then until the write
-    // deadline ends the session. The receiver never closes the connection.
-    let started = Instant::now();
-    let mut offered = 0_u32;
-    wait_until("the stalled write to hit the I/O deadline", || {
-        if get(&stats.disconnects) >= 1 {
-            return true;
-        }
-        if queued(&sink) < 20 {
-            assert!(offered < 3000, "kernel buffering absorbed {offered} frames");
-            offer_large(&mut sink, offered);
-            offered += 1;
-        }
-        false
-    });
-    let stalled_for = started.elapsed();
-    assert!(
-        stalled_for + Duration::from_millis(500) >= TEST_IO_TIMEOUT,
-        "the session ended after only {stalled_for:?}"
+    // The shortest stall timeout, and a fast reconnect policy, so the session
+    // returns soon after the stall ends.
+    let mut sink = start_sink_with_stall(
+        &server,
+        fast_policy(),
+        Some(spool),
+        &stats,
+        MIN_STALL_TIMEOUT,
     );
-    // Changes with H2: no disconnect while the stall is shorter than the stall
-    // timeout (10 to 30 s). disconnects stays 0 here, and this wait is for the
-    // stall timeout instead of IO_TIMEOUT.
+
+    let started = Instant::now();
+    let mut offered = stall_the_link(&mut sink);
+    wait_until("the stall timeout to end the session", || {
+        get(&stats.disconnects) >= 1
+    });
+    assert!(
+        started.elapsed() >= MIN_STALL_TIMEOUT,
+        "the session ended after only {:?}",
+        started.elapsed()
+    );
     assert_eq!(get(&stats.disconnects), 1);
-    // The blocks that waited behind the stalled write find the link down and go
-    // to the spool. Wait for the queue to empty before the receiver resumes.
-    wait_until("the queued blocks to reach the spool", || {
-        queued(&sink) == 0 && get(&stats.spooled) >= 1
+    // The block the link gave back, the FIFO, and the blocks behind them reach
+    // the spool or the front list. Wait for the router to take them all.
+    wait_until("the router to take the queued blocks", || {
+        queued(&sink) == 0
     });
     assert_eq!(get(&stats.reconnects), 0, "the receiver is still paused");
-    // Changes with H2: disconnected_dropped == 0. The write has no deadline of its
-    // own, the frames are not abandoned, and the session continues.
-    let in_flight = get(&stats.disconnected_dropped);
+    // Changes with H2: this was `disconnected_dropped >= 1`. The unsent live
+    // frames go back to the router, and none is abandoned. The only frames that
+    // cannot go back are the replay batches the router had out (at most two, one
+    // large frame each here): the spill left the router in Draining, and the
+    // spool cursor had moved past them.
     assert!(
-        in_flight >= 1,
-        "the chunk that timed out is counted as dropped"
+        get(&stats.disconnected_dropped) <= u64::from(REPLAY_CREDIT),
+        "{} frames counted",
+        get(&stats.disconnected_dropped)
     );
-    assert!(in_flight <= u64::from(offered));
 
     // The receiver comes back and accepts the new session.
     resume(&server);
@@ -215,26 +223,22 @@ fn a_receiver_that_accepts_nothing_for_the_io_deadline_loses_the_session() {
     let got = server.received.frames();
     assert!(strictly_increasing(&got), "order or repeat: {got:?}");
     assert_eq!(get(&stats.disconnects), 1);
-    // Changes with H2: reconnects == 0, because the session was never lost.
     assert_eq!(get(&stats.reconnects), 1);
     assert_eq!(get(&stats.queue_dropped), 0);
     assert_eq!(get(&stats.spool_dropped), 0);
     assert_eq!(get(&stats.replayed), get(&stats.spooled));
-    // Nothing is lost silently: every frame the receiver lacks is in a counter.
-    // An equality is not true here. The counter can exceed the loss: a write that
-    // times out on Windows may still complete in the kernel, and the link counts
-    // every frame written since its last flush as lost when the session fails,
-    // although the kernel had accepted them. So the frame counted in
-    // `disconnected_dropped` may also arrive, and delivered + counted can exceed
-    // offered. The strongest true statement is a bound.
-    let delivered = got.len() as u64;
-    let missing = u64::from(offered) - delivered;
-    assert!(
-        missing <= counted_lost(&stats),
-        "{missing} frames missing, {} counted",
-        counted_lost(&stats)
+    // Changes with H2: this was a bound, because a write that timed out may
+    // still complete in the kernel and the counted frames may also arrive. Now
+    // the frames the kernel accepted before the stall reach the receiver, the cut
+    // frame and every unsent live frame are sent again on the new session, and
+    // the receiver gets each frame once. Only the replay batches in flight are
+    // counted, and the receiver does not get them.
+    assert!(counted_lost(&stats) <= u64::from(REPLAY_CREDIT));
+    assert_eq!(
+        got.len() as u64 + counted_lost(&stats),
+        u64::from(offered),
+        "each frame is delivered or counted once"
     );
-    assert!(delivered <= u64::from(offered), "no frame arrives twice");
 }
 
 #[test]
@@ -246,41 +250,29 @@ fn after_a_spill_every_later_block_takes_the_spool_path_until_the_backlog_is_emp
     let spool = open_spool(&dir, SPOOL_MIB * MIB, &stats);
     let mut sink = start_sink(&server, no_retry(), Some(spool), &stats);
 
-    // The sender blocks on the receiver that stopped reading, and the queue grows
-    // past the spill threshold without filling.
-    let mut offered = stall_the_sender(&mut sink, 0);
-    while queued(&sink) < SPILL_BLOCKS + 4 {
-        offer_large(&mut sink, offered);
-        offered += 1;
-    }
-    let behind_the_stall = queued(&sink);
-    // Blocks the sender took off the queue before it blocked went to the link
-    // directly: the queue was short then and the spool had no backlog.
-    let direct = u64::from(offered) - behind_the_stall as u64;
-    assert_eq!(get(&stats.spooled), 0);
+    // The link stalls, and the link FIFO fills. The router takes the FIFO to the
+    // spool, which now holds a backlog.
+    // Changes with H1: the spill used to start when the sender thread found 96
+    // blocks queued behind a blocked write. The router now spills a full FIFO.
+    let mut offered = stall_the_link(&mut sink);
+    let spooled_at_spill = get(&stats.spooled);
+    let later_from = offered;
 
     // The receiver reads again, but slower than the input: 5 ms per large frame.
     // The input is offered as fast as the queue accepts it.
     server.received.frame_delay_ms.store(5, Ordering::Release);
     resume(&server);
     for _ in 0..40 {
-        wait_until("room in the send queue", || {
-            queued(&sink) < SEND_QUEUE_BLOCKS - 8
-        });
         offer_large(&mut sink, offered);
         offered += 1;
     }
     let total = usize::try_from(offered).expect("small");
     wait_until("every frame to arrive", || server.received.len() >= total);
 
-    // Every block offered after the sender took the first one off a deep queue
-    // went to the spool, including the 40 offered while the receiver was
-    // connected and reading, because the backlog never emptied in between.
-    // Changes with H1: the same count, but the first spill happens while the
-    // link write blocks, so `direct` is what the link writer took before its FIFO
-    // was deep. This test's setup needs a stall detector that does not rely on a
-    // long queue then.
-    assert_eq!(get(&stats.spooled), u64::from(offered) - direct);
+    // Every block offered after the spill went to the spool, including the 40
+    // offered while the receiver was connected and reading, because the backlog
+    // never emptied in between.
+    assert!(get(&stats.spooled) >= spooled_at_spill + u64::from(offered - later_from));
     assert_eq!(get(&stats.replayed), get(&stats.spooled));
     assert_eq!(
         server.received.frames(),
@@ -291,9 +283,12 @@ fn after_a_spill_every_later_block_takes_the_spool_path_until_the_backlog_is_emp
     assert_eq!(get(&stats.disconnects), 0);
     assert_eq!(counted_lost(&stats), 0);
 
-    // With the backlog gone the next block goes straight to the link again.
+    // With the backlog gone the next block goes straight to the link again. The
+    // router finds the backlog empty at its first read after the last batch, so
+    // wait for the spool to drop its last segment.
     // Changes with H3b only: a live-first policy sends new frames to the link
     // while the backlog drains, out of order.
+    wait_until("the backlog to empty", || get(&stats.spool_segments) == 0);
     let spooled = get(&stats.spooled);
     send(&mut sink, offered..offered + 1);
     wait_until("the probe frame to arrive", || {
@@ -307,4 +302,72 @@ fn after_a_spill_every_later_block_takes_the_spool_path_until_the_backlog_is_emp
         (total as u64 + 1) + counted_lost(&stats),
         u64::from(offered) + 1
     );
+}
+
+#[test]
+fn a_receiver_that_stops_reading_causes_one_bounded_stall_then_counted_drops() {
+    let server = FakeServer::up();
+    // The receiver finishes the handshake and never reads again: the socket
+    // buffers fill and the link must wait.
+    server.received.paused.store(true, Ordering::Release);
+    let stats = Arc::new(SinkStats::default());
+    // No spool, and the shortest stall timeout.
+    let mut sink = start_sink_with_stall(&server, no_retry(), None, &stats, MIN_STALL_TIMEOUT);
+    let started = Instant::now();
+    let mut offered = 0_u32;
+    wait_until("the stall timeout to end the session", || {
+        if get(&stats.disconnects) >= 1 {
+            return true;
+        }
+        // Two frames of 32 KiB make a block. The parser channel stays short, so
+        // nothing is dropped there.
+        if queued(&sink) < 64 {
+            assert!(offered < 4096, "kernel buffering absorbed 128 MiB");
+            sink.write_frame(&sized_frame(offered, 32 * 1024))
+                .expect("loss is never an error");
+            offered += 1;
+        }
+        false
+    });
+    // One stall of the stall timeout (plus scheduling) ended the session.
+    assert!(started.elapsed() >= MIN_STALL_TIMEOUT);
+    assert!(!stats.connected.load(Ordering::Relaxed));
+    assert_eq!(get(&stats.disconnects), 1);
+    // The wait for the blocked socket is what the slow-write counters show.
+    assert!(get(&stats.slow_writes) >= 1);
+    assert!(get(&stats.write_max_us) >= 1_000_000);
+    // With no spool, the frames that came back, the FIFO, and the channel are
+    // counted once, in `disconnected_dropped`, by the router. The router counts
+    // the FIFO when it has the hand-back; the count is final after that.
+    wait_until("the router to finish the hand-back", || {
+        sink.shared.probe.hand_backs.load(Ordering::Acquire) >= 1
+    });
+    // A partial block that the parser still holds goes to the router now.
+    sink.flush().expect("block is sent");
+    wait_until("the router to take the queued blocks", || {
+        queued(&sink) == 0
+    });
+    // The router counts a block in the pass that takes it. Two more passes have
+    // finished when the count is final.
+    let turns = sink.shared.probe.turns.load(Ordering::Acquire);
+    wait_until("the router to count the frames", || {
+        sink.shared.probe.turns.load(Ordering::Acquire) >= turns + 2
+    });
+    let dropped_at_loss = get(&stats.disconnected_dropped);
+    assert!(dropped_at_loss >= 1, "the frames of the failed session");
+    assert!(
+        dropped_at_loss <= u64::from(offered),
+        "never more than offered"
+    );
+    assert_eq!(get(&stats.queue_dropped), 0);
+    // Afterwards each frame is counted exactly once, at once, with no wait.
+    for number in 0..10 {
+        sink.write_frame(&sized_frame(offered + number, 4096))
+            .expect("drop, not error");
+        sink.flush().expect("block is sent");
+    }
+    wait_until("the new frames to be counted", || {
+        get(&stats.disconnected_dropped) == dropped_at_loss + 10
+    });
+    sink.finish().expect("shutdown while disconnected is clean");
 }

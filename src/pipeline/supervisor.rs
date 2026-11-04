@@ -185,7 +185,7 @@ fn build_sink_with(
         .spool
         .as_ref()
         .and_then(|settings| open_spool(settings, &stats, check, free_space));
-    QueuedSink::start(link, spool, stats)
+    QueuedSink::start(link, spool, stats, config.receiver_stall())
 }
 
 /// Checks the spool folder with `check` and opens the spool. Returns `None` after
@@ -592,6 +592,7 @@ fn log_capture_started(config: &PipelineConfig, keywords: KeywordSelection) {
         etw_min_buffers = config.session.minimum_buffers,
         etw_max_buffers = config.session.maximum_buffers,
         etw_flush_seconds = config.session.flush_seconds,
+        receiver_stall_seconds = config.receiver_stall_seconds,
         match_any_keyword = format_args!("{:#x}", keywords.match_any),
         match_all_keyword = format_args!("{:#x}", keywords.match_all),
         keyword_fallback = keywords.fallback,

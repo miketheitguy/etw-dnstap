@@ -34,6 +34,11 @@ fn blackhole_receiver_at_startup_is_bounded_and_not_fatal() {
     drop(listener);
 }
 
+/// The blocking `FrameSink` path of `NetworkSink`, which the parser tests use and
+/// the service does not: each socket write has the I/O deadline. The link thread's
+/// version of this scenario, with a stall timeout and a hand-back, is
+/// `a_receiver_that_stops_reading_causes_one_bounded_stall_then_counted_drops` in
+/// `src/sender/saturation_tests.rs`.
 #[test]
 fn receiver_that_stops_reading_causes_one_bounded_stall_then_counted_drops() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
@@ -66,8 +71,7 @@ fn receiver_that_stops_reading_causes_one_bounded_stall_then_counted_drops() {
     assert!(started.elapsed() < Duration::from_secs(20));
     assert!(!stats.connected.load(Ordering::Relaxed));
     assert_eq!(stats.disconnects.load(Ordering::Relaxed), 1);
-    assert!(stats.slow_writes.load(Ordering::Relaxed) >= 1);
-    assert!(stats.write_max_us.load(Ordering::Relaxed) >= 1_000_000);
+
     let dropped_at_loss = stats.disconnected_dropped.load(Ordering::Relaxed);
     assert!(dropped_at_loss >= 1, "the frame that failed is counted");
     assert!(dropped_at_loss <= offered, "never more drops than frames");

@@ -112,7 +112,7 @@
           </counter>
           <counter id="18" uri="EtwDnstap.Pipeline.ReceiverDownDrops"
                    nameID="172" name="Receiver Down Drops"
-                   descriptionID="174" description="Frames lost in the sink: the connection failed with them in flight, or they arrived while the receiver was down and no spool was usable."
+                   descriptionID="174" description="Frames lost in the sink. With no spool: the live frames the link had not fully sent when the connection failed, and the frames that arrived while the receiver was down. Always: the unsent rest of a replay batch when the connection failed, and with TLS the frames of the one piece whose delivery was unconfirmed. With a spool, at a shutdown that follows a spill: the one live block that came back from the link, because it is older than the spool backlog. A counted frame may still have arrived."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -274,7 +274,7 @@
                    type="perf_counter_large_rawcount" detailLevel="standard" />
           <counter id="61" uri="EtwDnstap.Pipeline.BytesSent"
                    nameID="344" name="Bytes Sent"
-                   descriptionID="346" description="Total framed dnstap bytes (length prefix and payload) that the receiver connection accepted since the service started, live and replayed. Includes bytes still buffered when a connection failed."
+                   descriptionID="346" description="Total bytes that the socket of the receiver connection accepted since the service started, live and replayed. With plaintext these are the framed dnstap bytes (length prefix and payload); with TLS they are the bytes written to the socket, including record headers and tags. Includes bytes the kernel still held when a connection failed."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -282,7 +282,7 @@
           </counter>
           <counter id="62" uri="EtwDnstap.Pipeline.BytesSentPerSec"
                    nameID="348" name="Bytes Sent/sec"
-                   descriptionID="350" description="Rate of framed dnstap bytes that the receiver connection accepted. Add the growth of Spool Bytes to get the capture rate in bytes."
+                   descriptionID="350" description="Rate of bytes that the socket of the receiver connection accepted. With plaintext these are the framed dnstap bytes; with TLS they include record headers and tags. Add the growth of Spool Bytes to get the capture rate in bytes."
                    type="perf_counter_bulk_count" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -290,7 +290,7 @@
           </counter>
           <counter id="63" uri="EtwDnstap.Pipeline.SendQueuePeakDepth"
                    nameID="352" name="Send Queue Peak Depth"
-                   descriptionID="354" description="Most blocks (about 64 KiB each) waiting in the send queue in the last 60 seconds. The queue holds 128. A lower bound."
+                   descriptionID="354" description="Most blocks (about 64 KiB each) waiting in the send queue between the parser and the router in the last 60 seconds. The queue holds 128. A lower bound."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -298,7 +298,7 @@
           </counter>
           <counter id="64" uri="EtwDnstap.Pipeline.SocketWritePeakMicroseconds"
                    nameID="356" name="Socket Write Peak (microseconds)"
-                   descriptionID="358" description="Longest single socket write to the receiver, in microseconds, in the last 60 seconds. A write that blocks on a slow receiver shows here."
+                   descriptionID="358" description="Longest time, in microseconds, that the link waited for the receiver socket to become writable while it wrote one block, in the last 60 seconds. The link never blocks in a send. A receiver that accepts bytes slowly or not at all shows here."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
