@@ -119,7 +119,7 @@ These fields appear on `output stats` and `output stopped`.
 | `receiver_disconnects` | Established sessions lost: a socket error, or no bytes accepted for `--receiver-stall-seconds` while data waited. A receiver that is only slow does not end the session. |
 | `receiver_reconnects` | Successful reconnects after the first session. |
 | `receiver_reconnect_failures` | Failed reconnect attempts at connect, handshake, or protocol. Also counts a reconnect thread that did not start or ended without a result. |
-| `disconnected_dropped` | Frames lost in the sink. With no spool: every live frame the link had not fully sent when a connection failed (the block in hand and the link queue), and every frame that arrives while the receiver is down. With or without a spool: the unsent rest of a replay batch when a connection failed (after `replayed`), and with TLS the frames of the one 16 KiB piece whose delivery the service could not confirm. With a spool, at a shutdown that follows a spill: the one live block that came back from the link, because it is older than the spool backlog and cannot go in front of it. With a spool, live frames that a failed connection did not fully accept are not lost: they go to the spool and are sent again. A counted frame may still have arrived, so this is an upper bound. Not in `intake_dropped`. |
+| `disconnected_dropped` | Frames lost in the sink. With no spool: every live frame the link had not fully sent when a connection failed (the block in hand and the link queue), and every frame that arrives while the receiver is down. With a spool, at a shutdown that follows a spill: the one live block that came back from the link, because it is older than the spool backlog and cannot go in front of it. With a spool, a failed connection counts nothing here: live frames that it did not fully accept (with TLS, including the frames of the one 16 KiB piece whose delivery the service could not confirm) go to the spool or to the front of the next session, and replay frames that it did not fully accept stay in the spool, which sends them again. Bytes that the kernel already held at a failure are lost and not counted. A counted frame may still have arrived, so this is an upper bound. Not in `intake_dropped`. |
 | `slow_writes`, `write_max_us` | The link thread never blocks in a send. It writes without waiting, and when the socket takes no more it waits for the socket to become writable. For each block (about 64 KiB, or one replay batch) it adds up those waits. `slow_writes` counts blocks whose wait reached 5 ms, and `write_max_us` is the longest wait of one block, in microseconds. Both count since the service started. A wait that goes on is added to `write_max_us` while it lasts. |
 | `write_max_recent_us` | Gauge: the longest wait of one block for the socket to become writable, in microseconds, in the last 60 seconds. Use it, not `write_max_us`, to see whether the receiver is slow now. See [Windows of the recent peaks](#windows-of-the-recent-peaks). |
 | `bytes_sent` | Bytes that the socket of the receiver connection accepted, live and replayed. With plaintext these are the framed bytes (4-byte length and payload). With TLS they are the bytes written to the socket, so they include the record headers and tags (about 22 to 29 bytes for each 16 KiB). Includes bytes that the kernel still held when the connection failed. Excludes control frames. Take the rate between two lines and compare it with the capture rate. |
@@ -129,7 +129,7 @@ These fields appear on `output stats` and `output stopped`.
 | `link_saturated` | Flag: `true` while the spool backlog trends up with the receiver connected (larger than 10 samples ago, with at least 7 of the 10 steps rising). It clears when the backlog is empty or no longer larger than 10 samples ago. Holds its value while the receiver is down. Always `false` with no spool. See [The saturated state](#the-saturated-state). |
 | `queue_dropped` | Frames discarded because the send queue was full. Also in `encoded`. |
 | `spooled` | Frames stored for later sending. |
-| `replayed` | Frames read from the spool and handed to the receiver connection, including earlier-run leftovers. |
+| `replayed` | Frames from the spool that the receiver connection fully accepted, including earlier-run leftovers. A frame counts once, when the connection takes it, not when the service reads it from disk. A frame that a failed connection did not take is read again and counts when it is sent. |
 | `spool_dropped`, `spool_dropped_bytes` | Frames (`spool_dropped`) or bytes (`spool_dropped_bytes`, control frames included) removed, skipped, or refused unsent. Causes: eviction, corrupt or cut-off data, a pause, or an I/O error. Leftover segments count only bytes, because their frame count is unknown. |
 | `spool_errors` | Every spool I/O error. |
 | `spool_bytes`, `spool_segments` | Gauges: bytes and segment files now, including files whose removal has not yet succeeded. |
@@ -196,12 +196,14 @@ dequeued       = encoded + ignored + rejected + output_failed_events
   `spool_dropped_bytes` are not loss counters. `disconnected_dropped` is outside the
   identities, because its frames already count in `encoded`.
 - Each frame that reaches the sink ends in a write, `queue_dropped`,
-  `disconnected_dropped`, or `spool_dropped`. A stored frame counts in `spooled`, then
-  `replayed`, then one of those endings. A frame still on disk at shutdown counts in
-  `spooled` and in no loss counter. `spool_bytes` and `spool_segments` show what remains.
+  `disconnected_dropped`, or `spool_dropped`. A stored frame counts in `spooled`, and in
+  `replayed` when the receiver connection takes it, or in `spool_dropped` if the spool
+  removes it first. A frame still on disk at shutdown counts in `spooled` and in no loss
+  counter. `spool_bytes` and `spool_segments` show what remains, and `spool_bytes` includes
+  the frames that the service has read from a segment and the connection has not yet taken.
 - Frames in the send queue when the sender stops abnormally count in none of these. The
   parser counts only the failed write, in `output_failed_events`.
-- Leftover frames count in `replayed` when read, never in `encoded`. A leftover segment
+- Leftover frames count in `replayed` when the connection takes them, never in `encoded`. A leftover segment
   removed unsent adds only to `spool_dropped_bytes`. A cut-off final frame adds one to
   `spool_dropped`.
 - `bytes_sent` counts what the socket accepted (with TLS, the record bytes), not what the receiver read. No counter reports
@@ -284,13 +286,13 @@ totals and gauges are `PERF_COUNTER_LARGE_RAWCOUNT`.
 | Jumbo Pool Exhausted Drops | 15 | No free jumbo slot, or `--jumbo-capacity` is 0. | `pool_exhausted_jumbo` |
 | ETW Events Lost | 16 | Events ETW reports lost. | `etw_lost` |
 | ETW Buffers Lost | 17 | Buffers ETW reports lost. Not an event count. | `etw_buffers_lost` |
-| Receiver Down Drops | 18 | Frames lost in the sink: with no spool, the live frames the link had not fully sent at a failure and the frames that arrive while the receiver is down; the unsent rest of a replay batch at a failure; with TLS one unconfirmed piece; with a spool, the one live block handed back at a shutdown that follows a spill. A counted frame may still have arrived. | `disconnected_dropped` |
+| Receiver Down Drops | 18 | Frames lost in the sink: with no spool, the live frames the link had not fully sent at a failure and the frames that arrive while the receiver is down; with a spool, the one live block handed back at a shutdown that follows a spill. With a spool, a failed connection counts nothing here. A counted frame may still have arrived. | `disconnected_dropped` |
 | Events Rejected | 19 | Dequeued events rejected by the parser. | `rejected` |
 | Callback Errors | 20 | Events the callback could not copy or hand off. | `callback_errors` |
 | Receiver Disconnects | 21 | Lost receiver connections. | `receiver_disconnects` |
 | Send Queue Drops | 52 | Frames discarded, send queue full. Also in Frames Sent. | `queue_dropped` |
 | Frames Spooled | 53 | Frames stored for later sending. | `spooled` |
-| Frames Replayed | 54 | Frames read back from the spool, including leftovers. | `replayed` |
+| Frames Replayed | 54 | Frames from the spool that the receiver connection accepted, including leftovers. | `replayed` |
 | Spool Dropped Frames (55) / Spool Dropped Bytes (56) | 55 / 56 | Frames (55) or bytes (56) removed, skipped, or refused unsent. Causes as for `spool_dropped`. ID 56 is Advanced detail. | `spool_dropped` / `spool_dropped_bytes` |
 | Spool Errors | 57 | Spool I/O errors. | `spool_errors` |
 | Bytes Sent | 61 | Bytes the socket of the receiver connection accepted, live and replayed (with TLS, including record headers and tags). ID 62 is its rate. | `bytes_sent` |
@@ -301,8 +303,7 @@ How the totals relate:
   ID 14, so do not add them. Events Dropped also includes drops when the channel's parser
   end is gone. Those have no counter of their own.
 - IDs 18, 52, and 55 are sink losses, and a frame is in at most one. Frames in flight may
-  have reached the receiver. Frames Replayed (54) is not a loss, but a frame in a failed
-  replay batch is in both 54 and 18.
+  have reached the receiver. Frames Replayed (54) is not a loss.
 - To count every frame and event lost, add 12, 16, 18, 52, and 55. Leave out 17, which counts buffers.
 
 #### Gauges

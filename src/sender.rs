@@ -27,12 +27,14 @@
 //! thread takes the next block as soon as it finishes one, and the router routes
 //! every block in the parser channel before it waits.
 //!
-//! Delivery is at most once: a frame the socket accepted is never resent. A live
-//! frame the socket did not fully accept goes back to the router and is sent
-//! again on the next session; the receiver saw only a truncated copy of it. Only
-//! the unsent rest of one replay batch (whose spool cursor has moved) and, with
-//! TLS, the frames of one unconfirmed piece are lost, and they are counted in
-//! `disconnected_dropped`.
+//! A frame the socket fully accepted is never resent by a running service. A
+//! frame the socket did not fully accept goes back and is sent again on the
+//! next session; the receiver saw at most a truncated copy of it. A live frame
+//! goes back to the router. A replay frame goes back to the spool: the router
+//! holds each batch it reads until the link reports it, and a failure or a
+//! shutdown rewinds the spool to the last frame the link took. Nothing is lost
+//! at a failure except what the kernel already held. Across a crash the held
+//! replay data is sent again.
 //! See `docs/design/slow-receiver.md`.
 
 use std::{
@@ -61,7 +63,7 @@ use crate::{
 /// Capacity of a block. A block holds less than [`BLOCK_SEND_BYTES`] before a
 /// frame is appended, and a frame adds at most `MAX_ENCODED_LENGTH` plus its
 /// 4-byte length, so a frame always fits and the buffer never grows. A replay
-/// batch is below [`REPLAY_BATCH_BYTES`] plus one frame, so it fits too.
+/// batch is at most the larger of [`REPLAY_BATCH_BYTES`] and one frame, so it fits too.
 const BLOCK_CAPACITY: usize = 136 * 1024;
 /// The parser sends a block once it holds at least this many bytes.
 const BLOCK_SEND_BYTES: usize = 64 * 1024;
@@ -76,9 +78,11 @@ const SEND_QUEUE_BLOCKS: usize = 128;
 /// replay batches.
 const LINK_FIFO_BLOCKS: usize = 128;
 /// Replay batches the router can have out at once, in the FIFO or in the link
-/// thread's hand. A second batch keeps the link busy while the router reads the
-/// next, and bounds the replay data lost at a failure.
-const REPLAY_CREDIT: u8 = 2;
+/// thread's hand: the FIFO's depth less the front list. The spool holds them
+/// until the link reports them, so a failure loses none, and one router wake
+/// queues enough batches (about 0.2 s of replay at 41.2 MB/s) for the link to run
+/// without the router.
+const REPLAY_CREDIT: u8 = 127;
 /// Live blocks the router can keep for the next session after a failure while
 /// the spool holds a backlog: the one block that the link thread had in hand.
 /// Every other live block is in the spool already, or is not older than it.
@@ -89,9 +93,15 @@ const FRONT_LIST_BLOCKS: usize = 1;
 /// were in the FIFO, and the block that came back from the link thread was in its
 /// hand, so they add none. 260 blocks of 136 KiB are 34.5 MiB.
 const POOL_BLOCKS: usize = SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLOCKS + 3;
-/// The most spool bytes read in one replay step. A batch ends after the frame
-/// that crosses the limit. The router has at most [`REPLAY_CREDIT`] batches out.
+/// The most spool bytes read in one replay step. A batch takes a frame only if it
+/// fits the limit, and always takes the first, so it is at most the larger of
+/// this and one maximum-length frame (71,684 bytes). The router has at most
+/// [`REPLAY_CREDIT`] batches out.
 const REPLAY_BATCH_BYTES: usize = 64 * 1024;
+/// The most the router reads from the spool in one pass, before it serves the
+/// parser channel again. The channel holds 8 MiB, 0.20 s at 41.2 MB/s; a read of
+/// 1 MiB from a disk that is not cached, at 100 MB/s, takes 10.5 ms of that.
+const REPLAY_TURN_BYTES: usize = 1024 * 1024;
 /// How long the router waits for something to do. It bounds the delay before the
 /// router notices that the link went down, that a paused spool read can be
 /// retried, and that shutdown began.
@@ -102,6 +112,7 @@ const SENDER_POLL: Duration = Duration::from_millis(50);
 const LINK_POLL: Duration = Duration::from_millis(50);
 /// Messages the link thread can have waiting for the router: a `ReplayDone` for
 /// each replay credit, the live block in hand at a failure, and `HandBackDone`.
+/// The link thread never waits for room.
 const RETURN_MESSAGES: usize = REPLAY_CREDIT as usize + 2;
 /// How long `finish` waits for room in the channel for the last partial block.
 const FINAL_SEND_TIMEOUT: Duration = Duration::from_millis(100);
@@ -121,6 +132,10 @@ const _: () = assert!(LINK_FIFO_BLOCKS >= 2 && REPLAY_CREDIT > 0);
 // The FIFO must have room for the front list and every replay batch, so a send
 // that the router has checked never waits.
 const _: () = assert!(FRONT_LIST_BLOCKS + REPLAY_CREDIT as usize <= LINK_FIFO_BLOCKS);
+// The credit is the whole of what is left, so a change to the FIFO or the front
+// list asks for a decision about it.
+const _: () = assert!(FRONT_LIST_BLOCKS + REPLAY_CREDIT as usize == LINK_FIFO_BLOCKS);
+const _: () = assert!(REPLAY_TURN_BYTES >= REPLAY_BATCH_BYTES);
 
 pub(crate) use self::link::LinkSettings;
 
@@ -180,8 +195,17 @@ enum Return {
     /// again before anything newer. Only the block in hand comes back this way;
     /// the router takes the FIFO itself.
     Returned(Block),
-    /// A replay batch is written or counted: the router has a credit back.
-    ReplayDone,
+    /// The link thread is done with a replay batch: the router has a credit
+    /// back. `bytes` and `frames` are the prefix of the batch that the session
+    /// fully handed to the socket, ending at a frame boundary: all of it for a
+    /// batch written whole, less at a failure. The router reports it to the
+    /// spool, which holds the rest until the router rewinds.
+    ReplayDone { bytes: usize, frames: u32 },
+    /// The link thread counted a whole replay batch in `disconnected_dropped`
+    /// (the batch reached it with no session to send it on). The router has a
+    /// credit back, and the spool passes the batch without counting it as
+    /// replayed, so the frames are in one counter only.
+    ReplayCounted,
     /// The link thread has ended its session and returned its block in hand. It
     /// takes nothing from the FIFO and publishes `up` again only after the router
     /// answers with a fence.

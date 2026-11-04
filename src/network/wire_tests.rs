@@ -241,3 +241,90 @@ fn rustls_takes_at_most_its_buffer_limit_of_a_large_offer() {
     }
     assert_eq!(server_reads(&mut server, &sent), frame);
 }
+
+/// Offers `piece` until the session refuses, draining after each offer. Returns
+/// the plaintext that `tls_offer` reported taken, the ciphertext that reached the
+/// socket, and the index of the offer that failed.
+fn offer_until_refused(
+    client: &mut ClientConnection,
+    piece: &[u8],
+) -> (Vec<u8>, Vec<u8>, Option<usize>) {
+    let mut taken = Vec::new();
+    let mut wire = Vec::new();
+    let mut socket = Socket::new(&[Answer::Take(usize::MAX)]);
+    for index in 0..64 {
+        match tls_offer(client, piece) {
+            Ok(moved) => {
+                assert_eq!(moved.taken, piece.len());
+                taken.extend_from_slice(&piece[..moved.taken]);
+                tls_drain(client, &mut socket).expect("drain");
+                wire.extend_from_slice(&std::mem::take(&mut socket.taken));
+            }
+            Err(error) => {
+                assert!(
+                    error.to_string().contains("record limit"),
+                    "unexpected error: {error}"
+                );
+                return (taken, wire, Some(index));
+            }
+        }
+    }
+    (taken, wire, None)
+}
+
+#[test]
+fn a_tls_session_at_its_record_limit_fails_instead_of_dropping_data() {
+    // The AES-GCM suite of ring with a record limit of 8 instead of 2^24. At the
+    // limit rustls queues close_notify, refuses the record, and still reports the
+    // bytes as taken.
+    let (mut client, mut server) = TlsKit::with_record_limit(8).pair();
+    let piece = [0x5a_u8; 200];
+    let (taken, wire, failed_at) = offer_until_refused(&mut client, &piece);
+    let failed_at = failed_at.expect("the record limit ends the session");
+    assert!(
+        (1..=8).contains(&failed_at),
+        "the limit is 8 records, one of them the handshake: failed at offer {failed_at}"
+    );
+    // Every byte that an offer reported taken reached the receiver. None was
+    // dropped on the way.
+    assert_eq!(server_reads(&mut server, &wire), taken);
+}
+
+#[test]
+fn a_piece_smaller_than_a_close_notify_record_can_pass_once_and_the_next_offer_fails() {
+    // The refused piece is smaller than the 31-byte close_notify record that
+    // rustls queues in its place, so the size test cannot tell them apart. The
+    // frames of the encoder are far larger. The next offer queues nothing and
+    // fails, so at most one such piece is lost.
+    let (mut client, mut server) = TlsKit::with_record_limit(8).pair();
+    let piece = [0x5a_u8; 5];
+    let (taken, wire, failed_at) = offer_until_refused(&mut client, &piece);
+    assert!(failed_at.is_some(), "the session ends");
+    let received = server_reads(&mut server, &wire);
+    assert!(taken.starts_with(&received));
+    assert!(
+        taken.len() - received.len() <= piece.len(),
+        "at most the one piece is lost"
+    );
+}
+
+#[test]
+fn offers_of_every_size_are_never_taken_for_a_refusal() {
+    for (version, mut client, mut server) in sessions() {
+        let mut socket = Socket::new(&[Answer::Take(usize::MAX)]);
+        let mut sent = Vec::new();
+        let mut plain = Vec::new();
+        for size in [1_usize, 2, 5, 100, 4096, TLS_FEED_BYTES] {
+            for _ in 0..50 {
+                let piece = vec![0x33_u8; size];
+                let moved = tls_offer(&mut client, &piece)
+                    .unwrap_or_else(|error| panic!("{version}, {size} bytes: {error}"));
+                assert_eq!(moved.taken, size, "{version}");
+                plain.extend_from_slice(&piece);
+                tls_drain(&mut client, &mut socket).expect("drain");
+                sent.extend_from_slice(&std::mem::take(&mut socket.taken));
+            }
+        }
+        assert_eq!(server_reads(&mut server, &sent), plain, "{version}");
+    }
+}

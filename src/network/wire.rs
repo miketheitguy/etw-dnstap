@@ -17,6 +17,23 @@
 //!   socket did not take inside rustls, so `WouldBlock` never cuts a record.
 //!   Neither `write_all`, `StreamOwned::write`, nor a `BufWriter` is used on
 //!   the data path: each hides how much of a write was accepted.
+//!
+//! Two cases leave a piece in doubt, and the rule that an unconfirmed piece
+//! cannot have reached the receiver whole has one exception.
+//!
+//! - **The record limit.** At the confidentiality limit of its cipher (2^24
+//!   records for TLS 1.2 with AES-GCM), rustls queues `close_notify`, refuses the
+//!   record, and still reports the bytes as taken. [`tls_offer`] checks that the
+//!   ciphertext it queued is larger than the plaintext it took, which any record
+//!   makes it, and fails the session otherwise. The data is not confirmed, so
+//!   the link gives it back, and the reconnect has new keys.
+//! - **A key update.** In TLS 1.3 rustls can queue a `KeyUpdate` (about 22 bytes)
+//!   after a data record, at the record limit or on `refresh_traffic_keys()`. If
+//!   the socket takes the whole data record and the session fails while the
+//!   `KeyUpdate` is still pending, [`Wire::pending`] is true, so the piece stays
+//!   unconfirmed, although the receiver holds it. The frames are sent again and
+//!   arrive twice. The window is the time to write 22 bytes, once in 2^23 or
+//!   more records.
 
 use std::{
     io::{self, Write},
@@ -126,13 +143,48 @@ pub(crate) fn plain_offer(socket: &mut impl Write, bytes: &[u8]) -> io::Result<M
     }
 }
 
+/// The least that one TLS record adds to the plaintext it carries: its 5-byte
+/// header (RFC 5246 section 6.2.1, RFC 8446 section 5.1) and the 16-byte
+/// authentication tag of every AEAD cipher that rustls offers.
+const MIN_RECORD_OVERHEAD: usize = 5 + 16;
+
+/// The bytes rustls has queued for the socket. `process_new_packets` does no I/O
+/// here, because this path never reads from the socket; it returns the state,
+/// which `CommonState` alone does not expose as a count.
+fn queued_tls_bytes(connection: &mut ClientConnection) -> io::Result<usize> {
+    connection
+        .process_new_packets()
+        .map(|state| state.tls_bytes_to_write())
+        .map_err(io::Error::other)
+}
+
 /// Feeds rustls with `bytes`. Nothing reaches the socket here.
+///
+/// `Writer::write` reports the bytes taken even when rustls refuses to encrypt
+/// them: at the record limit of the cipher it queues `close_notify`, drops the
+/// plaintext, and returns the length. A record always makes the ciphertext
+/// longer than its plaintext by a header and a tag, so ciphertext that is not
+/// at least that much larger than `taken` means the data was dropped. That is an
+/// error here, and the session ends.
+///
+/// A refused piece of 10 bytes or fewer (smaller than a `close_notify` record,
+/// and not a frame the encoder produces) could pass once. The next offer queues
+/// nothing and fails.
 ///
 /// # Errors
 /// Returns the error rustls reports for the connection (a fatal alert, for
-/// example).
+/// example), or an error when rustls took bytes and queued no record for them.
 pub(crate) fn tls_offer(connection: &mut ClientConnection, bytes: &[u8]) -> io::Result<Moved> {
+    let before = queued_tls_bytes(connection)?;
     let taken = connection.writer().write(bytes)?;
+    if taken > 0 {
+        let added = queued_tls_bytes(connection)?.saturating_sub(before);
+        if added < taken + MIN_RECORD_OVERHEAD {
+            return Err(io::Error::other(
+                "TLS took plaintext and queued no record for it: the cipher's record limit",
+            ));
+        }
+    }
     Ok(Moved { taken, written: 0 })
 }
 

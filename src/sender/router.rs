@@ -22,7 +22,12 @@
 //! While the spool holds a backlog the router replays it: batches of the spool
 //! head go into the same FIFO, so replay and live data keep one order. The router
 //! has at most [`REPLAY_CREDIT`] batches out at once; the link thread returns a
-//! credit with `ReplayDone`.
+//! credit with `ReplayDone`, which says how much of the batch the socket took.
+//! The spool holds each batch until then. It deletes a segment only when the
+//! link has taken all of it, and a failure sets its read position back to the
+//! last frame the link took ([`Spool::rewind`]), so no replay frame is lost. The
+//! router reads at most [`REPLAY_TURN_BYTES`] in one pass, so the parser channel
+//! is served again soon, and it writes the spool cursor once per pass.
 //!
 //! **States.** The router believes the link is up or down (`up`). It follows the
 //! shared `up` flag, which only the link thread writes:
@@ -30,16 +35,17 @@
 //! - *Direct*: `up`, no backlog. Live blocks go to the FIFO.
 //! - *Draining*: `up`, a backlog or a replay batch out. Live blocks go to the
 //!   spool. The front list goes first, then replay batches. The router leaves
-//!   Draining only when a read finds nothing and every credit is back, so the
-//!   FIFO holds no replay batch in Direct.
+//!   Draining only when the spool holds nothing, which needs every batch
+//!   reported, so the FIFO holds no replay batch in Direct.
 //! - *Hand-back*: the link thread cleared `up`. The router takes nothing from the
 //!   parser channel and appends nothing to the spool. It waits for `HandBackDone`,
-//!   takes the FIFO, places the blocks, and sends a fence (see
+//!   takes the FIFO, rewinds the spool, places the blocks, and sends a fence (see
 //!   [`Router::place_older`]).
 //! - *Down*: blocks go to the spool.
 //! - *Sealing*: shutdown. The router closes the FIFO and the fence channel,
-//!   collects what comes back, takes the FIFO, sends everything still queued to
-//!   the spool, seals it, and joins the link thread.
+//!   collects what comes back, takes the FIFO, sends everything still queued to the
+//!   spool, seals it (which saves the delivered position, so the replay data the
+//!   link did not take stays on disk for the next run), and joins the link thread.
 
 use std::{
     collections::VecDeque,
@@ -54,7 +60,8 @@ use crossbeam_queue::ArrayQueue;
 
 use super::{
     Block, FRONT_LIST_BLOCKS, Item, LINK_FIFO_BLOCKS, LinkShared, MAX_IDLE_READS,
-    REPLAY_BATCH_BYTES, REPLAY_CREDIT, Return, RouterPorts, SEND_QUEUE_BLOCKS, SENDER_POLL,
+    REPLAY_BATCH_BYTES, REPLAY_CREDIT, REPLAY_TURN_BYTES, Return, RouterPorts, SEND_QUEUE_BLOCKS,
+    SENDER_POLL,
     monitor::{LinkMonitor, Observation},
     release,
 };
@@ -77,8 +84,8 @@ pub(super) enum Route {
 /// What a replay step did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReplayStep {
-    /// A batch went to the FIFO.
-    Sent,
+    /// A batch of this many bytes went to the FIFO.
+    Sent(usize),
     /// Nothing was read; call again at once.
     Again,
     /// Nothing to read now; wait for a block.
@@ -207,6 +214,8 @@ impl Router {
         let deadline = self.shared.shutdown.link_deadline();
         self.collect_returns();
         self.follow_link();
+        // Every report of this pass is applied: save the delivered position once.
+        self.checkpoint();
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) || self.finished() {
             return Turn::Done;
         }
@@ -252,6 +261,11 @@ impl Router {
 
     fn has_backlog(&self) -> bool {
         self.spool.as_ref().is_some_and(Spool::has_backlog)
+    }
+
+    /// Whether the spool has data the router has not read.
+    fn has_unread(&self) -> bool {
+        self.spool.as_ref().is_some_and(Spool::has_unread)
     }
 
     /// Whether the router may take another block from the parser channel. With no
@@ -370,17 +384,33 @@ impl Router {
     /// caller holds the take lock, or knows that the link thread takes nothing:
     /// it has stopped, or it is waiting for the fence.
     ///
-    /// A replay batch cannot go back to the spool, because its cursor has moved:
-    /// it is counted in `disconnected_dropped`, and its credit comes back.
+    /// A replay batch is not kept: the spool still holds its frames. It goes back
+    /// to the pool, and the caller rewinds the spool ([`Self::rewind_spool`]) once
+    /// the link has stopped taking items. The credit comes back in
+    /// [`Self::place_older`], which resets it, so this does not touch it. A spill
+    /// never finds one, because it runs only with no replay batch out.
     fn drain_fifo(&mut self) {
         while let Ok(item) = self.fifo_end.try_recv() {
             match item {
                 Item::Live(block) => self.older.push_back(block),
-                Item::Replay(block) => {
-                    self.replay_out = self.replay_out.saturating_sub(1);
-                    self.discard(block);
-                }
+                Item::Replay(block) => release(&self.free, block),
             }
+        }
+    }
+
+    /// Gives back every replay batch the link did not take: the spool reads again
+    /// from the frame after the last one the link reported. Call it once the link
+    /// has stopped taking items and every report is applied.
+    fn rewind_spool(&mut self) {
+        if let Some(spool) = self.spool.as_mut() {
+            spool.rewind();
+        }
+    }
+
+    /// Saves the spool cursor when the delivered position moved.
+    fn checkpoint(&mut self) {
+        if let Some(spool) = self.spool.as_mut() {
+            spool.checkpoint();
         }
     }
 
@@ -474,19 +504,27 @@ impl Router {
         moved
     }
 
-    /// Reads replay batches from the spool head and sends them to the FIFO, up to
-    /// the credit. Returns whether anything moved.
+    /// Reads replay batches from the spool and sends them to the FIFO, up to the
+    /// credit and [`REPLAY_TURN_BYTES`]. Returns whether anything moved.
+    ///
+    /// The front list is already in the FIFO: `serve` sends it first, and the FIFO
+    /// has room for it and for the whole credit (see the assert on the constants),
+    /// so replay never passes it.
     fn replay(&mut self) -> bool {
         let mut progressed = false;
-        while self.is_up()
+        let mut read = 0;
+        while read < REPLAY_TURN_BYTES
+            && self.is_up()
             && self.shared.up.load(Ordering::Acquire)
-            && self.has_backlog()
-            && self.front.is_empty()
+            && self.has_unread()
             && self.replay_out < REPLAY_CREDIT
             && self.fifo_has_room()
         {
             match self.replay_step() {
-                ReplayStep::Sent => progressed = true,
+                ReplayStep::Sent(bytes) => {
+                    progressed = true;
+                    read += bytes;
+                }
                 ReplayStep::Again => {
                     progressed = true;
                     break;
@@ -497,9 +535,9 @@ impl Router {
         progressed
     }
 
-    /// Reads one batch from the spool head and sends it to the FIFO. The caller
-    /// has checked that the FIFO has room and that a credit is free, so the send
-    /// cannot wait, and a batch whose cursor moved always reaches the link thread.
+    /// Reads one batch from the spool and sends it to the FIFO. The caller has
+    /// checked that the FIFO has room and that a credit is free, so the send
+    /// cannot wait. The spool holds the batch until the link thread reports it.
     fn replay_step(&mut self) -> ReplayStep {
         let mut block = self.shared.take_block(&self.free);
         let Some(spool) = self.spool.as_mut() else {
@@ -510,21 +548,26 @@ impl Router {
         if let Ok(frames @ 1..) = read {
             self.idle_reads = 0;
             block.frames = frames;
+            let bytes = block.bytes.len();
             self.replay_out += 1;
             if let Err(block) = self.offer(Item::Replay(block)) {
-                // The FIFO had room, so this does not happen. The spool consumed
-                // the batch when it returned it: it is lost, and it is counted.
+                // The FIFO had room, so this does not happen. The batch never
+                // reached the link: it is counted, and passed without counting it
+                // as replayed, so the spool does not read it again.
                 self.replay_out -= 1;
+                if let Some(owner) = self.spool.as_mut() {
+                    owner.written_off();
+                }
                 self.discard(block);
             }
-            return ReplayStep::Sent;
+            return ReplayStep::Sent(bytes);
         }
         release(&self.free, block);
         // Nothing read: an error, a pause, or only control frames skipped. Call
         // again only in the last case, and not forever.
         self.idle_reads = self.idle_reads.saturating_add(1);
         let again = self.spool.as_ref().is_none_or(|current| {
-            !current.has_backlog() || (!current.reads_paused() && self.idle_reads < MAX_IDLE_READS)
+            !current.has_unread() || (!current.reads_paused() && self.idle_reads < MAX_IDLE_READS)
         });
         if again {
             ReplayStep::Again
@@ -586,7 +629,18 @@ impl Router {
     fn take_return(&mut self, message: Return) {
         match message {
             Return::Returned(block) => self.older.push_back(block),
-            Return::ReplayDone => self.replay_out = self.replay_out.saturating_sub(1),
+            Return::ReplayDone { bytes, frames } => {
+                self.replay_out = self.replay_out.saturating_sub(1);
+                if let Some(spool) = self.spool.as_mut() {
+                    spool.delivered(bytes, frames);
+                }
+            }
+            Return::ReplayCounted => {
+                self.replay_out = self.replay_out.saturating_sub(1);
+                if let Some(spool) = self.spool.as_mut() {
+                    spool.written_off();
+                }
+            }
             Return::HandBackDone => self.handed_back = true,
         }
     }
@@ -618,6 +672,8 @@ impl Router {
         }
         self.handed_back = false;
         self.take_fifo();
+        self.rewind_spool();
+        self.checkpoint();
         self.link_state = LinkState::Down;
         self.place_older();
         self.send_fence();
@@ -658,6 +714,8 @@ impl Router {
         self.handed_back = false;
         self.fences = None;
         self.take_fifo();
+        self.rewind_spool();
+        self.checkpoint();
         self.place_older();
     }
 
@@ -727,9 +785,10 @@ impl Router {
     }
 
     /// Shutdown. Closes the FIFO and the fence channel, so the link thread writes
-    /// what is left within its budget, hands back what it holds, and ends. Then,
-    /// in order, the block it gave back, the FIFO, the front list, and what is
-    /// left in the parser channel go to the spool, which is sealed. The link
+    /// what is left within its budget, hands back what it holds, and ends. The
+    /// replay data the link did not take stays on disk, and the seal saves the
+    /// position after the last frame the link took. Then, in order, the block it gave back, the FIFO, the front list, and what
+    /// is left in the parser channel go to the spool, which is sealed. The link
     /// thread runs STOP/FINISH meanwhile; the result is its result.
     ///
     /// Blocks older than a backlog cannot go in front of it. They are counted in
@@ -744,7 +803,11 @@ impl Router {
                 Err(_) => break,
             }
         }
-        // The link thread has ended its session: it takes nothing more.
+        // The link thread has ended its session: it takes nothing more. Every
+        // batch it finished is reported. The ones it did not take stay in the
+        // spool for the next run, which reads from the frame after the last one
+        // the link took; `Spool::seal` saves that position. Nothing reads the
+        // spool again, so its read position needs no rewind.
         self.take_fifo();
         let keep_order = self.spool.is_some() && !self.has_backlog();
         while let Some(block) = self.older.pop_front().or_else(|| self.front.pop_front()) {

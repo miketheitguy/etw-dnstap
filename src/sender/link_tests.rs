@@ -209,58 +209,44 @@ fn a_piece_that_starts_inside_a_frame_ends_with_that_frame_at_least() {
 }
 
 #[test]
-fn a_block_splits_into_sent_unknown_and_kept_frames_by_the_bytes_taken() {
+fn a_block_splits_into_sent_and_unsent_frames_by_the_bytes_confirmed() {
     let bytes = framed_lengths(&[10, 10, 10, 10]);
-    // 14 bytes per frame. Nothing taken: everything is kept.
+    // 14 bytes per frame. Nothing confirmed: everything is unsent.
     assert_eq!(
-        split_block(&bytes, 0, 0),
+        split_block(&bytes, 0),
         Split {
             sent: 0,
-            unknown: 0,
-            kept: 4,
-            keep_from: 0
+            sent_end: 0,
+            unsent: 4
         }
     );
-    // The socket took one frame and part of the second (plaintext: the two are
-    // the same): the second is cut and kept whole.
+    // The socket took one frame and part of the second: the second is cut, and
+    // goes back whole with the rest.
     assert_eq!(
-        split_block(&bytes, 20, 20),
+        split_block(&bytes, 20),
         Split {
             sent: 1,
-            unknown: 0,
-            kept: 3,
-            keep_from: 14
+            sent_end: 14,
+            unsent: 3
         }
     );
-    // TLS: two frames confirmed, one fed but unconfirmed, one not fed.
+    // TLS: two frames confirmed. Frames fed to rustls but not confirmed are
+    // unsent too: the receiver cannot have a whole copy of them.
     assert_eq!(
-        split_block(&bytes, 28, 42),
+        split_block(&bytes, 28),
         Split {
             sent: 2,
-            unknown: 1,
-            kept: 1,
-            keep_from: 42
+            sent_end: 28,
+            unsent: 2
         }
     );
-    // TLS: the piece ends inside a frame: that frame was not fully fed, so it is
-    // kept, and it cannot have arrived whole.
+    // Everything confirmed: nothing is unsent.
     assert_eq!(
-        split_block(&bytes, 28, 35),
-        Split {
-            sent: 2,
-            unknown: 0,
-            kept: 2,
-            keep_from: 28
-        }
-    );
-    // Everything taken: nothing is kept.
-    assert_eq!(
-        split_block(&bytes, 56, 56),
+        split_block(&bytes, 56),
         Split {
             sent: 4,
-            unknown: 0,
-            kept: 0,
-            keep_from: 56
+            sent_end: 56,
+            unsent: 0
         }
     );
 }
@@ -276,7 +262,11 @@ fn a_live_block_and_a_replay_batch_are_written_whole_and_the_batch_reports_done(
     let total = (live.bytes.len() + replay.bytes.len()) as u64;
     rig.send(Item::Live(live));
     rig.send(Item::Replay(replay));
-    assert!(matches!(rig.next_return(), Return::ReplayDone));
+    // The batch reports all of its bytes and frames.
+    let Return::ReplayDone { bytes, frames } = rig.next_return() else {
+        panic!("the batch is reported");
+    };
+    assert_eq!((bytes, frames), (2 * 104, 2));
     assert_eq!(script.session_frames(0), vec![0, 1, 2, 3, 4]);
     assert_eq!(get(&rig.stats.bytes_sent), total);
     rig.close().expect("clean STOP");
@@ -444,21 +434,39 @@ fn a_failure_returns_only_the_block_in_hand_and_leaves_the_fifo_to_the_router() 
 }
 
 #[test]
-fn a_cut_replay_batch_is_counted_from_the_cut_frame_and_never_returned() {
+fn a_cut_replay_batch_reports_the_frames_taken_and_counts_nothing() {
     let script = Script::new(false);
     script.set_mode(Mode::then_reset(104 + 10));
     let rig = Rig::new(&script, Duration::from_secs(60), None);
     rig.send(Item::Replay(numbered_block(0..4, 100)));
     wait_until("the link to clear up", || !rig.up());
-    assert!(matches!(rig.next_return(), Return::ReplayDone));
+    // One frame was sent. The report ends after it; the cut frame and the two
+    // after it stay in the spool, so the link counts nothing and returns nothing.
+    let Return::ReplayDone { bytes, frames } = rig.next_return() else {
+        panic!("the batch is reported");
+    };
+    assert_eq!((bytes, frames), (104, 1));
     assert!(matches!(rig.next_return(), Return::HandBackDone));
-    // One frame was sent; the cut frame and the two after it are lost.
-    assert_eq!(get(&rig.stats.disconnected_dropped), 3);
+    assert_eq!(get(&rig.stats.disconnected_dropped), 0);
     assert_eq!(script.session_frames(0), vec![0]);
 }
 
 #[test]
-fn a_tls_piece_whose_delivery_is_unconfirmed_is_counted_and_the_frames_after_it_go_back() {
+fn a_batch_that_the_socket_took_nothing_of_reports_nothing_taken() {
+    let script = Script::new(false);
+    script.set_mode(Mode::then_reset(10));
+    let rig = Rig::new(&script, Duration::from_secs(60), None);
+    rig.send(Item::Replay(numbered_block(0..2, 100)));
+    wait_until("the link to clear up", || !rig.up());
+    let Return::ReplayDone { bytes, frames } = rig.next_return() else {
+        panic!("the batch is reported");
+    };
+    assert_eq!((bytes, frames), (0, 0));
+    assert_eq!(get(&rig.stats.disconnected_dropped), 0);
+}
+
+#[test]
+fn a_tls_piece_whose_delivery_is_unconfirmed_goes_back_with_the_frames_after_it() {
     let script = Script::new(false);
     // Six frames of 6,004 bytes make three pieces of two frames. The socket takes
     // all of the first record (12,008 bytes of plaintext and at most 29 of
@@ -467,15 +475,86 @@ fn a_tls_piece_whose_delivery_is_unconfirmed_is_counted_and_the_frames_after_it_
     let rig = Rig::new(&script, Duration::from_secs(60), Some(TlsKit::new()));
     rig.send(Item::Live(numbered_block(0..6, 6_000)));
     wait_until("the link to clear up", || !rig.up());
+    // Frames 2 and 3 were fed to rustls, and the socket took only part of their
+    // record, which the receiver cannot decrypt. They go back with 4 and 5.
     let Return::Returned(rest) = rig.next_return() else {
-        panic!("the frames after the unconfirmed piece come back");
+        panic!("the frames after the confirmed piece come back");
     };
-    assert_eq!(numbers_in(&rest), vec![4, 5]);
+    assert_eq!(numbers_in(&rest), vec![2, 3, 4, 5]);
+    assert_eq!(rest.frames, 4);
     assert!(matches!(rig.next_return(), Return::HandBackDone));
-    // Frames 2 and 3 were fed to rustls and may or may not have arrived: counted.
-    assert_eq!(get(&rig.stats.disconnected_dropped), 2);
+    assert_eq!(get(&rig.stats.disconnected_dropped), 0);
     // The receiver decrypted the first record only.
     assert_eq!(script.session_frames(0), vec![0, 1]);
+}
+
+#[test]
+fn a_tls_replay_batch_reports_the_confirmed_frames_and_counts_nothing() {
+    let script = Script::new(false);
+    script.set_mode(Mode::then_reset(12_008 + 29 + 50));
+    let rig = Rig::new(&script, Duration::from_secs(60), Some(TlsKit::new()));
+    rig.send(Item::Replay(numbered_block(0..6, 6_000)));
+    wait_until("the link to clear up", || !rig.up());
+    let Return::ReplayDone { bytes, frames } = rig.next_return() else {
+        panic!("the batch is reported");
+    };
+    // Two frames are confirmed. The unconfirmed piece (frames 2 and 3) and the
+    // rest are read from the spool again.
+    assert_eq!((bytes, frames), (2 * 6_004, 2));
+    assert!(matches!(rig.next_return(), Return::HandBackDone));
+    assert_eq!(get(&rig.stats.disconnected_dropped), 0);
+    assert_eq!(script.session_frames(0), vec![0, 1]);
+}
+
+#[test]
+fn a_tls_session_at_its_record_limit_hands_back_the_frames_it_did_not_send() {
+    let script = Script::new(false);
+    // rustls refuses the third data record of a session (the limit is 3 records,
+    // one of them the handshake) and still reports the bytes as taken.
+    let rig = Rig::new(
+        &script,
+        Duration::from_secs(60),
+        Some(TlsKit::with_record_limit(3)),
+    );
+    // 40 frames of 1,004 bytes: 16 to a piece, one record each.
+    rig.send(Item::Live(numbered_block(0..40, 1_000)));
+    wait_until("the link to clear up", || !rig.up());
+    let delivered = script.session_frames(0);
+    assert!(
+        !delivered.is_empty() && delivered.len() < 40 && delivered.len().is_multiple_of(16),
+        "whole records only: {} frames",
+        delivered.len()
+    );
+    // The frames that rustls took and dropped were never confirmed, so they come
+    // back, and nothing is counted.
+    let Return::Returned(rest) = rig.next_return() else {
+        panic!("the unsent frames come back");
+    };
+    let first = u32::try_from(delivered.len()).expect("small");
+    assert_eq!(numbers_in(&rest), (first..40).collect::<Vec<_>>());
+    assert!(matches!(rig.next_return(), Return::HandBackDone));
+    assert_eq!(get(&rig.stats.disconnected_dropped), 0);
+    assert_eq!(get(&rig.stats.disconnects), 1);
+}
+
+#[test]
+fn a_tls_replay_batch_at_the_record_limit_reports_only_the_confirmed_frames() {
+    let script = Script::new(false);
+    let rig = Rig::new(
+        &script,
+        Duration::from_secs(60),
+        Some(TlsKit::with_record_limit(3)),
+    );
+    rig.send(Item::Replay(numbered_block(0..40, 1_000)));
+    wait_until("the link to clear up", || !rig.up());
+    let delivered = script.session_frames(0);
+    let Return::ReplayDone { bytes, frames } = rig.next_return() else {
+        panic!("the batch is reported");
+    };
+    assert_eq!(frames as usize, delivered.len());
+    assert_eq!(bytes, delivered.len() * 1_004);
+    assert!(matches!(rig.next_return(), Return::HandBackDone));
+    assert_eq!(get(&rig.stats.disconnected_dropped), 0);
 }
 
 #[test]
@@ -577,6 +656,33 @@ fn the_link_takes_the_next_item_at_once_and_waits_only_when_the_fifo_is_empty() 
     drop(stepper.fifo);
     assert_eq!(stepper.link.step(), Step::End(End::Closed));
     assert!(stepper.returns.is_empty());
+}
+
+#[test]
+fn a_replay_batch_that_reaches_a_link_with_no_session_is_counted_once_and_passed() {
+    let mut stepper = stepper();
+    stepper
+        .link
+        .uplink
+        .lost(&io::Error::other("the session ended"));
+    stepper
+        .fifo
+        .send(Item::Replay(numbered_block(0..3, 100)))
+        .expect("room");
+    stepper
+        .fifo
+        .send(Item::Live(numbered_block(3..5, 100)))
+        .expect("room");
+    assert_eq!(stepper.link.step(), Step::Worked);
+    assert_eq!(stepper.link.step(), Step::Worked);
+    // The batch is counted by the link, and the spool is told to pass it without
+    // counting it as replayed. A live block is counted and nothing else.
+    assert!(matches!(
+        stepper.returns.try_recv(),
+        Ok(Return::ReplayCounted)
+    ));
+    assert!(stepper.returns.try_recv().is_err());
+    assert_eq!(get(&stepper.link.stats.disconnected_dropped), 5);
 }
 
 #[test]

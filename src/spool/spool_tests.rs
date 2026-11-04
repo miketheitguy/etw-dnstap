@@ -104,7 +104,9 @@ fn get(counter: &AtomicU64) -> u64 {
 fn drain(spool: &mut Spool, limit: usize) -> Vec<u8> {
     let mut out = Vec::new();
     loop {
-        let frames = spool.read_batch(&mut out, limit).expect("read succeeds");
+        let frames = spool
+            .read_and_deliver(&mut out, limit)
+            .expect("read succeeds");
         if frames == 0 {
             return out;
         }
@@ -363,7 +365,7 @@ fn a_reopened_spool_replays_leftovers_from_the_cursor_and_writes_a_new_segment()
             );
         }
         let mut out = Vec::new();
-        let read_frames = first.read_batch(&mut out, 60_000).expect("read") as usize;
+        let read_frames = first.read_and_deliver(&mut out, 60_000).expect("read") as usize;
         let before = numbers(&out);
         assert_eq!(before.len(), read_frames);
         assert!(
@@ -373,6 +375,10 @@ fn a_reopened_spool_replays_leftovers_from_the_cursor_and_writes_a_new_segment()
         let old_sequences = segment_files(dir.path());
         if seal_first {
             first.seal().expect("seal");
+        } else {
+            // A crash. The router saves the delivered position once per pass, so
+            // the file holds the position of the last pass.
+            first.checkpoint();
         }
         drop(first);
 
@@ -437,7 +443,7 @@ fn lost_frames_are_not_counted_again_when_the_segment_is_evicted_later() {
     leftover_segment(&dir, 2, &numbered(2..4, 0).0, true);
     let (mut spool, stats) = open(&dir, 200);
     let mut out = Vec::new();
-    assert_eq!(spool.read_batch(&mut out, 1000).expect("read"), 2);
+    assert_eq!(spool.read_and_deliver(&mut out, 1000).expect("read"), 2);
     assert_eq!(get(&stats.spool_dropped_bytes), 14);
     assert_eq!(get(&stats.spool_dropped), 1);
     // The next block needs room, so segment 1 (already ended) is deleted.
@@ -553,11 +559,11 @@ fn reading_to_the_writer_position_empties_the_spool_and_moves_the_cursor() {
     let (mut spool, stats) = open(&dir, MIB);
     assert_eq!(append_numbers(&mut spool, 0..5, 10), Appended::Stored);
     let mut out = Vec::new();
-    assert_eq!(spool.read_batch(&mut out, 1 << 20).expect("read"), 5);
+    assert_eq!(spool.read_and_deliver(&mut out, 1 << 20).expect("read"), 5);
     assert_eq!(numbers(&out), [0, 1, 2, 3, 4]);
     // The cursor file exists while data may remain.
     assert!(dir.path().join("cursor.bin").exists());
-    assert_eq!(spool.read_batch(&mut out, 1 << 20).expect("read"), 0);
+    assert_eq!(spool.read_and_deliver(&mut out, 1 << 20).expect("read"), 0);
     assert!(!spool.has_backlog());
     assert_eq!(all_files(dir.path()), Vec::<String>::new());
     // The cursor stays, set to the next sequence.
@@ -618,7 +624,7 @@ fn appending_while_reading_keeps_frames_in_order() {
         );
         next += 7;
         let mut out = Vec::new();
-        spool.read_batch(&mut out, 20_000).expect("read");
+        spool.read_and_deliver(&mut out, 20_000).expect("read");
         seen.extend(numbers(&out));
     }
     seen.extend(numbers(&drain(&mut spool, 20_000)));
@@ -880,7 +886,7 @@ fn a_segment_that_cannot_be_deleted_is_not_sent_twice() {
     // Once the other process lets go, the next idle read removes it.
     drop(hold);
     let mut out = Vec::new();
-    assert_eq!(spool.read_batch(&mut out, 1000).expect("read"), 0);
+    assert_eq!(spool.read_and_deliver(&mut out, 1000).expect("read"), 0);
     assert_eq!(segment_files(dir.path()), Vec::<String>::new());
     assert_eq!(get(&stats.spool_bytes), 0);
     assert_eq!(get(&stats.spool_segments), 0);
@@ -928,7 +934,7 @@ fn a_sharing_violation_keeps_the_segment_and_pauses_reads() {
     let (mut spool, stats) = open(&dir, MIB);
     let mut out = Vec::new();
     let error = spool
-        .read_batch(&mut out, 1000)
+        .read_and_deliver(&mut out, 1000)
         .expect_err("the file is in use");
     assert_eq!(error.raw_os_error(), Some(32));
     assert_eq!(get(&stats.spool_errors), 1);
@@ -936,7 +942,7 @@ fn a_sharing_violation_keeps_the_segment_and_pauses_reads() {
     assert_eq!(get(&stats.spool_dropped_bytes), 0);
 
     // Reads are paused: no busy loop, no second error.
-    assert_eq!(spool.read_batch(&mut out, 1000).expect("paused"), 0);
+    assert_eq!(spool.read_and_deliver(&mut out, 1000).expect("paused"), 0);
     assert_eq!(get(&stats.spool_errors), 1);
 
     // The other process lets go: the segment is read in full.
@@ -963,7 +969,7 @@ fn three_sharing_violations_in_a_row_delete_the_segment_and_count_it() {
     for attempt in 1..=3 {
         spool.read_paused_until = None;
         let error = spool
-            .read_batch(&mut out, 1000)
+            .read_and_deliver(&mut out, 1000)
             .expect_err("the file is in use");
         assert_eq!(error.raw_os_error(), Some(32), "attempt {attempt}");
         assert_eq!(get(&stats.spool_errors), attempt + u64::from(attempt == 3));
@@ -977,31 +983,320 @@ fn three_sharing_violations_in_a_row_delete_the_segment_and_count_it() {
 }
 
 #[test]
-fn a_cursor_write_failure_consumes_nothing_and_pauses_reads() {
+fn a_cursor_write_failure_leaves_an_older_position_and_does_not_pause_reads() {
     let dir = TestDir::new("spool-cursor-failure");
     let (mut spool, stats) = open(&dir, MIB);
-    assert_eq!(append_numbers(&mut spool, 0..5, 10), Appended::Stored);
+    // 6 blocks of 10 frames, about 50 KiB each: 3 segments, 20 frames in the first.
+    for block in 0..6 {
+        assert_eq!(
+            append_numbers(&mut spool, block * 10..block * 10 + 10, 5000),
+            Appended::Stored
+        );
+    }
     // A folder where the cursor file belongs: the write cannot succeed.
     fs::create_dir(dir.path().join(cursor::FILE_NAME)).expect("folder");
-    let mut out = vec![0xaa];
-    let error = spool
-        .read_batch(&mut out, 1000)
-        .expect_err("the cursor cannot be saved");
-    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    assert_eq!(out, [0xaa], "the bytes were handed back");
-    assert_eq!(get(&stats.replayed), 0);
-    assert_eq!(get(&stats.spool_errors), 1);
+    let mut out = Vec::new();
+    let first = spool.read_and_deliver(&mut out, 30_000).expect("read");
+    assert!(
+        first > 0 && first < 10,
+        "the batch is inside the first segment"
+    );
+    spool.checkpoint();
+    assert_eq!(get(&stats.spool_errors), 1, "the position cannot be saved");
 
-    // Reads are paused, while appends go on.
-    assert_eq!(spool.read_batch(&mut out, 1000).expect("paused"), 0);
-    assert_eq!(get(&stats.spool_errors), 1);
-    assert_eq!(append_numbers(&mut spool, 5..6, 10), Appended::Stored);
+    // Reads go on: the file is only bookkeeping for a crash. The pause keeps the
+    // spool from trying again at once.
+    out.clear();
+    let second = spool
+        .read_and_deliver(&mut out, 30_000)
+        .expect("reads are not paused");
+    assert!(second > 0 && first + second < 20);
+    assert_eq!(get(&stats.replayed), u64::from(first + second));
+    spool.checkpoint();
+    assert_eq!(
+        get(&stats.spool_errors),
+        1,
+        "no second try inside the pause"
+    );
 
-    // After the cursor file is back, every frame comes out once, in order.
+    // The file is back. The next try, after the pause, saves the position of the
+    // last delivery, so a crash now sends nothing twice.
     fs::remove_dir(dir.path().join(cursor::FILE_NAME)).expect("folder is removed");
-    spool.read_paused_until = Some(Instant::now());
-    assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2, 3, 4, 5]);
+    spool.cursor_blocked_until = Some(Instant::now());
+    spool.checkpoint();
+    assert_eq!(get(&stats.spool_errors), 1);
+    drop(spool);
+    let (mut again, _stats) = open(&dir, MIB);
+    assert_eq!(
+        numbers(&drain(&mut again, 1 << 20)),
+        (u64::from(first + second)..60).collect::<Vec<_>>()
+    );
+}
+
+// ---- held data: the delivered position, the rewind, and the cursor ----
+
+/// Reads one batch and keeps it held: returns its bytes and frame count.
+fn read_held(spool: &mut Spool, limit: usize) -> (Vec<u8>, u32) {
+    let mut out = Vec::new();
+    let frames = spool.read_batch(&mut out, limit).expect("read succeeds");
+    (out, frames)
+}
+
+/// The bytes of the first `count` frames of a batch.
+fn prefix_bytes(batch: &[u8], count: usize) -> usize {
+    let mut at = 0;
+    for _ in 0..count {
+        let length = u32::from_be_bytes([batch[at], batch[at + 1], batch[at + 2], batch[at + 3]]);
+        at += 4 + length as usize;
+    }
+    at
+}
+
+/// Six blocks of ten frames of about 5 KB each: 3 segments of 20 frames.
+fn three_segments(spool: &mut Spool) {
+    for block in 0..6 {
+        assert_eq!(
+            append_numbers(spool, block * 10..block * 10 + 10, 5000),
+            Appended::Stored
+        );
+    }
+}
+
+#[test]
+fn a_rewind_reads_the_held_batches_again_in_order_across_a_segment_end() {
+    let dir = TestDir::new("spool-rewind");
+    let (mut spool, stats) = open(&dir, MIB);
+    three_segments(&mut spool);
+    // Six batches of about five frames reach into the second segment.
+    let mut held = Vec::new();
+    for _ in 0..6 {
+        held.push(read_held(&mut spool, 30_000));
+    }
+    let read: u64 = held.iter().map(|(_, frames)| u64::from(*frames)).sum();
+    assert!(
+        read > 20 && read < 40,
+        "{read} frames reach the second segment"
+    );
+    assert_eq!(segment_files(dir.path()).len(), 3, "nothing is deleted");
+    assert_eq!(get(&stats.replayed), 0, "nothing is delivered");
+
+    // The link takes the first batch and fails.
+    let (first_bytes, first_frames) = &held[0];
+    spool.delivered(first_bytes.len(), *first_frames);
+    assert_eq!(get(&stats.replayed), u64::from(*first_frames));
+    spool.rewind();
+    assert_eq!(
+        numbers(&drain(&mut spool, 1 << 20)),
+        (u64::from(*first_frames)..60).collect::<Vec<_>>()
+    );
+    assert_eq!(get(&stats.replayed), 60, "each frame is counted once");
+    assert_eq!(get(&stats.spool_dropped), 0);
+    assert!(!spool.has_backlog());
+    assert_eq!(all_files(dir.path()), Vec::<String>::new());
+}
+
+#[test]
+fn a_rewind_after_a_partial_report_starts_at_the_first_frame_not_taken() {
+    let dir = TestDir::new("spool-rewind-cut");
+    let (mut spool, stats) = open(&dir, MIB);
+    three_segments(&mut spool);
+    let (batch, frames) = read_held(&mut spool, 30_000);
+    assert!(frames > 3);
+    // The link fully handed over two frames and failed inside the third.
+    spool.delivered(prefix_bytes(&batch, 2), 2);
+    spool.rewind();
+    assert_eq!(get(&stats.replayed), 2);
+    let (again, _) = read_held(&mut spool, 30_000);
+    assert_eq!(numbers(&again).first(), Some(&2));
+    assert_eq!(
+        numbers(&again).len(),
+        frames as usize,
+        "the same batch again"
+    );
+}
+
+#[test]
+fn a_segment_is_deleted_when_its_last_batch_is_delivered_not_when_it_is_read() {
+    let dir = TestDir::new("spool-delete-late");
+    leftover_segment(&dir, 1, &numbered(0..3, 0).0, true);
+    leftover_segment(&dir, 2, &numbered(3..6, 0).0, true);
+    let (mut spool, stats) = open(&dir, MIB);
+    let (first, first_frames) = read_held(&mut spool, 1000);
+    let (second, second_frames) = read_held(&mut spool, 1000);
+    assert_eq!(numbers(&first), [0, 1, 2]);
+    assert_eq!(numbers(&second), [3, 4, 5]);
+    assert_eq!(segment_files(dir.path()).len(), 2, "both are held");
+    assert!(spool.has_backlog());
+    assert!(!spool.has_unread());
+
+    spool.delivered(first.len(), first_frames);
+    assert_eq!(segment_files(dir.path()), [segment_name(2)]);
+    assert!(spool.has_backlog());
+    spool.delivered(second.len(), second_frames);
+    assert!(!spool.has_backlog());
+    assert_eq!(all_files(dir.path()), Vec::<String>::new());
+    assert_eq!(get(&stats.spool_bytes), 0);
     assert_eq!(get(&stats.replayed), 6);
+}
+
+#[test]
+fn the_active_segment_is_deleted_when_the_reader_has_caught_up_and_it_is_delivered() {
+    let dir = TestDir::new("spool-delete-active");
+    let (mut spool, _stats) = open(&dir, MIB);
+    assert_eq!(append_numbers(&mut spool, 0..5, 10), Appended::Stored);
+    let (batch, frames) = read_held(&mut spool, 1 << 20);
+    assert_eq!(frames, 5);
+    assert!(spool.has_backlog(), "the batch is held");
+    assert!(!spool.has_unread());
+    assert_eq!(segment_files(dir.path()).len(), 1);
+    // A block that arrives while the batch is held is unread data.
+    assert_eq!(append_numbers(&mut spool, 5..6, 10), Appended::Stored);
+    assert!(spool.has_unread());
+    spool.delivered(batch.len(), frames);
+    assert_eq!(segment_files(dir.path()).len(), 1, "it still holds frame 5");
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [5]);
+    assert!(!spool.has_backlog());
+    assert_eq!(all_files(dir.path()), Vec::<String>::new());
+    // The next block starts a new segment.
+    assert_eq!(append_numbers(&mut spool, 6..7, 10), Appended::Stored);
+    assert_eq!(segment_files(dir.path()).len(), 1);
+}
+
+#[test]
+fn eviction_skips_held_segments_and_counts_only_what_it_deletes() {
+    let dir = TestDir::new("spool-evict-held");
+    let (mut spool, stats) = open(&dir, MIB);
+    three_segments(&mut spool);
+    // Frames 0 to a few are held: the first segment has read data.
+    let (_, first_frames) = read_held(&mut spool, 30_000);
+    let (_, second_frames) = read_held(&mut spool, 30_000);
+    let held_frames = first_frames + second_frames;
+    assert!(held_frames < 20, "both batches are in the first segment");
+    // Fill the cap and go past it: 34 more blocks of about 50 KB.
+    for block in 6..40 {
+        assert_eq!(
+            append_numbers(&mut spool, block * 10..block * 10 + 10, 5000),
+            Appended::Stored
+        );
+    }
+    assert!(get(&stats.spool_dropped) > 0, "the cap was reached");
+    let files = segment_files(dir.path());
+    assert_eq!(files[0], segment_name(1), "the held segment stays");
+    assert!(files.len() > 2);
+    let dropped = get(&stats.spool_dropped);
+    assert!(dropped.is_multiple_of(10), "whole segments went: {dropped}");
+
+    // The held data survives a rewind. The segment after it is the first to go,
+    // so the frames come out in order with one gap.
+    spool.rewind();
+    let read = numbers(&drain(&mut spool, 1 << 20));
+    assert_eq!(read[0], 0);
+    assert!(read.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(read[..20], (0..20).collect::<Vec<_>>());
+    assert_ne!(read[20], 20, "the segment after the held one was evicted");
+    // Every frame is delivered or dropped, none both.
+    assert_eq!(get(&stats.replayed), read.len() as u64);
+    assert_eq!(get(&stats.replayed) + dropped, 400);
+}
+
+#[test]
+fn the_cursor_holds_the_delivered_position_and_a_crash_sends_the_held_data_again() {
+    let dir = TestDir::new("spool-cursor-delivered");
+    let (mut spool, _stats) = open(&dir, MIB);
+    three_segments(&mut spool);
+    let (first, first_frames) = read_held(&mut spool, 30_000);
+    let (second, _) = read_held(&mut spool, 30_000);
+    // Reading does not write the cursor file.
+    assert!(matches!(read_cursor(&dir), CursorRead::Missing));
+    spool.delivered(first.len(), first_frames);
+    spool.checkpoint();
+    assert!(matches!(
+        read_cursor(&dir),
+        CursorRead::Valid(cursor) if cursor.sequence == 1 && cursor.offset == START_LEN + first.len() as u64
+    ));
+    // A crash: the second batch was read and not delivered, so it comes again.
+    drop(spool);
+    let (mut again, _again_stats) = open(&dir, MIB);
+    let (replay, _) = read_held(&mut again, 30_000);
+    assert_eq!(numbers(&replay), numbers(&second));
+}
+
+#[test]
+fn a_rewind_needs_no_cursor_write_and_a_stop_after_it_repeats_nothing() {
+    let dir = TestDir::new("spool-cursor-seal");
+    let (mut spool, _stats) = open(&dir, MIB);
+    three_segments(&mut spool);
+    let (first, first_frames) = read_held(&mut spool, 30_000);
+    let (_second, _) = read_held(&mut spool, 30_000);
+    spool.delivered(first.len(), first_frames);
+    spool.rewind();
+    // The service stops: the position of the last delivery is saved.
+    spool.seal().expect("seal");
+    drop(spool);
+    let (mut next, stats) = open(&dir, MIB);
+    assert_eq!(
+        numbers(&drain(&mut next, 1 << 20)),
+        (u64::from(first_frames)..60).collect::<Vec<_>>()
+    );
+    assert_eq!(get(&stats.spool_dropped), 0);
+}
+
+#[test]
+fn a_stop_with_batches_still_held_saves_the_delivered_position() {
+    let dir = TestDir::new("spool-seal-held");
+    let (mut spool, _stats) = open(&dir, MIB);
+    three_segments(&mut spool);
+    let (first, first_frames) = read_held(&mut spool, 30_000);
+    let (_second, _) = read_held(&mut spool, 30_000);
+    spool.delivered(first.len(), first_frames);
+    // No rewind: the position in the file is the delivered one anyway.
+    spool.seal().expect("seal");
+    drop(spool);
+    let (mut next, stats) = open(&dir, MIB);
+    assert_eq!(
+        numbers(&drain(&mut next, 1 << 20)),
+        (u64::from(first_frames)..60).collect::<Vec<_>>()
+    );
+    assert_eq!(get(&stats.spool_dropped), 0);
+}
+
+#[test]
+fn a_cursor_older_than_every_segment_starts_at_the_first_segment() {
+    let dir = TestDir::new("spool-cursor-old");
+    leftover_segment(&dir, 5, &numbered(0..3, 0).0, true);
+    leftover_segment(&dir, 6, &numbered(3..6, 0).0, true);
+    // The position of a run whose later segments were deleted before a crash.
+    write_cursor(&dir, 2, 100);
+    let (mut spool, stats) = open(&dir, MIB);
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2, 3, 4, 5]);
+    assert_eq!(get(&stats.spool_dropped), 0);
+}
+
+#[test]
+fn a_loss_counted_at_a_cut_tail_or_a_bad_start_is_not_counted_again_after_a_rewind() {
+    let dir = TestDir::new("spool-loss-once");
+    // Segment 1 holds 2 frames and a 14-byte cut-off tail. Segment 2 has no START.
+    let mut body = numbered(0..2, 0).0;
+    body.extend_from_slice(&[0, 0, 0, 100, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    leftover_segment(&dir, 1, &body, false);
+    fs::write(dir.path().join(segment_name(2)), [0xee_u8; 100]).expect("junk segment");
+    leftover_segment(&dir, 3, &numbered(2..4, 0).0, true);
+    let (mut spool, stats) = open(&dir, MIB);
+    // Everything is read and held; the losses are counted when first met.
+    let (first, _) = read_held(&mut spool, 1000);
+    let (third, _) = read_held(&mut spool, 1000);
+    assert_eq!(numbers(&first), [0, 1]);
+    assert_eq!(numbers(&third), [2, 3]);
+    assert_eq!(get(&stats.spool_dropped_bytes), 14 + 100);
+    assert_eq!(get(&stats.spool_dropped), 1);
+    // Nothing is delivered and the link gives it all back: the same frames come
+    // out, and the losses are not counted again.
+    spool.rewind();
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2, 3]);
+    assert_eq!(get(&stats.spool_dropped_bytes), 14 + 100);
+    assert_eq!(get(&stats.spool_dropped), 1);
+    assert_eq!(get(&stats.replayed), 4);
+    assert_eq!(all_files(dir.path()), Vec::<String>::new());
 }
 
 // ---- fsinfo ----
@@ -1482,7 +1777,7 @@ fn a_segment_deleted_after_repeated_sharing_violations_is_logged_as_a_discard() 
         let mut out = Vec::new();
         for _ in 0..3 {
             spool.read_paused_until = None;
-            spool.read_batch(&mut out, 1000).expect_err("in use");
+            spool.read_and_deliver(&mut out, 1000).expect_err("in use");
         }
     });
     drop(hold);
@@ -1530,7 +1825,7 @@ fn unread_bytes_fall_as_the_replay_reads_while_the_gauge_waits_for_the_segment()
     assert_eq!(spool.unread_bytes(), written);
 
     let mut out = Vec::new();
-    spool.read_batch(&mut out, 1).expect("read succeeds");
+    spool.read_and_deliver(&mut out, 1).expect("read succeeds");
     let after_one = spool.unread_bytes();
     assert!(after_one < written, "the read frame is no longer unread");
     assert_eq!(
@@ -1538,7 +1833,7 @@ fn unread_bytes_fall_as_the_replay_reads_while_the_gauge_waits_for_the_segment()
         START_LEN + out.len() as u64,
         "by the bytes of the batch and the START that the first read passes"
     );
-    spool.read_batch(&mut out, 1).expect("read succeeds");
+    spool.read_and_deliver(&mut out, 1).expect("read succeeds");
     assert!(spool.unread_bytes() < after_one);
     // The file stays whole until its last frame is read.
     assert_eq!(get(&stats.spool_bytes), written);
@@ -1556,7 +1851,7 @@ fn unread_bytes_count_every_segment_and_only_the_first_is_part_read() {
     let (mut spool, _stats) = open(&dir, 8 * MIB);
     assert_eq!(spool.unread_bytes(), first + second);
     let mut out = Vec::new();
-    spool.read_batch(&mut out, 1).expect("read succeeds");
+    spool.read_and_deliver(&mut out, 1).expect("read succeeds");
     assert_eq!(
         spool.unread_bytes(),
         first + second - START_LEN - out.len() as u64
@@ -1625,7 +1920,7 @@ fn a_leftover_segment_is_as_old_as_its_file() {
     // Once the first segment is read, the second one is the oldest.
     let mut out = Vec::new();
     while spool.segments.len() > 1 {
-        spool.read_batch(&mut out, 1).expect("read succeeds");
+        spool.read_and_deliver(&mut out, 1).expect("read succeeds");
     }
     let second_age = spool.oldest_age(Instant::now(), SystemTime::now());
     assert!(

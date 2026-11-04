@@ -3,7 +3,8 @@
 
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::{
-    RootCertStore, ServerConfig, ServerConnection,
+    CipherSuiteCommon, RootCertStore, ServerConfig, ServerConnection, SupportedCipherSuite,
+    Tls12CipherSuite,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
 };
 
@@ -97,6 +98,46 @@ impl TlsKit {
         versions: &[&'static rustls::SupportedProtocolVersion],
     ) -> Arc<Self> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
+        Self::build(versions, Arc::clone(&provider), provider)
+    }
+
+    /// A kit for TLS 1.2 whose client may encrypt only `limit` records with one
+    /// key. rustls takes that limit from the cipher suite
+    /// (`CipherSuiteCommon::confidentiality_limit`, 2^24 for AES-GCM); the kit uses
+    /// the ring AES-128-GCM suite with a smaller number, so a test reaches the
+    /// limit in a few writes. The server side is unchanged.
+    pub(crate) fn with_record_limit(limit: u64) -> Arc<Self> {
+        let SupportedCipherSuite::Tls12(base) =
+            rustls::crypto::ring::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        else {
+            panic!("a TLS 1.2 suite");
+        };
+        // A test leaks the one suite it builds.
+        let limited: &'static Tls12CipherSuite = Box::leak(Box::new(Tls12CipherSuite {
+            common: CipherSuiteCommon {
+                suite: base.common.suite,
+                hash_provider: base.common.hash_provider,
+                confidentiality_limit: limit,
+            },
+            prf_provider: base.prf_provider,
+            kx: base.kx,
+            sign: base.sign,
+            aead_alg: base.aead_alg,
+        }));
+        let mut client_provider = rustls::crypto::ring::default_provider();
+        client_provider.cipher_suites = vec![SupportedCipherSuite::Tls12(limited)];
+        Self::build(
+            &[&rustls::version::TLS12],
+            Arc::new(client_provider),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+    }
+
+    fn build(
+        versions: &[&'static rustls::SupportedProtocolVersion],
+        client_provider: Arc<rustls::crypto::CryptoProvider>,
+        server_provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> Arc<Self> {
         let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("CA parameters");
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
@@ -113,12 +154,12 @@ impl TlsKit {
         roots.add(ca_certificate.der().clone()).expect("trusted CA");
         let chain: Vec<CertificateDer<'static>> = vec![server_certificate.der().clone()];
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(server_key.serialize_der()));
-        let client = ClientConfig::builder_with_provider(Arc::clone(&provider))
+        let client = ClientConfig::builder_with_provider(client_provider)
             .with_protocol_versions(versions)
             .expect("client versions")
             .with_root_certificates(roots)
             .with_no_client_auth();
-        let server = ServerConfig::builder_with_provider(provider)
+        let server = ServerConfig::builder_with_provider(server_provider)
             .with_protocol_versions(versions)
             .expect("server versions")
             .with_no_client_auth()

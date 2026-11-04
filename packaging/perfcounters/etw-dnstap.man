@@ -112,7 +112,7 @@
           </counter>
           <counter id="18" uri="EtwDnstap.Pipeline.ReceiverDownDrops"
                    nameID="172" name="Receiver Down Drops"
-                   descriptionID="174" description="Frames lost in the sink. With no spool: the live frames the link had not fully sent when the connection failed, and the frames that arrived while the receiver was down. Always: the unsent rest of a replay batch when the connection failed, and with TLS the frames of the one piece whose delivery was unconfirmed. With a spool, at a shutdown that follows a spill: the one live block that came back from the link, because it is older than the spool backlog. A counted frame may still have arrived."
+                   descriptionID="174" description="Frames lost in the sink. With no spool: the live frames the link had not fully sent when the connection failed, and the frames that arrived while the receiver was down. With a spool, at a shutdown that follows a spill: the one live block that came back from the link, because it is older than the spool backlog. With a spool, a failed connection counts nothing here: its unsent frames go back to the router or stay in the spool. A counted frame may still have arrived."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />
@@ -222,7 +222,7 @@
           </counter>
           <counter id="54" uri="EtwDnstap.Pipeline.FramesReplayed"
                    nameID="316" name="Frames Replayed"
-                   descriptionID="318" description="Total frames read from the spool and handed to the receiver connection since the service started."
+                   descriptionID="318" description="Total frames from the spool that the receiver connection fully accepted since the service started."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />

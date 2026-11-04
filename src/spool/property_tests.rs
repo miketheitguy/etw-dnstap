@@ -372,7 +372,7 @@ impl Harness {
         let mut out = Vec::new();
         let frames = self
             .spool()?
-            .read_batch(&mut out, limit)
+            .read_and_deliver(&mut out, limit)
             .map_err(|error| TestCaseError::fail(format!("read failed: {error}")))?;
         let parsed = split_frames(&out).map_err(TestCaseError::fail)?;
         prop_assert_eq!(parsed.len(), frames as usize, "frame count of the batch");
@@ -580,5 +580,268 @@ proptest! {
         ops in prop::collection::vec(op_strategy(true, false, false), 0..50),
     ) {
         Harness::new(limits)?.run(&ops)?;
+    }
+}
+
+// ---- held data, the delivered position, and the rewind ----
+
+/// One step of a link and a router over a spool that holds batches.
+#[derive(Clone, Debug)]
+enum HeldOp {
+    /// Append a block of `frames` frames with about `pad` filler bytes each.
+    Append { frames: u8, pad: u8 },
+    /// Read one batch of at most `limit` bytes and keep it held.
+    Read { limit: u16 },
+    /// The link takes the oldest held batch whole.
+    Deliver,
+    /// The link takes `frames` frames (modulo the batch) of the oldest held batch
+    /// and fails: everything held goes back.
+    Fail { frames: u8 },
+    /// The link fails with nothing taken.
+    Rewind,
+    /// The router saves the delivered position.
+    Checkpoint,
+    /// A stop: give back what is held, seal, and open the folder again.
+    Reopen,
+}
+
+fn held_op_strategy(reopen: bool) -> BoxedStrategy<HeldOp> {
+    let append = (1_u8..=10, 0_u8..=120)
+        .prop_map(|(frames, pad)| HeldOp::Append { frames, pad })
+        .boxed();
+    let read = (1_u16..=1500)
+        .prop_map(|limit| HeldOp::Read { limit })
+        .boxed();
+    let fail = any::<u8>()
+        .prop_map(|frames| HeldOp::Fail { frames })
+        .boxed();
+    let ops = prop_oneof![
+        5 => append,
+        6 => read,
+        3 => Just(HeldOp::Deliver),
+        2 => fail,
+        1 => Just(HeldOp::Rewind),
+        1 => Just(HeldOp::Checkpoint),
+    ];
+    if reopen {
+        prop_oneof![18 => ops, 1 => Just(HeldOp::Reopen)].boxed()
+    } else {
+        ops.boxed()
+    }
+}
+
+/// The model of a spool whose batches are held until a link reports them.
+struct HeldHarness {
+    dir: TestDir,
+    limits: Limits,
+    spool: Option<Spool>,
+    stats: Arc<SinkStats>,
+    next_number: u64,
+    /// Held batches, oldest first: their frame numbers and bytes.
+    held: VecDeque<(Vec<u64>, Vec<u8>)>,
+    /// Frames reported delivered, in order.
+    delivered: Vec<u64>,
+    /// The newest frame handed out and not given back.
+    last_read: Option<u64>,
+}
+
+impl HeldHarness {
+    fn new(limits: Limits) -> Result<Self, TestCaseError> {
+        FREE_BASE.set(limits.free_base);
+        FREE_PER_FILE.set(limits.per_file);
+        let dir = TestDir::new("property-held");
+        let stats = Arc::new(SinkStats::default());
+        let spool = open_spool(&dir, limits, &stats)?;
+        Ok(Self {
+            dir,
+            limits,
+            spool: Some(spool),
+            stats,
+            next_number: 0,
+            held: VecDeque::new(),
+            delivered: Vec::new(),
+            last_read: None,
+        })
+    }
+
+    fn spool(&mut self) -> Result<&mut Spool, TestCaseError> {
+        self.spool
+            .as_mut()
+            .ok_or_else(|| TestCaseError::fail("the spool is closed"))
+    }
+
+    /// Gives back everything held, as a failed link does.
+    fn give_back(&mut self) -> Check {
+        self.held.clear();
+        self.spool()?.rewind();
+        self.last_read = self.delivered.last().copied();
+        Ok(())
+    }
+
+    fn apply(&mut self, op: &HeldOp) -> Check {
+        match *op {
+            HeldOp::Append { frames, pad } => {
+                let payloads: Vec<Vec<u8>> = (0..u64::from(frames))
+                    .map(|offset| {
+                        let number = self.next_number + offset;
+                        let pad = usize::from(pad) + usize::try_from(number % 5).unwrap_or(0);
+                        payload(number, pad)
+                    })
+                    .collect();
+                let _outcome = self.spool()?.append(&framed(&payloads), u32::from(frames));
+                self.next_number += u64::from(frames);
+            }
+            HeldOp::Read { limit } => {
+                let mut out = Vec::new();
+                let frames = self
+                    .spool()?
+                    .read_batch(&mut out, usize::from(limit))
+                    .map_err(|error| io_fail(&error))?;
+                let mut numbers = Vec::new();
+                for body in split_frames(&out).map_err(TestCaseError::fail)? {
+                    numbers.push(check_payload(body).map_err(TestCaseError::fail)?);
+                }
+                prop_assert_eq!(numbers.len(), frames as usize, "frame count of the batch");
+                for number in &numbers {
+                    prop_assert!(
+                        self.last_read.is_none_or(|last| *number > last),
+                        "frame {} came after frame {:?}",
+                        number,
+                        self.last_read
+                    );
+                    self.last_read = Some(*number);
+                }
+                if frames > 0 {
+                    self.held.push_back((numbers, out));
+                }
+            }
+            HeldOp::Deliver => {
+                if let Some((numbers, bytes)) = self.held.pop_front() {
+                    let frames = u32::try_from(numbers.len()).unwrap_or(u32::MAX);
+                    self.spool()?.delivered(bytes.len(), frames);
+                    self.delivered.extend(numbers);
+                }
+            }
+            HeldOp::Fail { frames } => {
+                if let Some((numbers, bytes)) = self.held.pop_front() {
+                    let taken = usize::from(frames) % (numbers.len() + 1);
+                    let mut at = 0;
+                    for body in split_frames(&bytes)
+                        .map_err(TestCaseError::fail)?
+                        .iter()
+                        .take(taken)
+                    {
+                        at += 4 + body.len();
+                    }
+                    let count = u32::try_from(taken).unwrap_or(u32::MAX);
+                    self.spool()?.delivered(at, count);
+                    self.delivered.extend(&numbers[..taken]);
+                }
+                self.give_back()?;
+            }
+            HeldOp::Rewind => self.give_back()?,
+            HeldOp::Checkpoint => self.spool()?.checkpoint(),
+            HeldOp::Reopen => {
+                self.give_back()?;
+                self.spool()?.seal().map_err(|error| io_fail(&error))?;
+                self.spool = None;
+                self.spool = Some(open_spool(&self.dir, self.limits, &self.stats)?);
+            }
+        }
+        self.check()
+    }
+
+    /// Delivered frames are in order and counted once; the held frames are still
+    /// on disk; and every offered frame is delivered, dropped, or on disk and not
+    /// delivered.
+    fn check(&self) -> Check {
+        prop_assert!(
+            self.delivered.windows(2).all(|pair| pair[0] < pair[1]),
+            "order or repeat: {:?}",
+            self.delivered
+        );
+        prop_assert_eq!(get(&self.stats.replayed), self.delivered.len() as u64);
+        let last = self.delivered.last().copied();
+        let on_disk: BTreeSet<u64> = segment_paths(self.dir.path())
+            .iter()
+            .flat_map(|path| file_numbers(path))
+            .collect();
+        for (numbers, _) in &self.held {
+            for number in numbers {
+                prop_assert!(
+                    on_disk.contains(number),
+                    "held frame {} left the disk",
+                    number
+                );
+            }
+        }
+        let undelivered = on_disk
+            .iter()
+            .filter(|number| last.is_none_or(|last| **number > last))
+            .count() as u64;
+        prop_assert_eq!(
+            self.next_number,
+            self.delivered.len() as u64 + get(&self.stats.spool_dropped) + undelivered,
+            "offered = delivered + dropped + undelivered on disk"
+        );
+        Ok(())
+    }
+
+    /// The link takes everything that is left, and the spool empties.
+    fn finish(&mut self) -> Check {
+        self.give_back()?;
+        for _ in 0..DRAIN_CALLS {
+            let mut out = Vec::new();
+            let frames = self
+                .spool()?
+                .read_and_deliver(&mut out, DRAIN_LIMIT)
+                .map_err(|error| io_fail(&error))?;
+            for body in split_frames(&out).map_err(TestCaseError::fail)? {
+                self.delivered
+                    .push(check_payload(body).map_err(TestCaseError::fail)?);
+            }
+            if frames == 0 {
+                break;
+            }
+        }
+        self.check()?;
+        prop_assert!(!self.spool()?.has_backlog(), "the spool did not empty");
+        prop_assert_eq!(
+            self.next_number,
+            self.delivered.len() as u64 + get(&self.stats.spool_dropped)
+        );
+        Ok(())
+    }
+
+    fn run(&mut self, ops: &[HeldOp]) -> Check {
+        for op in ops {
+            self.apply(op)?;
+        }
+        self.finish()
+    }
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Whatever the link takes and gives back, the frames it was handed are in
+    /// order and none twice, held frames are never deleted, and every offered
+    /// frame is delivered, counted dropped, or still on disk. Small caps evict
+    /// while batches are held.
+    #[test]
+    fn held_batches_and_rewinds_conserve_frames_and_keep_order(
+        limits in cap_strategy(),
+        ops in prop::collection::vec(held_op_strategy(false), 0..60),
+    ) {
+        HeldHarness::new(limits)?.run(&ops)?;
+    }
+
+    /// A stop gives back what is held and saves the delivered position: the next
+    /// run repeats nothing and loses nothing.
+    #[test]
+    fn a_stop_after_a_rewind_repeats_nothing_and_loses_nothing(
+        ops in prop::collection::vec(held_op_strategy(true), 0..60),
+    ) {
+        HeldHarness::new(Limits::cap_only(1 << 24))?.run(&ops)?;
     }
 }

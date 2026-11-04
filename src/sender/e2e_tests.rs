@@ -196,6 +196,8 @@ fn a_restart_with_leftovers_and_a_cursor_inside_a_segment_resumes_after_the_curs
             (1..PER_BLOCK).contains(&consumed),
             "the batch must end inside the first segment, got {consumed}"
         );
+        // The link took the batch; the stop saves that position.
+        spool.delivered(out.len(), consumed);
         spool.seal().expect("segment is sealed");
         consumed
     };
@@ -270,7 +272,7 @@ fn a_slowly_reading_receiver_makes_blocks_spool_and_then_drain_in_order() {
 }
 
 #[test]
-fn a_link_that_fails_mid_replay_loses_the_failed_batch_and_sends_nothing_twice() {
+fn a_link_that_fails_mid_replay_loses_only_what_the_kernel_held_and_sends_nothing_twice() {
     const BACKLOG: u32 = 150;
     const LIVE: u32 = 10;
     const DELIVERED_BEFORE_HANG_UP: u32 = 20;
@@ -320,27 +322,22 @@ fn a_link_that_fails_mid_replay_loses_the_failed_batch_and_sends_nothing_twice()
         got[..DELIVERED_BEFORE_HANG_UP as usize],
         (0..DELIVERED_BEFORE_HANG_UP).collect::<Vec<_>>()
     );
+    // The failed batch is not lost: the spool is rewound to the frame after the
+    // last one the socket took, and those frames are sent again. Only the frames
+    // that the kernel had already accepted when the receiver hung up can be
+    // missing. They are one run of consecutive frames after the last frame the
+    // receiver read, and nothing counts them.
     let lost = missing(&got, total);
-    assert!(!lost.is_empty(), "the failed batch was not lost");
-    // The consumed batch is one run of consecutive frames, never a hole before it.
-    let (lowest_lost, highest_lost) = (lost[0], lost[lost.len() - 1]);
-    assert_eq!(
-        lost,
-        (lowest_lost..=highest_lost).collect::<Vec<_>>(),
-        "the lost frames are consecutive"
-    );
-    assert!(lowest_lost >= DELIVERED_BEFORE_HANG_UP);
+    if let (Some(lowest_lost), Some(highest_lost)) = (lost.first(), lost.last()) {
+        assert_eq!(
+            lost,
+            (*lowest_lost..=*highest_lost).collect::<Vec<_>>(),
+            "the lost frames are consecutive"
+        );
+        assert!(*lowest_lost >= DELIVERED_BEFORE_HANG_UP);
+    }
     assert!(get(&stats.disconnects) >= 1);
-    assert!(
-        get(&stats.disconnected_dropped) >= 1,
-        "the failed batch is counted"
-    );
-    assert!(
-        get(&stats.disconnected_dropped) <= lost.len() as u64,
-        "{} frames counted, {} missing: a counted frame must be missing",
-        get(&stats.disconnected_dropped),
-        lost.len()
-    );
+    assert_eq!(get(&stats.disconnected_dropped), 0);
     assert_eq!(get(&stats.spool_dropped), 0);
     assert_eq!(get(&stats.queue_dropped), 0);
 }
@@ -369,6 +366,7 @@ fn a_run_stopped_in_the_middle_of_a_replay_leaves_a_cursor_the_next_run_resumes_
         let mut out = Vec::new();
         let consumed = spool.read_batch(&mut out, 200_000).expect("batch is read");
         assert!(consumed > 0);
+        spool.delivered(out.len(), consumed);
         spool.seal().expect("segment is sealed");
         consumed
     };
@@ -400,7 +398,9 @@ fn a_run_stopped_in_the_middle_of_a_replay_leaves_a_cursor_the_next_run_resumes_
         "socket buffering absorbed the whole backlog"
     );
     assert!(!segment_files(&dir).is_empty(), "the backlog stays on disk");
-    assert!(get(&second_stats.disconnected_dropped) >= 1);
+    // The replay batches the socket did not take went back to the spool: nothing
+    // is counted, and the stop saved the position after the last frame it took.
+    assert_eq!(get(&second_stats.disconnected_dropped), 0);
     server.received.paused.store(false, Ordering::Release);
 
     // The third run resumes at the cursor: everything from `boundary` on arrives

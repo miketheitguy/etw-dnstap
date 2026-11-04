@@ -162,8 +162,8 @@ impl SegmentReader {
         self.position
     }
 
-    /// Moves back to `position` and clears the end state. Used when a batch
-    /// could not be marked consumed, so the caller can read it again.
+    /// Moves back to `position` and clears the end state. Used when a failed link
+    /// gives back the batches it did not take, so the caller can read them again.
     pub(super) fn rewind(&mut self, position: u64) -> io::Result<()> {
         self.file.seek(SeekFrom::Start(position))?;
         self.position = position;

@@ -699,13 +699,14 @@ fn combine_results(capture: Result<()>, parser: Result<()>) -> Result<()> {
 /// The sink counters count frames that left the parser, and they are not part of
 /// `intake_dropped`. Each frame of this run that is lost is in at most one of
 /// three loss counters: `disconnected_dropped` (no spool was configured or
-/// usable while the receiver was down, or the connection failed with the frame
-/// in flight), `spool_dropped` (the spool evicted, refused, or could not read the
-/// frame), and `queue_dropped` (the send queue was full). `replayed` counts
-/// frames handed to the link from the spool, so a frame in a replay batch that
-/// then failed is in both `replayed` and `disconnected_dropped`. `spooled`
-/// counts frames appended to the spool; those not yet replayed or dropped are
-/// still in it. Leftover frames from an earlier run appear in `replayed` and in
+/// usable while the receiver was down, or the connection failed with a live frame
+/// in flight and no spool to take it back), `spool_dropped` (the spool evicted,
+/// refused, or could not read the frame), and `queue_dropped` (the send queue
+/// was full). `replayed` counts frames from the spool that the connection fully
+/// accepted, when it accepted them: a frame in a replay batch that a failed
+/// connection did not take stays in the spool, is read again, and counts then.
+/// `spooled` counts frames appended to the spool; those not yet replayed or
+/// dropped are still in it. Leftover frames from an earlier run appear in `replayed` and in
 /// `spool_dropped_bytes`, but never in `encoded`, and `spool_dropped_bytes` has
 /// no fixed ratio to `spool_dropped` because a leftover segment's frame count is
 /// unknown. One case is in none of these counters: frames already in the send

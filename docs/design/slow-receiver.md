@@ -1,13 +1,14 @@
 # Slow receiver: link writer and progress liveness
 
-> **Status:** Proposed · **Describes:** the `dnstap-sender` routing and the link in `main` at commit `a06f6fd`, and a change to them (tasks H1 and H2 of the [slow and saturated receiver plan](../plans/slow-receiver-plan.md)) · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** Built (H1, H2, B1, D, and B2) · **Describes:** the `dnstap-sender` routing and the link at `main` commit `a06f6fd`, and the change to them on branch `slow-receiver` (tasks H1 and H2 of the [slow and saturated receiver plan](../plans/slow-receiver-plan.md)) · **Evidence dated:** B2 throughput on the build host, 2026-11-04; otherwise not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03; B2 on 2026-11-04 (review V4)
 
 This design keeps the sender thread free of socket waits, and ends a session only when
 the receiver makes no progress. On a failure, unsent live data goes back to the router
 (decision B1). Hand-offs between threads are batched through a deep FIFO, so the design
-keeps its throughput on a CPU-saturated host (decision D). It compares two designs,
-recommends one, and gives its state machines, constants, and tests. For a saturated link it keeps today's strict order (H3a, decided
-at gate G2).
+keeps its throughput on a CPU-saturated host (decision D). A spool rewind (task B2)
+returns unsent replay data to the spool, so a failure counts no replay frame.
+It compares two designs, recommends one, and gives its state machines, constants, and
+tests. For a saturated link it keeps today's strict order (H3a, decided at gate G2).
 
 ## Problem
 
@@ -38,7 +39,7 @@ waits for the backoff (250 ms to 30 s) and the TLS and Frame Streams handshakes.
 | --- | --- | --- |
 | I1 | Capture order is kept while the spool holds a backlog. Every live block goes to the spool until the backlog is empty. | `SenderThread::destination`, `Spool::has_backlog` |
 | I2 | Each lost frame counts in exactly one of `queue_dropped`, `disconnected_dropped`, and `spool_dropped`. | `QueuedSink::send_current`, `NetworkSink::connection_lost`, `Spool::append` |
-| I3 | Delivery is at most once. `Spool::read_batch` saves the cursor before it returns a batch. A batch lost on a failed link counts in `disconnected_dropped`. Under B1 a frame cut mid-write is sent again; the receiver saw only a truncated copy, so it never gets the frame twice. | `Spool::read_batch`, `SenderThread::replay_step` |
+| I3 | Delivery is at most once. `Spool::read_batch` saves the cursor before it returns a batch. A batch lost on a failed link counts in `disconnected_dropped`. Under B1 a frame cut mid-write is sent again; the receiver saw only a truncated copy, so it never gets the frame twice. B2: the cursor still moves before a batch is handed out, and a rewind sets it back to the delivered position, so unsent replay data is read again, not lost. A crash loses only the read-ahead. | `Spool::read_batch`, `SenderThread::replay_step` |
 | I4 | The parser never blocks and never allocates per frame. | `QueuedSink::write_frame`, the block pool |
 | I5 | Shutdown takes about 5 s at most, inside the 10 s watchdog. | `SHUTDOWN_LINK_BUDGET`, `IO_TIMEOUT` |
 | I6 | Connect and handshakes run on the `dnstap-reconnect` helper, with the backoff unchanged. | `NetworkSink::poll` |
@@ -62,7 +63,7 @@ timeout error.
 | --- | --- | --- |
 | Threads and ownership | Router owns the spool, the parser channel, and the FIFO sender. Link thread owns the session, the reconnect state, and the FIFO receiver. A block has one owner at a time; unsent live blocks come back by a return channel. | One thread owns everything, as today. |
 | Waiting | Router waits with one `crossbeam_channel::Select` (parser channel, return channel). Link thread waits on FIFO readiness or socket readiness. Each drains all it can per wake (D). | The thread must wait for "a block arrived" or "the socket is writable". No call waits on a crossbeam channel and a socket together, so it must alternate short waits. |
-| Loss on a link failure | Unsent live frames go back to the router. Only the unsent rest of two replay batches (less than 268 KiB, in Draining) and, with TLS, one unconfirmed piece are lost. | The tail can go back by the same rules; the hand-back is simpler, but the tail stays in the routing loop. |
+| Loss on a link failure | Unsent live frames go back to the router. Only the unsent rest of two replay batches (less than 268 KiB, in Draining) and, with TLS, one unconfirmed piece are lost (B2: no replay frame is lost). | The tail can go back by the same rules; the hand-back is simpler, but the tail stays in the routing loop. |
 | How the router learns of a failure | The link thread returns its block in hand and sends `HandBackDone`. The router drains the FIFO itself. | Directly: the write returns the error. |
 | Memory | Pool grows by 130 blocks (about 17.3 MiB): the 128-block FIFO, the front list, and a block for the link thread. | No change. |
 
@@ -95,7 +96,8 @@ Choose H1a. Reasons:
    neither the standard library nor crossbeam provides.
 3. The partial-write state is a local loop on the link thread.
 4. The spool seal and STOP/FINISH run at the same time at shutdown.
-5. Unsent live data returns to the router (B1); only two replay batches are at risk.
+5. Unsent live data returns to the router (B1); only two replay batches are at risk, and
+   B2 removes that risk.
 
 Unlike the plan's H1a, socket I/O is not blocking, because of the R1 constraint. See
 [H2](#h2-liveness-from-progress).
@@ -121,7 +123,8 @@ Unlike the plan's H1a, socket I/O is not blocking, because of the R1 constraint.
 `up`; the router reads it. `LinkShared` also holds the take lock (a `Mutex<()>`); see
 [the spill](#batched-hand-offs-and-the-passive-spill-d). A FIFO item is a `Block` tagged
 `Live` or `Replay`. The `Fence` is a message on its own channel (As built, 6). The return
-channel (capacity 4) carries `Returned(Block)`, `ReplayDone`, and `HandBackDone`. Both
+channel (capacity 129 with B2; 4 before) carries `Returned(Block)`, `ReplayDone`, and
+`HandBackDone`. Both
 threads release blocks to the one lock-free pool.
 
 ### Batched hand-offs and the passive spill (D)
@@ -164,14 +167,18 @@ The link returns only its block in hand; the router drains the FIFO itself.
    `up`, and stops taking FIFO items.
 2. It splits the block in hand. Fully accepted frames are sent. The cut frame and later
    frames move to the buffer start (`copy_within`) and go back as `Returned`. With TLS,
-   the unconfirmed piece counts in `disconnected_dropped`. A replay batch is never
-   returned: its unsent rest counts there, then `ReplayDone`.
+   the frames of the unconfirmed piece go back too (B2; before B2 the piece of a live block
+   counted in `disconnected_dropped`). A replay batch is never returned. Before B2 its unsent
+   rest counted there, then `ReplayDone`. With B2 the link counts nothing: `ReplayDone`
+   reports the accepted prefix, and the unsent rest stays in the spool
+   ([B2](#b2-spool-rewind)).
 3. It sends `HandBackDone` (at shutdown it drops the return sender instead). It may
    reconnect, but it neither publishes `up` nor writes until it receives a `Fence`.
 4. The router stops sending when it sees `up` false or `HandBackDone`. After
    `HandBackDone` it drains the FIFO with its clone: live blocks follow the returned one;
-   a replay batch counts in `disconnected_dropped` and returns its credit. It takes no
-   parser block and appends nothing to the spool until step 5.
+   a replay batch returns its credit and counts in `disconnected_dropped` (B2: it counts
+   nowhere, and the router rewinds the spool after the drain). It takes no parser block and
+   appends nothing to the spool until step 5.
 5. It places the returned block, the drained live blocks, then newer blocks: on the
    spool with no backlog; on the front list (at most 1 block) with a backlog, sent
    first after the reconnect; counted once in `disconnected_dropped` with no spool.
@@ -180,8 +187,9 @@ The link returns only its block in hand; the router drains the FIFO itself.
 
 **Proofs.**
 
-- **No deadlock.** The link has at most 4 unread messages out (2 `ReplayDone`, 1
-  `Returned`, 1 `HandBackDone`), and the return channel holds 4. The `Fence` channel
+- **No deadlock.** The link has at most `REPLAY_CREDIT` + 2 unread messages out
+  (`REPLAY_CREDIT` `ReplayDone`, 1 `Returned`, 1 `HandBackDone`: 4 before B2, 129 with B2),
+  and the return channel holds that many. The `Fence` channel
   holds one message and is empty when the router sends it. The link waits for it with a
   timeout and checks the shutdown deadline.
 - **No double count.** Each FIFO item is received once (MPMC). The block in hand is the
@@ -201,22 +209,24 @@ The link returns only its block in hand; the router drains the FIFO itself.
 | State | Condition | On a live block | Replay | Next state |
 | --- | --- | --- | --- | --- |
 | Direct | `up`, no backlog | Front list first. Then `try_send` to the FIFO. `Full`: spill (drain the FIFO to the spool, then this block). | None. | Spill → Draining. `up` false or `HandBackDone` → HandBack. |
-| Draining | `up`, backlog | Append to the spool. | Front list first. Then, per free credit (2): `read_batch` into a pool block (64 KiB), `send` it to the FIFO. | A read finds nothing and both credits are back → Direct. `up` false or `HandBackDone` → HandBack. |
-| HandBack | The link ended its session | Not taken: blocks wait in the parser channel. | None. | Wait for `HandBackDone`, drain the FIFO, place the blocks (steps 4 to 5), send `Fence` → Down. |
+| Draining | `up`, backlog | Append to the spool. | Front list first. Then, per free credit (2; 127 with B2, at most `REPLAY_TURN_BYTES` per turn): `read_batch` into a pool block (64 KiB), `send` it to the FIFO. | A read finds nothing and every credit is back → Direct (B2: the last `ReplayDone` deletes the last segment, so this happens at that `ReplayDone`). `up` false or `HandBackDone` → HandBack. |
+| HandBack | The link ended its session | Not taken: blocks wait in the parser channel. | None. | Wait for `HandBackDone`, drain the FIFO, rewind the spool (B2), place the blocks (steps 4 to 5), send `Fence` → Down. |
 | Down | not `up`, hand-back done | Append to the spool. With no spool, count in `disconnected_dropped`. | None. | `up` true → Direct or Draining. |
 | Closing | Shutdown started, within the link budget | As in the states above, but no replay. | None. | Budget ends, or channel closed and empty → Sealing. |
 | Sealing | Past the budget, or the channel closed and empty | Drop the FIFO sender. Wait until the return channel closes. Drain the FIFO. Then the returned block, the FIFO blocks, and the channel: to the spool. | None. | `seal`, join the link thread → Done. |
 
-The router is the only FIFO producer, with at most two replay batches out. In Draining
-the FIFO holds only those and the front list, so a replay `send` always has a slot and a
-batch whose cursor moved reaches the link (I3). With no spool, a full FIFO stops the
+The router is the only FIFO producer, with at most `REPLAY_CREDIT` replay batches out (2;
+127 with B2). In Draining the FIFO holds only those and the front list, so a replay `send`
+always has a slot. Before B2 a batch whose cursor moved had to reach the link (I3). With B2
+a batch that does not is read again. With no spool, a full FIFO stops the
 router, and the parser counts `queue_dropped`, as today. `SPILL_BLOCKS` goes. In Sealing
 with a backlog, live blocks older than it count in `disconnected_dropped`: at most 1
 block (134 KiB) by the front-list bound.
 
 As-built notes 1 to 3 were written before decision D and are corrected below for it:
 note 2's bound is 1 block, and note 3's hand-back is the one in steps 1 to 6. Notes 6 to
-11 record what the build under D does differently from the text above.
+11 record what the build under D does differently from the text above. B2 changes notes
+1, 2, and 9; each says how.
 
 > **As built, 1: the end of a drain.** `Spool::read_batch` does not delete the last segment in
 > the call that returns the last data. The next call returns 0 and deletes it, and the router
@@ -226,6 +236,8 @@ note 2's bound is 1 block, and note 3's hand-back is the one in steps 1 to 6. No
 > batch in hand and live blocks behind it in the FIFO cannot arise. Test 1 below therefore
 > covers the hand-back without a backlog (returned blocks at the head of the spool, before the
 > blocks that were in the FIFO) and the end of a drain (only the unsent rest of the last batch is lost) as two tests.
+> **B2 changes this.** The reader no longer deletes a segment. `Spool::delivered` does, at
+> the last `ReplayDone` ([Segment deletion](#segment-deletion)).
 >
 > **As built, 2: Sealing with a backlog.** The loss in the paragraph above needs only a spill
 > and a shutdown (a stalled link at shutdown), not also a failure. Under D the bound is 1
@@ -233,7 +245,8 @@ note 2's bound is 1 block, and note 3's hand-back is the one in steps 1 to 6. No
 > the spool, so the only live block older than the backlog is the one the link thread held.
 > (Before D it was the block in hand and two FIFO blocks, at most 3.) The replay batches that
 > the router has out at that moment, at most two, are counted too, as at any failure in
-> Draining.
+> Draining. **B2 changes this.** Those batches are not counted. They are read again
+> ([Rewind](#rewind-at-the-hand-back)).
 >
 > **As built, 3: shutdown hand-back.** The link thread stops at the shutdown deadline, clears
 > `up`, returns its block in hand, drops the return channel, and ends. It does not wait for
@@ -280,7 +293,10 @@ note 2's bound is 1 block, and note 3's hand-back is the one in steps 1 to 6. No
 > out. The router therefore sends live blocks to the spool while a replay batch is out, even
 > when the spool no longer holds a backlog, and goes back to Direct only when every credit is
 > back. The FIFO then holds no replay batch in Direct, so a spill never meets one. (The spill
-> and the hand-back still count a replay batch if they find one.)
+> and the hand-back still count a replay batch if they find one.) **B2 changes this.** A
+> segment with frames out is not deleted, so `has_backlog` stays true while a batch is out.
+> The rule stays as a guard. The spill never finds a replay batch, and the hand-back
+> rewinds instead of counting.
 >
 > **As built, 10: the pool counts the front list.** `POOL_BLOCKS` has a term of its own for
 > the front list (`FRONT_LIST_BLOCKS`, 1), although the block on it was in the link thread's
@@ -318,27 +334,31 @@ Each frame in it then ends in exactly one way:
 
 | End | Counted by | Counter |
 | --- | --- | --- |
-| The kernel accepted all its bytes. | nobody | none: sent, as today. Kernel-buffered bytes are the only live data still lost at a failure, and they stay uncounted. |
+| The kernel accepted all its bytes. | nobody | none: sent, as today. Kernel-buffered bytes (live or replay) are the only data still lost at a failure, and they stay uncounted. |
 | Live, cut, not yet accepted, or still in the FIFO. | the router, after the hand-back, as an ordinary block | `spool_dropped` if the spool refuses it; `disconnected_dropped` with no spool or in the Sealing case |
-| Live, in the unconfirmed TLS piece. | the link thread | `disconnected_dropped` |
-| Replay, not fully accepted. | the link thread (in hand) or the router (in the FIFO) | `disconnected_dropped` |
+| Live, in the unconfirmed TLS piece. | the router (B2: returned with the cut frame, like the frames after it) | as the other returned frames. Before B2: the link thread counted them in `disconnected_dropped`. |
+| Replay, not fully accepted: the cut frame, the unconfirmed TLS frames, the rest of the batch in hand, the batches in the FIFO. | nobody (B2) | none: the spool goes back to the end of the last accepted frame, and the frames are read and sent again. Before B2 the link thread (in hand) or the router (in the FIFO) counted them in `disconnected_dropped`. |
 
 The router also counts the front list. The parser counts only a full channel
-(`queue_dropped`). Each block has one owner at a time, so I2 holds.
+(`queue_dropped`). Each block has one owner at a time, so I2 holds. With B2 a spool frame
+ends in `replayed` (delivered), in `spool_dropped` (evicted or unreadable, never read), or on
+disk; never in two of these ([Eviction](#eviction-and---spool-max-mib)).
 
 ### Constants
 
 | Constant | Value | Arithmetic |
 | --- | --- | --- |
 | `LINK_FIFO_BLOCKS` | 128 (was 2) | A thread that waits can lose one quantum: 2 clock ticks (31.25 ms) on Windows client, 12 ticks (187.5 ms) on Windows Server. At 41.2 MB/s that is 1.29 MB (20 blocks) and 7.7 MB (118 blocks). 128 blocks (8 MiB of frames) cover one Server quantum at 41.2 MB/s with a 9 % margin (up to 44.7 MB/s, about 217,000 queries per second) and six client quanta. No hold remains, so this is the only in-memory slack. |
-| Loss at a failure | less than 268 KiB, only in Draining | The unsent rest of two replay batches, each below 64 KiB + 70 KiB + 4 bytes. With TLS, add one piece of at most 16 KiB. Live blocks in the FIFO cost memory, not loss: they go back. Today the worst case is 320 KiB. |
+| Loss at a failure | B2: none counted; the kernel-buffered bytes are lost uncounted. Before B2: less than 140 KiB, only in Draining | Before B2: the unsent rest of two replay batches, each at most 71,684 bytes, and with TLS one piece of at most 16 KiB. Live blocks in the FIFO cost memory, not loss: they go back. With B2 the replay batches go back too (to the spool), and so does the unconfirmed TLS piece of a live block. |
 | `TLS_FEED_BYTES` | 16 KiB | One TLS record at the default fragment size, so the unconfirmed plaintext is one piece. |
 | Link pause held in memory | — | FIFO 8 MiB / R_in: about 4.1 s at 10,000, 0.81 s at 50,000, and 0.20 s at 200,000 queries per second. The kernel send buffer adds more; it is autotuned (as built, H4), so these are lower bounds. |
-| Router pause held in memory | — | Parser channel 8 MiB / R_in: 0.20 s at 41.2 MB/s, one Server quantum. |
-| `REPLAY_BATCH_BYTES` | 64 KiB | `read_batch` stops after the frame that crosses the limit, so a batch is below 64 KiB + 70 KiB + 4 bytes. It fits `BLOCK_CAPACITY` (136 KiB) with no reallocation. |
-| Replay credit | 2 batches (was 1) | V2: credit 2 made replay about 6 times faster on a saturated host. Two batches bound the replay loss above. |
+| Router pause held in memory | — | Parser channel 8 MiB / R_in: 0.20 s at 41.2 MB/s, one Server quantum. B2: a replay read adds about 10 ms to a turn ([Turn length](#credit-batch-size-and-turn-length)). |
+| `REPLAY_BATCH_BYTES` | 64 KiB | `read_batch` takes a frame only if it fits the limit, and always takes the first, so a batch is at most max(64 KiB, 70 KiB + 4 bytes) = 71,684 bytes. (Earlier text said that the frame that crosses the limit is taken too, which gave 134 KiB.) It fits `BLOCK_CAPACITY` (136 KiB) with no reallocation. |
+| Replay credit | B2: 127 batches. Before B2: 2 (was 1) | V2: credit 2 made replay about 6 times faster on a saturated host, and bounded the replay loss above. With B2 nothing is lost, and 127 = `LINK_FIFO_BLOCKS` - `FRONT_LIST_BLOCKS` ([Credit](#credit-batch-size-and-turn-length)). |
+| `REPLAY_TURN_BYTES` | B2: 1 MiB | The most the router reads from the spool in one pass. |
+| `RETURN_MESSAGES` | `REPLAY_CREDIT` + 2 | 4 before B2, 129 with B2. |
 | `SEND_QUEUE_BLOCKS` | 128, unchanged | User decision. |
-| `POOL_BLOCKS` | `SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLOCKS + 3` = 260 | One block each for the parser, the router, and the link thread, and the front list (1 block, finding m3). The blocks the router takes out of the FIFO, for a spill or a hand-back, were in the FIFO, and the block the link thread returns was in its hand, so they add none. 260 × 136 KiB = 34.5 MiB, against 17.3 MiB at `a06f6fd`. |
+| `POOL_BLOCKS` | `SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLOCKS + 3` = 260 | One block each for the parser, the router, and the link thread, and the front list (1 block, finding m3). The blocks the router takes out of the FIFO, for a spill or a hand-back, were in the FIFO, and the block the link thread returns was in its hand, so they add none. 260 × 136 KiB = 34.5 MiB, against 17.3 MiB at `a06f6fd`. B2 adds none: a replay batch is a FIFO item. |
 | `LINK_POLL` | 50 ms | The readiness and FIFO wait. It bounds the reaction to shutdown, the stall check, the `Fence` wait, and the reconnect poll. |
 | Stall timeout | 15 s default | `--receiver-stall-seconds`, 2 to 300. At 50,000 queries per second the spool takes 15 s × 10.3 MB/s = 155 MB, about 4 % of the 4,096 MiB default. |
 | `IO_TIMEOUT` | 2 s, unchanged | Connect, TLS handshake, READY/ACCEPT/START, and STOP/FINISH only. Never a data write. |
@@ -383,6 +403,513 @@ STOP/FINISH. The router drains the FIFO while STOP/FINISH runs.
 **Interaction with the spool.** A shorter stall fills the FIFO and spills: no loss, no
 reconnect. With no spool, the loss is `queue_dropped` until the receiver resumes.
 
+## B2. Spool rewind
+
+> **Status:** Built on 2026-11-04, after the user approved the design the same day. The
+> sections above describe the code at `7ac0c1c`. Where B2 changes one of them, that section
+> says so and keeps the old value. [As built (B2)](#as-built-b2) lists what differs from
+> this design.
+
+B1 gives unsent live data back to the router. A replay batch cannot go back, because
+`Spool::read_batch` saves the cursor and may delete the segment before the link has sent the
+batch (I3). That is why the replay credit is 2: a failure loses at most two batches (under
+140 KiB; earlier text said 268 KiB, which assumed a batch could cross the limit). It is
+also why replay is slow on a saturated host: each batch needs a router wake (review V3: a
+drain of 5.6 to 40.7 MB/s at 2 busy threads per CPU, and 11 to 19 MB/s with a credit of 4).
+
+B2 keeps what the link has not taken. The spool tracks a read position and a delivered
+position. At a failure the read position goes back to the delivered position, and the unsent
+data is read again. No replay frame is lost, so the credit can follow the FIFO depth, and one
+router wake queues enough batches for the link to run without the router.
+
+| # | Decision | Section |
+| --- | --- | --- |
+| 1 | Two positions, read (R) and delivered (D). The spool keeps the batches between them. | [Positions](#positions-and-reports) |
+| 2 | A segment is deleted when D has passed it, not when R has. | [Segment deletion](#segment-deletion) |
+| 3 | A failure sets R back to D. Replay data in the FIFO and in the link's hand is read again. | [Rewind](#rewind-at-the-hand-back) |
+| 4 | `cursor.bin` holds D, saved once per router pass. Across a crash the held data is sent again (at least once). A stop repeats nothing. | [Cursor](#cursorbin-and-a-crash) |
+| 5 | Held segments count toward the cap. Eviction skips them. | [Eviction](#eviction-and---spool-max-mib) |
+| 6 | Credit 127, at most 1 MiB read per router turn, batch size 64 KiB. | [Credit](#credit-batch-size-and-turn-length) |
+| 7 | Shutdown leaves the held data on disk, and `seal` saves D. | [Shutdown](#shutdown-and-sealing) |
+| 8 | A failure counts no frame, live or replay, except in a spool-less run. | [Loss](#loss-after-b2) |
+| 9 | The unconfirmed TLS piece of a live block goes back with the cut frame. | [TLS](#rewind-at-the-hand-back) |
+
+### Positions and reports
+
+| | Read position R | Delivered position D |
+| --- | --- | --- |
+| Meaning | The end of the last batch the router read. | The end of the last frame whose bytes the session fully handed to the kernel. With TLS, the end of the last frame in a piece that `write_tls` has fully written. |
+| Lives in | `Spool`. R is in the first segment that has not `ended` (the reader has not finished it): `read_offset` and `frames_read` of that segment. | `Spool`. D is in the head segment: `done_offset` and `frames_done`. |
+| Moves forward | `read_batch`. | `Spool::delivered`, when the router takes a `ReplayDone`. |
+| Moves back | `Spool::rewind`, to D. | Never. |
+
+D never passes R. Data between them is **held**: read, not delivered. The spool keeps it on
+disk. `delivered`, `rewind`, `checkpoint`, and `has_unread` are methods of `Spool`.
+
+**Spans.** `read_batch` records a span for each batch it returns: the segment sequence, the
+start and end offsets, and the frame count. A batch comes from one segment. The spool keeps
+the spans in read order, in a queue that grows to at most `REPLAY_CREDIT` entries. The link
+finishes batches in FIFO order, and a live block makes no span, so each report belongs to
+the front span. The router tracks no positions and no batch numbers.
+
+**Reports.** `Return::ReplayDone` carries `bytes` and `frames`: the prefix of the batch that
+the session fully handed to the kernel, ending at a frame boundary.
+
+- A whole batch reports its totals.
+- At a failure the link settles the batch in hand with the same message. It reports the
+  frames of `Split::sent` and the end offset of the last of them (a new `Split::sent_end`).
+  The cut frame, the unconfirmed TLS frames, and every later frame are not counted and not
+  returned. They stay in the spool. A live block is settled the same way, except that its
+  unsent frames go back as `Returned` (B1). Then the link sends `HandBackDone`.
+- A batch in the FIFO that the link never took is released by the router at the drain.
+
+`Spool::delivered(bytes, frames)` pops the front span, sets D to the span start plus `bytes`,
+adds `frames` to the `replayed` counter, and sweeps (see below). The spool ignores a report
+when no span is out and clamps `bytes` to the span; neither can happen.
+
+`replayed` moves from the read to the delivery. A frame that is read twice (a rewind) would
+count twice, and a perfmon counter must not fall. After B2, `replayed` is the number of
+spool frames the connection fully accepted.
+
+**Defensive paths.** Two paths cannot run today: `reject` (an item arrives while the link is
+down) and a failed `offer` in `replay_step` (the FIFO had room). Both count the batch in
+`disconnected_dropped` and then pass it with `Spool::written_off`, which moves D past the batch
+without adding to `replayed`. `reject` reports it with `Return::ReplayCounted`. A counted
+frame is always one that D has passed, so it is never read again, and it is in one counter.
+
+### Segment deletion
+
+Today `read_batch` deletes a segment when the reader finishes it. After B2 the reader only
+marks the segment `ended` and goes on to the next one. A separate sweep deletes.
+
+- **Ended.** The reader ends a segment at STOP, at the end of an unsealed file, at a cut-off
+  or corrupt frame, or at the good length of a segment closed after a write error. A rewind
+  clears `ended`, because the reader must read the segment again from D. A segment whose
+  rest was counted as dropped also keeps a separate mark that a rewind does not clear (see
+  [Eviction](#eviction-and---spool-max-mib)).
+- **Sweep.** While the head segment has ended and `frames_done == frames_read`, the spool
+  deletes it. This is true when the link took everything read from it. The sweep runs at the
+  end of `delivered`, and at the end of a `read_batch` that ended a segment, because a
+  segment with no frame left to deliver gets no report.
+- **The active segment** never ends (more data can arrive). When it is the only segment, R is
+  at its writer position, and `frames_done == frames_read`, the sweep deletes it and closes
+  the writer. This is the case that the call returning 0 handles today.
+- **The cursor.** A deletion writes the cursor only when no span is out, exactly as today
+  (the next segment's start, or the next unused sequence). With a span out the cursor already
+  holds R, which is ahead, and a deletion writes nothing.
+
+`has_backlog()` stays true while any segment remains. It now means "data not yet delivered".
+A new `has_unread()` means "R is before the end of the data". `replay()` tests `has_unread()`:
+with the whole backlog held, `has_backlog()` is true but a read would return nothing.
+`unread_bytes()` is measured from R; the monitor reads it and nothing in it changes. A
+rewind raises it, and the monitor already restarts its window when `disconnects` changes.
+
+**As-built note 1 changes.** The call that returns 0 no longer deletes the last segment.
+`delivered` does, when the last `ReplayDone` arrives. The router then leaves Draining at that
+`ReplayDone`, not at the next read. Direct still needs no backlog and every credit back.
+
+### Rewind at the hand-back
+
+The router rewinds after it has taken everything the link sent and the FIFO.
+
+1. The link settles the block in hand (a replay batch: `ReplayDone` with the accepted prefix;
+   a live block: `Returned`) and sends `HandBackDone`.
+2. The router applies each message in channel order. Every `ReplayDone` moves D. Then it
+   takes `HandBackDone`, or the close of the channel.
+3. `take_fifo`: live items go to `older`. Replay items go back to the pool, give their credit
+   back, and are not counted.
+4. `Spool::rewind`: the spans are dropped; every segment's `read_offset` and `frames_read`
+   are set to its `done_offset` and `frames_done`; `ended` is cleared on every segment (the
+   mark for a counted loss is kept); the reader is dropped, and the next read reopens the
+   file at D. The cursor file needs no write: it never passes D.
+5. `place_older` and the fence, as in B1.
+
+**Proofs.**
+
+- **D has every finished batch.** The link sends `ReplayDone` before `HandBackDone` on one
+  channel. The router rewinds after `HandBackDone` or the close, and the channel delivers
+  every message before it reports a close. The same holds in `link_vanished` and in the
+  Sealing loop.
+- **Nothing is sent twice.** The frames before D were fully accepted. A frame at or after D
+  was not: a cut frame left the receiver only a truncated copy, which it discards (the B1
+  rule). So reading again from D repeats no complete frame. Bytes that the kernel took are
+  counted as accepted, so they are before D.
+- **Order.** From D on, the spool holds in capture order: the unsent rest of the batch in
+  hand, the batches that were in the FIFO, the unread data, and the live blocks that
+  Draining appended. The blocks older than all of it (the returned block, live FIFO items,
+  the front list) go to the front list when a backlog exists, and to the head of the spool
+  when none does. That is B1. In Direct no span is out (as-built note 9), so a failure
+  finds D = R and the rewind does nothing.
+- **The front list stays at 1 block.** Draining sends no live block to the FIFO, whatever the
+  credit. The only live block that can be in the FIFO or in hand is the front block itself.
+- **The spill never meets a replay item.** A spill runs only in Direct, where `replay_out` is
+  0. It does not rewind.
+- **A batch read after `up` cleared** reaches the FIFO and is released at the drain. The
+  `up` check in `replay()` stays as an optimization. It is not needed for correctness any
+  more.
+- **No deadlock.** At most `REPLAY_CREDIT` `ReplayDone`, one `Returned`, and one
+  `HandBackDone` are unread, so the return channel holds `REPLAY_CREDIT + 2` (129).
+
+**TLS, live and replay.** The frames of the unconfirmed piece go back with the rest: a replay
+batch to the spool, a live block to the router (decided 2026-11-04; B1 counted the piece of a
+live block in `disconnected_dropped`). They cannot have reached the receiver whole:
+
+- A piece holds at most 16 KiB, which is one TLS record (`TLS_FEED_BYTES`). The exception is
+  the first frame of a piece when it is longer: the piece is then that frame (or its rest)
+  alone, in several records.
+- `pending()` is true when some ciphertext that `tls_offer` queued is not on the socket.
+  `tls_drain` returns an error only while `wants_write()` is true. TCP is in order, so the
+  receiver holds a prefix of the pending bytes. When the last of them is the tail of the data
+  record, it holds a prefix of that record and cannot decrypt it.
+- Every unknown frame ends inside the pending bytes. None is complete at the receiver, with
+  one exception.
+
+**The exception.** In TLS 1.3 rustls can queue a `KeyUpdate` (about 22 bytes) after a data
+record, at the AES-GCM record limit or on `refresh_traffic_keys()`. If the socket takes the
+whole data record and the connection resets while the `KeyUpdate` is still pending, the piece
+stays unconfirmed, although the receiver holds it, and its frames arrive twice. The earlier
+claim that an error never hides a record that was fully written is false in that window. The
+window is the time to write about 22 bytes, once per 2^23 or more records. The service does
+not call `refresh_traffic_keys()`. No code changes for it (risk 19).
+
+So the return makes no duplicate except in that window, and the last counted loss at a failure
+is gone. The link
+tests use a real TLS server on the scripted socket, which decrypts whole records only, so they
+check the argument: the receiver holds the frames before the piece and none from it.
+
+### `cursor.bin` and a crash
+
+Decided by the user on 2026-11-04: across a crash or kill, the read-ahead is sent again.
+Delivery across a crash is at least once. `cursor.bin` holds the delivered position D, not
+the read position. A normal stop repeats nothing.
+
+- **Rule.** `read_batch` does not write the file. `Spool::checkpoint` writes D, at most once
+  per router pass, after the pass has applied every `ReplayDone`, and only if D moved. The
+  spool also writes it when it deletes the first segment (the start of the next segment, or
+  the next unused sequence, as today), and `Spool::seal` writes it. A rewind needs no write:
+  the file never passes D, so setting R back to D leaves it valid.
+- **What a crash repeats.** The frames the file does not cover: the held data (up to 127
+  batches) and the frames delivered since the last write (those of one pass). A batch is at
+  most max(64 KiB, 70 KiB + 4 bytes) = 71,684 bytes, because `read_batch` never takes a frame
+  that crosses the limit. The held data is 8.0 MiB at 103-byte frames and 8.7 MiB at the
+  worst. The receiver can see these frames twice. Nothing else is added: a crash still loses
+  the live data in memory (the parser channel and the FIFO, up to 16 MiB) and the bytes the
+  kernel held.
+- **A stop repeats nothing.** `Spool::seal` writes D, with or without held batches. The next
+  run starts at the frame after the last one the link took.
+- **Write rate.** One 28-byte positional write per router pass that applied a report, so never
+  more than one per batch: at most about 630 a second at 41.2 MB/s and about 8,400 a second at
+  the idle replay rate (550 MB/s, review V2), the same bound as the write before each batch
+  today. A pass that applies many reports writes once, so a busy host writes less. Add one write
+  for each segment deleted (about one per 64 MiB). The file is never flushed.
+- **A failed write.** The file keeps the older D, so a crash repeats more frames and never
+  fewer. The error is counted in `spool_errors` and logged as any spool I/O error. Reads do
+  not pause: replay serves the receiver, and the file only bounds what a crash repeats. Before
+  B2 the file had to be written before the send, so a failed write had to stop the read. The
+  spool tries again after the pause (10 s), at a deletion at once, and in `seal`.
+- **Open.** `Spool::open` applies D as before, and the lag of the file adds two cases that
+  need nothing new. A cursor that names a segment that is gone, or that is older than every
+  segment, makes reading start at the first segment's START: the segments between were
+  delivered, because the file never passes D. A cursor in a segment that exists resumes at its
+  offset, and the segments below it are deleted uncounted. A damaged cursor file (wrong size,
+  magic, or check value, or an offset inside START) is not a crash. It is unchanged: the
+  oldest segment is dropped and counted, which bounds what a damaged file can repeat.
+- **A segment that could not be deleted.** The deletion writes the cursor first, so the file
+  names a position past the stray file. The next start deletes the stray file and does not
+  send it again (the property that `src/spool.rs` documents). If that write fails too, a
+  crash can send the stray file again, which at-least-once allows.
+- **Rejected: the cursor at R, written before the batch leaves (at most once).** It was the
+  earlier proposal. The user chose to resend: a crash then loses no replay data.
+
+### Eviction and `--spool-max-mib`
+
+- **The cap.** Held segments are on disk, so they count in `total_bytes`, `spool_bytes`, and
+  the cap.
+- **The victim.** The cap path and the free-space floor path both delete the oldest segment
+  that has no read byte (R has not entered it). They skip held segments. The floor path
+  also keeps the newest segment, as today.
+- **Counters.** A victim was never read, so its `frames_read` is 0 and `spool_dropped` takes
+  all its frames, as now. A leftover segment adds only bytes. A held frame is never counted
+  by eviction. A frame the link took is counted in `replayed`. A frame is in one counter or
+  is sent: held segments are not evicted, and an evicted segment was not read.
+- **A loss counted once.** A cut-off tail, a corrupt rest, or an unreadable rest is counted
+  when the reader first meets it. The segment keeps a mark. After a rewind the reader meets
+  the same end and counts nothing. A read error or a bad START on R's segment ends the
+  segment at its read offset and counts the unread part at once, as today; the file stays
+  until D passes the read part. The mark is not cleared by a rewind.
+- **The order guarantee (H3a).** Today the victim is the head segment, which holds the
+  oldest unread data. After B2 the victim is the first segment with no read byte, which is
+  newer than the held data by at most P + 2S (see the minimum cap). The receiver still gets
+  frames in capture order, with a gap after the held run. H3a keeps its meaning: the oldest
+  data that is not already on its way to the receiver goes first.
+- **The minimum cap.** The largest batch is 71,684 bytes (70 KiB + 4 bytes; `read_batch` takes
+  a frame only if it fits the 64 KiB limit, or if it is the first). Held bytes are at most
+  P = 127 × 71,684 = 8.7 MiB (8.0 MiB at 103-byte frames).
+  Held segments also include the delivered prefix of D's segment and the unread rest of R's,
+  each below one segment S = min(64 MiB, cap / 8). So held segments hold at most P + 2S.
+  At `--spool-max-mib 64`, S is 8 MiB and held segments hold at most 24.7 MiB. A block that
+  needs room arrives when the segments hold more than 63.8 MiB, so at least 39 MiB of
+  segments (at least five) are not held, and a victim exists. At any larger cap the held bytes are
+  below three quarters of the cap, because P < cap / 4. If no victim existed, the loop would
+  end as it does today when no segment is left, and the block would be written over the cap.
+  Tests that use a cap below 64 MiB must keep the read-ahead below it.
+- **The floor path** can find only held segments to delete. It then refuses blocks for one
+  pause (10 s) and counts `spool_dropped`, as it does today when only the newest segment is
+  left. This needs a volume that is already at its floor and a spool smaller than P + 2S.
+
+### Credit, batch size, and turn length
+
+| Constant | Value | Arithmetic |
+| --- | --- | --- |
+| `REPLAY_CREDIT` | 127 (was 2) | `LINK_FIFO_BLOCKS - FRONT_LIST_BLOCKS`. It is the most that the FIFO can hold next to the front block, so a send that the router has checked never waits (the compile-time assert is then tight). To keep replay at the capture rate through a router that runs once per Server quantum (187.5 ms), the link needs 41.2 MB/s × 0.1875 s / 64 KiB = 118 batches. 127 gives a margin of 7.6 % (up to 44.4 MB/s), on the same footing as the FIFO for live data. |
+| `REPLAY_BATCH_BYTES` | 64 KiB, unchanged | A larger batch needs a larger `BLOCK_CAPACITY` in all 260 pool blocks (about 16 MiB for each 64 KiB), and it widens the held bytes and the crash window. After B2 the batch size no longer limits the drain, because a wake queues many batches. A smaller batch makes more messages and cursor writes. |
+| `REPLAY_TURN_BYTES` | 1 MiB (new) | The most the router reads from the spool in one `serve` call. Replay stops after the first batch that reaches it, so a turn reads under 1 MiB + 70 KiB. See below. |
+| `RETURN_MESSAGES` | `REPLAY_CREDIT + 2` = 129 (was 4) | See "No deadlock" above. |
+| `LINK_FIFO_BLOCKS` | 128, unchanged | |
+| `POOL_BLOCKS` | 260, unchanged | See below. |
+
+**Pool, no new blocks.**
+
+- A replay batch is a pool block that `replay_step` takes and offers to the FIFO at once. In
+  the FIFO it uses one of the 128 slots. In the link's hand it replaces a slot, because the
+  link took it from the FIFO. The router's hand holds one block while it reads.
+- In Draining the FIFO holds at most the front block and 127 batches, which is 128. These are
+  the slots and hands that the `POOL_BLOCKS` term already counts for live blocks.
+- A rewind returns blocks to the pool. It allocates none, and it reads again into pool
+  blocks.
+- The new tests assert `pool_fallbacks == 0`.
+
+**Turn length.**
+
+- `serve` takes the parser blocks first (up to 128), then replay. Replay stops after
+  `REPLAY_TURN_BYTES`, and the turn returns `Moved`, so the next turn serves the parser
+  channel again.
+- The parser channel holds 8 MiB: 0.20 s at 41.2 MB/s. One Server quantum of router pause
+  already uses 7.7 MB of it (118 of 128 blocks). The read at the end of a turn must cost a
+  small part of the rest. 1 MiB from a disk that is not in the page cache, at 100 MB/s, takes
+  10.5 ms. That is 5 % of 0.20 s, and the parser adds 0.43 MB (7 blocks) meanwhile. From the
+  page cache a read is faster, and this figure is an assumption that lab task L checks.
+- One turn queues about 16 batches (103-byte frames). Eight back-to-back turns fill the
+  credit. A router wake runs turns while they move something, so one wake queues all 127
+  batches. At 41.2 MB/s the link then needs no router for 127 × 64 KiB / 41.2 MB/s = 0.20 s.
+
+### Shutdown and Sealing
+
+At shutdown `serve` reads no replay (as today). Batches out finish within the link budget or
+come back. `Router::seal` is unchanged except for what the spool does:
+
+1. Drop the FIFO sender and the fence sender. Apply every message until the return channel
+   closes. This moves D for each batch the link finished and settles the batch in hand.
+2. `take_fifo`: replay items are released. Nothing is counted.
+3. Live blocks older than a backlog and the front list: as today.
+4. The blocks left in the parser channel go to the spool. Then `Spool::seal` writes D to the
+   cursor file and STOP to the active segment.
+
+The held data stays on disk, in order, and the next start reads from D. The router does not
+rewind at a stop: nothing reads the spool again, and the file never holds the read position.
+(The first version of this note had a rewind here. It was redundant.) `seal` writes the cursor
+file as it writes STOP. A write that fails is counted in `spool_errors` and logged, as a STOP
+write that fails always was: a disk fault at the stop is not a receiver problem, and the
+rule that a receiver problem adds no output at stop does not cover it. Nothing else is added
+at stop. The shutdown bound (about 3.2 s) does not change.
+
+### Loss after B2
+
+| Case | Counted loss before B2 | After B2 |
+| --- | --- | --- |
+| Failure in Direct | none | none |
+| Failure in Draining (replay in the FIFO and in hand) | under 140 KiB, `disconnected_dropped` | none counted. The kernel-buffered bytes are uncounted, as for live data. |
+| TLS unconfirmed piece, replay | at most 16 KiB, `disconnected_dropped` | none: the frames are read again |
+| TLS unconfirmed piece, live | at most 16 KiB, `disconnected_dropped` | none: returned to the router with the cut frame |
+| Shutdown with batches out | counted | none: they stay on disk |
+| Shutdown with a backlog and a front block | at most 1 block, `disconnected_dropped` | unchanged |
+| Crash or kill (not a stop) | under 140 KiB of replay, uncounted | none lost; up to 127 batches (8.0 MiB, 8.7 MiB at the worst) and the frames of the last pass are sent again, so the receiver can see them twice |
+
+### As built (B2)
+
+What the build does differently from the design above, in the order of the code.
+
+1. **Names.** `Spool::delivered(bytes, frames)`, `Spool::rewind()`, `Spool::checkpoint()`, and
+   `Spool::has_unread()`. `Return::ReplayDone` carries `{ bytes, frames }`. `Split` has `sent`,
+   `sent_end`, and `unsent`; the `unknown` and `kept` fields are gone, because a live block and a
+   replay batch both settle by the confirmed bytes alone. `REPLAY_TURN_BYTES` is in
+   `src/sender.rs`. The pool, the FIFO, and the front list are unchanged.
+2. **The spans** are a `VecDeque` that grows to at most `REPLAY_CREDIT` entries on the router
+   thread. They are not allocated at start, because the spool does not know the credit.
+3. **The reader ends a segment in the call that returns its last frames.** The design said
+   that the call after that one ends it. A segment with held frames stays until `delivered`
+   passes it. A segment with no frames to deliver (a bad START, or nothing but control frames)
+   is deleted by the `sweep` that the read runs. The active segment carries an `at_end` flag
+   that an append clears.
+4. **The mark for a counted loss** is `cut`, the offset where the readable data ends, with
+   `lost_frames` and `lost_bytes`. After a rewind the reader stops at `cut` and counts
+   nothing. An eviction subtracts `lost_frames` and `lost_bytes`. A read error, a bad START,
+   and an invalid cursor use the same mark (`Spool::abandon`), so they delete the segment at
+   once when nothing in it is held, as before.
+5. **Eviction** (`Spool::evict_oldest(keep_last)`) takes the oldest segment that the reader has
+   not ended and whose read offset is not past its delivered offset. The first segment
+   qualifies when nothing is held in it, so a spool with nothing held evicts as before.
+6. **The cursor.** `Spool::checkpoint` writes D when it moved. The router calls it once per pass
+   after `collect_returns` and `follow_link`, and after a hand-back and a vanished link. A deletion
+   of the first segment writes the cursor, and `Spool::seal` writes it. After a failed write
+   `checkpoint` waits one `PAUSE` (10 s). Reads never pause for it: `read_paused_until` now
+   covers only a transient read error. An invalid cursor file is handled as before.
+7. **The router** releases a replay item that it finds in the FIFO (`drain_fifo`, which leaves
+   the credit to `place_older`) and rewinds the spool in `hand_back` and `link_vanished`. It does
+   not rewind in `seal`, because `Spool::seal` saves D and nothing reads the spool again. The `up`
+   check in `replay()` stays. The `front.is_empty()` guard in `replay()` is gone, because
+   `serve` sends the front list first and the FIFO has room for it and for the whole credit.
+   A batch that cannot be sent to the FIFO (it cannot happen) and a replay item that the link
+   rejects are counted and passed with `Spool::written_off`, which does not add to `replayed`
+   (review V4, m2). The router saves D with `Spool::checkpoint` once per pass, and in
+   `hand_back` and `link_vanished`.
+8. **Batch size.** `read_batch` takes a frame only if it fits the limit, and always takes the
+   first. A batch is therefore at most 71,684 bytes, not 134 KiB. The earlier text, the code
+   comments, and the guides had the larger figure; the 268 KiB loss bound was 140 KiB at most.
+9. **Test seam.** `Spool::read_and_deliver` (`src/spool/test_support.rs`, tests only) reads a batch
+   and reports it delivered at once, for the tests of the spool alone that do not model a link.
+10. **The perfcounter manifest** (`packaging/perfcounters/etw-dnstap.man`) changed the help text of
+    counters 18 and 54, and `etw-dnstap-perf.rc` was regenerated with CTRPP (two strings changed).
+    The updated manifest has to be registered again on upgrade, as the unreleased version
+    requires already.
+11. **Throughput.** The V2 harness is not in the repository, so a harness was rebuilt from the
+    review notes (a temporary test, removed after the run): release profile, loopback, a receiver
+    that counts bytes, 103-byte frames on the wire, busy threads at normal priority, 24 logical
+    CPUs, Windows 11. Replay drains a backlog of 400,000 frames (41 MB). Live is a paced 41.2 MB/s
+    capture for 4 s. Ten runs of each replay case:
+
+    | Case | B2 | Before B2 (`7ac0c1c`) |
+    | --- | --- | --- |
+    | Replay, idle | 725 to 787 MB/s (median 753) | 600 to 914 MB/s (median 789) |
+    | Replay, 1 busy thread per CPU | 320 to 505 MB/s (median 361) | 12.8 to 41.9 MB/s (median 27.4) |
+    | Replay, 2 busy threads per CPU | 51 to 368 MB/s (median 73.9) | 4.7 to 9.0 MB/s (median 5.3) |
+    | Live, idle / 1 / 2 busy per CPU | 41.2 / 41.0 / 40.7 MB/s, 0 % spooled, 0 dropped | 41.2 / 41.2 / 40.7 MB/s, 0 % spooled; 2,548 frames dropped at 2 busy |
+
+    A first set of 5 runs agreed (B2 at 2 busy per CPU: 56 to 85 MB/s). V3 had measured 5.6 to
+    40.7 MB/s before B2 on its host, and the same load gave 4.7 to 9.0 MB/s here.
+
+12. **The TLS record limit (review V4, M1; found there, older than B2).** At the confidentiality
+    limit of its cipher (2^24 records for TLS 1.2 with AES-GCM), rustls 0.23.46 queues
+    `close_notify`, refuses the record, and still returns the length from `Writer::write`. The
+    link then saw every block complete with no socket write: the stall timer never fired, `up`
+    stayed true, and frames were discarded silently. Before B2 they were lost; with B2 they would
+    also count in `replayed` and be deleted. `tls_offer` (`src/network/wire.rs`) now compares the
+    ciphertext that rustls queued for an offer (`process_new_packets().tls_bytes_to_write()`,
+    which does no I/O here) with the plaintext it took. Any record is longer than its plaintext
+    by a 5-byte header and a 16-byte tag, so less than that means the data was dropped, and the
+    offer fails. The data is not confirmed, so the B1 and B2 hand-back returns it, and the
+    reconnect has new keys. `rustls` offers no public flag for a queued `close_notify`; the
+    check also needs no constant for the record count, which the cipher suite supplies. One
+    limit: a refused piece of 10 bytes or fewer is smaller than the 31-byte `close_notify`
+    record that takes its place and can pass once; the next offer queues nothing and fails.
+    The encoder never produces a frame that small. The tests lower the limit through the cipher
+    suite (`TlsKit::with_record_limit`), which is the library's own setting, so the product code
+    has no test seam.
+13. **Fuzzing.** `src/spool/fuzzing.rs` now ends some batches in a failed link, at points the
+    input chooses (at most eight): it delivers half of the frames and rewinds.
+14. **Output at stop.** `Spool::seal` writes the cursor file, and a failed write is counted and
+    logged like any spool I/O error, as a failed STOP write always was. The rule that nothing is
+    added at stop concerns receiver problems; this is a disk fault.
+
+### B2 tests
+
+**New.**
+
+1. **Spool, rewind.** Read three batches across a segment end, deliver the first, rewind.
+   The next read starts at the second batch. Frames are in order and none repeats.
+2. **Spool, cut frame.** Deliver a prefix that ends inside a batch, rewind. The next read
+   starts at the first unaccepted frame. `replayed` counts the accepted frames only.
+3. **Spool, deletion waits.** After the last read, the file and `has_backlog` stay.
+   `delivered` deletes an ended segment when D passes it, and the active segment when R is
+   at its writer position. A segment with no frame to deliver is swept by the read.
+4. **Spool, eviction during flight.** Hold three segments, append to the cap. The held
+   segments stay, the victim is the first segment with no read byte, `spool_dropped` is the
+   victim's frames, and `replayed` + `spool_dropped` + on disk equals appended. At a cap of
+   64 MiB with 127 held batches of the largest frames, a victim exists.
+5. **Spool, cursor.** The file is not written by a read. It holds D after `checkpoint`.
+   Reopen after a crash: the held batch comes again, and the frames before D do not. Reopen
+   after `seal`: nothing repeats. A cursor older than every segment starts at the first
+   segment. A failed write leaves the older position, and reads go on.
+6. **Spool, a loss counted once.** A cut tail and an unreadable segment are counted at the
+   first meeting only, across a rewind.
+7. **Spool, property.** Extend `src/spool/property_tests.rs` with `Deliver` (all or a
+   prefix) and `Rewind` steps among append, read, evict, and reopen. Check conservation
+   (appended = `replayed` + `spool_dropped` + on disk), order, no repeat, and the gauges.
+   `src/spool/fuzzing.rs` calls `delivered` and rewinds at random points.
+8. **Link, replay and live.** A cut replay batch reports the accepted prefix, counts
+   nothing, and returns nothing. A TLS replay piece that is unconfirmed is not counted, and
+   the report ends at the last confirmed frame. The unconfirmed piece of a live block comes
+   back with the frames after it, and nothing is counted. A whole batch reports its
+   totals. `Split::sent_end` has its own cases.
+9. **Router, one wake.** On the manual scheduler, one `turn` queues 16 batches (103-byte
+   frames) and eight turns queue 127. The link then writes all of them with `step`, with
+   no router turn between. The router takes 127 `ReplayDone`, and the spool is empty.
+10. **Router, return channel.** The link finishes 127 batches while the router does not run.
+    The link never blocks on the return channel.
+11. **Router, hand-back.** 100 batches in the FIFO and one cut in hand: D moves, the credit
+    comes back, `disconnected_dropped` is 0, and the next read starts at the cut frame. The
+    front list still goes first.
+12. **Router, `link_vanished` and `seal`.** A vanished link rewinds and saves D. `seal` saves D
+    and the next run starts there. STOP follows.
+13. **Threads, a failure with many batches out.** After the reconnect every frame arrives
+    once and in order, and no counter shows a loss. The scripted wire has no kernel buffer.
+14. **Threads, TLS replay.** A failure in a replay piece: the frames arrive once.
+15. **Threads, shutdown with batches out.** The link is stalled with batches out: after
+    `finish`, the segments hold every unsent frame in order, `cursor.bin` equals D, the next
+    run replays from D, and nothing is counted.
+16. **Spool, crash.** Drop the spool without `seal` after a `checkpoint` and reopen the
+    folder: the spool resumes at the checkpoint, and the held and uncheckpointed frames come
+    again. A kill leaves the same files. The threads cannot simulate a kill, because `Drop`
+    shuts them down in order.
+17. **Test 13 (existing proptest, see above).** Its oracle becomes stronger: with a spool
+    large enough, delivered frames equal the offered frames, in order and without repeats.
+    Add a step that fills the FIFO with replay batches before a failure.
+18. **The cursor per pass.** A crash copy of the folder shows what a crash would leave. Reading
+    saves nothing, a report alone saves nothing, a pass that applied a report saves D once,
+    and the repeat after a crash is at most the batches of the last pass. A hand-back and a
+    vanished link save D before they return, without a pass.
+19. **TLS record limit.** A TLS 1.2 session whose cipher limit is 8 records (the ring AES-GCM
+    suite with `confidentiality_limit` lowered) fails at the limit instead of dropping data:
+    every byte that `tls_offer` reports taken reaches the receiver. A live block and a replay
+    batch at the limit come back or report only the confirmed frames, and nothing is counted.
+    A piece smaller than a `close_notify` record can pass once, and the next offer fails.
+20. **Counted batches.** A replay batch that reaches a link with no session, and one that the
+    router cannot offer, are counted once and not read again, and `replayed` does not count them.
+
+**Existing tests whose expectation changes because a loss becomes a rewind.**
+
+| File | Test | Change |
+| --- | --- | --- |
+| `src/sender/router_tests.rs` | `a_replay_batch_in_the_fifo_at_a_hand_back_is_counted_and_gives_its_credit_back` | 0 frames counted; the data is read again. |
+| `src/sender/router_tests.rs` | `the_router_reads_two_replay_batches_and_a_third_only_when_the_link_reports_one_done` | Credit 127; at most `REPLAY_TURN_BYTES` per call; `ReplayDone` carries the counts. |
+| `src/sender/router_tests.rs` | `live_blocks_go_to_the_spool_until_the_last_replay_credit_is_back` | The segment is deleted at `ReplayDone`, not at the next read. |
+| `src/sender/router_tests.rs` | `the_router_reads_no_replay_batch_once_the_link_thread_has_cleared_up` | `replayed` counts at delivery. |
+| `src/sender/link_tests.rs` | `a_cut_replay_batch_is_counted_from_the_cut_frame_and_never_returned` | Nothing is counted; the report carries the accepted prefix. |
+| `src/sender/link_tests.rs` | `a_tls_piece_whose_delivery_is_unconfirmed_is_counted_and_the_frames_after_it_go_back` | The piece goes back with the frames after it: nothing is counted. |
+| `src/sender/fault_tests.rs` | `a_tls_piece_whose_delivery_is_unconfirmed_counts_and_later_frames_arrive_once` | The same, over the threads: all six frames arrive, once. |
+| `src/sender/link_tests.rs` | `a_block_splits_into_sent_unknown_and_kept_frames_by_the_bytes_taken` | `Split::sent_end`. |
+| `src/sender/link_tests.rs` | `a_live_block_and_a_replay_batch_are_written_whole_and_the_batch_reports_done` | The report carries the totals. |
+| `src/sender/fault_tests.rs` | `a_failure_at_the_end_of_a_drain_loses_only_the_rest_of_the_last_replay_batch` | The cut frame is sent again: `lost()` 0, and session 1 starts with the cut frame. |
+| `src/sender/saturation_tests.rs` | `a_receiver_that_accepts_nothing_for_the_stall_timeout_loses_the_session_and_only_the_replay_in_flight` | The `<= REPLAY_CREDIT` bound becomes 0. |
+| `src/sender/e2e_tests.rs` | `a_link_that_fails_mid_replay_loses_the_failed_batch_and_sends_nothing_twice` | `disconnected_dropped` is 0; only frames in the kernel buffer can be missing. |
+| `src/sender/e2e_tests.rs` | `a_run_stopped_in_the_middle_of_a_replay_leaves_a_cursor_the_next_run_resumes_from` | `disconnected_dropped >= 1` becomes 0; the boundary equals the delivered count. |
+| `src/spool/spool_tests.rs` | The `drain` helper and the tests that read to the end and expect a deleted segment, a moved cursor, or `replayed` (among them `reading_to_the_writer_position_empties_the_spool_and_moves_the_cursor`, `unread_bytes_fall_as_the_replay_reads_while_the_gauge_waits_for_the_segment`, `a_segment_that_cannot_be_deleted_is_not_sent_twice`, `a_cursor_write_failure_consumes_nothing_and_pauses_reads`, and the sharing-violation tests) | The helper calls `delivered` after each batch. |
+| `src/spool/property_tests.rs`, `src/spool/fuzzing.rs` | `read` and the fuzz loop | They call `delivered`; `replayed` is checked against deliveries. |
+
+**Throughput acceptance.** The V3 harness (release, loopback, 103-byte frames) shows a replay
+drain of at least 41 MB/s at 2 busy threads per CPU in every run, and a drain at 1 busy
+thread per CPU that stays within the 130 to 454 MB/s that review V3 measured. During a
+drain, `send_queue_depth_max` rises by no more than the 7 blocks that the turn budget
+allows. Lab task L repeats it on Windows Server. The result on the build host is in
+[As built (B2)](#as-built-b2), note 11: it meets the first line (51 to 368 MB/s at 2 busy threads
+per CPU, 10 of 10 runs).
+
+**Documents that change with the code.** `docs/guide/monitoring.md` (`replayed`,
+`disconnected_dropped`), `docs/guide/configuration.md` (Order, Delivery is at most once),
+`docs/guide/tuning.md` (spool sizing: the cap includes the held data),
+`docs/design/measurement-terms.md`, `docs/design/data-path.md`, the comments in
+`src/pipeline/supervisor.rs` and `src/sender.rs`, and `CHANGELOG.md`.
+
 ## Tests
 
 ### Characterization tests to flip (C1)
@@ -390,7 +917,7 @@ reconnect. With no spool, the loss is `queue_dropped` until the receiver resumes
 | Behavior today | Assertion after task I1 |
 | --- | --- |
 | F1: a write stall drops frames in `queue_dropped` while the spool has room. | `queue_dropped` is 0. Every frame arrives in capture order after the stall. |
-| F2: a stall longer than 2 s disconnects and counts in-flight frames in `disconnected_dropped`. | A stall shorter than the stall timeout: `disconnects`, `reconnects`, and `disconnected_dropped` are 0, and every frame arrives in order. With the timeout set to 2 s it disconnects, the unsent live frames go to the spool, and `disconnected_dropped` counts at most the replay batches the router had out (two, in Draining). |
+| F2: a stall longer than 2 s disconnects and counts in-flight frames in `disconnected_dropped`. | A stall shorter than the stall timeout: `disconnects`, `reconnects`, and `disconnected_dropped` are 0, and every frame arrives in order. With the timeout set to 2 s it disconnects, the unsent live frames go to the spool, and `disconnected_dropped` counts at most the replay batches the router had out (two, in Draining). B2: 0. |
 | F3: a sustained slow receiver keeps every block on the spool path. | Unchanged: gate G2 chose H3a. |
 
 The existing sender, e2e, and backpressure tests must still pass. Under D, tests that
@@ -407,7 +934,7 @@ frames in capture order.
    `disconnected_dropped`; the cut rest, the 40, then newer blocks head the spool and
    arrive first after the reconnect.
 2. **End of a drain.** Two replay batches out: `disconnected_dropped` equals their unsent
-   rest only (less than 268 KiB).
+   rest only (less than 268 KiB). B2: 0, and the rest is read again ([B2 tests](#b2-tests)).
 3. **Spill drain race.** The link is held at the take lock (test hook) while the router
    spills a full FIFO; then the link fails. Assert: spool order equals capture order;
    the front list holds at most 1 block; after the reconnect it arrives before the
@@ -424,7 +951,8 @@ frames in capture order.
 6. **Cut frame resent.** A reset inside frame F: the old receiver discards the
    truncated F; the new session delivers F in full, once.
 7. **TLS unconfirmed piece.** A TLS failure during a piece: its frames count in
-   `disconnected_dropped`, later frames go back, nothing arrives twice.
+   `disconnected_dropped`, later frames go back, nothing arrives twice. B2: the piece goes
+   back with the later frames, and nothing is counted.
 8. **Partial writes.** 1 byte, then `WouldBlock`, in turn; plaintext and TLS arrive intact.
 9. **Stall timer.** With a 2 s timeout, 1 byte a second keeps the session; none for 2 s
    ends it.
@@ -436,6 +964,7 @@ frames in capture order.
     accepted (less than 0.81 s): nothing spooled, no loss, order kept. As built, the test
     pauses for 118 blocks, one Server quantum at 41 MB/s.
 13. **Backlog to live.** A `proptest` over stall, failure, and resume sequences keeps order.
+    B2 makes the oracle stronger ([B2 tests](#b2-tests)).
 14. **No spool, pool, flag.** A full FIFO backs up into `queue_dropped` only; the parser
     never takes the `Block::new` fallback; the flag accepts 2 and 300.
 
@@ -456,7 +985,8 @@ is longer.
   > which the MSI passes on unchecked. `--receiver-stall-seconds` follows that rule, so the
   > MSI is unchanged. `docs/guide/configuration.md` lists the option.
 - **Unsent data at a failure.** User chose B1 on 2026-11-03: unsent live data goes back
-  to the router, and only replay data whose cursor moved can be lost.
+  to the router, and only replay data whose cursor moved can be lost. B2 reads that replay
+  data again.
 - **Parser channel.** It stays at 128 blocks.
 - **Batched hand-offs.** User chose D on 2026-11-03; thread priority rejected (the
   service must not compete with `dns.exe`). Review V2 measured (release, loopback,
@@ -475,6 +1005,13 @@ is longer.
 - **Saturated link.** User chose H3a on 2026-11-03: strict capture order, with the
   oldest spool data deleted at the cap. With H4, the fixed `SO_SNDBUF` goes, so Windows
   send autotuning stays on. H3b, H3c, and the other shedding options are not built.
+- **Spool rewind (B2).** The user approved the design on 2026-11-04 and decided four
+  points. (1) Across a crash or kill the read-ahead is sent again: `cursor.bin` holds the
+  delivered position, so delivery across a crash is at least once. A stop repeats nothing.
+  (2) `replayed` counts a spool frame when the connection accepts it. (3) The unconfirmed
+  TLS piece of a live block goes back to the router like the cut frame. (4) While batches
+  are in flight, eviction deletes the oldest segment that has not been read; this is still
+  H3a.
 
 ### Risks and open questions
 
@@ -499,19 +1036,56 @@ is longer.
    collector.
 7. **rustls API.** The data path relies on rustls 0.23 `writer()`, `write_tls`, and
    `wants_write`, and on the default fragment size. A version change reruns tests 7 and 8.
-8. **Future work, B2.** Re-read replay batches after a failure (an in-memory rewind with
-   deferred segment deletion), or keep their unsent rest on the front list. Deferred.
+8. **B2, spool rewind.** Built; see [B2](#b2-spool-rewind). It sets the read
+   position back to the delivered position at a failure and defers segment deletion until
+   the link has taken the data. Risks 12 to 17 are its costs.
 9. **Server quantum at full rate.** On Windows Server at 41 MB/s, a link thread that
    loses a full 187.5 ms quantum needs about 118 blocks of FIFO. `LINK_FIFO_BLOCKS` = 128
    (8 MiB) covers it with a 9 % margin. With a FIFO of 96 it would spill about 22 blocks,
    and the spill is sticky until replay catches up. Two lost quanta in a row, or above
    44.7 MB/s, still spill. Lab task L decides.
-10. **Replay on a saturated host.** At 2 busy threads per CPU, replay may stay below the
-    capture rate, so a backlog can grow (H3a then evicts the oldest data). Review V3
+10. **Replay on a saturated host.** At 2 busy threads per CPU, replay stayed below the
+    capture rate, so a backlog could grow (H3a then evicts the oldest data). Review V3
     measured a drain of 5.6 to 40.7 MB/s on that load, against 110 to 120 MB/s at `HEAD`.
     A credit of 4 measured only 11 to 19 MB/s. The user accepted this as a known limit
-    on 2026-11-03. The planned fix is B2: rewind the spool on a failure. Unsent replay
-    data then goes back to the spool, so the credit can grow to about the FIFO depth
-    with no loss.
+    on 2026-11-03. B2 is the fix: the spool is rewound at a failure, so unsent replay data
+    goes back and the credit is 127, about the FIFO depth. One router wake queues the whole
+    credit, and the link needs no router for 0.20 s of replay at 41.2 MB/s. Measured on
+    2026-11-04 on a client host with 24 logical CPUs (see [As built (B2)](#as-built-b2)):
+    51 to 368 MB/s at 2 busy threads per CPU in 10 of 10 runs, against 4.7 to 9.0 MB/s
+    before B2 on the same host. Lab task L repeats it on Windows Server, where the quantum
+    is longer; until then the risk is closed on this host only.
 11. **Take lock.** If the router is preempted while it holds the take lock, the link
     waits up to one quantum. The lock is held only for queue pops during a spill.
+12. **Duplicates after a crash.** Delivery across a crash or kill is at least once (decided
+    2026-11-04). The receiver can see up to 127 replay batches twice (8.0 MiB, 8.7 MiB at the
+    worst) and the frames of the last router pass. A normal stop repeats nothing. A receiver
+    that cannot tolerate a repeat has to deduplicate, as it must for any TCP restart.
+13. **Disk in use.** Held data stays on disk until delivered: about 8 MiB, and 8.7 MiB at the
+    worst. It stays in whole segments, and eviction spares a segment with any read byte, so
+    the bytes that the cap cannot delete reach P + 2S: 24.7 MiB at the minimum cap of 64 MiB
+    (39 % of it), and about 137 MiB with 64 MiB segments (caps of 512 MiB and above).
+    `spool_bytes` includes them. At the minimum cap an eviction victim always exists (B2,
+    "The minimum cap").
+14. **Live data waits behind read-ahead.** In Draining a live block goes through the spool and
+    then waits behind the replay batches in the FIFO: up to 8 MiB at R_link, which is 0.2 s
+    at 41.2 MB/s and 1.7 s at 5 MB/s. Before B2 it waited behind two batches. This is small
+    against the backlog delay that Draining already means.
+15. **Router turns.** A replay read adds under 1 MiB + 70 KiB to a turn, about 10 ms on a disk
+    that reads 100 MB/s. The 100 MB/s figure is an assumption. If the lab shows
+    `send_queue_depth_max` rising during a drain, lower `REPLAY_TURN_BYTES`.
+16. **Counter meaning.** `replayed` counts at delivery, not at the read (decided 2026-11-04).
+    `disconnected_dropped` no longer holds replay frames or the unconfirmed TLS piece, except
+    in the two defensive paths and with no spool. `bytes_sent` counts the accepted prefix of a
+    cut frame again when the frame is sent again, as it already does for live data. Task W
+    updates the guides.
+17. **Duplicates at a failure.** None are expected, except in risk 19. D is the end of the last
+    frame the kernel fully accepted, and an unconfirmed TLS piece cannot have arrived whole. A fault in this
+    argument would show as a frame twice at the receiver; B2 tests 13 to 17 check it.
+18. **Eviction victim.** B2 deletes the first segment with no read byte. It is newer than the
+    held data by at most P + 2S. Decided as H3a on 2026-11-04.
+19. **A duplicate in the TLS 1.3 key update window.** If rustls queues a `KeyUpdate` after a
+    data record and the connection resets while it is pending, the receiver holds the record
+    and the service sends its frames again. The window is about 22 bytes of writing, once per
+    2^23 or more records, and the service never asks for a key update. The chance is
+    negligible; no code changes. See the exception in "TLS, live and replay".

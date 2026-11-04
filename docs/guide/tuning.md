@@ -182,6 +182,13 @@ including the 4-byte length prefix. Each query makes two frames: event 256 and e
 These are calculations from the 103-byte average. The lab has not run a spool outage, so no
 figure here is a measured result.
 
+While the receiver connection drains a backlog, the service holds up to about 9 MiB (127 batches
+of 64 KiB) that it has read and the connection has not yet taken. The segments that hold any of it
+stay on disk whole and count in the cap and in `spool_bytes`, and the cap does not delete them.
+Those segments can hold more than the 9 MiB: that data plus two segments, which is 24.7 MiB at the
+smallest cap (64 MiB, with 8 MiB segments) and about 137 MiB with 64 MiB segments (caps of 512 MiB
+and above). The smallest cap always has other segments to delete.
+
 - Size the cap for the longest outage you must cover. Multiply MiB per hour by the hours, and
   add a margin. For 10,000 queries per second and a two-hour outage, the spool needs about
   14,144 MiB, so set `--spool-max-mib 16384`.

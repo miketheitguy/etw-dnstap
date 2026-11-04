@@ -78,7 +78,7 @@ The service distinguishes these loss units and the related counters:
 | `foreign_pid_rejected` | Live service only. Records from a process other than the DNS Server. Not counted in `received`. |
 | `etw_buffers_delivered` | Live service only. ETW buffers whose delivery finished (buffer callback calls). |
 | `parser_wake_requests` | Live service only. Delivered buffers that enqueued events and so sent the parser a wake request. |
-| `disconnected_dropped` | Live service only. Encoded frames lost in the sink, in flight when a connection failed or received while the receiver was down with no spool in use. A failed replay batch also counts in `replayed`. These frames are never resent and are not part of `intake_dropped`. |
+| `disconnected_dropped` | Live service only. Encoded frames lost in the sink: with no spool, in flight when a connection failed or received while the receiver was down. With a spool, a failed connection counts nothing here: its unsent live frames go back to the router and its unsent replay frames stay in the spool. These frames are never resent and are not part of `intake_dropped`. |
 
 After native capture stops and the parser joins, schema 2 requires these exact
 identities:

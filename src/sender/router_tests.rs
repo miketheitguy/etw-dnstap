@@ -3,14 +3,14 @@
 //! that come back from the link are placed. The threads together are tested in
 //! `fault_tests.rs`.
 
-use std::{sync::mpsc, thread, time::Duration};
+use std::{fs, sync::mpsc, thread, time::Duration};
 
 use crossbeam_channel::bounded;
 
 use super::*;
 use crate::{
     sender::{
-        REPLAY_CREDIT,
+        REPLAY_CREDIT, REPLAY_TURN_BYTES,
         link::{LinkThread, Step},
         link_channels,
         script::{Script, ScriptUplink, complete_frames},
@@ -54,6 +54,21 @@ fn rig(spool: Option<Spool>, stats: &Arc<SinkStats>, up: bool) -> Rig {
     }
 }
 
+/// What a crash right now would leave behind: a copy of the spool folder, opened
+/// by a new run. Returns the first frame that run reads.
+fn first_frame_after_a_crash(dir: &TestDir) -> Option<u32> {
+    let copy = TestDir::new("crash-copy");
+    for entry in fs::read_dir(dir.path()).expect("the folder is listed") {
+        let entry = entry.expect("an entry");
+        fs::copy(entry.path(), copy.path().join(entry.file_name())).expect("a file is copied");
+    }
+    let stats = Arc::new(SinkStats::default());
+    let mut spool = open_spool(&copy, 64 * MIB, &stats);
+    let mut out = Vec::new();
+    spool.read_batch(&mut out, 1 << 20).expect("batch is read");
+    complete_frames(&out).first().copied()
+}
+
 /// A count of blocks as a sequence number.
 fn blocks(count: usize) -> u32 {
     u32::try_from(count).expect("small")
@@ -78,7 +93,9 @@ fn drain_spool(spool: &mut Spool) -> Vec<u32> {
     let mut all = Vec::new();
     loop {
         let mut out = Vec::new();
-        let frames = spool.read_batch(&mut out, 1 << 20).expect("batch is read");
+        let frames = spool
+            .read_and_deliver(&mut out, 1 << 20)
+            .expect("batch is read");
         if frames == 0 {
             return all;
         }
@@ -356,31 +373,54 @@ fn spool_of_big_frames(dir: &TestDir, stats: &Arc<SinkStats>, count: u32) -> Spo
     spool
 }
 
+/// The bytes of a replay batch of one maximum-length frame.
+const BIG_BATCH_BYTES: usize = crate::dnstap::MAX_ENCODED_LENGTH + 4;
+
+/// A report that the link took a whole batch of one maximum-length frame.
+fn big_batch_done() -> Return {
+    Return::ReplayDone {
+        bytes: BIG_BATCH_BYTES,
+        frames: 1,
+    }
+}
+
 #[test]
-fn the_router_reads_two_replay_batches_and_a_third_only_when_the_link_reports_one_done() {
+fn the_router_reads_up_to_the_credit_and_a_batch_more_only_as_the_link_reports_one_done() {
+    const FRAMES: u32 = REPLAY_CREDIT as u32 + 3;
     let dir = TestDir::new("credit");
     let stats = Arc::new(SinkStats::default());
-    let mut rig = rig(Some(spool_of_big_frames(&dir, &stats, 4)), &stats, true);
+    let mut rig = rig(
+        Some(spool_of_big_frames(&dir, &stats, FRAMES)),
+        &stats,
+        true,
+    );
     let (_input, parser) = bounded::<Block>(1);
 
+    // One pass reads about 1 MiB: 15 batches of one maximum-length frame.
+    let per_pass = REPLAY_TURN_BYTES.div_ceil(BIG_BATCH_BYTES);
     assert!(rig.router.serve(&parser, false));
-    assert_eq!(rig.router.replay_out, REPLAY_CREDIT);
-    // No third batch while two are out, however often the router runs.
-    for _ in 0..3 {
+    assert_eq!(usize::from(rig.router.replay_out), per_pass);
+    // The credit fills in a few passes and not beyond, however often the router runs.
+    for _ in 0..20 {
         let _ = rig.router.serve(&parser, false);
     }
-    assert_eq!(rig.fifo.len(), 2, "two batches at a time");
+    assert_eq!(rig.router.replay_out, REPLAY_CREDIT);
+    assert_eq!(rig.fifo.len(), usize::from(REPLAY_CREDIT));
     let first = rig.fifo.try_recv().expect("the first batch");
     assert!(matches!(&first, Item::Replay(block) if block.frames == 1));
 
-    rig.returns.send(Return::ReplayDone).expect("done");
+    rig.returns.send(big_batch_done()).expect("done");
     rig.router.collect_returns();
-    assert_eq!(rig.router.replay_out, 1);
+    assert_eq!(rig.router.replay_out, REPLAY_CREDIT - 1);
+    assert_eq!(get(&stats.replayed), 1, "replayed counts at delivery");
     assert!(rig.router.serve(&parser, false));
-    assert_eq!(fifo_numbers(&rig.fifo), vec![1, 2]);
+    assert_eq!(rig.router.replay_out, REPLAY_CREDIT);
+    let last = rig.fifo.try_iter().last().expect("the newest batch");
+    assert_eq!(numbers([last.into_block()]), vec![u32::from(REPLAY_CREDIT)]);
     // Closing: no replay at all.
-    rig.returns.send(Return::ReplayDone).expect("done");
-    rig.returns.send(Return::ReplayDone).expect("done");
+    for _ in 0..3 {
+        rig.returns.send(big_batch_done()).expect("done");
+    }
     rig.router.collect_returns();
     let _ = rig.router.serve(&parser, true);
     assert!(rig.fifo.is_empty());
@@ -394,16 +434,16 @@ fn live_blocks_go_to_the_spool_until_the_last_replay_credit_is_back() {
     let (_input, parser) = bounded::<Block>(1);
     assert!(rig.router.serve(&parser, false));
     assert_eq!(rig.router.replay_out, 1);
-    // The next read finds nothing and deletes the last segment, so the spool has
-    // no backlog; but a replay batch is still out, and a live block must not be
-    // sent ahead of nothing but behind it in the FIFO. It waits in the spool
-    // until the credit is back.
+    // The spool keeps the segment while the batch is out, so it still has a
+    // backlog, and a live block must not be sent ahead of the batch: it waits in
+    // the spool until the credit is back.
     let _ = rig.router.serve(&parser, false);
-    assert!(!rig.router.has_backlog());
+    assert!(rig.router.has_backlog());
+    assert!(!rig.router.has_unread());
     assert_eq!(rig.router.destination(), Route::Spool);
     rig.router.route_live(block(7));
-    assert!(rig.router.has_backlog());
-    rig.returns.send(Return::ReplayDone).expect("done");
+    assert!(rig.router.has_unread());
+    rig.returns.send(big_batch_done()).expect("done");
     rig.router.collect_returns();
     assert_eq!(rig.router.replay_out, 0);
     // A backlog again: the router stays in Draining and replays the live block.
@@ -422,15 +462,16 @@ fn the_router_reads_no_replay_batch_once_the_link_thread_has_cleared_up() {
     let stats = Arc::new(SinkStats::default());
     let mut rig = rig(Some(spool_of_big_frames(&dir, &stats, 3)), &stats, true);
     let (_input, parser) = bounded::<Block>(1);
-    // The link thread cleared `up`, and the router has not noticed yet: a batch
-    // read now would move the spool cursor and be counted without a write attempt.
+    // The link thread cleared `up`, and the router has not noticed yet. A batch
+    // read now would only be read again after the hand-back, so reading it is
+    // wasted work, not a loss; the router does not read it.
     rig.shared.up.store(false, Ordering::Release);
     for _ in 0..3 {
         let _ = rig.router.serve(&parser, false);
     }
     assert!(rig.fifo.is_empty(), "no batch reached the FIFO");
     assert_eq!(rig.router.replay_out, 0);
-    assert_eq!(get(&stats.replayed), 0, "the cursor did not move");
+    assert_eq!(get(&stats.replayed), 0, "nothing was read or delivered");
     // Once the link is up again, the same router reads from the first frame.
     rig.shared.up.store(true, Ordering::Release);
     assert!(rig.router.serve(&parser, false));
@@ -469,25 +510,135 @@ fn the_hand_back_takes_the_fifo_places_the_blocks_in_order_and_then_sends_the_fe
 }
 
 #[test]
-fn a_replay_batch_in_the_fifo_at_a_hand_back_is_counted_and_gives_its_credit_back() {
+fn replay_batches_in_the_fifo_at_a_hand_back_give_their_credit_back_and_are_read_again() {
     let dir = TestDir::new("hand-back-replay");
     let stats = Arc::new(SinkStats::default());
     let mut rig = rig(Some(spool_of_big_frames(&dir, &stats, 4)), &stats, true);
     let (_input, parser) = bounded::<Block>(1);
     assert!(rig.router.serve(&parser, false));
-    assert_eq!(rig.router.replay_out, 2);
-    // The link fails with both batches still in the FIFO.
+    assert_eq!(rig.router.replay_out, 4);
+    // The link fails with all four batches still in the FIFO.
     rig.returns.send(Return::HandBackDone).expect("done");
     rig.shared.up.store(false, Ordering::Release);
     rig.router.follow_link();
     assert_eq!(rig.router.replay_out, 0);
-    assert_eq!(
-        get(&stats.disconnected_dropped),
-        2,
-        "one frame in each batch"
-    );
+    assert_eq!(get(&stats.disconnected_dropped), 0, "nothing is lost");
+    assert_eq!(get(&stats.replayed), 0);
     assert!(rig.fifo.is_empty());
     assert!(rig.fences.try_recv().is_ok(), "the fence follows the drain");
+    // The link comes back: the same four frames are read again, in order.
+    rig.shared.up.store(true, Ordering::Release);
+    rig.router.follow_link();
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(fifo_numbers(&rig.fifo), vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn a_batch_that_the_link_counted_is_passed_without_counting_it_as_replayed() {
+    let dir = TestDir::new("counted-batch");
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(Some(spool_of_big_frames(&dir, &stats, 3)), &stats, true);
+    let (_input, parser) = bounded::<Block>(1);
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(rig.router.replay_out, 3);
+    // The link counted the first batch itself (no session) and says so.
+    rig.returns.send(Return::ReplayCounted).expect("counted");
+    rig.router.collect_returns();
+    assert_eq!(rig.router.replay_out, 2);
+    assert_eq!(get(&stats.replayed), 0, "a counted frame is not replayed");
+    // A failed hand-back later reads the other two again, and not the first.
+    rig.returns.send(Return::HandBackDone).expect("done");
+    rig.shared.up.store(false, Ordering::Release);
+    rig.router.follow_link();
+    rig.shared.up.store(true, Ordering::Release);
+    rig.router.follow_link();
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(fifo_numbers(&rig.fifo), vec![1, 2]);
+}
+
+#[test]
+fn a_batch_that_cannot_enter_the_fifo_is_counted_once_and_not_read_again() {
+    let dir = TestDir::new("offer-fails");
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(Some(spool_of_big_frames(&dir, &stats, 3)), &stats, true);
+    // The router has no FIFO sender, so the offer fails (it cannot, in production).
+    let saved = rig.router.fifo.take();
+    assert_eq!(rig.router.replay_step(), ReplayStep::Sent(BIG_BATCH_BYTES));
+    assert_eq!(rig.router.replay_out, 0);
+    assert_eq!(get(&stats.disconnected_dropped), 1);
+    assert_eq!(get(&stats.replayed), 0, "one counter only");
+    // The next batch is the second frame: the counted one is not read again.
+    rig.router.fifo = saved;
+    assert_eq!(rig.router.replay_step(), ReplayStep::Sent(BIG_BATCH_BYTES));
+    assert_eq!(fifo_numbers(&rig.fifo), vec![1]);
+}
+
+/// A spool of `count` frames of 1,000 bytes, numbered from 0. A replay batch
+/// holds 65 of them.
+fn spool_of_small_frames(dir: &TestDir, stats: &Arc<SinkStats>, count: u32) -> Spool {
+    let mut spool = open_spool(dir, 64 * MIB, stats);
+    for chunk in (0..count).collect::<Vec<_>>().chunks(50) {
+        let frames: Vec<Vec<u8>> = chunk
+            .iter()
+            .map(|number| sized_frame(*number, 1_000))
+            .collect();
+        let added = u32::try_from(frames.len()).expect("small");
+        assert_eq!(spool.append(&framed(&frames), added), Appended::Stored);
+    }
+    spool
+}
+
+/// Bytes of one frame of `spool_of_small_frames` on the wire.
+const SMALL_FRAME_BYTES: usize = 1_004;
+/// Frames in one replay batch of `spool_of_small_frames`.
+const SMALL_PER_BATCH: u32 = 65;
+
+#[test]
+fn a_hand_back_with_a_cut_replay_batch_reads_again_from_the_cut_frame() {
+    let dir = TestDir::new("hand-back-cut");
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(
+        Some(spool_of_small_frames(&dir, &stats, 4 * SMALL_PER_BATCH)),
+        &stats,
+        true,
+    );
+    let (_input, parser) = bounded::<Block>(1);
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(rig.router.replay_out, 4);
+    // The link takes the first batch and 10 frames of the second, then fails with
+    // the other two in the FIFO.
+    let _taken = [rig.fifo.try_recv(), rig.fifo.try_recv()];
+    rig.returns
+        .send(Return::ReplayDone {
+            bytes: SMALL_PER_BATCH as usize * SMALL_FRAME_BYTES,
+            frames: SMALL_PER_BATCH,
+        })
+        .expect("done");
+    rig.returns
+        .send(Return::ReplayDone {
+            bytes: 10 * SMALL_FRAME_BYTES,
+            frames: 10,
+        })
+        .expect("done");
+    rig.returns.send(Return::HandBackDone).expect("done");
+    rig.shared.up.store(false, Ordering::Release);
+    rig.router.follow_link();
+    assert_eq!(rig.router.replay_out, 0);
+    assert_eq!(get(&stats.replayed), u64::from(SMALL_PER_BATCH) + 10);
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+    assert!(rig.fifo.is_empty());
+    // The next read starts at the cut frame.
+    rig.shared.up.store(true, Ordering::Release);
+    rig.router.follow_link();
+    assert!(rig.router.serve(&parser, false));
+    let batch = rig.fifo.try_recv().expect("a batch");
+    let seen = numbers([batch.into_block()]);
+    assert_eq!(seen.first(), Some(&(SMALL_PER_BATCH + 10)));
+    assert!(strictly_consecutive(&seen));
+}
+
+fn strictly_consecutive(numbers: &[u32]) -> bool {
+    numbers.windows(2).all(|pair| pair[1] == pair[0] + 1)
 }
 
 #[test]
@@ -547,6 +698,159 @@ fn a_link_thread_that_vanishes_sends_the_blocks_it_held_to_the_spool_and_stays_d
     assert_eq!(router.destination(), Route::Spool);
     let mut spool = router.spool.take().expect("spool");
     assert_eq!(drain_spool(&mut spool), vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn the_router_saves_the_delivered_position_once_a_pass_has_applied_the_reports() {
+    let dir = TestDir::new("checkpoint-pass");
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(
+        Some(spool_of_small_frames(&dir, &stats, 3 * SMALL_PER_BATCH)),
+        &stats,
+        true,
+    );
+    let (_input, parser) = bounded::<Block>(1);
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(rig.router.replay_out, 3);
+    let bytes = SMALL_PER_BATCH as usize * SMALL_FRAME_BYTES;
+    let frames = SMALL_PER_BATCH;
+    // Reading saves nothing: a crash now sends everything again.
+    assert_eq!(first_frame_after_a_crash(&dir), Some(0));
+
+    // A report alone saves nothing. The pass saves once, after it applied it.
+    rig.returns
+        .send(Return::ReplayDone { bytes, frames })
+        .expect("done");
+    rig.router.collect_returns();
+    assert_eq!(first_frame_after_a_crash(&dir), Some(0));
+    let _ = rig.router.turn(&parser);
+    assert_eq!(first_frame_after_a_crash(&dir), Some(SMALL_PER_BATCH));
+
+    // The next report is delivered but not saved until the next pass ends: a
+    // crash in between repeats at most that batch.
+    rig.returns
+        .send(Return::ReplayDone { bytes, frames })
+        .expect("done");
+    rig.router.collect_returns();
+    assert_eq!(first_frame_after_a_crash(&dir), Some(SMALL_PER_BATCH));
+    let _ = rig.router.turn(&parser);
+    assert_eq!(first_frame_after_a_crash(&dir), Some(2 * SMALL_PER_BATCH));
+}
+
+#[test]
+fn a_hand_back_saves_the_delivered_position_before_the_router_goes_on() {
+    let dir = TestDir::new("checkpoint-hand-back");
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(
+        Some(spool_of_small_frames(&dir, &stats, 4 * SMALL_PER_BATCH)),
+        &stats,
+        true,
+    );
+    let (_input, parser) = bounded::<Block>(1);
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(rig.router.replay_out, 4);
+    // The link takes the first batch and 10 frames of the second, and fails.
+    let _taken = [rig.fifo.try_recv(), rig.fifo.try_recv()];
+    rig.returns
+        .send(Return::ReplayDone {
+            bytes: SMALL_PER_BATCH as usize * SMALL_FRAME_BYTES,
+            frames: SMALL_PER_BATCH,
+        })
+        .expect("done");
+    rig.returns
+        .send(Return::ReplayDone {
+            bytes: 10 * SMALL_FRAME_BYTES,
+            frames: 10,
+        })
+        .expect("done");
+    rig.returns.send(Return::HandBackDone).expect("done");
+    rig.shared.up.store(false, Ordering::Release);
+    // No pass ends here: the hand-back itself saves the position.
+    rig.router.follow_link();
+    assert_eq!(first_frame_after_a_crash(&dir), Some(SMALL_PER_BATCH + 10));
+}
+
+#[test]
+fn a_link_thread_that_vanishes_with_batches_out_gives_them_back_to_the_spool() {
+    let dir = TestDir::new("vanish-replay");
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(
+        Some(spool_of_small_frames(&dir, &stats, 3 * SMALL_PER_BATCH)),
+        &stats,
+        true,
+    );
+    let (_input, parser) = bounded::<Block>(1);
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(rig.router.replay_out, 3);
+    // The link wrote the first batch, reported it, and vanished.
+    let _taken = rig.fifo.try_recv();
+    rig.returns
+        .send(Return::ReplayDone {
+            bytes: SMALL_PER_BATCH as usize * SMALL_FRAME_BYTES,
+            frames: SMALL_PER_BATCH,
+        })
+        .expect("done");
+    let Rig {
+        mut router,
+        returns,
+        fifo,
+        ..
+    } = rig;
+    drop(returns);
+    router.collect_returns();
+    assert!(router.is_gone());
+    assert!(fifo.is_empty(), "the router took the FIFO");
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+    // The router saved the position after the first batch before it went on.
+    assert_eq!(first_frame_after_a_crash(&dir), Some(SMALL_PER_BATCH));
+    let mut spool = router.spool.take().expect("spool");
+    let rest = drain_spool(&mut spool);
+    assert_eq!(
+        rest,
+        (SMALL_PER_BATCH..3 * SMALL_PER_BATCH).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn the_router_seals_with_batches_out_and_the_next_run_reads_from_the_last_frame_taken() {
+    let dir = TestDir::new("seal-replay");
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(
+        Some(spool_of_small_frames(&dir, &stats, 3 * SMALL_PER_BATCH)),
+        &stats,
+        true,
+    );
+    let (_input, parser) = bounded::<Block>(1);
+    assert!(rig.router.serve(&parser, false));
+    assert_eq!(rig.router.replay_out, 3);
+    // The link wrote the first batch and 7 frames of the second, then ended.
+    let _taken = [rig.fifo.try_recv(), rig.fifo.try_recv()];
+    rig.returns
+        .send(Return::ReplayDone {
+            bytes: SMALL_PER_BATCH as usize * SMALL_FRAME_BYTES,
+            frames: SMALL_PER_BATCH,
+        })
+        .expect("done");
+    rig.returns
+        .send(Return::ReplayDone {
+            bytes: 7 * SMALL_FRAME_BYTES,
+            frames: 7,
+        })
+        .expect("done");
+    let Rig {
+        router, returns, ..
+    } = rig;
+    drop(returns);
+    router.seal(&parser).expect("seal");
+    assert_eq!(get(&stats.disconnected_dropped), 0, "nothing is counted");
+
+    // The next run finds the rest of the second batch and the third.
+    let next = Arc::new(SinkStats::default());
+    let mut spool = open_spool(&dir, 64 * MIB, &next);
+    assert_eq!(
+        drain_spool(&mut spool),
+        (SMALL_PER_BATCH + 7..3 * SMALL_PER_BATCH).collect::<Vec<_>>()
+    );
 }
 
 // ---- the deterministic batching test ----
@@ -643,6 +947,113 @@ fn the_same_schedule_spills_with_a_two_block_fifo() {
     assert!(spills > 0, "a FIFO of 2 cannot hold 120 blocks");
 }
 
+// ---- one router wake queues the whole credit ----
+
+#[test]
+fn one_router_wake_queues_the_whole_credit_and_the_link_drains_it_without_the_router() {
+    const PER_BATCH: u32 = SMALL_PER_BATCH;
+    let credit = usize::from(REPLAY_CREDIT);
+    let dir = TestDir::new("one-wake");
+    let stats = Arc::new(SinkStats::default());
+    let script = Script::new(true);
+    let uplink = ScriptUplink::new(&script, &stats, None, true);
+    let shared = Arc::new(LinkShared::new(false));
+    let free = Arc::new(ArrayQueue::new(super::super::POOL_BLOCKS));
+    for _ in 0..super::super::POOL_BLOCKS - 1 {
+        release(&free, Block::default());
+    }
+    let (ports, link_ports) = link_channels(LINK_FIFO_BLOCKS);
+    let mut link = LinkThread::new(
+        uplink,
+        link_ports,
+        Arc::clone(&shared),
+        Arc::clone(&stats),
+        Arc::clone(&free),
+        script.settings(Duration::from_secs(60)),
+    );
+    link.begin();
+    assert!(shared.up.load(Ordering::Acquire));
+    // A backlog of three batches more than the credit.
+    let spool = spool_of_small_frames(&dir, &stats, blocks(credit + 3) * PER_BATCH);
+    let mut router = Router::new(
+        Some(spool),
+        Arc::clone(&stats),
+        free,
+        Arc::clone(&shared),
+        ports,
+        thread::spawn(|| Ok(())),
+    );
+    let (_input, parser) = bounded::<Block>(SEND_QUEUE_BLOCKS);
+
+    // One pass reads about 1 MiB (16 batches) and asks to run again at once.
+    assert_eq!(router.turn(&parser), Turn::Moved);
+    assert_eq!(
+        usize::from(router.replay_out),
+        REPLAY_TURN_BYTES.div_ceil(usize::try_from(PER_BATCH).expect("small") * SMALL_FRAME_BYTES)
+    );
+    // The router runs again while it moves something. The link thread does not
+    // run, and one wake queues the whole credit.
+    let mut turns = 1;
+    while router.turn(&parser) == Turn::Moved {
+        turns += 1;
+        assert!(turns <= 20, "the router keeps reading");
+    }
+    assert_eq!(router.replay_out, REPLAY_CREDIT);
+    assert_eq!(router.fifo_end.len(), credit);
+    assert!(
+        turns >= credit.div_ceil(16),
+        "a pass is bounded by its budget"
+    );
+
+    // The link thread drains every batch with no router pass between. It never
+    // waits on the return channel, which has a place for each report.
+    assert_eq!(router.returns.capacity(), Some(credit + 2));
+    loop {
+        assert!(
+            router.returns.len() < credit + 2,
+            "the return channel would block the link thread"
+        );
+        match link.step() {
+            Step::Worked => {}
+            Step::Idle => break,
+            Step::End(end) => panic!("the link thread ended: {end:?}"),
+        }
+    }
+    assert!(router.fifo_end.is_empty());
+    assert_eq!(router.returns.len(), credit);
+    assert_eq!(
+        script.frames(),
+        (0..blocks(credit) * PER_BATCH).collect::<Vec<_>>()
+    );
+
+    // The router takes the reports, the spool deletes what is delivered, and the
+    // router reads the last three batches.
+    assert_eq!(router.turn(&parser), Turn::Moved);
+    assert_eq!(get(&stats.replayed), u64::from(blocks(credit) * PER_BATCH));
+    // The last three batches, and a short one where the data crosses a segment.
+    assert!(
+        (3..=4).contains(&router.replay_out),
+        "{}",
+        router.replay_out
+    );
+    loop {
+        match link.step() {
+            Step::Worked => {}
+            Step::Idle => break,
+            Step::End(end) => panic!("the link thread ended: {end:?}"),
+        }
+    }
+    let _ = router.turn(&parser);
+    assert_eq!(router.replay_out, 0);
+    assert!(!router.has_backlog(), "everything is delivered and deleted");
+    assert_eq!(
+        script.frames(),
+        (0..blocks(credit + 3) * PER_BATCH).collect::<Vec<_>>()
+    );
+    assert_eq!(get(&shared.pool_fallbacks), 0, "no block beyond the pool");
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+}
+
 /// Appends a block of `bytes` bytes to the spool of `router`, so its backlog grows.
 fn grow_backlog(router: &mut Router, bytes: usize) {
     let spool = router.spool.as_mut().expect("the router has a spool");
@@ -680,7 +1091,7 @@ fn the_router_sets_and_clears_link_saturated_from_the_spool_it_owns() {
         // The link drains the backlog: the state clears at once.
         let mut out = Vec::new();
         let backlog = router.spool.as_mut().expect("spool");
-        while backlog.read_batch(&mut out, 1 << 20).expect("read") > 0 {}
+        while backlog.read_and_deliver(&mut out, 1 << 20).expect("read") > 0 {}
         assert!(!router.has_backlog());
         router.monitor.force_due();
         router.sample_monitor();

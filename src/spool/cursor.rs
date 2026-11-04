@@ -1,11 +1,14 @@
-//! The spool read position, kept in `cursor.bin` next to the segments.
+//! The spool delivered position, kept in `cursor.bin` next to the segments: the
+//! end of the last frame the link fully handed to the socket.
 //!
 //! Format, all little-endian, 28 bytes: magic `ETDC`, sequence `u64`, byte
 //! offset `u64`, and a check value `sequence ^ offset ^ CHECK_KEY`. The file is
-//! overwritten in place with one positional write before each replay batch is
-//! sent, so a frame is marked consumed before it can reach the socket. A torn
-//! write fails the check value and reads as [`CursorRead::Invalid`]. The file is
-//! a high-water mark and is never deleted.
+//! overwritten in place with one positional write, when the router has applied
+//! the reports of a pass, when the first segment is deleted, and at a stop. It
+//! never passes the delivered position, so a crash sends frames again and never
+//! loses one. A torn write fails the check value and reads as
+//! [`CursorRead::Invalid`]. The file is a high-water mark for deletion and is
+//! never deleted.
 
 use super::fsinfo::is_plain_file;
 

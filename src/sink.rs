@@ -27,15 +27,16 @@ pub(crate) struct SinkStats {
     /// - with no spool, every live frame that the link had not fully sent when a
     ///   connection failed (the block in hand and the link queue), and
     ///   every frame that arrives while the link is down;
-    /// - the unsent rest of a replay batch when a connection failed;
-    /// - with TLS, the frames of the one piece whose delivery was unconfirmed;
     /// - with a spool, at shutdown after a spill, the live block (at most 1)
     ///   that came back from the link: it is older than the spool backlog, so it
     ///   cannot go in front of it.
     ///
-    /// With a spool, live frames that a failed connection did not fully accept
-    /// are not lost: they go to the spool and are sent again. A counted frame may
-    /// still have arrived, so this is an upper bound on the loss. Distinct from
+    /// With a spool, a failed connection counts nothing here. Live frames that it
+    /// did not fully accept (with TLS, including the frames of the one piece whose
+    /// delivery was unconfirmed) go back to the spool and are sent again, and the
+    /// spool keeps the replay frames that it did not fully accept. Bytes the
+    /// kernel already held are lost and not counted. A counted frame may still
+    /// have arrived, so this is an upper bound on the loss. Distinct from
     /// the intake counters, which count events dropped before reaching the parser.
     pub(crate) disconnected_dropped: AtomicU64,
     /// Blocks (about 64 KiB of frames) whose wait for the socket to become
@@ -78,7 +79,9 @@ pub(crate) struct SinkStats {
     pub(crate) queue_dropped: AtomicU64,
     /// Frames appended to the spool.
     pub(crate) spooled: AtomicU64,
-    /// Frames read from the spool and handed to the link.
+    /// Frames from the spool that the link fully handed to the socket, counted
+    /// when it does. A frame that a failed connection did not take is read again
+    /// and counts then.
     pub(crate) replayed: AtomicU64,
     /// Frames removed from the spool unsent, or refused by it: eviction, corrupt
     /// or cut-off data, floor suspension, I/O errors.

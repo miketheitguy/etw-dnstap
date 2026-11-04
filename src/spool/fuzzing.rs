@@ -139,7 +139,22 @@ fn check_frames(out: &[u8], frames: u32) {
     assert_eq!(count, frames, "frame count does not match the bytes");
 }
 
-/// Drives [`Spool::open`] and [`Spool::read_batch`] over arbitrary bytes.
+/// The most times the fuzzed link fails in one run.
+const FAILURES: u32 = 8;
+
+/// The bytes of the first `count` frames of a batch that `check_frames` accepted.
+fn prefix_bytes(out: &[u8], count: u32) -> usize {
+    let mut at = 0;
+    for _ in 0..count {
+        let header = [out[at], out[at + 1], out[at + 2], out[at + 3]];
+        at += 4 + u32::from_be_bytes(header) as usize;
+    }
+    at
+}
+
+/// Drives [`Spool::open`] and [`Spool::read_batch`] over arbitrary bytes, with a
+/// link that fails at points the input chooses: it takes part of a batch, and the
+/// rest is given back with [`Spool::rewind`].
 ///
 /// The first two bytes of `data` choose what is written (see `write_inputs`);
 /// the rest is the content of a segment file, or of two. The function returns
@@ -168,14 +183,33 @@ pub fn spool_segment(data: &[u8]) {
     // A read error pauses reads; a fuzz run must not wait for the pause.
     spool.pause = Duration::ZERO;
     // Every call that returns nothing still skips at least one control frame or
-    // deletes a segment, so this many calls reach the end.
+    // deletes a segment, so this many calls reach the end. Each of the (at most
+    // eight) failures of the link makes the spool read one batch again.
     let mut out = Vec::new();
     let mut total = 0_u64;
-    for _ in 0..written + 16 {
+    let mut failures = 0;
+    for call in 0..written + 16 + 2 * FAILURES as usize {
         out.clear();
         if let Ok(frames) = spool.read_batch(&mut out, limit) {
             check_frames(&out, frames);
-            total += u64::from(frames);
+            // The input chooses some batches that end in a failed link: it takes
+            // half of the frames, and the spool gives the rest back.
+            let fails = failures < FAILURES
+                && frames > 1
+                && data
+                    .get(call % data.len().max(1))
+                    .is_some_and(|byte| byte % 5 == 0);
+            if fails {
+                failures += 1;
+                let taken = frames / 2;
+                total += u64::from(taken);
+                spool.delivered(prefix_bytes(&out, taken), taken);
+                spool.rewind();
+            } else {
+                // The link takes the batch whole.
+                total += u64::from(frames);
+                spool.delivered(out.len(), frames);
+            }
         }
         if !spool.has_backlog() {
             break;

@@ -163,8 +163,7 @@ fn a_stall_shorter_than_the_stall_timeout_keeps_the_session() {
 }
 
 #[test]
-fn a_receiver_that_accepts_nothing_for_the_stall_timeout_loses_the_session_and_only_the_replay_in_flight()
- {
+fn a_receiver_that_accepts_nothing_for_the_stall_timeout_loses_the_session_and_no_frame() {
     let dir = TestDir::new("sat-session");
     let server = FakeServer::up();
     server.received.paused.store(true, Ordering::Release);
@@ -198,15 +197,10 @@ fn a_receiver_that_accepts_nothing_for_the_stall_timeout_loses_the_session_and_o
     });
     assert_eq!(get(&stats.reconnects), 0, "the receiver is still paused");
     // Changes with H2: this was `disconnected_dropped >= 1`. The unsent live
-    // frames go back to the router, and none is abandoned. The only frames that
-    // cannot go back are the replay batches the router had out (at most two, one
-    // large frame each here): the spill left the router in Draining, and the
-    // spool cursor had moved past them.
-    assert!(
-        get(&stats.disconnected_dropped) <= u64::from(REPLAY_CREDIT),
-        "{} frames counted",
-        get(&stats.disconnected_dropped)
-    );
+    // frames go back to the router, and none is abandoned. Changes with B2: the
+    // replay batches the router had out (the spill left it in Draining) go back to
+    // the spool too, so nothing is counted.
+    assert_eq!(get(&stats.disconnected_dropped), 0);
 
     // The receiver comes back and accepts the new session.
     resume(&server);
@@ -230,14 +224,14 @@ fn a_receiver_that_accepts_nothing_for_the_stall_timeout_loses_the_session_and_o
     // Changes with H2: this was a bound, because a write that timed out may
     // still complete in the kernel and the counted frames may also arrive. Now
     // the frames the kernel accepted before the stall reach the receiver, the cut
-    // frame and every unsent live frame are sent again on the new session, and
-    // the receiver gets each frame once. Only the replay batches in flight are
-    // counted, and the receiver does not get them.
-    assert!(counted_lost(&stats) <= u64::from(REPLAY_CREDIT));
+    // frame and every unsent frame, live or replay, are sent again on the new
+    // session, and the receiver gets each frame once. Changes with B2: nothing is
+    // counted, so every frame offered arrived.
+    assert_eq!(counted_lost(&stats), 0);
     assert_eq!(
-        got.len() as u64 + counted_lost(&stats),
+        got.len() as u64,
         u64::from(offered),
-        "each frame is delivered or counted once"
+        "each frame arrived once"
     );
 }
 
@@ -273,7 +267,9 @@ fn after_a_spill_every_later_block_takes_the_spool_path_until_the_backlog_is_emp
     // offered while the receiver was connected and reading, because the backlog
     // never emptied in between.
     assert!(get(&stats.spooled) >= spooled_at_spill + u64::from(offered - later_from));
-    assert_eq!(get(&stats.replayed), get(&stats.spooled));
+    wait_until("the reports to be applied", || {
+        get(&stats.replayed) == get(&stats.spooled)
+    });
     assert_eq!(
         server.received.frames(),
         (0..offered).collect::<Vec<_>>(),

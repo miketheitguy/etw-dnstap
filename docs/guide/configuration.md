@@ -204,8 +204,10 @@ Protocol failures at startup are not.
   which puts them at the head of the spool (or at the front of the next session when the spool
   already holds a backlog), and the service sends them again. A frame cut in the middle is sent
   again in full; the receiver saw only a truncated copy, which Frame Streams readers discard.
-  Only the unsent rest of one replay batch (under 134 KiB), and with TLS the frames of the one
-  16 KiB piece whose delivery is unknown, count in `disconnected_dropped`.
+  With TLS, the frames of the one 16 KiB piece whose delivery is unknown go back too: the
+  socket took only part of its record, which the receiver cannot decrypt. Replay frames that
+  the connection did not fully accept stay in the spool and are read again. With a spool,
+  nothing is counted in `disconnected_dropped` at a failure.
 - **Retry:** Each attempt runs on a helper thread, so a blackholed receiver never blocks the parser.
   Each wait is uniform between half of a base delay and the base. The base starts at 250 ms,
   doubles, and caps at 30 seconds. A successful reconnect resets it. Every new session repeats
@@ -320,9 +322,12 @@ With a spool in use, `queue_dropped` means a slow disk held up the router.
 ### Order
 
 While the spool holds frames, every new block goes to the spool, even when the receiver is
-connected. Frames therefore reach the receiver in capture order. After a reconnect, the router replays the oldest frames in batches of up to 64 KiB, two at a time. Before each batch, it moves queued blocks to the spool. Frames
-from an earlier run replay first. The file `cursor.bin` records the read position. Each run writes
-new segment files and never appends to an earlier run's.
+connected. Frames therefore reach the receiver in capture order. After a reconnect, the router replays the oldest frames in batches of up to 64 KiB, up to 127
+batches at a time, so the link thread can send about 0.2 seconds of replay at 41 MB/s without
+waiting for the router. The router reads at most 1 MiB from the spool, then moves queued blocks to the spool
+before it reads more. A segment stays on disk until the connection has taken all of it. Frames
+from an earlier run replay first. The file `cursor.bin` records the position after the last frame
+the connection took. Each run writes new segment files and never appends to an earlier run's.
 
 ### Size limits and eviction
 
@@ -334,34 +339,42 @@ new segment files and never appends to an earlier run's.
   counts them in `spool_dropped`, and checks again. Warnings give the free and needed MiB for the
   first four pauses, then the 61st, 121st, and so on. Refused blocks log nothing during a pause.
 - A segment holds up to 64 MiB, or one eighth of the cap when that is smaller.
-- The oldest data goes first. Each removal counts in `spool_dropped` and `spool_dropped_bytes`. A
+- The oldest data goes first, except the segments that hold any data the service has read and
+  the connection has not yet taken: those stay whole until the connection takes the data or a
+  failure gives it back. The cap counts them. That data is at most about 9 MiB, but the whole
+  segments that hold it can be larger: that data plus two segments, which is 24.7 MiB at the
+  smallest cap (64 MiB, with 8 MiB segments) and about 137 MiB with 64 MiB segments (caps of
+  512 MiB and above). Each removal counts in `spool_dropped` and `spool_dropped_bytes`. A
   leftover segment from an earlier run adds only bytes, because its frame count is unknown.
   Eviction warnings give the frames and bytes lost.
 
 Size the cap from the outage you must cover. [Spool sizing](tuning.md#spool-sizing) has the
 figures.
 
-### Delivery is at most once
+<a id="delivery-is-at-most-once"></a>
 
-- A frame that the socket accepted is never sent twice. The router moves the `cursor.bin` read
-  position before it hands a replay batch to the link thread, so a failure after that point loses
-  the unsent rest of the batch.
-- Loss per failed connection is bounded:
-  - The unsent rest of the replay batches in flight: at most two, each up to 64 KiB plus one frame
-    (under 268 KiB in all, about 2,600 frames at 103 bytes each). They count in `replayed` and
-    `disconnected_dropped`.
-  - With TLS, the frames of the one piece (up to 16 KiB) that the TLS layer took and the socket
-    did not confirm. They count in `disconnected_dropped`.
+### Delivery after a failure, a stop, and a crash
 
-  Live frames are not lost at a failure: the unsent ones go back to the spool, or to the front of
-  the next session. Data in the socket send buffer is lost, uncounted. Windows sizes that buffer,
-  and it can grow to several MiB on a fast link.
+- A running service sends no frame twice. A frame that the socket fully accepted is never sent
+  again. A frame that it did not fully accept goes back, live frames to the router and replay
+  frames to the spool, and is sent in full on the next session. The receiver saw only a truncated
+  copy of a cut frame.
+- A failed connection loses nothing that the service counts. Data in the socket send buffer is
+  lost, uncounted. Windows sizes that buffer, and it can grow to several MiB on a fast link.
+- A normal stop repeats nothing: the next run starts after the last frame the connection took.
+- A crash or kill (the process ends without a stop) sends frames again. `cursor.bin` holds the
+  position after the last frame the connection took, saved once per router pass. After a crash the
+  next run starts there, so it sends again the replay data that the service had read and the
+  connection had not taken (up to 127 batches, 8 MiB at 103 bytes a frame), and the frames taken
+  since the last save. A receiver can see these frames twice. Delivery across a crash is at least
+  once.
 - The spool does not flush data to disk. It protects against a receiver outage, not a power loss.
 
 ### Shutdown
 
-At shutdown, the router routes the queued blocks and seals the active segment. The `cursor.bin`
-read position is already current. The backlog stays on disk for the next run, and the service does
+At shutdown, the router routes the queued blocks, gives back to the spool the replay data that the
+connection did not take, saves the position after the last frame the connection took in `cursor.bin`,
+and seals the active segment. The backlog stays on disk for the next run, and the service does
 not send it before exit. For the receiver write cutoff, see
 [Startup and shutdown deadlines](#startup-and-shutdown-deadlines).
 

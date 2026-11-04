@@ -258,8 +258,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   A session ends only when the receiver accepts no bytes for `--receiver-stall-seconds`;
   it used to end when one write took 2 seconds. When a session ends, the live frames
   that the socket did not fully accept go to the spool (or to the front of the next
-  session) and are sent again, so `disconnected_dropped` counts only the unsent rest of
-  the replay batches in flight (at most two) and, with TLS, one unconfirmed 16 KiB piece. `bytes_sent` counts bytes
+  session) and are sent again. With TLS, the frames of the one unconfirmed 16 KiB piece
+  go back with them. With a spool, a failed connection therefore counts nothing in
+  `disconnected_dropped` (the spool keeps the replay batches, see the next entry). `bytes_sent` counts bytes
   the socket accepted (with TLS, the record bytes). `slow_writes`, `write_max_us`, and
   `write_max_recent_us` measure the wait for the socket to become writable, one block at
   a time. The block pool grows from 17.3 MiB to 34.5 MiB, and the shutdown bound falls
@@ -267,11 +268,22 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   seconds, with no STOP. A STOP/FINISH exchange that does not complete at a requested
   stop no longer fails the stop: the service writes nothing about it and stops with
   success (it used to exit with a service-specific error, and SCM restarted it). Unsent
-  frames stay in the spool. `output_errors` no longer counts it. Known limit: on a
-  host with about two runnable threads for each CPU, a backlog replays at about 6 to
-  40 MB/s, against about 110 MB/s before. After a spill on such a host, the backlog can
-  grow to `--spool-max-mib`, and the oldest frames count in `spool_dropped`. See
+  frames stay in the spool. `output_errors` no longer counts it. See
   [Slow receiver](docs/design/slow-receiver.md).
+- **Breaking.** The spool keeps data until the receiver connection has taken it. The
+  router reads replay batches ahead (up to 127 of 64 KiB, about 8 MiB) and the spool deletes
+  a segment only after the connection has fully taken it. When a session ends, the batches
+  the connection did not take are read again from the frame after the last one it took, so a
+  failed connection loses no replay frame and `disconnected_dropped` does not count one. This
+  also lets a backlog replay without a router wake for each batch. `cursor.bin` now holds
+  the position after the last frame the connection took, and the service saves it once per
+  router pass. A normal stop repeats nothing. After a crash or kill, delivery is at least
+  once: the next run sends again the replay data that was read and not taken, up to 127
+  batches (about 8 MiB), and the receiver can see those frames twice. `replayed` counts a
+  frame when the connection takes it, not when the service reads it. The spool holds up to
+  about 9 MiB more on disk while it drains, and the size cap does not delete those
+  segments. If `cursor.bin` cannot be written, replay goes on and a crash repeats more
+  frames. See [Slow receiver](docs/design/slow-receiver.md#b2-spool-rewind).
 - **Breaking.** The spool is on by default. An upgrade needs the spool folder
   and the re-registered counter manifest. See
   [Add the spool folder](docs/guide/upgrade.md#add-the-spool-folder). With a
@@ -563,6 +575,13 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Fixed
 
+- A TLS 1.2 session with an AES-GCM cipher that sent 2^24 records silently dropped all
+  later frames. At that limit rustls queues `close_notify` and refuses the record, yet its
+  writer still reports the bytes as taken. The link counted every block as sent, the stall
+  timer never fired, and the session stayed up, so frames were lost without a counter.
+  The link now treats a TLS write that queues no record as a session error. It hands the
+  data back, and the reconnect uses new keys. A session reaches 2^24 records after 256 GiB
+  of frames in full 16 KiB records, and sooner when the records are smaller.
 - `Invoke-LabGuest` in `scripts/performance/LabCommon.psm1` passed a multi-element
   argument list to the guest as one nested array, so callers with several
   arguments received them all in the first parameter. Arguments now arrive as

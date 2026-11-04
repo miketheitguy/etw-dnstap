@@ -279,3 +279,20 @@ fn a_capture_sees_a_callsite_first_reached_on_another_thread() {
         lines.text()
     );
 }
+
+impl super::Spool {
+    /// Reads a batch and reports it delivered at once, for tests of the spool
+    /// alone that do not model a link: the read position and the delivered
+    /// position move together.
+    ///
+    /// # Errors
+    /// Returns the error of the read.
+    pub(crate) fn read_and_deliver(&mut self, out: &mut Vec<u8>, limit: usize) -> io::Result<u32> {
+        let before = out.len();
+        let frames = self.read_batch(out, limit)?;
+        if frames > 0 {
+            self.delivered(out.len() - before, frames);
+        }
+        Ok(frames)
+    }
+}

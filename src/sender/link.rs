@@ -19,15 +19,19 @@
 //! shutdown deadline), the thread clears `up`, stops taking FIFO items, and splits
 //! the block in hand by the exact byte counts. The router takes the FIFO itself.
 //!
-//! - Live frames that the socket fully accepted are sent and forgotten.
+//! - Frames that the socket fully accepted are sent and forgotten.
 //! - Live frames that it did not fully accept (the cut frame and every later
 //!   one) go back to the router in order, and are sent again on the next session.
 //!   The receiver saw only a truncated copy of the cut frame, which it discards.
 //! - With TLS, the frames of the piece that was fed to rustls but not confirmed
-//!   on the socket may or may not have arrived. They count in
-//!   `disconnected_dropped`.
-//! - A replay batch is never returned (its spool cursor has moved). Its frames
-//!   that are not fully accepted count in `disconnected_dropped`.
+//!   on the socket go back the same way. The piece is one TLS record (or one long
+//!   frame), and the socket has taken only part of its ciphertext, which the
+//!   receiver cannot decrypt, so it holds no complete copy of those frames. (One
+//!   exception: a TLS 1.3 `KeyUpdate` queued after the record; see
+//!   `src/network/wire.rs`.)
+//! - A replay batch is not returned: the spool holds it. The thread reports the
+//!   frames the socket fully accepted in `ReplayDone`, and the router sets the
+//!   spool back to the frame after them. Nothing is counted.
 //!
 //! Then the thread sends `HandBackDone`. It may reconnect at once, but it neither
 //! publishes `up` nor writes until the router's fence arrives: the router sends
@@ -104,8 +108,9 @@ enum Kind {
 
 /// How far a block got. `confirmed` bytes are on the socket. `fed_end` bytes
 /// were taken by the session; with TLS the bytes between the two sit in rustls
-/// and their fate is unknown. For plaintext the two are equal. `scan` is a frame
-/// start at or before `confirmed`, so locating a piece costs little.
+/// and have not reached the socket whole. For plaintext the two are equal. A
+/// failure settles the block by `confirmed` alone. `scan` is a frame start at or
+/// before `confirmed`, so locating a piece costs little.
 #[derive(Clone, Copy, Debug, Default)]
 struct Progress {
     confirmed: usize,
@@ -348,8 +353,10 @@ impl<U: Uplink> LinkThread<U> {
         match item {
             Item::Live(block) => self.drop_block(block),
             Item::Replay(block) => {
+                // Counted, and so passed: the spool must not read it again, and
+                // must not count it as replayed too.
                 self.drop_block(block);
-                self.send(Return::ReplayDone);
+                self.send(Return::ReplayCounted);
             }
         }
     }
@@ -501,7 +508,10 @@ impl<U: Uplink> LinkThread<U> {
     /// A block the socket fully accepted.
     fn complete(&mut self, block: Block, kind: Kind) {
         if kind == Kind::Replay {
-            self.send(Return::ReplayDone);
+            self.send(Return::ReplayDone {
+                bytes: block.bytes.len(),
+                frames: block.frames,
+            });
         }
         release(&self.free, block);
     }
@@ -539,47 +549,43 @@ impl<U: Uplink> LinkThread<U> {
             kind,
             progress,
         } = hand;
-        let split = split_block(&block.bytes, progress.confirmed, progress.fed_end);
+        let split = split_block(&block.bytes, progress.confirmed);
         // `ending` means the shutdown deadline interrupted this block: close with
         // no STOP (see `cut`).
         self.cut = ending;
-        let lost = u64::from(split.unknown);
         match kind {
             Kind::Replay => {
-                // Its spool cursor has moved: whatever was not fully accepted is
-                // lost, and the router may read the next batch.
-                self.count_dropped(lost + u64::from(split.kept));
+                // The spool holds the batch. It learns how much the socket took
+                // and sets its read position back to the frame after that.
                 release(&self.free, block);
-                self.send(Return::ReplayDone);
+                self.send(Return::ReplayDone {
+                    bytes: split.sent_end,
+                    frames: split.sent,
+                });
             }
             Kind::Live => {
-                self.count_dropped(lost);
-                if split.kept == 0 {
+                if split.unsent == 0 {
                     release(&self.free, block);
                     return;
                 }
                 // The cut frame and every later one move to the start of the same
                 // buffer; nothing is allocated.
-                block.bytes.copy_within(split.keep_from.., 0);
-                let kept_bytes = block.bytes.len() - split.keep_from;
+                block.bytes.copy_within(split.sent_end.., 0);
+                let kept_bytes = block.bytes.len() - split.sent_end;
                 block.bytes.truncate(kept_bytes);
-                block.frames = split.kept;
+                block.frames = split.unsent;
                 self.send(Return::Returned(block));
             }
         }
     }
 
-    fn count_dropped(&self, frames: u64) {
-        if frames > 0 {
-            self.stats
-                .disconnected_dropped
-                .fetch_add(frames, Ordering::Relaxed);
-        }
-    }
-
     /// Counts every frame of a block that will not be sent, and frees the block.
     fn drop_block(&self, block: Block) {
-        self.count_dropped(u64::from(block.frames));
+        if block.frames > 0 {
+            self.stats
+                .disconnected_dropped
+                .fetch_add(u64::from(block.frames), Ordering::Relaxed);
+        }
         release(&self.free, block);
     }
 
@@ -661,38 +667,33 @@ fn piece_end(bytes: &[u8], scan: &mut usize, from: usize, limit: Option<usize>) 
 struct Split {
     /// Frames the socket fully accepted.
     sent: u32,
-    /// Frames fully taken by the session whose records the socket may not have
-    /// accepted (TLS only).
-    unknown: u32,
-    /// Frames the session did not fully take, the cut frame first.
-    kept: u32,
-    /// The offset of the first kept frame, or the block length if none is kept.
-    keep_from: usize,
+    /// The offset after the last of them, or 0 if none: the first frame that
+    /// goes back starts here, and the block length is the end of a block that was
+    /// sent whole.
+    sent_end: usize,
+    /// Frames after them: the cut frame, the frames a TLS session took whole but
+    /// the socket did not confirm, and every later frame. The receiver cannot
+    /// have a complete copy of any of them.
+    unsent: u32,
 }
 
 /// Divides `bytes` by frame at a failure: a frame that ends at or before
-/// `confirmed` was sent, one that ends at or before `fed_end` has an unknown
-/// fate, and every other frame was not fully taken, so the receiver cannot have
-/// a complete copy of it.
-fn split_block(bytes: &[u8], confirmed: usize, fed_end: usize) -> Split {
+/// `confirmed` was sent, and every other frame was not, so the receiver cannot
+/// have a complete copy of it.
+fn split_block(bytes: &[u8], confirmed: usize) -> Split {
     let mut split = Split {
         sent: 0,
-        unknown: 0,
-        kept: 0,
-        keep_from: bytes.len(),
+        sent_end: 0,
+        unsent: 0,
     };
     let mut start = 0;
     while start < bytes.len() {
         let end = frame_end(bytes, start);
         if end <= confirmed {
             split.sent += 1;
-        } else if end <= fed_end {
-            split.unknown += 1;
+            split.sent_end = end;
         } else {
-            if split.kept == 0 {
-                split.keep_from = start;
-            }
-            split.kept += 1;
+            split.unsent += 1;
         }
         start = end;
     }

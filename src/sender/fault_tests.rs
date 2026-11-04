@@ -23,7 +23,7 @@ use crate::{
     dnstap::MAX_ENCODED_LENGTH,
     network::test_support::TlsKit,
     sender::{
-        BLOCK_SEND_BYTES, FRONT_LIST_BLOCKS,
+        BLOCK_SEND_BYTES, FRONT_LIST_BLOCKS, REPLAY_CREDIT,
         script::{Mode, Script, ScriptUplink, trailing_partial},
         sender_tests::{MIB, get, numbers_of, open_spool, queued, sized_frame, wait_until},
     },
@@ -272,12 +272,14 @@ fn a_failure_without_a_backlog_puts_the_returned_blocks_at_the_head_of_the_spool
     assert_eq!(h.script.trailing_partial(0), frame_bytes(LARGE) / 2);
     assert_eq!(h.script.session_frames(1), (0..8).collect::<Vec<_>>());
     assert_eq!(h.lost(), 0);
-    assert_eq!(get(&h.stats.replayed), 8);
+    // The router counts a frame when it applies the link's report, a moment after
+    // the receiver has the frame.
+    wait_until("the reports to be applied", || get(&h.stats.replayed) == 8);
     h.finish().expect("clean STOP");
 }
 
 #[test]
-fn a_failure_at_the_end_of_a_drain_loses_only_the_rest_of_the_last_replay_batch() {
+fn a_failure_at_the_end_of_a_drain_loses_nothing_and_the_cut_frame_is_sent_again() {
     let dir = TestDir::new("fault-drain");
     let mut h = Harness::start(
         &dir,
@@ -296,20 +298,24 @@ fn a_failure_at_the_end_of_a_drain_loses_only_the_rest_of_the_last_replay_batch(
     wait_until("the replay to fail the link", || {
         get(&h.stats.disconnects) == 1
     });
-    // The cursor moved past the fifth frame, so it cannot be read again: its
-    // unsent rest is counted, and nothing else is.
-    assert_eq!(get(&h.stats.disconnected_dropped), 1);
+    // The spool is rewound to the end of the fourth frame: the fifth is read
+    // again, not counted.
+    assert_eq!(get(&h.stats.disconnected_dropped), 0);
     // Live data goes to the spool while the link is down.
     h.offer(100..102, LARGE);
     wait_until("the live frames to be spooled", || {
         get(&h.stats.spooled) == 7
     });
     h.reconnect();
-    wait_until("the live frames to arrive", || h.delivered().len() == 6);
+    wait_until("the live frames to arrive", || h.delivered().len() == 7);
     assert_eq!(h.script.session_frames(0), vec![0, 1, 2, 3]);
-    assert_eq!(h.script.session_frames(1), vec![100, 101]);
-    assert_eq!(h.lost(), 1);
-    assert_eq!(get(&h.stats.queue_dropped), 0);
+    assert_eq!(h.script.session_frames(1), vec![4, 100, 101]);
+    assert_eq!(h.lost(), 0);
+    // Every frame the spool handed to the link is counted once, when the router
+    // applies the report.
+    wait_until("the reports to be applied", || {
+        get(&h.stats.replayed) == get(&h.stats.spooled)
+    });
     h.finish().expect("clean STOP");
 }
 
@@ -334,20 +340,22 @@ fn a_failure_soon_after_a_spill_sends_the_live_rest_first_then_the_backlog() {
         get(&h.stats.spooled) == LINK_FIFO_BLOCKS as u64 + 1
     });
     assert_eq!(h.spills(), 1);
-    // The router reads two replay batches (frames 1 and 2) into the FIFO, and the
-    // link, still blocked on block 0, takes neither.
-    wait_until("two replay batches to enter the FIFO", || {
-        h.replay_out() == 2 && h.probe_fifo() == 2
+    // The router reads replay batches (frames 1 to 127, one frame each) into the
+    // FIFO up to its credit, and the link, still blocked on block 0, takes none.
+    let credit = usize::from(REPLAY_CREDIT);
+    wait_until("the replay batches to enter the FIFO", || {
+        h.replay_out() == credit && h.probe_fifo() == credit
     });
 
     // The link fails holding live block 0 (nothing of it was taken). It goes
-    // back to the front list. The two replay batches are lost: their cursor moved.
+    // back to the front list. The replay batches go back to the spool: nothing
+    // is lost.
     h.script
         .set_mode(Mode::Fail(io::ErrorKind::ConnectionReset));
     wait_until("the live block to wait on the front list", || {
         h.probe_front() == 1
     });
-    assert_eq!(get(&h.stats.disconnected_dropped), 2);
+    assert_eq!(get(&h.stats.disconnected_dropped), 0);
     assert_eq!(get(&h.stats.disconnects), 1);
     // Newer frames follow the backlog in the spool.
     h.offer(130..132, LARGE);
@@ -356,12 +364,12 @@ fn a_failure_soon_after_a_spill_sends_the_live_rest_first_then_the_backlog() {
     wait_until("the last frame to arrive", || {
         h.delivered().last() == Some(&131)
     });
-    // Session 1 got the live block (0) first, then the backlog from the cursor
-    // (3 to 129; frames 1 and 2 were the lost batches), then the newer frames.
+    // Session 1 got the live block (0) first, then the whole backlog (1 to 129,
+    // read again from the start), then the newer frames.
     assert_eq!(h.script.session_frames(0), Vec::<u32>::new());
-    let expected: Vec<u32> = [0].into_iter().chain(3..132).collect();
+    let expected: Vec<u32> = [0].into_iter().chain(1..132).collect();
     assert_eq!(h.script.session_frames(1), expected);
-    assert_eq!(h.lost(), 2);
+    assert_eq!(h.lost(), 0);
     assert_eq!(h.front_max(), FRONT_LIST_BLOCKS);
     assert_eq!(get(&h.shared.pool_fallbacks), 0, "the pool bound holds");
     h.finish().expect("clean STOP");
@@ -440,8 +448,9 @@ fn a_spill_while_the_link_holds_the_take_lock_keeps_capture_order_and_one_front_
         get(&h.stats.spooled) == LINK_FIFO_BLOCKS as u64 + 1
     });
     assert_eq!(h.spills(), 1);
-    wait_until("two replay batches to enter the FIFO", || {
-        h.replay_out() == 2 && h.probe_fifo() == 2
+    let credit = usize::from(REPLAY_CREDIT);
+    wait_until("the replay batches to enter the FIFO", || {
+        h.replay_out() == credit && h.probe_fifo() == credit
     });
 
     // Then the link fails with block 0 in hand: the only live block older than
@@ -454,12 +463,12 @@ fn a_spill_while_the_link_holds_the_take_lock_keeps_capture_order_and_one_front_
     wait_until("the last frame to arrive", || {
         h.delivered().last() == Some(&129)
     });
-    // Block 0 goes first, then the backlog from the cursor. Frames 1 and 2 were
-    // the two replay batches the router had out, and they are counted.
-    let expected: Vec<u32> = [0].into_iter().chain(3..130).collect();
+    // Block 0 goes first, then the whole backlog. The replay batches the router
+    // had out went back to the spool, so none is lost.
+    let expected: Vec<u32> = [0].into_iter().chain(1..130).collect();
     assert_eq!(h.script.session_frames(1), expected);
-    assert_eq!(get(&h.stats.disconnected_dropped), 2);
-    assert_eq!(h.lost(), 2);
+    assert_eq!(get(&h.stats.disconnected_dropped), 0);
+    assert_eq!(h.lost(), 0);
     h.finish().expect("clean STOP");
 }
 
@@ -585,7 +594,7 @@ fn a_frame_cut_by_a_failure_is_sent_again_in_full_on_the_new_session_and_arrives
 }
 
 #[test]
-fn a_tls_piece_whose_delivery_is_unconfirmed_counts_and_later_frames_arrive_once() {
+fn a_tls_piece_whose_delivery_is_unconfirmed_goes_back_and_arrives_once() {
     let dir = TestDir::new("fault-tls");
     let mut h = Harness::start(
         &dir,
@@ -604,18 +613,160 @@ fn a_tls_piece_whose_delivery_is_unconfirmed_counts_and_later_frames_arrive_once
     }
     h.sink().flush().expect("block is sent");
     wait_until("the session to fail", || get(&h.stats.disconnects) == 1);
-    // Frames 2 and 3 were fed to rustls, and their fate is unknown: counted.
-    // Frames 4 and 5 were not fed: they go back.
-    wait_until("the later frames to reach the spool", || {
-        get(&h.stats.spooled) == 2
+    // Frames 2 and 3 were fed to rustls, and the socket took only part of their
+    // record, which the receiver cannot decrypt. They go back with 4 and 5.
+    wait_until("the unsent frames to reach the spool", || {
+        get(&h.stats.spooled) == 4
     });
-    assert_eq!(get(&h.stats.disconnected_dropped), 2);
+    assert_eq!(get(&h.stats.disconnected_dropped), 0);
     h.reconnect();
-    wait_until("the later frames to arrive", || h.delivered().len() == 4);
+    wait_until("the unsent frames to arrive", || h.delivered().len() == 6);
     assert_eq!(h.script.session_frames(0), vec![0, 1]);
-    assert_eq!(h.script.session_frames(1), vec![4, 5]);
-    assert!(strictly_increasing(&h.delivered()));
+    assert_eq!(h.script.session_frames(1), vec![2, 3, 4, 5]);
+    assert_eq!(h.delivered(), vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(h.lost(), 0);
     h.finish().expect("clean STOP");
+}
+
+#[test]
+fn a_tls_replay_piece_that_is_unconfirmed_is_read_again_and_arrives_once() {
+    let dir = TestDir::new("fault-tls-replay");
+    let mut h = Harness::start(
+        &dir,
+        &Options {
+            tls: true,
+            connected: false,
+            ..Options::new()
+        },
+    );
+    // Six frames of 6,004 bytes wait in the spool: one replay batch. The socket
+    // takes the first record and the first bytes of the second, then resets.
+    for number in 0..6 {
+        h.sink()
+            .write_frame(&sized_frame(number, 6_000))
+            .expect("frame is queued");
+    }
+    h.sink().flush().expect("block is sent");
+    wait_until("the frames to be spooled", || get(&h.stats.spooled) == 6);
+    h.script.set_next_mode(Mode::then_reset(12_008 + 29 + 50));
+    h.script.allow_connect(true);
+    wait_until("the replay to fail the link", || {
+        get(&h.stats.disconnects) == 1
+    });
+    assert_eq!(get(&h.stats.disconnected_dropped), 0);
+    assert_eq!(h.script.session_frames(0), vec![0, 1]);
+    h.reconnect();
+    wait_until("the rest to arrive", || h.delivered().len() == 6);
+    assert_eq!(h.script.session_frames(1), vec![2, 3, 4, 5]);
+    assert_eq!(h.lost(), 0);
+    wait_until("each frame to be counted once", || {
+        get(&h.stats.replayed) == 6
+    });
+    h.finish().expect("clean STOP");
+}
+
+// ---- replay batches out at a failure and at a stop ----
+
+/// Frames in the backlog of the tests below: five replay batches at 104 bytes a
+/// frame (630 frames, 65,520 bytes, in each of the first four).
+const BACKLOG_FRAMES: u32 = 3_000;
+/// Bytes of a full replay batch of small frames.
+const SMALL_BATCH_BYTES: usize = 630 * 104;
+
+/// Builds the backlog while the receiver is down, then lets the link in with a
+/// session that takes nothing. When every replay batch is out (one in the link's
+/// hand and four in the FIFO), the session's mode becomes `then`.
+fn replay_with_five_batches_out(h: &mut Harness, then: Mode) {
+    h.offer(0..BACKLOG_FRAMES, SMALL);
+    wait_until("the backlog to be spooled", || {
+        get(&h.stats.spooled) == u64::from(BACKLOG_FRAMES)
+    });
+    h.script.set_next_mode(Mode::Blocked);
+    h.script.allow_connect(true);
+    wait_until("the five batches to be out", || {
+        h.replay_out() == 5 && h.probe_fifo() == 4 && h.script.waits() >= 1
+    });
+    h.script.set_mode(then);
+}
+
+#[test]
+fn a_failure_with_many_replay_batches_out_loses_nothing_and_repeats_nothing() {
+    let dir = TestDir::new("fault-many-batches");
+    let mut h = Harness::start(
+        &dir,
+        &Options {
+            connected: false,
+            ..Options::new()
+        },
+    );
+    // The session takes two whole batches and part of the third, then resets with
+    // two batches in the FIFO.
+    replay_with_five_batches_out(&mut h, Mode::then_reset(2 * SMALL_BATCH_BYTES + 5_000));
+    wait_until("the link to fail", || get(&h.stats.disconnects) == 1);
+    assert_eq!(get(&h.stats.disconnected_dropped), 0);
+    let first = h.script.session_frames(0);
+    assert!(
+        first.len() > 2 * 630,
+        "the session took {} frames",
+        first.len()
+    );
+    h.reconnect();
+    wait_until("every frame to arrive", || {
+        h.delivered().len() == BACKLOG_FRAMES as usize
+    });
+    assert_eq!(h.delivered(), (0..BACKLOG_FRAMES).collect::<Vec<_>>());
+    assert_eq!(
+        h.script.session_frames(1)[0],
+        u32::try_from(first.len()).expect("small")
+    );
+    assert_eq!(h.lost(), 0);
+    wait_until("each frame to be counted once", || {
+        get(&h.stats.replayed) == u64::from(BACKLOG_FRAMES)
+    });
+    assert_eq!(get(&h.shared.pool_fallbacks), 0);
+    h.finish().expect("clean STOP");
+}
+
+#[test]
+fn shutdown_with_replay_batches_out_keeps_the_data_and_the_next_run_starts_after_what_was_taken() {
+    let dir = TestDir::new("fault-shutdown-replay");
+    let mut h = Harness::start(
+        &dir,
+        &Options {
+            connected: false,
+            ..Options::new()
+        },
+    );
+    // The session takes 30,000 bytes of the first batch and then stops.
+    replay_with_five_batches_out(&mut h, Mode::then_block(30_000));
+    wait_until("the link to take its 30,000 bytes", || {
+        h.script.wire_len(0) == 30_000
+    });
+    let started = Instant::now();
+    h.finish().expect("shutdown with a stalled link is clean");
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert_eq!(h.lost(), 0, "nothing is counted");
+    let first = h.delivered();
+    assert_eq!(
+        first,
+        (0..288).collect::<Vec<_>>(),
+        "30,000 / 104 whole frames"
+    );
+    // Every frame is still on disk. The cut frame is in the file too.
+    assert_eq!(
+        frames_on_disk(&dir),
+        (0..BACKLOG_FRAMES).collect::<Vec<_>>()
+    );
+
+    // The next run starts after the last frame the link took: the cut frame and
+    // everything after it, once.
+    let mut next = Harness::start(&dir, &Options::new());
+    wait_until("the rest to arrive", || {
+        next.delivered().len() == BACKLOG_FRAMES as usize - first.len()
+    });
+    assert_eq!(next.delivered(), (288..BACKLOG_FRAMES).collect::<Vec<_>>());
+    assert_eq!(next.lost(), 0);
+    next.finish().expect("clean STOP");
 }
 
 // ---- liveness and the router ----
@@ -845,6 +996,9 @@ enum Op {
     Fail(usize),
     /// A reconnect may happen.
     Reconnect,
+    /// This many small one-frame blocks at once: a backlog of several replay
+    /// batches when the link is down or behind.
+    Backlog(u32),
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -856,6 +1010,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         2 => (0_usize..200_000).prop_map(Op::Partial),
         2 => (0_usize..200_000).prop_map(Op::Fail),
         3 => Just(Op::Reconnect),
+        1 => (300_u32..=1500).prop_map(Op::Backlog),
     ]
 }
 
@@ -874,7 +1029,7 @@ proptest! {
 
     /// Whatever the link does (stall, take a few bytes, reset, come back), the
     /// frames the receiver gets are in capture order with no complete frame twice,
-    /// and every frame offered is delivered or in exactly one loss counter.
+    /// and every frame offered is delivered: none is lost or counted lost.
     #[test]
     fn backlog_to_live_keeps_capture_order_over_stalls_failures_and_resumes(
         ops in prop::collection::vec(op_strategy(), 1..14),
@@ -894,6 +1049,10 @@ proptest! {
                 }
                 Op::Big(count) => {
                     h.offer(next..next + count, LARGE);
+                    next += count;
+                }
+                Op::Backlog(count) => {
+                    h.offer(next..next + count, SMALL);
                     next += count;
                 }
                 Op::Block => {
@@ -924,7 +1083,7 @@ proptest! {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             h.script.allow_connect(true);
-            if h.queued() == 0 && h.delivered().len() as u64 + h.lost() == u64::from(next) {
+            if h.queued() == 0 && h.delivered().len() as u64 == u64::from(next) {
                 break;
             }
             prop_assert!(Instant::now() < deadline, "frames are missing: {}", h.describe(next));
@@ -932,7 +1091,11 @@ proptest! {
         }
         let got = h.delivered();
         prop_assert!(strictly_increasing(&got), "order or repeat: {got:?}");
-        prop_assert_eq!(got.len() as u64 + h.lost(), u64::from(next));
+        // The scripted socket has no kernel buffer, and the spool is large: with
+        // B1 and B2 nothing is lost at a failure, so every frame arrives.
+        prop_assert_eq!(got.len() as u64, u64::from(next));
+        prop_assert_eq!(h.lost(), 0);
+        prop_assert_eq!(get(&h.stats.disconnected_dropped), 0);
         prop_assert_eq!(get(&h.shared.pool_fallbacks), 0);
         prop_assert_eq!(get(&h.stats.spool_dropped), 0);
         prop_assert_eq!(get(&h.stats.queue_dropped), 0);

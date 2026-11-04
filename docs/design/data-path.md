@@ -115,10 +115,10 @@ On the sender thread, `SenderThread::route` sends each block to one of three pla
 3. Nowhere, when no spool is in use and the receiver is down. The frames count in
    `disconnected_dropped`.
 
-While the receiver is connected and the spool holds frames, the sender replays the
-oldest frames in batches of up to 256 KiB. It records the new read position before
-each batch goes to the socket, so a frame is never sent twice. See
-[Spool](../guide/configuration.md#spool).
+While the receiver is connected and the spool holds frames, the router replays the
+oldest frames in batches of up to 64 KiB, up to 127 at a time. The spool keeps each batch
+until the link thread has sent it, and a failure gives the unsent rest back, so a failed
+connection loses no replay frame. See [Spool](../guide/configuration.md#spool).
 
 The sender thread owns the link (`NetworkSink`). It runs the TLS and Frame Streams
 handshakes, sends STOP, and waits for FINISH at shutdown. Reconnects run on the
