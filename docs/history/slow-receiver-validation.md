@@ -327,6 +327,11 @@ frame, which is what B1 and B2 assume.
 5. **`send_queue_depth_max` at 10,000 QPS** read 33 to 61 with no loss in every
    run, also unshaped. Later analysis (task L1D) traced it to one ETW flush burst
    of about 2 MB waiting while the idle router wakes. It is not a defect.
+6. **Follow-up runs L1 and L5 (2026-11-04).** See
+   [Follow-up runs L1 and L5](#follow-up-runs-l1-and-l5-2026-11-04). Item 1: the drop did
+   not recur in 14 runs, and a related stall of the event delivery did (8 runs). Risk 9
+   held in every run that reached the link, but 41.2 MB/s on a fully busy host was not
+   reached.
 
 ## Deviations from the plan
 
@@ -379,3 +384,246 @@ frame, which is what B1 and B2 assume.
   (the pause stopped and continued it). It receives the service's frames again.
   The temporary collector files are deleted.
 - The checkpoints `slow-receiver-L-pre-2026-11-04` on both guests are kept.
+
+## Follow-up runs L1 and L5 (2026-11-04)
+
+Two follow-up tasks on the same lab, after the router wait and pass counters
+([plan](../plans/slow-receiver-plan.md#l-1-and-l-6-results)) were built:
+
+- **L1.** Repeat the L case `after-50k-ctl-d0` (open item 1, finding L-1) with the new
+  counters, a WPR trace, and guest and host counters, to find out what holds the
+  service.
+- **L5.** Run design risk 9: does the 128-block link FIFO cover a Windows Server
+  quantum at 41.2 MB/s?
+
+The raw data is lab evidence under `target/performance/slow-receiver-L1L5-20261104/`.
+It is not in the repository. Result in one line: the L-1 drop did not recur, but a
+related stall did, in 8 of 14 runs. It is a gap in the delivery of events to the
+service, not a late router wake. Risk 9 held in
+every run that reached the link at full rate, but the runs that tested it hardest
+never reached it.
+
+### Method differences from L
+
+| Item | L | Follow-up |
+| --- | --- | --- |
+| Build | `13972d8` | `1cc66d8` (HEAD), MSI built with `scripts/build/Build-Msi.ps1`. MSI SHA-256 `BB2F578ED98F1534E5A325230EB1391707463FF89A0B24683ACEEBA72F3587E3`, executable SHA-256 `12ACC3994A003A6A78BEAD1EF616E9D57B0BDEE3359F2DF039F925D3D263A79F`. Installed with the same three MSI properties, exit 3010, guest restarted. After the restart the service ran the new hash, and `typeperf -q EtwDnstap` listed "Router Wait Peak (microseconds)" (ID 67) and "Router Pass Peak (microseconds)" (ID 68). |
+| Checkpoints | `slow-receiver-L-pre-2026-11-04` | New `slow-receiver-L1L5-pre-2026-11-04` on both guests, taken before any change. All earlier checkpoints kept. |
+| Client | `dns-stress`, 4 threads | The same binary. 4 threads for 50,000 QPS, 8 for 100,000, 16 for 200,000. Its `metrics.jsonl` is kept for every run. |
+| Guest counters | `\EtwDnstap(*)\*`, processor, queue length, service CPU | Also at 1 s: `\Memory\Pages/sec`, `Page Faults/sec`, `Available MBytes`, `Pages Input/sec`, and for the process instance `etw-dnstap` (checked: one instance, no suffix) `Page Faults/sec`, `Working Set`, `% Processor Time`, `Thread Count`. |
+| Host counters | none | Read-only, at 1 s: `\Hyper-V Hypervisor Virtual Processor(DNSTap-WS2025*)`, instances `DNSTap-WS2025:Hv VP 0` to `Hv VP 5`: `CPU Wait Time Per Dispatch`, `% Guest Run Time`, `CPU Contention Time Per Dispatch`, `CPU Wake Up Time Per Dispatch`. |
+| WPR | none | Runs r02, r04, r06: `wpr -start CPU -start DiskIO` (memory mode, circular), stopped 5 s after the load ended. This did not work: the CPU profile with stacks wrote about 90 MB/s, so the buffer held only the last 5 s of an 85 s run. Those traces were deleted. Runs r07, r08, r10, r11, r13, r14: a custom profile in file mode (context switch, ready thread, page fault, hard fault, disk I/O events, no stacks, about 150 MB for a run), and in r13 and r14 also the 1 ms sampled profile with stacks. Stopped 5 s after the load ended. `wpr -cancel` on any error path. |
+| ETL kept | n/a | The rule was: only for `queue_dropped` > 0 or a router peak above 250,000 us. No run met it, so I kept the file-mode traces of every run that spilled (r07, r10, r11, r13, r14, 0.77 GB in all) and deleted the others. |
+| Analysis of traces | n/a | Windows Performance Toolkit `xperf` on the host, text dump of the events and `-a profile -detail` with the Microsoft symbol server. |
+
+The L1 case is unchanged: 50,000 QPS, 4 client threads, 60 s load, `tbf rate 320mbit
+burst 256kb latency 400ms` on the receiver ingress through `ifb`, no delay, 30 s tail.
+The receiver collector config was checked before the first run: the devnull logger and
+`StandardOutput=null`. Delivery was counted from `ss -tin` `bytes_received`
+(103.015 bytes a frame), never from the collector. The driver and analysis scripts are
+in `target/performance/slow-receiver-L1L5-20261104/scripts/`.
+
+### L1 results
+
+14 runs of the L case: 5 without WPR (r01, r03, r05, r09, r12), 9 with WPR (r02, r04,
+r06 in memory mode, r07, r08, r10, r11 in file mode, r13, r14 with stacks). "Stall" is a
+sampled second with events received below half of 100,000. "Spill" is the second in
+which `spooled` first rose. The peaks are the largest of the 1 s counter samples.
+
+| Run | WPR | Encoded | Delivered (gap) | `queue_dropped` | Spooled | Peak `send_queue_depth_max` | Router wait peak (ms) | Router pass peak (ms) | Write wait peak (ms) | `intake_dropped` | Min events/s, last 10 s | Min service CPU %, last 10 s | Stall, s into load | Spill, s into load |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| r01 | no | 5,999,976 | 5,999,989 (+13) | 0 | 330,964 | 42 | 65.7 | 16.7 | 3.2 | 0 | 99,887 | 3.1 | 12-13, 16 | 15 |
+| r02 | memory, 5 s | 5,999,994 | 6,000,007 (+13) | 0 | 0 | 2 | 66.1 | 0.9 | 2.9 | 0 | 99,526 | 6.2 | none | none |
+| r03 | no | 5,956,817 | 5,956,894 (+77) | 0 | 539,079 | 54 | 69.5 | 19.8 | 3.1 | 43,159 | 99,557 | 7.7 | 22-25 | 3, 24, 32 |
+| r04 | memory, 5 s | 5,939,561 | 5,939,599 (+38) | 0 | 332,221 | 47 | 65.4 | 16.4 | 3.9 | 60,439 | 99,615 | 6.2 | 7-10 | 8 |
+| r05 | no | 5,976,431 | 5,976,481 (+50) | 0 | 589,665 | 37 | 66.2 | 16.5 | 3.4 | 23,549 | 1 | 0.0 | 12-13, 54-55 | 3, 17, 59 |
+| r06 | memory, 5 s | 5,960,513 | 5,960,507 (-6) | 0 | 101,498 | 13 | 65.8 | 21.2 | 4.0 | 39,447 | 99,891 | 6.1 | 23-25 | 26 |
+| r07 | file | 5,999,968 | 5,999,980 (+12) | 0 | 219,785 | 42 | 68.2 | 16.4 | 3.5 | 0 | 99,036 | 12.4 | 44 (trace: 42-49) | 50 |
+| r08 | file | 5,999,984 | 5,999,997 (+13) | 0 | 0 | 2 | 66.0 | 0.4 | 2.6 | 0 | 99,188 | 7.8 | none | none |
+| r09 | no | 5,999,992 | 6,000,005 (+13) | 0 | 245,538 | 36 | 65.7 | 15.6 | 3.2 | 0 | 99,902 | 4.6 | none | 3 |
+| r10 | file | 5,970,698 | 5,970,763 (+65) | 0 | 196,361 | 27 | 66.1 | 12.7 | 3.0 | 29,282 | 99,873 | 7.7 | none | 3 |
+| r11 | file | 5,997,534 | 5,997,554 (+20) | 0 | 245,688 | 38 | 65.6 | 16.9 | 4.5 | 2,422 | 99,753 | 9.3 | none | 3 |
+| r12 | no | 5,999,984 | 5,999,997 (+13) | 0 | 148,370 | 23 | 65.7 | 11.7 | 3.2 | 0 | 99,519 | 3.1 | 7 | 13 |
+| r13 | file + stacks | 5,955,273 | 5,955,368 (+95) | 0 | 159,632 | 36 | 66.0 | 13.1 | 3.1 | 44,719 | 99,450 | 7.7 | none | 3 |
+| r14 | file + stacks | 5,999,988 | 6,000,001 (+13) | 0 | 250,706 | 29 | 66.7 | 18.3 | 3.2 | 0 | 99,802 | 6.2 | 12-13 (trace: 11-22) | 22 |
+
+Every run: `spool_dropped` 0, `disconnects` 0, `etw_lost` 0, stop and FINISH confirmed,
+client timeouts 0, client rate 49,972 to 50,032 a second. The positive gap of +12 to
++95 is the 84-byte handshake of each connection and a few replayed frames, as in L.
+The small `Min events/s` values in r05 (1) are the stall at 54 s, 6 s before the load end.
+
+#### Findings
+
+1. **`queue_dropped` did not recur.** It was 0 in all 14 runs (about 83 million
+   frames). L-1 is not reproduced. The closest run is r05: a stall at 54 s into the
+   load (events received 1 a second, service CPU 0 %), then a spill of 220,885 frames at
+   59 s and 23,549 frames in `intake_dropped`. That is the L-1 pattern one step short of
+   the 128-block parser channel overflowing.
+2. **A delivery stall recurred in 8 of 14 runs** (r01, r03, r04, r05, r06, r07, r12,
+   r14), with and without WPR, at any time in the load. In one to three consecutive
+   samples the events received per second fall to 0 to 58,000 (nominal 100,000), the
+   send rate to 0.0 to 3 MB/s, and the service CPU to 0 to 3 %, while the guest stays 24
+   to 27 % busy and `dns-stress` sees every answer. This is the L-1 picture (events
+   1,900 a second, send rate 0.2 MB/s, service CPU 1.5 %). The receiver got nothing for
+   about 1.5 s in r01 and r07. The events missing in the stall (about 170,000 to
+   250,000, which is 17 to 26 MB) come back later in one burst of 150,000 to 250,000
+   events in a second (r01: 215,000 and 243,000; r07: 251,000; r14: 240,000).
+3. **The stall is not a late router wake or a blocking router call.** The router wait
+   peak was 65.4 to 69.5 ms in all 14 runs (the wait times out at 50 ms, so this is
+   the normal value plus jitter). The router pass peak was 0.4 to 0.9 ms with no spill
+   (r02, r08) and 11.7 to 21.2 ms in runs that spilled (the spool file writes).
+   Neither moved in a stall.
+4. **The service threads were idle, not held.** The traces of r07 and r14 show, in the
+   stall: `etw-consumer`, `dnstap-parser`, `dnstap-sender`, and `dnstap-link` all wait
+   with their normal timeouts, and no thread runs for a whole second. `etw-consumer` is
+   woken about 1,600 times a second by the `System` process, the same as outside a
+   stall, but it uses about 5 ms of CPU a second instead of 35 to 40. After the gap
+   (2 s in r07, 1 to 2 s in r14) the events come at the normal rate of 100,000 a
+   second for 5 s (r07, 44.7 to 49.8 s) to 9 s (r14), but only in once-a-second
+   batches (the 1 s ETW flush interval): the threads use 2 to 5 times less CPU for the
+   same rate (parser 23 to 28 ms a second instead of 90 to 130), the service
+   working set is 150 MB instead of 92 MB, and the process fault counter reads about
+   8,700 a second. Then one burst clears it (r07 at 49.8 s: 251,000 events, 21 hard
+   faults, working set back to 92 MB, a spill). Over the load window of r07, r10, r11,
+   r13, and r14 the longest wait of any service thread between ready and running was
+   0.6 to 1.6 ms. So the threads never waited for a processor.
+5. **Not the host, memory, or paging.** `CPU Wait Time Per Dispatch` stayed in its
+   normal range (1,700 to 4,500) with no change in a stall; `CPU Contention Time` and
+   `CPU Wake Up Time` were 0 in every run. `Available MBytes` stayed above 1,250 (above
+   1,950 outside r02), `Pages Input/sec` was 300 to 420 at most
+   (one reading of 10,724 in r02, a clean run, while WPR wrote), and the traces of r07 and r14 show
+   21 hard faults in the one second of the catch-up burst and none in the stall. The process page
+   fault counter read 8,700 to 12,500 a second in the spill runs while the working
+   set was about 150 MB, and 5,200 to 5,300 in the clean runs r02 and r08. The traces
+   show few fault events. That disagreement is not resolved, and the faults are not
+   the cause: they start with the stall.
+6. **The ETW buffers did not fill, and nothing was lost.** `% ETW Buffers Used` stayed
+   at 6 to 11 %, `etw_lost` was 0, and `encoded` equals `received` in every run. So
+   the events were delayed, not dropped, before they reached the service. The extra
+   working set (about 58 MB) suggests that they wait in the memory of the service
+   process, in the ETW consumer library, but this was not shown. The `dns.exe`
+   process kept its CPU (about 900 ms a second) and kept calling `EtwpWriteUserEvent`
+   at about the normal rate (sampled profile of r14), so the events are produced in the
+   stall. The cause of the late delivery is not known. One candidate is the timestamp
+   ordering that `ProcessTrace` does across the per-processor buffers, which waits for
+   the 1 s flush when one buffer is quiet. This was not tested.
+7. **Spills have two sources.** In r03, r05, r09, r10, r11, and r13 a spill of 150,000
+   to 220,000 frames came 2.5 to 3.5 s after the load started, with no stall: this is
+   finding L-2 (lab shaping at the load start), unchanged. In r01, r03, r04, r05, r06,
+   r07, r12, r14 a spill came 1 to 11 s after the stall began, when the catch-up burst
+   arrived: 17 to 26 MB at once is more than the parser channel (8 MiB) and the link
+   FIFO (8 MiB) hold while the shaped link drains 40 MB/s, so the FIFO filled and the
+   router spilled. `intake_dropped` was above 0 in 7 runs (2,422 to 60,439): four with
+   a stall (r03, r04, r05, r06) and three with the load-start spill (r10, r11, r13).
+8. **The stall is not caused by the lab shaping.** A 30 s probe at 200,000 QPS with no
+   shaping (`l5-probe-200k`) had one stall at 31 s (events 305 a second, service CPU
+   0 %) and no spill. The six unshaped L5 runs at 60 s had none, apart from the
+   client's own stall noted below.
+9. **Verdict on L-1.** What held the service for about 1 s was not a late wake, a long
+   router pass, a processor shortage, or paging. The service had no work: events
+   reached it about 2 s late, and the delay was cleared with one burst. A burst larger
+   than the parser channel (128 blocks) produces `queue_dropped`, which is what L-1
+   recorded once. Here the same burst produced a spill and `intake_dropped`, never
+   `queue_dropped`. That the L-1 stall had this cause is likely, not proven. The
+   cause of the gap in the ETW delivery is open.
+
+The normal baseline of the new counters is in finding 3. In the L5 runs (below) the
+router wait peak was 66 to 88 ms on an idle guest, 140 ms on a busy guest at 100,000 QPS,
+and 195 to 216 ms with 12 busy threads at 200,000 QPS, where the pass peak stayed under
+1 ms. That is what a late wake looks like (the wake lost a quantum), and it is not what
+the L1 stalls looked like.
+
+### L5 results
+
+Design risk 9, link unshaped (no `ifb`), 60 s load. "Busy" is 12 `powershell.exe`
+processes running `while($true){}` at normal priority, from 3 s before the load to its
+end. Runs `l5x-` were added to find the busy level at which 41 MB/s still reaches the
+link. `l5-probe-200k` is the 30 s test of the client. The client reached 100,000 and
+200,000 QPS in every run (`metrics.jsonl`: mean 99,999 and 200,000 to 200,001 a second,
+lowest second 99,912 and 199,883). It does not stall the rate except as noted.
+
+| Run | Busy | QPS (client mean/s) | Encoded | Delivered (gap) | `queue_dropped` | Spooled | Peak `send_queue_depth_max` | Router wait peak (ms) | Router pass peak (ms) | Write wait peak (ms) | `link_saturated` | Rx MB/s | `etw_lost` | `intake_dropped` | Events received/s mean (min) | Guest CPU % mean (max) | Proc. queue mean (max) | Service CPU % mean |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| idle 100k | 0 | 100,000 (100,000) | 11,986,312 | 11,986,333 (+21) | 0 | 0 | 2 | 66.1 | 0.4 | 0.4 | 0 | 20.4 | 13,626 | 0 | 199,752 (196,770) | 40 (54) | 0.5 (3) | 30 |
+| idle 200k | 0 | 200,000 (200,001) | 23,891,395 | 23,891,131 (-264) | 0 | 0 | 4 | 80.9 | 1.5 | 0.6 | 0 | 40.4 | 103,207 | 0 | 395,256 (236,138) | 71 (83) | 2.1 (7) | 48 |
+| busy 100k | 12 | 100,000 (99,999) | 11,610,815 | 11,610,756 (-59) | 0 | 0 | 50 | 139.8 | 0.2 | 1.6 | 0 | 19.6 | 4,673 | 384,496 | 199,685 (186,272) | 100 (100) | 17.3 (27) | 10 |
+| busy 200k | 12 | 200,000 (200,000) | 668,068 | 668,181 (+113) | 0 | 0 | 23 | 216.1 | 0.5 | 0.7 | 0 | 1.1 | 23,330,343 | 0 | 10,568 (0) | 100 (100) | 19.0 (45) | 1 |
+| busy 200k, repeat | 12 | 200,000 (200,000) | 714,629 | 714,488 (-141) | 0 | 0 | 20 | 195.2 | 0.3 | 1.0 | 0 | 1.2 | 23,285,347 | 0 | 11,404 (0) | 100 (100) | 23.3 (42) | 1 |
+| busy 6, 200k (extra) | 6 | 200,000 (196,618) | 9,454,259 | 9,454,057 (-202) | 0 | 0 | 76 | 194.5 | 1.0 | 2.0 | 0 | 16.1 | 13,680,921 | 398,820 | 159,476 (10,577) | 100 (100) | 10.8 (20) | 11 |
+| busy 3, 200k (extra) | 3 | 200,000 (194,882) | 23,280,959 | 23,280,798 (-161) | 0 | 0 | 13 | 66.0 | 1.1 | 1.8 | 0 | 39.4 | 133,910 | 0 | 387,266 (30,249) | 88 (93) | 3.7 (8) | 42 |
+| probe 200k, 30 s | 0 | 200,000 (199,998) | 11,931,399 | 11,931,411 (+12) | 0 | 0 | 5 | 87.8 | 2.3 | 1.3 | 0 | 38.1 | 68,243 | 0 | 382,575 (305) | 69 (81) | 1.8 (6) | 44 |
+
+Each query makes two events, so 200,000 QPS is about 400,000 events a second and
+41.2 MB/s on the wire. Every run: `spool_dropped` 0, `disconnects` 0, stop and FINISH
+confirmed, `spool_errors` 0. The `etw_lost` and `intake_dropped` columns are losses
+before the sink and are not risk 9. The client's own timeouts (DNS answers it did not
+get) were 0 to 5,344 a run (0.04 % at most). The busy 3 run has one client second at
+0 and the next at 114,029 (a client stall, 22 to 23 s): the `Events received/s` minimum
+of 30,249 in that run is the client, not the service. The `Delivered (gap)` of -59 to -264
+at 100,000 and 200,000 QPS is the few frames in flight at the service stop.
+
+#### Findings
+
+1. **Risk 9 did not fail in any run.** `spooled` was 0 and `queue_dropped` was 0 in all
+   8 runs, so the link FIFO never filled. The write wait peak was 0.4 to 2.0 ms: the
+   link thread never waited on the socket for long. That includes the two runs at
+   full rate: 40.4 MB/s on an idle guest (71 % busy) and 39.4 MB/s with 3 busy threads
+   (88 % busy). In the busy 3 run the router wait peak was 66 ms, so no thread lost a
+   quantum.
+2. **The hardest case was not reached.** With 12 busy threads at 200,000 QPS the
+   capture path starves before the link: the guest is 100 % busy, the service uses 1 % of a
+   CPU, and 97 % of the events are lost in ETW (`etw_lost` 23.3 million), so only 1.1
+   to 1.2 MB/s reach the link. With 6 busy threads 16 MB/s reaches it, and 13.7 million
+   events are lost in ETW. So the case "full 41.2 MB/s, and a link thread that loses a
+   quantum" never happened, and I could not make it happen with CPU load alone. The
+   router did lose more than a quantum in the busy 200k runs (wait peak 195 and
+   216 ms against 187.5 ms), and the FIFO still had no spill, but at 1 MB/s that proves
+   nothing about 41 MB/s.
+3. **Busy at 100,000 QPS** (19.6 MB/s, every CPU busy, queue length 17): no spill, no
+   `queue_dropped`, router wait peak 140 ms, but 384,496 events (3.2 %) lost at the intake
+   ring and 4,673 in ETW: the parser does not keep up on this guest. That is not a
+   link FIFO loss.
+4. **No spill happened, so there is no cause to name.** A write wait that stays small
+   while the FIFO fills would show the link thread not running; no run showed it.
+5. **Unshaped, the ETW stall of L1 did not appear in the 60 s runs**, and appeared once
+   in the 30 s probe (finding 8 of L1).
+
+Verdict: risk 9 **held** for what the lab can generate (41 MB/s with up to 3 busy threads
+on 6 vCPUs, and 20 MB/s with 12), and is **still open** for 41.2 MB/s on a fully busy
+host, because the capture path loses the events before they reach the link.
+
+### Deviations and limits
+
+- WPR in memory mode (the built-in `CPU` and `DiskIO` profiles) held only the last
+  5 s, so r02, r04, and r06 have no usable trace. The file-mode profile is lighter
+  than `CPU`/`DiskIO` (no stacks except in r13 and r14), so it may perturb less, or
+  differently.
+- Counters are 1 s samples and the guest times move in 15.6 ms ticks. A stall of
+  1 s can fall in two samples, and a burst can hide it (r07, r10).
+- The cause of the late ETW delivery was not found. The traces rule out
+  processor, memory, and host causes for the service threads, but they do not show where
+  the events wait.
+- r08 (a clean run) and r02 have no ETL. The ETL of r10, r11, and r13 shows no stall
+  (their spills are the load-start spill, L-2).
+- Extra runs: `l5-probe-200k`, `l5x-busy6-200k`, `l5x-busy3-200k`.
+
+### Lab state after
+
+- **Guest:** the HEAD MSI is installed, ProductCode
+  `{81B6B84B-8F14-4885-93EF-E98F0951151E}`, MSI properties
+  `RECEIVER=172.27.215.60:6000`, `SESSION_NAME=EtwDnstap-Lab`,
+  `SERVICE_ARGS="--plaintext --stats-interval-seconds 5"`. The executable SHA-256 is
+  `12ACC3994A003A6A78BEAD1EF616E9D57B0BDEE3359F2DF039F925D3D263A79F`. The service is
+  running as `NT AUTHORITY\LocalService`, SID type restricted, recovery
+  `restart/5000`, connected to the receiver. The spool holds only `cursor.bin`. The
+  busy processes, the samplers, WPR (`wpr -status`: not recording), and the staging
+  folder are gone.
+- **Receiver:** `tc qdisc show`, the `eth0` ingress filters, `iptables -S` (filter and
+  mangle), `ip6tables -S`, `nft list ruleset`, the link list, and the loaded
+  traffic-control modules match the step 0 record line for line. The `ifb`, `sch_tbf`,
+  `sch_ingress`, `act_mirred`, and `cls_u32` modules that the runs loaded were
+  unloaded. The collector config is unchanged (same SHA-256 before and after), and its
+  output still goes to null (`StandardOutput=null`, `StandardError=null`, devnull
+  logger).
+- **Checkpoints:** `slow-receiver-L1L5-pre-2026-11-04` on both guests, kept, with all
+  earlier checkpoints.
