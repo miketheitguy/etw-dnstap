@@ -28,7 +28,7 @@ fn pipeline_config_validation_matches_the_command_line() -> Result<()> {
         "--receiver",
         "127.0.0.1:6000",
     ])?)?;
-    assert_eq!(valid.capacity, 65_536);
+    assert_eq!(valid.capacity, 131_072);
     let mut bad_capacity = valid.clone();
     bad_capacity.capacity = 1;
     assert!(bad_capacity.validate().is_err());
@@ -51,7 +51,7 @@ fn validates_memory_and_cli_bounds() {
         CaptureArgs::try_parse_from(["etw-dnstap", "--receiver", "127.0.0.1:6000"])
             .expect("receiver arguments are valid")
             .capacity,
-        65_536
+        131_072
     );
     for capacity in ["0", "256"] {
         assert!(

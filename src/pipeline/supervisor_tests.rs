@@ -647,13 +647,13 @@ fn pipeline_starts_and_stops_promptly_while_the_receiver_is_down() -> Result<()>
         },
         |_name, _sources| None,
     )?;
-    // The default pool (65,536 + 2 regular and 64 jumbo slots) crosses the
-    // progress interval exactly four times.
+    // The default pool (131,072 + 2 regular and 64 jumbo slots) crosses the
+    // progress interval exactly eight times.
     assert_eq!(
         progress_reports,
         (config.capacity + 2 + usize::from(config.jumbo_capacity)) / PoolManager::PROGRESS_INTERVAL
     );
-    assert_eq!(progress_reports, 4);
+    assert_eq!(progress_reports, 8);
     assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
     assert!(
         started.elapsed() < Duration::from_secs(8),
@@ -766,7 +766,7 @@ fn supervisor_queries_etw_and_publishes_a_snapshot_on_each_tick() {
     assert!(published.len() >= 2, "{} snapshots", published.len());
     assert_eq!(queries, u64::try_from(published.len()).expect("small"));
     let last = published.last().expect("a snapshot");
-    assert_eq!(last.channel_capacity, 65_536);
+    assert_eq!(last.channel_capacity, 131_072);
     assert_eq!(last.channel_depth, 5);
 }
 

@@ -45,13 +45,13 @@ ETW can apply other values than the requested ones. The service then writes
 This is the canonical statement of the default limits. Other documents link here.
 
 The defaults are `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128
---capacity 65536`: 128 KiB buffers, at least 12 of them and at most 128, and a channel of
-65,536 events. They are sized for 200,000 queries per second, which is about 400,000 events
+--capacity 131072`: 128 KiB buffers, at least 12 of them and at most 128, and a channel of
+131,072 events. They are sized for 200,000 queries per second, which is about 400,000 events
 per second and 41.2 MB per second of dnstap frames.
 
-> **Provisional.** The lab has not yet run these exact values. A run on a 12-vCPU guest will
-> confirm or change them. Until then, treat them as a starting point and watch `ring_dropped`
-> and `etw_lost`.
+> **Tested on one guest.** The lab ran these values at 200,000 queries per second on a 12-vCPU,
+> 8 GiB guest. See [200,000 QPS sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
+> Other machines and loads can differ. Watch `ring_dropped` and `etw_lost`.
 
 Each value is set from the largest value the lab observed at 200,000 queries per second. See
 [200,000 QPS validation](../history/200k-qps-validation.md).
@@ -61,7 +61,7 @@ Each value is set from the largest value the lab observed at 200,000 queries per
 | ETW buffer size (`--etw-buffer-kib`) | 128 KiB, no loss, about 373 events per buffer | 128 |
 | Maximum ETW buffers (`--etw-max-buffers`) | 29 allocated (3.6 MiB), at most 7 in use at once | 128 (16 MiB) |
 | Minimum ETW buffers (`--etw-min-buffers`) | 7 in use, of ETW's minimum of 12 | 12 |
-| Channel (`--capacity`) | Peak queue 21,622 | 65,536 |
+| Channel (`--capacity`) | Peak queue 28,129 idle, 61,239 with 12 busy CPU threads | 131,072 |
 
 The lab ran this load twice, for 50 seconds each, with `--etw-max-buffers 256` and
 `--capacity 262144`. Both runs had no ring drops, no `etw_lost`, and no lost ETW buffers.
@@ -73,15 +73,25 @@ Why these values:
 - **Minimum buffers.** ETW used one buffer per logical processor, plus at most one waiting for
   delivery. ETW raises the minimum to at least two per logical processor, so 12 has an effect
   only on a host with fewer than 6 logical processors.
-- **Channel.** 65,536 is three times the peak queue of 21,622. ETW sometimes delivers events
-  about 2 seconds late and then in one burst. In the lab, such bursts overflowed a
-  24,576-event channel, and `intake_dropped` counted 23,549 to 60,439 events. The larger
-  channel holds more of a burst. The lab has not yet shown that it holds all of it.
+- **Channel.** 131,072 is more than four times the idle peak queue of 28,129. ETW
+  sometimes delivers events about 2 seconds late and then in one burst. A 24,576-event channel
+  overflowed on such bursts, and `intake_dropped` counted 23,549 to 60,439 events. At 200,000
+  queries per second the lab compared sizes on the 12-vCPU guest:
+
+  | `--capacity` | Idle, peak queue | 12 busy CPU threads, peak queue | 24 busy CPU threads | Service working set (peak) |
+  | --- | --- | --- | --- | --- |
+  | 65,536 | 24,223 to 61,903 (94%), 0 dropped in 3 runs | 63,940 (98%), 0 dropped | Full. One run dropped 12,264 events | 241 MB |
+  | 131,072 | 27,385 and 28,129, 0 dropped in 2 runs | 61,239 (47%), 0 dropped | Not run | 356 MB |
+  | 262,144 | Not run at 200,000 queries per second | Not run | Not run | 812 MB |
+
+  At 65,536 the channel came close to full even on an idle guest. At 131,072 the busiest run
+  used 47% of the channel and no run dropped an event. The step from 65,536 to 131,072 costs
+  115 MB of working set. The step to 262,144 would cost another 456 MB.
 
 Costs:
 
-- Counted storage is 145.53 MiB at the default capacity. See [Storage](configuration.md#storage).
-- The startup deadline is 14 seconds (26 seconds at `--capacity 262144`). See
+- Counted storage is 283.03 MiB at the default capacity. See [Storage](configuration.md#storage).
+- The startup deadline is 18 seconds (26 seconds at `--capacity 262144`). See
   [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
 - ETW buffer memory is at most 16 MiB (128 buffers of 128 KiB), plus what ETW adds on a host
   with more than 64 logical processors. The minimum reserves 12 × 128 KiB = 1.5 MiB at start,
@@ -97,8 +107,18 @@ above 200,000 queries per second. The window is `--stats-interval-seconds`, or 6
 that is `0`. The message reads `received rate is above 440,000 events/s; the default buffer
 settings were validated at about 400,000 events/s (200,000 queries per second)`. The warning does
 not mean events were lost. Watch `ring_dropped` and `etw_lost`. If they rise, raise `--capacity`
-and `--etw-max-buffers`, for example to `--etw-max-buffers 256 --capacity 131072`. The lab did not
-test 131,072.
+and `--etw-max-buffers`, for example to `--etw-max-buffers 256 --capacity 262144`, the largest
+`--capacity`. An earlier lab load of 200,000 queries per second ran without loss at that value, but it
+uses 558.03 MiB of counted storage and about 812 MB of working set.
+
+The lab also found a case that the channel size does not fix. At 100,000 queries per second on
+the idle 12-vCPU guest, ETW delivered events late, in gaps of 1 to 3 seconds followed by a
+burst, and the channel overflowed at every size. 65,536 dropped 0.89 to 1.40 million events,
+131,072 dropped 0.44 to 0.46 million, and 262,144 dropped 0.16 and 0.03 million. A larger
+channel reduces this loss but does not remove it. The cause is on the ETW delivery side and is
+still open. If `ring_dropped` rises at a rate well below 200,000 queries per second, check the
+delivery gaps in the lab write-up before you raise `--capacity` further.
+The 12-vCPU runs are in [200,000 QPS sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
 
 Choosing the value:
 
@@ -171,8 +191,12 @@ The per-rate table is in [ETW flush removal validation](../history/flush-removal
   run. The settings before the previous defaults used 8.4 to 8.7 seconds.
 
 **65,536 is enough up to about 44,000 queries per second on this VM. It is marginal at a
-sustained 50,000.** For sustained rates near 50,000, raise `--capacity`, for example to
-131,072. The lab did not test 131,072.
+sustained 50,000.** The default is now 131,072, which this 6-vCPU VM did not run. The later
+12-vCPU runs used `--capacity 65536` and the 256-block send queue and link FIFO, with a 320 Mbit
+shaped link at 50,000 queries per second.
+Four of four runs dropped no events and spilled nothing, and the channel peaked at 37,000 to
+40,000. See
+[200,000 QPS sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
 
 These results cover one VM, an authoritative load, 50-second runs, and
 `--etw-flush-seconds 1`. Monitor `ring_dropped` and `etw_lost` under the real load after each

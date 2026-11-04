@@ -381,7 +381,7 @@ const DEFAULTS_VALIDATED_EVENTS_PER_SEC: f64 = 440_000.0;
 const RATE_WARNING: &str = "received rate is above 440,000 events/s; the default buffer settings \
     were validated at about 400,000 events/s (200,000 queries per second); if ring_dropped or \
     etw_lost increase, raise --capacity and --etw-max-buffers, for example \
-    --etw-max-buffers 256 --capacity 131072";
+    --etw-max-buffers 256 --capacity 262144";
 /// How often the supervisor re-reads the DNS Server service process ID.
 const TARGET_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// Rate window when counter snapshots are disabled.

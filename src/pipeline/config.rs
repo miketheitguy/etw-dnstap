@@ -16,7 +16,7 @@ use crate::{etw::SessionConfig, spool::fsinfo};
 const DEFAULT_SESSION_NAME: &str = "EtwDnstap";
 
 /// Default channel capacity; `CaptureArgs` uses the same value.
-pub(super) const DEFAULT_CAPACITY: usize = 65_536;
+pub(super) const DEFAULT_CAPACITY: usize = 131_072;
 
 /// Where `ProgramData` is when the environment variable is unset or not a plain
 /// absolute path on a local drive letter.
@@ -61,7 +61,7 @@ pub(crate) struct CaptureArgs {
     tls_server_name: Option<String>,
 
     /// Event channel capacity, 1024–262144; full channels drop the newest event.
-    #[arg(long, default_value = "65536", value_parser = parse_capacity)]
+    #[arg(long, default_value = "131072", value_parser = parse_capacity)]
     pub(super) capacity: usize,
 
     /// Concurrent records over 2 KiB; zero disables their capture (maximum 256).

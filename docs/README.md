@@ -148,7 +148,7 @@ Dated records in [`history/`](history/). Do not use their commands as procedures
 | --- | --- |
 | [Ring-buffer capacity fix: plan](history/ring-buffer-fix-plan.md) | Capacity-only 8,192 candidate and its gates |
 | [Ring-buffer capacity fix: validation](history/ring-buffer-fix-validation.md) | Superseded by pooled intake. ArrayQueue results |
-| [Ring capacity experiment](history/ring-capacity-experiment.md) | Set the former 8,192 default (now 65,536) |
+| [Ring capacity experiment](history/ring-capacity-experiment.md) | Set the former 8,192 default (now 131,072) |
 | [Rejected wake-on-enqueue experiment](history/ring-wakeup.md) | Rejected wake-on-enqueue candidate |
 | [Pooled intake: validation plan](history/pooled-intake-plan.md) | Original validation design and ownership record |
 | [Pooled intake: audit plan](history/pooled-intake-audit-plan.md) | Audit of the pooled implementation |

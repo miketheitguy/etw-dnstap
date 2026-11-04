@@ -20,7 +20,7 @@ fails at startup. Repeating an option is an error, so the last value does not wi
 | `--plaintext` | off | Flag | Disables TLS and peer authentication. Use only on a trusted network. See [TLS](#tls). |
 | `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | Name the receiver certificate must match. See [TLS](#tls). |
 | `--receiver-stall-seconds SECONDS` | `15` | 2 to 300 | How long the receiver may accept no bytes, while the service has data to send, before the service ends the session and reconnects. A receiver that is slow, or paused for less than this, keeps its session: the service holds the data in memory, then spools it. An idle connection never stalls. With `--no-spool`, a longer stall means more `queue_dropped`. See [Receiver connection](#receiver-connection). |
-| `--capacity N` | `65536` | 1,024 to 262,144 events | Event channel size. A full channel drops the newest event and counts it in `ring_dropped` and `intake_dropped`. |
+| `--capacity N` | `131072` | 1,024 to 262,144 events | Event channel size. A full channel drops the newest event and counts it in `ring_dropped` and `intake_dropped`. |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for padded payloads over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Otherwise capture runs until SCM stops the service or a failure occurs. |
 | `--session-name NAME` | `EtwDnstap` | 1 to 128 ASCII letters, digits, underscore, dot, or hyphen. Case-sensitive. The first character must not be a hyphen. | Real-time ETW session name. The ETW grant must use the same spelling, or the start fails with access denied. A new name needs a grant run and a restart. See [Session reclaim](#session-reclaim) and [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
@@ -70,8 +70,8 @@ See [pooled-intake.md](../design/pooled-intake.md).
 | --- | --- | --- |
 | 8,192 (earlier default) | 64 | 25.22 MiB |
 | 24,576 (previous default) | 64 | 59.59 MiB |
-| 65,536 (default) | 64 | 145.53 MiB |
-| 131,072 | 64 | 283.03 MiB |
+| 65,536 (previous default) | 64 | 145.53 MiB |
+| 131,072 (default) | 64 | 283.03 MiB |
 | 262,144 | 64 | 558.03 MiB |
 | 262,144 | 256 (maximum) | 582.11 MiB |
 
@@ -388,8 +388,8 @@ not send it before exit. For the receiver write cutoff, see
 ## Startup and shutdown deadlines
 
 - **Startup:** The deadline is 10 seconds, plus 1 second per 16,384 `--capacity` slots, rounded up.
-  The default 65,536 gives 14 seconds, and 262,144 gives 26 seconds. The previous default 24,576
-  gave 12 seconds, and 8,192 gave 11 seconds. The deadline covers identity checks, argument validation, receiver connection,
+  The default 131,072 gives 18 seconds, and 262,144 gives 26 seconds. The previous default 65,536
+  gave 14 seconds, the one before it (24,576) gave 12 seconds, and 8,192 gave 11 seconds. The deadline covers identity checks, argument validation, receiver connection,
   spool open, pool allocation, and capture start. Capture start has its own inner 10-second
   deadline.
 - **SCM progress:** The first `START_PENDING` report has a 10-second wait hint. After the arguments

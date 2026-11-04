@@ -61,7 +61,7 @@ the ownership rules.
 ### 3. Buffer
 
 The pool holds preallocated 2 KiB slots, plus `--jumbo-capacity` slots for records over
-2 KiB. The channel holds at most `--capacity` slots, 65,536 by default. Neither part
+2 KiB. The channel holds at most `--capacity` slots, 131,072 by default. Neither part
 grows after startup.
 
 After each delivered ETW buffer, `native_buffer_callback` increments

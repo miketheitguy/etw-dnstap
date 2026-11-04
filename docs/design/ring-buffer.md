@@ -16,7 +16,7 @@ choose `--capacity`, `--etw-flush-seconds`, or the ETW buffer options.
 The user-mode ETW callback leases preallocated storage and copies each accepted event.
 It calls `crossbeam_channel::Sender::try_send` on a bounded event channel. It never
 waits or allocates. A full channel drops the newest event and increments `ring_dropped`
-and `intake_dropped`. The default capacity is 65,536 events. It was 24,576 until the
+and `intake_dropped`. The default capacity is 131,072 events. It was 65,536, and 24,576 before that, until the
 defaults moved to 200,000 queries per second, and 8192 until 2026-11-01.
 `--capacity` accepts 1,024 to 262,144.
 
@@ -66,8 +66,8 @@ The regular pool has `capacity + 2` slots. The jumbo pool has `--jumbo-capacity`
 simultaneous jumbo leases fit at the defaults, even if the channel has spare entries.
 Slot return uses class-specific `ArrayQueue` free lists. No pool grows during capture.
 
-At the defaults (65,536 events, 64 jumbo slots), counted storage is 152,598,608 bytes
-(145.53 MiB). The count includes payload, slot metadata, free lists, and channel
+At the defaults (131,072 events, 64 jumbo slots), counted storage is 296,777,808 bytes
+(283.03 MiB). The count includes payload, slot metadata, free lists, and channel
 elements. It excludes allocator overhead, native ETW buffers, stacks, TDH caches,
 protobuf data, and output buffers. The
 [slot sizes and formulas](pooled-intake.md#memory-budget-and-configuration) are in

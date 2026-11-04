@@ -93,7 +93,7 @@ TLS is cleared explicitly after `ProcessTrace` returns.
 
 ## Memory budget and configuration
 
-The channel default is `--capacity 65536`. `--capacity` accepts 1,024 to 262,144, and
+The channel default is `--capacity 131072`. `--capacity` accepts 1,024 to 262,144, and
 the pool accepts 1 to 262,144 slots. `--jumbo-capacity` accepts 0 to 256, and zero
 disables jumbo capture. Storage has two independent classes:
 
@@ -132,16 +132,16 @@ free-list elements = (C + 2 + J) x 16
 channel elements   = C x 112
 ```
 
-At the defaults (C 65,536, J 64):
+At the defaults (C 131,072, J 64):
 
 | Allocation contents | Bytes |
 | --- | ---: |
-| Regular payloads | 134,221,824 |
+| Regular payloads | 268,439,552 |
 | Jumbo payloads | 8,412,672 |
-| Slot metadata | 1,574,448 |
-| Free-list elements | 1,049,632 |
-| Channel elements | 7,340,032 |
-| Total counted storage | 152,598,608 (145.53 MiB) |
+| Slot metadata | 3,147,312 |
+| Free-list elements | 2,098,208 |
+| Channel elements | 14,680,064 |
+| Total counted storage | 296,777,808 (283.03 MiB) |
 
 These totals exclude allocator rounding and metadata, queue headers, worker stacks,
 native ETW buffers, TDH caches, protobuf data, and output buffers. They are not

@@ -430,7 +430,7 @@ public static class PipelineAnimation
 
         // 3. Buffer
         x0 = Left(2);
-        Text("24,576 events", x0 + 14, BoxY + 68, 13, Muted);
+        Text("131,072 events", x0 + 14, BoxY + 68, 13, Muted);
         Text("2 KiB slots", x0 + 14, BoxY + 86, 13, Muted);
         Text("Full: drop newest", x0 + 14, BoxY + 142, 12, Red);
         var state = new int[24];  // 0 free, 1 queued, 2 leased by the parser

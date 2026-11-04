@@ -256,8 +256,14 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   400,000 events per second and 41.2 MB/s of dnstap frames). The command-line defaults
   are part of the public contract under the local policy, so this increases `y`. Ranges,
   validation, and behavior are unchanged. A service that sets none of these options uses
-  more memory. The values are provisional: the lab will confirm them on a 12-vCPU guest.
-  - `--capacity` goes from 24,576 to 65,536.
+  more memory. The lab tested them at 200,000 queries per second on a 12-vCPU guest. With the
+  131,072-event channel, 3 of 3 runs dropped nothing (two idle, one with 12 busy CPU threads).
+  `etw_lost` was 0 except in one run with 24 busy threads. See
+  [200,000 QPS sizing runs on 12 vCPUs](docs/history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
+  At 100,000 queries per second the guest's ETW delivered events late and the channel still
+  overflowed. The larger channel halves that loss but does not remove it.
+  - `--capacity` goes from 24,576 to 131,072. At 65,536 the channel peaked at 94 to 98% of
+    its size at 200,000 queries per second.
   - `--etw-buffer-kib` goes from 16 to 128, `--etw-min-buffers` from 0 to 12, and
     `--etw-max-buffers` from 64 to 128. ETW still raises the minimum to at least two per
     logical processor.
@@ -267,12 +273,12 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
     wakes late, as the lab saw (195 to 216 ms), no longer spills to the spool. No thread
     priority changes. The send queue also holds a burst of late ETW events. The replay
     credit stays 127 batches.
-  - Counted storage at the default capacity rises from 59.59 MiB to 145.53 MiB. The block
-    pool rises from 34.5 MiB to 68.5 MiB. The startup deadline rises from 12 s to 14 s. ETW
+  - Counted storage at the default capacity rises from 59.59 MiB to 283.03 MiB. The block
+    pool rises from 34.5 MiB to 68.5 MiB. The startup deadline rises from 12 s to 18 s. ETW
     buffer memory is at most 16 MiB (128 buffers of 128 KiB), against 1 MiB.
   - The rate warning (Event ID 3) fires above 440,000 events/s instead of 22,000 and names
     about 400,000 events/s (200,000 queries per second) as the validated rate. Its example
-    is now `--etw-max-buffers 256 --capacity 131072`.
+    is now `--etw-max-buffers 256 --capacity 262144`.
   - Pass `--etw-buffer-kib 16 --etw-min-buffers 0 --etw-max-buffers 64 --capacity 24576`
     for the old values. The queue sizes are not options. See
     [Defaults](docs/guide/tuning.md#defaults) and
