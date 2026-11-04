@@ -20,15 +20,15 @@ fails at startup. Repeating an option is an error, so the last value does not wi
 | `--plaintext` | off | Flag | Disables TLS and peer authentication. Use only on a trusted network. See [TLS](#tls). |
 | `--tls-server-name NAME` | the receiver IP | A DNS name or an IP literal. Cannot be combined with `--plaintext`. | Name the receiver certificate must match. See [TLS](#tls). |
 | `--receiver-stall-seconds SECONDS` | `15` | 2 to 300 | How long the receiver may accept no bytes, while the service has data to send, before the service ends the session and reconnects. A receiver that is slow, or paused for less than this, keeps its session: the service holds the data in memory, then spools it. An idle connection never stalls. With `--no-spool`, a longer stall means more `queue_dropped`. See [Receiver connection](#receiver-connection). |
-| `--capacity N` | `24576` | 1,024 to 262,144 events | Event channel size. A full channel drops the newest event and counts it in `ring_dropped` and `intake_dropped`. |
+| `--capacity N` | `65536` | 1,024 to 262,144 events | Event channel size. A full channel drops the newest event and counts it in `ring_dropped` and `intake_dropped`. |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for padded payloads over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Otherwise capture runs until SCM stops the service or a failure occurs. |
 | `--session-name NAME` | `EtwDnstap` | 1 to 128 ASCII letters, digits, underscore, dot, or hyphen. Case-sensitive. The first character must not be a hyphen. | Real-time ETW session name. The ETW grant must use the same spelling, or the start fails with access denied. A new name needs a grant run and a restart. See [Session reclaim](#session-reclaim) and [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
-| `--etw-buffer-kib KIB` | `16` | 4 to 128, a multiple of 4 | ETW session buffer size. |
-| `--etw-min-buffers N` | `0` | 0 to 4,096, at most `--etw-max-buffers` | Minimum buffer count, reserved at session start. `0` lets ETW choose. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
-| `--etw-max-buffers N` | `64` | 4 to 4,096 | Maximum buffer count, allocated on demand. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
-| `--etw-flush-seconds SECONDS` | `1` | 1 to 60 | Delivery interval, which bounds latency. Longer values use less CPU and make each batch larger. See [Low-rate defaults](tuning.md#low-rate-defaults). |
+| `--etw-buffer-kib KIB` | `128` | 4 to 128, a multiple of 4 | ETW session buffer size. See [Defaults](tuning.md#defaults). |
+| `--etw-min-buffers N` | `12` | 0 to 4,096, at most `--etw-max-buffers` | Minimum buffer count, reserved at session start. ETW raises it to at least two per logical processor. `0` lets ETW choose. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
+| `--etw-max-buffers N` | `128` | 4 to 4,096 | Maximum buffer count, allocated on demand. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
+| `--etw-flush-seconds SECONDS` | `1` | 1 to 60 | Delivery interval, which bounds latency. Longer values use less CPU and make each batch larger. See [Defaults](tuning.md#defaults). |
 | `--spool-dir PATH` | `C:\ProgramData\EtwDnstap\spool` | An absolute path that starts with a drive letter, with no `.` or `..` part. Cannot be combined with `--no-spool`. | Folder for frames that wait for the receiver. The service never creates it. A failed trust check runs without a spool. A malformed value fails parsing. See [Requirements](#requirements). |
 | `--no-spool` | off | Flag. Cannot be combined with `--spool-dir`, `--spool-max-mib`, or `--spool-min-free-mib`. | Runs without a spool. Lost frames count in `disconnected_dropped` or `queue_dropped`. |
 | `--spool-max-mib N` | `4096` | 64 to 1,048,576 MiB. Cannot be combined with `--no-spool`. | Cap on spool segment bytes. The oldest segments go first. See [Size limits and eviction](#size-limits-and-eviction). |
@@ -68,15 +68,15 @@ See [pooled-intake.md](../design/pooled-intake.md).
 
 | `--capacity` | Jumbo slots | Counted storage |
 | --- | --- | --- |
-| 8,192 (previous default) | 64 | 25.22 MiB |
-| 24,576 (default) | 64 | 59.59 MiB |
-| 65,536 | 64 | 145.53 MiB |
+| 8,192 (earlier default) | 64 | 25.22 MiB |
+| 24,576 (previous default) | 64 | 59.59 MiB |
+| 65,536 (default) | 64 | 145.53 MiB |
 | 131,072 | 64 | 283.03 MiB |
 | 262,144 | 64 | 558.03 MiB |
 | 262,144 | 256 (maximum) | 582.11 MiB |
 
-The block pool adds about 34.5 MiB at startup (260 blocks of 136 KiB): the send queue of 128
-blocks, the 128-block link queue that absorbs a slow receiver before the spool starts, one block
+The block pool adds about 68.5 MiB at startup (516 blocks of 136 KiB): the send queue of 256
+blocks, the 256-block link queue that absorbs a slow receiver before the spool starts, one block
 for the front list that waits for the next session after a failure, and one block each in the
 hands of the parser, the router, and the link thread. The pool is not in the totals.
 
@@ -197,7 +197,7 @@ Protocol failures at startup are not.
   accepted no byte for `--receiver-stall-seconds` while the link had data to write. A write that
   accepts any byte is progress. With TLS only bytes written to the socket count. An idle
   connection never stalls. A receiver that is slow or paused for less than the stall time loses
-  nothing and costs no reconnect: the service holds up to about 8 MiB in the link queue, and then
+  nothing and costs no reconnect: the service holds up to about 16 MiB in the link queue, and then
   the spool takes the data.
 - **Loss:** A failed write or a stall ends the session. The sink logs a warning and reconnects.
   The link thread gives the live frames that the socket did not fully accept back to the router,
@@ -309,7 +309,7 @@ out afterward.
 For each block of frames, the router thread chooses one destination:
 
 - **Link FIFO:** The receiver is connected, and the spool holds no unsent frames. The link
-  FIFO holds 128 blocks (about 8 MiB) in memory, and the link thread takes blocks from it.
+  FIFO holds 256 blocks (about 16 MiB) in memory, and the link thread takes blocks from it.
 - **Spool:** The receiver is down, the spool holds unsent frames, or the link FIFO is full.
   When the FIFO is full, the router moves all of its blocks to the spool, oldest first, and
   then the new block.
@@ -388,8 +388,8 @@ not send it before exit. For the receiver write cutoff, see
 ## Startup and shutdown deadlines
 
 - **Startup:** The deadline is 10 seconds, plus 1 second per 16,384 `--capacity` slots, rounded up.
-  The default 24,576 gives 12 seconds, and 262,144 gives 26 seconds. The previous default 8,192
-  gave 11 seconds. The deadline covers identity checks, argument validation, receiver connection,
+  The default 65,536 gives 14 seconds, and 262,144 gives 26 seconds. The previous default 24,576
+  gave 12 seconds, and 8,192 gave 11 seconds. The deadline covers identity checks, argument validation, receiver connection,
   spool open, pool allocation, and capture start. Capture start has its own inner 10-second
   deadline.
 - **SCM progress:** The first `START_PENDING` report has a 10-second wait hint. After the arguments

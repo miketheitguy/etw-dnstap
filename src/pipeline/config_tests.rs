@@ -28,7 +28,7 @@ fn pipeline_config_validation_matches_the_command_line() -> Result<()> {
         "--receiver",
         "127.0.0.1:6000",
     ])?)?;
-    assert_eq!(valid.capacity, 24_576);
+    assert_eq!(valid.capacity, 65_536);
     let mut bad_capacity = valid.clone();
     bad_capacity.capacity = 1;
     assert!(bad_capacity.validate().is_err());
@@ -51,7 +51,7 @@ fn validates_memory_and_cli_bounds() {
         CaptureArgs::try_parse_from(["etw-dnstap", "--receiver", "127.0.0.1:6000"])
             .expect("receiver arguments are valid")
             .capacity,
-        24_576
+        65_536
     );
     for capacity in ["0", "256"] {
         assert!(
@@ -106,9 +106,9 @@ fn etw_session_flags_default_and_enforce_ranges() {
     };
 
     let defaults = parse(&[]).expect("default ETW arguments");
-    assert_eq!(defaults.etw_buffer_kib, 16);
-    assert_eq!(defaults.etw_min_buffers, 0);
-    assert_eq!(defaults.etw_max_buffers, 64);
+    assert_eq!(defaults.etw_buffer_kib, 128);
+    assert_eq!(defaults.etw_min_buffers, 12);
+    assert_eq!(defaults.etw_max_buffers, 128);
     assert_eq!(defaults.etw_flush_seconds, 1);
 
     for (flag, values) in [
@@ -163,18 +163,18 @@ fn etw_min_buffers_must_not_exceed_etw_max_buffers() {
         "ETW minimum buffers (65) must not exceed ETW maximum buffers (64)"
     );
 
-    // The default maximum of 64 applies when only the minimum is given.
+    // The default maximum of 128 applies when only the minimum is given.
     let min_only_args = parse_args_from([
         "etw-dnstap",
         "--receiver",
         "127.0.0.1:6000",
         "--etw-min-buffers",
-        "65",
+        "129",
     ])
     .expect("in range");
     assert!(
         PipelineConfig::try_from(min_only_args).is_err(),
-        "65 > default 64"
+        "129 > default 128"
     );
 }
 

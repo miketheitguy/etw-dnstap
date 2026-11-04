@@ -290,7 +290,7 @@
           </counter>
           <counter id="63" uri="EtwDnstap.Pipeline.SendQueuePeakDepth"
                    nameID="352" name="Send Queue Peak Depth"
-                   descriptionID="354" description="Most blocks (about 64 KiB each) waiting in the send queue between the parser and the router in the last 60 seconds. The queue holds 128. A lower bound."
+                   descriptionID="354" description="Most blocks (about 64 KiB each) waiting in the send queue between the parser and the router in the last 60 seconds. The queue holds 256. A lower bound."
                    type="perf_counter_large_rawcount" detailLevel="standard">
             <counterAttributes>
               <counterAttribute name="reference" />

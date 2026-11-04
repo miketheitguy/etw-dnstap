@@ -516,18 +516,20 @@ fn timer_resolution_guard_pairs_begin_and_end() {
 
 #[test]
 fn rate_warning_needs_defaults_and_a_rate_above_the_validated_one() {
-    assert!(default_rate_exceeded(true, 22_001.0));
-    assert!(!default_rate_exceeded(true, 22_000.0));
-    assert!(!default_rate_exceeded(true, 20_000.0));
-    assert!(!default_rate_exceeded(false, 50_000.0));
+    assert!(default_rate_exceeded(true, 440_001.0));
+    assert!(!default_rate_exceeded(true, 440_000.0));
+    assert!(!default_rate_exceeded(true, 400_000.0));
+    assert!(!default_rate_exceeded(false, 500_000.0));
 }
 
 #[test]
 fn rate_warning_text_states_the_validated_rate_and_the_threshold() {
-    assert!(RATE_WARNING.contains("validated at about 20,000 events/s"));
-    assert!(RATE_WARNING.contains("above 22,000 events/s"));
+    assert!(
+        RATE_WARNING.contains("validated at about 400,000 events/s (200,000 queries per second)")
+    );
+    assert!(RATE_WARNING.contains("above 440,000 events/s"));
     // The text states the figure the condition uses.
-    assert!((DEFAULTS_VALIDATED_EVENTS_PER_SEC - 22_000.0).abs() < f64::EPSILON);
+    assert!((DEFAULTS_VALIDATED_EVENTS_PER_SEC - 440_000.0).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -645,13 +647,13 @@ fn pipeline_starts_and_stops_promptly_while_the_receiver_is_down() -> Result<()>
         },
         |_name, _sources| None,
     )?;
-    // The default pool (24,576 + 2 regular and 64 jumbo slots) crosses the
-    // progress interval exactly once.
+    // The default pool (65,536 + 2 regular and 64 jumbo slots) crosses the
+    // progress interval exactly four times.
     assert_eq!(
         progress_reports,
         (config.capacity + 2 + usize::from(config.jumbo_capacity)) / PoolManager::PROGRESS_INTERVAL
     );
-    assert_eq!(progress_reports, 1);
+    assert_eq!(progress_reports, 4);
     assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
     assert!(
         started.elapsed() < Duration::from_secs(8),
@@ -764,7 +766,7 @@ fn supervisor_queries_etw_and_publishes_a_snapshot_on_each_tick() {
     assert!(published.len() >= 2, "{} snapshots", published.len());
     assert_eq!(queries, u64::try_from(published.len()).expect("small"));
     let last = published.last().expect("a snapshot");
-    assert_eq!(last.channel_capacity, 24_576);
+    assert_eq!(last.channel_capacity, 65_536);
     assert_eq!(last.channel_depth, 5);
 }
 

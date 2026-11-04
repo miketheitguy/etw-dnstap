@@ -61,7 +61,7 @@ the ownership rules.
 ### 3. Buffer
 
 The pool holds preallocated 2 KiB slots, plus `--jumbo-capacity` slots for records over
-2 KiB. The channel holds at most `--capacity` slots, 24,576 by default. Neither part
+2 KiB. The channel holds at most `--capacity` slots, 65,536 by default. Neither part
 grows after startup.
 
 After each delivered ETW buffer, `native_buffer_callback` increments
@@ -106,14 +106,14 @@ socket.
 On the parser thread, `QueuedSink::write_frame` appends each frame to a block of
 complete dnstap frames. The parser sends a block at 64 KiB. It sends a partial block on
 its idle and busy timers: 100 ms after the last send when the parser is idle, and at
-least once a second when it is busy. The channel to the router holds 128 blocks. A block
+least once a second when it is busy. The channel to the router holds 256 blocks. A block
 that arrives at a full channel is discarded, and its frames count in `queue_dropped`.
-The block pool of 260 blocks, 34.5 MiB, is allocated at startup, so the parser does not
+The block pool of 516 blocks, 68.5 MiB, is allocated at startup, so the parser does not
 allocate per frame.
 
 On the router thread, `Router` takes each block and sends it to one of three places:
 
-1. The link FIFO, a queue of 128 blocks (about 8 MiB) that the link thread takes from.
+1. The link FIFO, a queue of 256 blocks (about 16 MiB) that the link thread takes from.
    The router uses it while the link is up and the spool holds no backlog.
 2. The spool, while the link is down, while the spool holds a backlog or a replay batch
    is out (so frames keep their order), and when the FIFO is full.

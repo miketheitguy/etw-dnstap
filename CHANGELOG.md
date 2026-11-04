@@ -252,6 +252,31 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The capacity defaults are sized for 200,000 queries per second (about
+  400,000 events per second and 41.2 MB/s of dnstap frames). The command-line defaults
+  are part of the public contract under the local policy, so this increases `y`. Ranges,
+  validation, and behavior are unchanged. A service that sets none of these options uses
+  more memory. The values are provisional: the lab will confirm them on a 12-vCPU guest.
+  - `--capacity` goes from 24,576 to 65,536.
+  - `--etw-buffer-kib` goes from 16 to 128, `--etw-min-buffers` from 0 to 12, and
+    `--etw-max-buffers` from 64 to 128. ETW still raises the minimum to at least two per
+    logical processor.
+  - The send queue between the parser and the router goes from 128 to 256 blocks (16 MiB),
+    and the link queue from 128 to 256 blocks (16 MiB). The link queue holds 0.41 s at
+    41.2 MB/s, which is two Windows Server scheduler quanta of 187.5 ms. A link thread that
+    wakes late, as the lab saw (195 to 216 ms), no longer spills to the spool. No thread
+    priority changes. The send queue also holds a burst of late ETW events. The replay
+    credit stays 127 batches.
+  - Counted storage at the default capacity rises from 59.59 MiB to 145.53 MiB. The block
+    pool rises from 34.5 MiB to 68.5 MiB. The startup deadline rises from 12 s to 14 s. ETW
+    buffer memory is at most 16 MiB (128 buffers of 128 KiB), against 1 MiB.
+  - The rate warning (Event ID 3) fires above 440,000 events/s instead of 22,000 and names
+    about 400,000 events/s (200,000 queries per second) as the validated rate. Its example
+    is now `--etw-max-buffers 256 --capacity 131072`.
+  - Pass `--etw-buffer-kib 16 --etw-min-buffers 0 --etw-max-buffers 64 --capacity 24576`
+    for the old values. The queue sizes are not options. See
+    [Defaults](docs/guide/tuning.md#defaults) and
+    [Slow receiver](docs/design/slow-receiver.md).
 - The service no longer sets `SO_SNDBUF` (it was 1 MiB). Windows dynamic send
   buffering is on unless an application sets that option, and a fixed buffer limits
   throughput to about the buffer size per round trip. The kernel send buffer now

@@ -67,21 +67,26 @@ use crate::{
 const BLOCK_CAPACITY: usize = 136 * 1024;
 /// The parser sends a block once it holds at least this many bytes.
 const BLOCK_SEND_BYTES: usize = 64 * 1024;
-/// Blocks the parser channel holds.
-const SEND_QUEUE_BLOCKS: usize = 128;
-/// Blocks the link FIFO holds (8 MiB of frames). It is the only in-memory slack
+/// Blocks the parser channel holds (16 MiB, 0.41 s at 41.2 MB/s). A router that
+/// loses a Windows Server quantum (187.5 ms) leaves 118 blocks in it. A burst of
+/// late ETW events can arrive at once, and the channel holds it.
+const SEND_QUEUE_BLOCKS: usize = 256;
+/// Blocks the link FIFO holds (16 MiB of frames). It is the only in-memory slack
 /// between the router and the socket, and the router spills to the spool only
 /// when it is full. A thread that waits for work can lose a scheduler quantum on a
 /// busy host: 12 clock ticks (187.5 ms) on Windows Server, which is about 118
-/// blocks at 41.2 MB/s. The FIFO holds that with margin and without a priority
-/// boost. With the replay credit, at most [`REPLAY_CREDIT`] of its blocks are
-/// replay batches.
-const LINK_FIFO_BLOCKS: usize = 128;
+/// blocks at 41.2 MB/s. The lab saw late wakes of 195 to 216 ms (up to 136
+/// blocks). The FIFO holds 256 blocks, 0.41 s at 41.2 MB/s, which is two
+/// quanta, without a priority boost. With the replay credit, at most
+/// [`REPLAY_CREDIT`] of its blocks are replay batches.
+const LINK_FIFO_BLOCKS: usize = 256;
 /// Replay batches the router can have out at once, in the FIFO or in the link
-/// thread's hand: the FIFO's depth less the front list. The spool holds them
-/// until the link reports them, so a failure loses none, and one router wake
-/// queues enough batches (about 0.2 s of replay at 41.2 MB/s) for the link to run
-/// without the router.
+/// thread's hand. The spool holds them until the link reports them, so a failure
+/// loses none. It is not the whole room in the FIFO: 127 batches are 0.20 s of
+/// replay at 41.2 MB/s, which is more than the 118 that one Server quantum of
+/// router pause needs, so one router wake queues enough for the link to run
+/// without the router. A larger credit would only raise the data that a crash
+/// repeats and the bytes that a failure reads again.
 const REPLAY_CREDIT: u8 = 127;
 /// Live blocks the router can keep for the next session after a failure while
 /// the spool holds a backlog: the one block that the link thread had in hand.
@@ -91,7 +96,7 @@ const FRONT_LIST_BLOCKS: usize = 1;
 /// one block each in the hands of the parser, the router, and the link thread.
 /// The blocks the router takes out of the FIFO to spill it, or at a hand-back,
 /// were in the FIFO, and the block that came back from the link thread was in its
-/// hand, so they add none. 260 blocks of 136 KiB are 34.5 MiB.
+/// hand, so they add none. 516 blocks of 136 KiB are 68.5 MiB.
 const POOL_BLOCKS: usize = SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLOCKS + 3;
 /// The most spool bytes read in one replay step. A batch takes a frame only if it
 /// fits the limit, and always takes the first, so it is at most the larger of
@@ -99,7 +104,7 @@ const POOL_BLOCKS: usize = SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLO
 /// [`REPLAY_CREDIT`] batches out.
 const REPLAY_BATCH_BYTES: usize = 64 * 1024;
 /// The most the router reads from the spool in one pass, before it serves the
-/// parser channel again. The channel holds 8 MiB, 0.20 s at 41.2 MB/s; a read of
+/// parser channel again. The channel holds 16 MiB, 0.41 s at 41.2 MB/s; a read of
 /// 1 MiB from a disk that is not cached, at 100 MB/s, takes 10.5 ms of that.
 const REPLAY_TURN_BYTES: usize = 1024 * 1024;
 /// How long the router waits for something to do. It bounds the delay before the
@@ -132,9 +137,6 @@ const _: () = assert!(LINK_FIFO_BLOCKS >= 2 && REPLAY_CREDIT > 0);
 // The FIFO must have room for the front list and every replay batch, so a send
 // that the router has checked never waits.
 const _: () = assert!(FRONT_LIST_BLOCKS + REPLAY_CREDIT as usize <= LINK_FIFO_BLOCKS);
-// The credit is the whole of what is left, so a change to the FIFO or the front
-// list asks for a decision about it.
-const _: () = assert!(FRONT_LIST_BLOCKS + REPLAY_CREDIT as usize == LINK_FIFO_BLOCKS);
 const _: () = assert!(REPLAY_TURN_BYTES >= REPLAY_BATCH_BYTES);
 
 pub(crate) use self::link::LinkSettings;

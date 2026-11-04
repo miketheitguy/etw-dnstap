@@ -88,9 +88,9 @@ pub(crate) struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            buffer_kib: 16,
-            minimum_buffers: 0,
-            maximum_buffers: 64,
+            buffer_kib: 128,
+            minimum_buffers: 12,
+            maximum_buffers: 128,
             flush_seconds: 1,
         }
     }

@@ -54,6 +54,11 @@ fn startup_budget_scales_with_capacity() {
         budget("16385"),
         STARTUP_BASE_BUDGET + Duration::from_secs(2)
     );
+    // The default capacity.
+    assert_eq!(
+        budget("65536"),
+        STARTUP_BASE_BUDGET + Duration::from_secs(4)
+    );
     assert_eq!(
         budget("262144"),
         STARTUP_BASE_BUDGET + Duration::from_secs(16)

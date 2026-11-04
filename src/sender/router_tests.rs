@@ -649,7 +649,7 @@ fn a_hand_back_with_a_backlog_keeps_the_returned_block_on_the_front_list() {
     for number in 0..blocks(LINK_FIFO_BLOCKS) {
         rig.router.route_live(block(number));
     }
-    // The FIFO is full, so this block spills it: the spool holds 0..=128.
+    // The FIFO is full, so this block spills it: the spool holds all of them.
     rig.router.route_live(block(blocks(LINK_FIFO_BLOCKS)));
     assert!(rig.router.has_backlog());
     // The link thread fails holding block 99 (older than all of them).
@@ -857,19 +857,21 @@ fn the_router_seals_with_batches_out_and_the_next_run_reads_from_the_last_frame_
 
 /// Blocks that arrive between two runs of the router.
 const ARRIVALS_PER_ROUTER_RUN: usize = 6;
-/// Runs of the router between two runs of the link thread.
+/// Runs of the router between two runs of the link thread: one Server quantum.
 const ROUTER_RUNS_PER_LINK_RUN: usize = 20;
+/// The same for two quanta (234 blocks).
+const ROUTER_RUNS_PER_TWO_QUANTA: usize = 39;
 /// Rounds the test plays.
 const ROUNDS: usize = 5;
 
 /// Plays a scheduler that runs the router often and the link thread seldom: the
-/// link thread loses `ROUTER_RUNS_PER_LINK_RUN` router periods (120 blocks, about
-/// one Windows Server quantum at 41 MB/s) in each round. Returns the number of
+/// link thread loses `runs_per_link_run` router periods in each round (20 are 120
+/// blocks, about one Windows Server quantum at 41 MB/s). Returns the number of
 /// spills and the blocks the receiver saw, with a FIFO of `fifo_blocks`.
 ///
 /// The test thread runs both, one at a time, so the schedule is the same on every
 /// machine and under any load.
-fn play_scheduler(fifo_blocks: usize) -> (usize, Vec<u32>) {
+fn play_scheduler(fifo_blocks: usize, runs_per_link_run: usize) -> (usize, Vec<u32>) {
     let dir = TestDir::new(&format!("batching-{fifo_blocks}"));
     let stats = Arc::new(SinkStats::default());
     let script = Script::new(true);
@@ -902,7 +904,7 @@ fn play_scheduler(fifo_blocks: usize) -> (usize, Vec<u32>) {
 
     let mut number = 0;
     for _ in 0..ROUNDS {
-        for _ in 0..ROUTER_RUNS_PER_LINK_RUN {
+        for _ in 0..runs_per_link_run {
             // The router runs: it routes everything that arrived since it last ran.
             for _ in 0..ARRIVALS_PER_ROUTER_RUN {
                 input.try_send(block(number)).expect("room in the channel");
@@ -933,8 +935,8 @@ fn play_scheduler(fifo_blocks: usize) -> (usize, Vec<u32>) {
 
 #[test]
 fn a_link_thread_that_loses_a_server_quantum_causes_no_spill_with_the_deep_fifo() {
-    let (spills, seen) = play_scheduler(LINK_FIFO_BLOCKS);
-    assert_eq!(spills, 0, "120 blocks fit in a FIFO of 128");
+    let (spills, seen) = play_scheduler(LINK_FIFO_BLOCKS, ROUTER_RUNS_PER_LINK_RUN);
+    assert_eq!(spills, 0, "120 blocks fit in the FIFO");
     let total = blocks(ROUNDS * ROUTER_RUNS_PER_LINK_RUN * ARRIVALS_PER_ROUTER_RUN);
     assert_eq!(seen, (0..total).collect::<Vec<_>>(), "all live, in order");
 }
@@ -943,8 +945,16 @@ fn a_link_thread_that_loses_a_server_quantum_causes_no_spill_with_the_deep_fifo(
 fn the_same_schedule_spills_with_a_two_block_fifo() {
     // The collapse that review V2 measured: a FIFO that holds less than the link
     // thread's absence cannot keep the spool empty.
-    let (spills, _) = play_scheduler(2);
+    let (spills, _) = play_scheduler(2, ROUTER_RUNS_PER_LINK_RUN);
     assert!(spills > 0, "a FIFO of 2 cannot hold 120 blocks");
+}
+
+#[test]
+fn a_link_thread_that_loses_two_server_quanta_causes_no_spill_with_the_deep_fifo() {
+    let (spills, seen) = play_scheduler(LINK_FIFO_BLOCKS, ROUTER_RUNS_PER_TWO_QUANTA);
+    assert_eq!(spills, 0, "234 blocks fit in the FIFO");
+    let total = blocks(ROUNDS * ROUTER_RUNS_PER_TWO_QUANTA * ARRIVALS_PER_ROUTER_RUN);
+    assert_eq!(seen, (0..total).collect::<Vec<_>>(), "all live, in order");
 }
 
 // ---- one router wake queues the whole credit ----

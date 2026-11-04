@@ -65,7 +65,7 @@ timeout error.
 | Waiting | Router waits with one `crossbeam_channel::Select` (parser channel, return channel). Link thread waits on FIFO readiness or socket readiness. Each drains all it can per wake (D). | The thread must wait for "a block arrived" or "the socket is writable". No call waits on a crossbeam channel and a socket together, so it must alternate short waits. |
 | Loss on a link failure | Unsent live frames go back to the router. Only the unsent rest of two replay batches (less than 268 KiB, in Draining) and, with TLS, one unconfirmed piece are lost (B2: no replay frame is lost). | The tail can go back by the same rules; the hand-back is simpler, but the tail stays in the routing loop. |
 | How the router learns of a failure | The link thread returns its block in hand and sends `HandBackDone`. The router drains the FIFO itself. | Directly: the write returns the error. |
-| Memory | Pool grows by 130 blocks (about 17.3 MiB): the 128-block FIFO, the front list, and a block for the link thread. | No change. |
+| Memory | Pool grows by 130 blocks (about 17.3 MiB): the FIFO (128 blocks when designed, 256 now), the front list, and a block for the link thread. | No change. |
 
 ### TLS partial writes, both options
 
@@ -348,17 +348,17 @@ disk; never in two of these ([Eviction](#eviction-and---spool-max-mib)).
 
 | Constant | Value | Arithmetic |
 | --- | --- | --- |
-| `LINK_FIFO_BLOCKS` | 128 (was 2) | A thread that waits can lose one quantum: 2 clock ticks (31.25 ms) on Windows client, 12 ticks (187.5 ms) on Windows Server. At 41.2 MB/s that is 1.29 MB (20 blocks) and 7.7 MB (118 blocks). 128 blocks (8 MiB of frames) cover one Server quantum at 41.2 MB/s with a 9 % margin (up to 44.7 MB/s, about 217,000 queries per second) and six client quanta. No hold remains, so this is the only in-memory slack. |
+| `LINK_FIFO_BLOCKS` | 256 (was 128, and 2 before D) | A thread that waits can lose one quantum: 2 clock ticks (31.25 ms) on Windows client, 12 ticks (187.5 ms) on Windows Server. At 41.2 MB/s that is 1.29 MB (20 blocks) and 7.7 MB (118 blocks). The lab measured late wakes of 195 to 216 ms on a busy guest (up to 136 blocks), so 128 blocks left no margin (risk 9). 256 blocks (16 MiB of frames) hold 0.41 s at 41.2 MB/s, which is two Server quanta (236 blocks) with a 8 % margin, and 12 client quanta. They cover the measured late wakes with room for a second one. No hold remains, so this is the only in-memory slack. |
 | Loss at a failure | B2: none counted; the kernel-buffered bytes are lost uncounted. Before B2: less than 140 KiB, only in Draining | Before B2: the unsent rest of two replay batches, each at most 71,684 bytes, and with TLS one piece of at most 16 KiB. Live blocks in the FIFO cost memory, not loss: they go back. With B2 the replay batches go back too (to the spool), and so does the unconfirmed TLS piece of a live block. |
 | `TLS_FEED_BYTES` | 16 KiB | One TLS record at the default fragment size, so the unconfirmed plaintext is one piece. |
-| Link pause held in memory | — | FIFO 8 MiB / R_in: about 4.1 s at 10,000, 0.81 s at 50,000, and 0.20 s at 200,000 queries per second. The kernel send buffer adds more; it is autotuned (as built, H4), so these are lower bounds. |
-| Router pause held in memory | — | Parser channel 8 MiB / R_in: 0.20 s at 41.2 MB/s, one Server quantum. B2: a replay read adds about 10 ms to a turn ([Turn length](#credit-batch-size-and-turn-length)). |
+| Link pause held in memory | — | FIFO 16 MiB / R_in: about 8.1 s at 10,000, 1.6 s at 50,000, and 0.41 s at 200,000 queries per second. The kernel send buffer adds more; it is autotuned (as built, H4), so these are lower bounds. |
+| Router pause held in memory | — | Parser channel 16 MiB / R_in: 0.41 s at 41.2 MB/s, two Server quanta. B2: a replay read adds about 10 ms to a turn ([Turn length](#credit-batch-size-and-turn-length)). |
 | `REPLAY_BATCH_BYTES` | 64 KiB | `read_batch` takes a frame only if it fits the limit, and always takes the first, so a batch is at most max(64 KiB, 70 KiB + 4 bytes) = 71,684 bytes. (Earlier text said that the frame that crosses the limit is taken too, which gave 134 KiB.) It fits `BLOCK_CAPACITY` (136 KiB) with no reallocation. |
-| Replay credit | B2: 127 batches. Before B2: 2 (was 1) | V2: credit 2 made replay about 6 times faster on a saturated host, and bounded the replay loss above. With B2 nothing is lost, and 127 = `LINK_FIFO_BLOCKS` - `FRONT_LIST_BLOCKS` ([Credit](#credit-batch-size-and-turn-length)). |
+| Replay credit | B2: 127 batches. Before B2: 2 (was 1) | V2: credit 2 made replay about 6 times faster on a saturated host, and bounded the replay loss above. With B2 nothing is lost. 127 was `LINK_FIFO_BLOCKS` - `FRONT_LIST_BLOCKS` while the FIFO had 128 blocks. It stays 127 with a FIFO of 256 ([Credit](#credit-batch-size-and-turn-length)). |
 | `REPLAY_TURN_BYTES` | B2: 1 MiB | The most the router reads from the spool in one pass. |
 | `RETURN_MESSAGES` | `REPLAY_CREDIT` + 2 | 4 before B2, 129 with B2. |
-| `SEND_QUEUE_BLOCKS` | 128, unchanged | User decision. |
-| `POOL_BLOCKS` | `SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLOCKS + 3` = 260 | One block each for the parser, the router, and the link thread, and the front list (1 block, finding m3). The blocks the router takes out of the FIFO, for a spill or a hand-back, were in the FIFO, and the block the link thread returns was in its hand, so they add none. 260 × 136 KiB = 34.5 MiB, against 17.3 MiB at `a06f6fd`. B2 adds none: a replay batch is a FIFO item. |
+| `SEND_QUEUE_BLOCKS` | 256 (was 128) | User decision, with the risk 9 fix. 16 MiB, 0.41 s at 41.2 MB/s. It holds one Server quantum of router pause (118 blocks) twice over, and the burst of late ETW events (finding L-7), which overflowed the 128-block channel once at 50,000 queries per second. |
+| `POOL_BLOCKS` | `SEND_QUEUE_BLOCKS + LINK_FIFO_BLOCKS + FRONT_LIST_BLOCKS + 3` = 516 | One block each for the parser, the router, and the link thread, and the front list (1 block, finding m3). The blocks the router takes out of the FIFO, for a spill or a hand-back, were in the FIFO, and the block the link thread returns was in its hand, so they add none. 516 × 136 KiB = 68.5 MiB (34.5 MiB with both queues at 128), against 17.3 MiB at `a06f6fd`. B2 adds none: a replay batch is a FIFO item. |
 | `LINK_POLL` | 50 ms | The readiness and FIFO wait. It bounds the reaction to shutdown, the stall check, the `Fence` wait, and the reconnect poll. |
 | Stall timeout | 15 s default | `--receiver-stall-seconds`, 2 to 300. At 50,000 queries per second the spool takes 15 s × 10.3 MB/s = 155 MB, about 4 % of the 4,096 MiB default. |
 | `IO_TIMEOUT` | 2 s, unchanged | Connect, TLS handshake, READY/ACCEPT/START, and STOP/FINISH only. Never a data write. |
@@ -397,7 +397,7 @@ STOP/FINISH. The router drains the FIFO while STOP/FINISH runs.
 | Final partial block, then the link budget | 1.1 s | 1.1 s |
 | Write in progress at the deadline, then the hand-back | up to 2 s | up to `LINK_POLL`, 0.05 s |
 | STOP/FINISH | up to 2 s | up to 2 s |
-| Returned block, FIFO, and channel to the spool, then seal | up to 128 blocks, after the link | up to 257 blocks (about 16 MiB), at the same time as STOP/FINISH |
+| Returned block, FIFO, and channel to the spool, then seal | up to 128 blocks, after the link | up to 513 blocks (about 32 MiB), at the same time as STOP/FINISH. At 100 MB/s that is 0.3 s of writes, an assumption that the lab checks. |
 | Total | about 5 s | about 3.2 s, or longer only if the seal takes longer than STOP/FINISH |
 
 **Interaction with the spool.** A shorter stall fills the FIFO and spills: no loss, no
@@ -419,7 +419,7 @@ drain of 5.6 to 40.7 MB/s at 2 busy threads per CPU, and 11 to 19 MB/s with a cr
 
 B2 keeps what the link has not taken. The spool tracks a read position and a delivered
 position. At a failure the read position goes back to the delivered position, and the unsent
-data is read again. No replay frame is lost, so the credit can follow the FIFO depth, and one
+data is read again. No replay frame is lost, so the credit can be large (127 batches), and one
 router wake queues enough batches for the link to run without the router.
 
 | # | Decision | Section |
@@ -661,19 +661,19 @@ the read position. A normal stop repeats nothing.
 
 | Constant | Value | Arithmetic |
 | --- | --- | --- |
-| `REPLAY_CREDIT` | 127 (was 2) | `LINK_FIFO_BLOCKS - FRONT_LIST_BLOCKS`. It is the most that the FIFO can hold next to the front block, so a send that the router has checked never waits (the compile-time assert is then tight). To keep replay at the capture rate through a router that runs once per Server quantum (187.5 ms), the link needs 41.2 MB/s × 0.1875 s / 64 KiB = 118 batches. 127 gives a margin of 7.6 % (up to 44.4 MB/s), on the same footing as the FIFO for live data. |
-| `REPLAY_BATCH_BYTES` | 64 KiB, unchanged | A larger batch needs a larger `BLOCK_CAPACITY` in all 260 pool blocks (about 16 MiB for each 64 KiB), and it widens the held bytes and the crash window. After B2 the batch size no longer limits the drain, because a wake queues many batches. A smaller batch makes more messages and cursor writes. |
+| `REPLAY_CREDIT` | 127 (was 2) | It was `LINK_FIFO_BLOCKS - FRONT_LIST_BLOCKS` while the FIFO had 128 blocks. The code needs only that the credit and the front block fit in the FIFO, so that a send that the router has checked never waits (the compile-time assert). With 256 blocks that holds with 128 to spare, and the credit stays 127. The held data and the crash window depend on the credit (P = 127 × 71,684 bytes), so a larger credit would widen them for no gain. To keep replay at the capture rate through a router that runs once per Server quantum (187.5 ms), the link needs 41.2 MB/s × 0.1875 s / 64 KiB = 118 batches. 127 gives a margin of 7.6 % (up to 44.4 MB/s), on the same footing as the FIFO for live data. |
+| `REPLAY_BATCH_BYTES` | 64 KiB, unchanged | A larger batch needs a larger `BLOCK_CAPACITY` in all 516 pool blocks (about 32 MiB for each 64 KiB), and it widens the held bytes and the crash window. After B2 the batch size no longer limits the drain, because a wake queues many batches. A smaller batch makes more messages and cursor writes. |
 | `REPLAY_TURN_BYTES` | 1 MiB (new) | The most the router reads from the spool in one `serve` call. Replay stops after the first batch that reaches it, so a turn reads under 1 MiB + 70 KiB. See below. |
 | `RETURN_MESSAGES` | `REPLAY_CREDIT + 2` = 129 (was 4) | See "No deadlock" above. |
-| `LINK_FIFO_BLOCKS` | 128, unchanged | |
-| `POOL_BLOCKS` | 260, unchanged | See below. |
+| `LINK_FIFO_BLOCKS` | 256 (was 128) | See the constants above. |
+| `POOL_BLOCKS` | 516 (was 260) | See below. |
 
 **Pool, no new blocks.**
 
 - A replay batch is a pool block that `replay_step` takes and offers to the FIFO at once. In
-  the FIFO it uses one of the 128 slots. In the link's hand it replaces a slot, because the
+  the FIFO it uses one of the 256 slots. In the link's hand it replaces a slot, because the
   link took it from the FIFO. The router's hand holds one block while it reads.
-- In Draining the FIFO holds at most the front block and 127 batches, which is 128. These are
+- In Draining the FIFO holds at most the front block and 127 batches, which is 128 of its 256 slots. These are
   the slots and hands that the `POOL_BLOCKS` term already counts for live blocks.
 - A rewind returns blocks to the pool. It allocates none, and it reads again into pool
   blocks.
@@ -681,13 +681,13 @@ the read position. A normal stop repeats nothing.
 
 **Turn length.**
 
-- `serve` takes the parser blocks first (up to 128), then replay. Replay stops after
+- `serve` takes the parser blocks first (up to 256), then replay. Replay stops after
   `REPLAY_TURN_BYTES`, and the turn returns `Moved`, so the next turn serves the parser
   channel again.
-- The parser channel holds 8 MiB: 0.20 s at 41.2 MB/s. One Server quantum of router pause
-  already uses 7.7 MB of it (118 of 128 blocks). The read at the end of a turn must cost a
+- The parser channel holds 16 MiB: 0.41 s at 41.2 MB/s. One Server quantum of router pause
+  already uses 7.7 MB of it (118 of 256 blocks). The read at the end of a turn must cost a
   small part of the rest. 1 MiB from a disk that is not in the page cache, at 100 MB/s, takes
-  10.5 ms. That is 5 % of 0.20 s, and the parser adds 0.43 MB (7 blocks) meanwhile. From the
+  10.5 ms. That is 2.6 % of 0.41 s, and the parser adds 0.43 MB (7 blocks) meanwhile. From the
   page cache a read is faster, and this figure is an assumption that lab task L checks.
 - One turn queues about 16 batches (103-byte frames). Eight back-to-back turns fill the
   credit. A router wake runs turns while they move something, so one wake queues all 127
@@ -945,8 +945,8 @@ frames in capture order.
 5. **Batching (deterministic).** A scripted link and router run under a manual
    scheduler. The link runs only every T of virtual time; between runs the router queues
    R_in × T. Assert: each link run empties the FIFO, each router run empties the parser
-   channel, and no spill happens while R_in × T ≤ 128 blocks (as built: 120 blocks per
-   link run, about one Server quantum at 41 MB/s). With a 2-block FIFO the same script
+   channel, and no spill happens while R_in × T ≤ the FIFO (as built: 120 blocks per
+   link run, about one Server quantum at 41 MB/s, and 234 blocks, about two quanta). With a 2-block FIFO the same script
    must spill (the V2 collapse).
 6. **Cut frame resent.** A reset inside frame F: the old receiver discards the
    truncated F; the new session delivers F in full, once.
@@ -956,7 +956,7 @@ frames in capture order.
 8. **Partial writes.** 1 byte, then `WouldBlock`, in turn; plaintext and TLS arrive intact.
 9. **Stall timer.** With a 2 s timeout, 1 byte a second keeps the session; none for 2 s
    ends it.
-10. **Shutdown under a stall.** 128 live blocks queued (and one in the link's hand), link
+10. **Shutdown under a stall.** 256 live blocks queued (and one in the link's hand), link
     never writable: `finish` returns in less than 4 s, the blocks are on disk in order,
     `disconnected_dropped` is 0.
 11. **STOP rules.** At a block boundary STOP/FINISH runs; mid-frame, no STOP.
@@ -987,7 +987,7 @@ is longer.
 - **Unsent data at a failure.** User chose B1 on 2026-11-03: unsent live data goes back
   to the router, and only replay data whose cursor moved can be lost. B2 reads that replay
   data again.
-- **Parser channel.** It stays at 128 blocks.
+- **Parser channel.** It was 128 blocks. The user raised it to 256 on 2026-11-04, with the FIFO (risk 9).
 - **Batched hand-offs.** User chose D on 2026-11-03; thread priority rejected (the
   service must not compete with `dns.exe`). Review V2 measured (release, loopback,
   103-byte frames, 24 logical CPUs, 2-block FIFO, credit 1):
@@ -1040,16 +1040,21 @@ is longer.
    position back to the delivered position at a failure and defers segment deletion until
    the link has taken the data. Risks 12 to 17 are its costs.
 9. **Server quantum at full rate.** On Windows Server at 41 MB/s, a link thread that
-   loses a full 187.5 ms quantum needs about 118 blocks of FIFO. `LINK_FIFO_BLOCKS` = 128
-   (8 MiB) covers it with a 9 % margin. With a FIFO of 96 it would spill about 22 blocks,
-   and the spill is sticky until replay catches up. Two lost quanta in a row, or above
-   44.7 MB/s, still spill. Lab task L decides.
+   loses a full 187.5 ms quantum needs about 118 blocks of FIFO. With a FIFO of 128 blocks
+   (8 MiB) the margin was 9 %, and the lab measured late wakes of 195 to 216 ms on a busy
+   guest, which are 123 to 136 blocks, so it was not enough. With a FIFO of 96 it would
+   spill about 22 blocks, and the spill is sticky until replay catches up.
+   **Fixed on 2026-11-04** without a priority change: `LINK_FIFO_BLOCKS` = 256 (16 MiB, 0.41 s
+   at 41.2 MB/s, two Server quanta) and `SEND_QUEUE_BLOCKS` = 256. A late wake of 216 ms
+   leaves about 120 blocks of room. Three lost quanta in a row, or a rate above 44.7 MB/s for
+   two quanta, still spill. Lab task L repeats risk 9 on the new sizes; until then it is not
+   confirmed by a run.
 10. **Replay on a saturated host.** At 2 busy threads per CPU, replay stayed below the
     capture rate, so a backlog could grow (H3a then evicts the oldest data). Review V3
     measured a drain of 5.6 to 40.7 MB/s on that load, against 110 to 120 MB/s at `HEAD`.
     A credit of 4 measured only 11 to 19 MB/s. The user accepted this as a known limit
     on 2026-11-03. B2 is the fix: the spool is rewound at a failure, so unsent replay data
-    goes back and the credit is 127, about the FIFO depth. One router wake queues the whole
+    goes back and the credit is 127, about half the FIFO depth since the risk 9 fix. One router wake queues the whole
     credit, and the link needs no router for 0.20 s of replay at 41.2 MB/s. Measured on
     2026-11-04 on a client host with 24 logical CPUs (see [As built (B2)](#as-built-b2)):
     51 to 368 MB/s at 2 busy threads per CPU in 10 of 10 runs, against 4.7 to 9.0 MB/s

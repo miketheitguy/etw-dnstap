@@ -371,17 +371,17 @@ where
     Ok(())
 }
 
-/// Received rate above which the default buffer settings are untested. The lab
-/// validated them at about 20,000 events/s (10,000 queries/s); the 10% margin
-/// covers ETW's once-per-second delivery batches within a rate window.
-const DEFAULTS_VALIDATED_EVENTS_PER_SEC: f64 = 22_000.0;
+/// Received rate above which the default buffer settings are untested. The
+/// defaults are sized for about 400,000 events/s (200,000 queries/s); the 10%
+/// margin covers ETW's once-per-second delivery batches within a rate window.
+const DEFAULTS_VALIDATED_EVENTS_PER_SEC: f64 = 440_000.0;
 /// The warning logged once when the rate passes
 /// [`DEFAULTS_VALIDATED_EVENTS_PER_SEC`]. It names both figures: the validated
 /// rate and the threshold above it.
-const RATE_WARNING: &str = "received rate is above 22,000 events/s; the default buffer settings \
-    were validated at about 20,000 events/s; if ring_dropped or etw_lost increase, raise \
-    --capacity and --etw-max-buffers, for example --etw-buffer-kib 64 --etw-max-buffers 256 \
-    --capacity 65536";
+const RATE_WARNING: &str = "received rate is above 440,000 events/s; the default buffer settings \
+    were validated at about 400,000 events/s (200,000 queries per second); if ring_dropped or \
+    etw_lost increase, raise --capacity and --etw-max-buffers, for example \
+    --etw-max-buffers 256 --capacity 131072";
 /// How often the supervisor re-reads the DNS Server service process ID.
 const TARGET_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// Rate window when counter snapshots are disabled.

@@ -80,7 +80,7 @@ message.
 | `the DNS Server service restarted` or `the DNS Server service stopped` | 4, then 1 | |
 | `a capture worker exited before shutdown was requested` | 1 | |
 | `ETW consumer did not return within 5 s of STOP` | 3 | Trace handle closed to force the worker out. |
-| `received rate is above 22,000 events/s` | 3 | |
+| `received rate is above 440,000 events/s` | 3 | |
 | `rejected ETW event` | 3 | |
 | `DNS event schema load failed` | 3 | |
 | `DNS event schema is unsupported and its events are rejected` | 3 | The key is not retried. |
@@ -163,7 +163,7 @@ Otherwise, check the collector's listener, port, content type, and the firewall.
 
 ## The receiver is slow
 
-When the link queue (128 blocks, about 8 MiB) is full, the router moves it to the
+When the link queue (256 blocks, about 16 MiB) is full, the router moves it to the
 spool and writes new blocks to the spool. Signs: `spooled` and `spool_bytes` rise while `receiver_connected` stays
 `true`.
 
@@ -179,7 +179,7 @@ peaks cover the last 60 seconds ([definitions](monitoring.md#output-counters)).
 | `link_saturated` | `true` | The spool backlog is larger than 10 samples ago (at least 10 seconds), with at least 7 of the 10 steps rising, and the receiver is connected. The receiver or the network path takes fewer bytes than the service captures. It keeps its value while the receiver is down, so read it with `receiver_connected`. |
 | `bytes_sent` | Rate below the capture byte rate | The link takes less than arrives. No counter reports the capture byte rate: it is the `bytes_sent` rate plus the growth of `spool_bytes` plus the `spool_dropped_bytes` rate. |
 | `spool_oldest_age_ms` | Large, and rising | The data that the link takes now is at most this old. At the cap, the spool deletes its oldest segments, which hold the oldest data. |
-| `send_queue_depth_max` | Near 128 | The router falls behind: the spool disk is slow, the router thread did not run, or late ETW events arrived in one burst. It is not the receiver. At 128 the parser drops frames. |
+| `send_queue_depth_max` | Near 256 | The router falls behind: the spool disk is slow, the router thread did not run, or late ETW events arrived in one burst. It is not the receiver. At 256 the parser drops frames. |
 | `write_max_recent_us` | 1,000,000 or more | A socket write blocks now. A write that stalls for 2 seconds ends the session. `write_max_us` is the maximum since the start, so it cannot show this. |
 | `router_wait_max_recent_us` | Far above 50,000 | The router thread woke late from its wait of at most 50 ms. The thread did not get a processor in time: look for CPU contention in the guest or on the host. |
 | `router_pass_max_recent_us` | Large | A call in a router pass blocked or ran long, such as a spool disk write. |
@@ -304,7 +304,7 @@ shutdown. A restart resets every counter. The counter definitions are in
 
 | Counter | Action |
 | --- | --- |
-| `ring_dropped` | Raise `--capacity`, or see [High-rate settings](tuning.md#high-rate-settings). |
+| `ring_dropped` | Raise `--capacity`. See [Defaults](tuning.md#defaults). |
 | `pool_exhausted_regular`, `pool_exhausted_jumbo` | Raise `--jumbo-capacity` if `pool_exhausted_jumbo` rises. With `--jumbo-capacity 0`, every jumbo record counts here. |
 | `receiver_disconnected` | Check whether the parser stopped. This is the event channel, not TCP. See [restarts](#the-service-keeps-restarting). |
 | `disconnected_dropped` | Check `spool_available`. See [the receiver section](#the-receiver-is-down-or-unreachable). |
@@ -323,17 +323,16 @@ unexplained until you read the counters.
 ## Rate warning
 
 With the default buffer settings, the service logs `received rate is above
-22,000 events/s` once per run. The warning alone does not mean that events were lost.
+440,000 events/s` once per run. The defaults are sized for about 400,000 events per second
+(200,000 queries per second). The warning alone does not mean that events were lost.
 
 If `ring_dropped` or `etw_lost` rises in the `capture stats` events, restart with:
 
 ```text
---etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536
+--etw-max-buffers 256 --capacity 131072
 ```
 
-If `ring_dropped` still rises, raise `--capacity`, for example to 131,072. See
-[High-rate settings](tuning.md#high-rate-settings) and
-[Low-rate defaults](tuning.md#low-rate-defaults). Lab runs are in
+The lab did not test 131,072. See [Defaults](tuning.md#defaults). Lab runs are in
 [Guide lab results, 2026-11](../history/guide-lab-results-2026-11.md).
 
 ## ETW consumer and session warnings

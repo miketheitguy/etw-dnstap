@@ -152,10 +152,10 @@ fn session_properties_write_configured_values() {
     assert_eq!(properties.properties.MinimumBuffers, 8);
 
     let defaults = SessionProperties::new(&SessionConfig::default(), GUID::default());
-    assert_eq!(defaults.properties.BufferSize, 16);
-    assert_eq!(defaults.properties.MaximumBuffers, 64);
+    assert_eq!(defaults.properties.BufferSize, 128);
+    assert_eq!(defaults.properties.MaximumBuffers, 128);
     assert_eq!(defaults.properties.FlushTimer, 1);
-    assert_eq!(defaults.properties.MinimumBuffers, 0);
+    assert_eq!(defaults.properties.MinimumBuffers, 12);
 
     let reserved = SessionConfig::new(16, 32, 64, 1).expect("valid configuration");
     let properties = SessionProperties::new(&reserved, GUID::default());
@@ -520,7 +520,7 @@ fn session_config_enforces_ranges_and_accepts_max_buffer_product() {
 
 #[test]
 fn session_config_checks_the_minimum_buffer_count() {
-    assert_eq!(SessionConfig::default().minimum_buffers, 0);
+    assert_eq!(SessionConfig::default().minimum_buffers, 12);
     let accepted = SessionConfig::new(16, 0, 64, 1).expect("zero lets ETW choose");
     assert_eq!(accepted.minimum_buffers, 0);
     let accepted = SessionConfig::new(16, 64, 64, 1).expect("minimum equal to maximum");

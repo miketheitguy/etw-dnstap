@@ -93,7 +93,7 @@ TLS is cleared explicitly after `ProcessTrace` returns.
 
 ## Memory budget and configuration
 
-The channel default is `--capacity 24576`. `--capacity` accepts 1,024 to 262,144, and
+The channel default is `--capacity 65536`. `--capacity` accepts 1,024 to 262,144, and
 the pool accepts 1 to 262,144 slots. `--jumbo-capacity` accepts 0 to 256, and zero
 disables jumbo capture. Storage has two independent classes:
 
@@ -132,23 +132,23 @@ free-list elements = (C + 2 + J) x 16
 channel elements   = C x 112
 ```
 
-At the defaults (C 24,576, J 64):
+At the defaults (C 65,536, J 64):
 
 | Allocation contents | Bytes |
 | --- | ---: |
-| Regular payloads | 50,335,744 |
+| Regular payloads | 134,221,824 |
 | Jumbo payloads | 8,412,672 |
-| Slot metadata | 591,408 |
-| Free-list elements | 394,272 |
-| Channel elements | 2,752,512 |
-| Total counted storage | 62,486,608 (59.59 MiB) |
+| Slot metadata | 1,574,448 |
+| Free-list elements | 1,049,632 |
+| Channel elements | 7,340,032 |
+| Total counted storage | 152,598,608 (145.53 MiB) |
 
 These totals exclude allocator rounding and metadata, queue headers, worker stacks,
 native ETW buffers, TDH caches, protobuf data, and output buffers. They are not
 process-private-memory measurements or total-memory limits. Payload pages are
 initialized before native delivery. Startup still makes heap allocations, and a failure
-of the ordinary allocation machinery can terminate the process. The high-rate settings
-are in the [tuning guide](../guide/tuning.md#high-rate-settings).
+of the ordinary allocation machinery can terminate the process. The defaults
+are in the [tuning guide](../guide/tuning.md#defaults).
 
 ## Nonblocking admission and allocation scope
 

@@ -40,8 +40,8 @@ pub(super) const PEAK_WINDOW: usize = 60;
 /// with the backlog this many samples ago (at least this many seconds).
 ///
 /// Ten samples are longer than the memory slack that absorbs a receiver pause
-/// before the spool starts (about 0.9 s at 50,000 queries per second to about
-/// 4.6 s at 10,000: the 8 MiB link queue and the kernel send buffer, taken as
+/// before the spool starts (about 1.7 s at 50,000 queries per second to about
+/// 8.7 s at 10,000: the 16 MiB link queue and the kernel send buffer, taken as
 /// 1 MiB, which Windows can grow), so a hiccup that the link queue absorbs does
 /// not count. They are
 /// short against the minutes a saturated link needs to fill the spool to

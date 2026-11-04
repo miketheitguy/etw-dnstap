@@ -57,7 +57,7 @@ msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v install.log `
     RECEIVER=192.0.2.10:6000 SESSION_NAME=EtwDnstap-Lab SERVICE_ARGS=--plaintext
 ```
 
-Quote a property that has spaces, for example `'SERVICE_ARGS="--plaintext --capacity 24576"'`.
+Quote a property that has spaces, for example `'SERVICE_ARGS="--plaintext --capacity 65536"'`.
 The MSI keeps the values in `HKLM\SOFTWARE\EtwDnstap\Installer`. See
 [Upgrade, repair, or change settings with the MSI](upgrade.md#upgrade-repair-or-change-settings-with-the-msi).
 
@@ -213,7 +213,7 @@ Only SYSTEM and Administrators can write, so ordinary users cannot replace the e
 ```powershell
 Copy-Item '.\target\x86_64-pc-windows-msvc\release\etw-dnstap.exe' $installDirectory
 Copy-Item '.\packaging\perfcounters\etw-dnstap.man' $installDirectory
-$imagePath = '"{0}\etw-dnstap.exe" --receiver "{1}" --capacity 24576' -f `
+$imagePath = '"{0}\etw-dnstap.exe" --receiver "{1}" --capacity 65536' -f `
     $installDirectory, $Receiver
 New-Service -Name EtwDnstap -BinaryPathName $imagePath `
     -StartupType Manual -DependsOn DNS
@@ -221,7 +221,7 @@ icacls.exe $installDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(RX)'
 lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"
 ```
 
-Arguments go in the binary path, not in `sc.exe start`. `--capacity 24576` is the default.
+Arguments go in the binary path, not in `sc.exe start`. `--capacity 65536` is the default.
 Add other options from [configuration.md](configuration.md) to the same string. TLS is the
 default, so complete the [receiver certificate step](receiver.md#receiver-certificate) first.
 For plaintext, add `--plaintext`.

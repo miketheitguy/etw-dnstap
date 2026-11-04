@@ -16,7 +16,7 @@ use crate::{etw::SessionConfig, spool::fsinfo};
 const DEFAULT_SESSION_NAME: &str = "EtwDnstap";
 
 /// Default channel capacity; `CaptureArgs` uses the same value.
-pub(super) const DEFAULT_CAPACITY: usize = 24_576;
+pub(super) const DEFAULT_CAPACITY: usize = 65_536;
 
 /// Where `ProgramData` is when the environment variable is unset or not a plain
 /// absolute path on a local drive letter.
@@ -61,7 +61,7 @@ pub(crate) struct CaptureArgs {
     tls_server_name: Option<String>,
 
     /// Event channel capacity, 1024–262144; full channels drop the newest event.
-    #[arg(long, default_value = "24576", value_parser = parse_capacity)]
+    #[arg(long, default_value = "65536", value_parser = parse_capacity)]
     pub(super) capacity: usize,
 
     /// Concurrent records over 2 KiB; zero disables their capture (maximum 256).
@@ -83,18 +83,19 @@ pub(crate) struct CaptureArgs {
     identity: String,
 
     /// ETW buffer size in KiB, 4–128, must be a multiple of 4.
-    #[arg(long, default_value = "16", value_parser = clap::value_parser!(u32).range(4..=128))]
+    #[arg(long, default_value = "128", value_parser = clap::value_parser!(u32).range(4..=128))]
     etw_buffer_kib: u32,
 
     /// Requested minimum ETW buffers, reserved when the session starts, 0–4096 and
     /// at most `--etw-max-buffers`. 0 lets ETW choose. ETW raises the value to at
-    /// least two per logical processor.
-    #[arg(long, default_value = "0", value_parser = clap::value_parser!(u32).range(0..=4096))]
+    /// least two per logical processor, so the default of 12 matters only below
+    /// six logical processors.
+    #[arg(long, default_value = "12", value_parser = clap::value_parser!(u32).range(0..=4096))]
     etw_min_buffers: u32,
 
     /// Requested maximum ETW buffers, 4–4096. ETW may reserve more (at least two buffers
     /// per logical processor, and raises the maximum to at least that).
-    #[arg(long, default_value = "64", value_parser = clap::value_parser!(u32).range(4..=4096))]
+    #[arg(long, default_value = "128", value_parser = clap::value_parser!(u32).range(4..=4096))]
     etw_max_buffers: u32,
 
     /// ETW real-time flush interval in seconds, 1–60. ETW delivers real-time
@@ -420,7 +421,7 @@ impl PipelineConfig {
             .then(|| Duration::from_secs(u64::from(self.stats_interval_seconds)))
     }
 
-    /// True when the ETW buffer and flush settings are the low-rate defaults.
+    /// True when the ETW buffer and flush settings are the defaults.
     pub(super) fn uses_default_etw_settings(&self) -> bool {
         self.session == SessionConfig::default()
     }

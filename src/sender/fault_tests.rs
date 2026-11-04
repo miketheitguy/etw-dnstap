@@ -324,18 +324,19 @@ fn a_failure_soon_after_a_spill_sends_the_live_rest_first_then_the_backlog() {
     let dir = TestDir::new("fault-front");
     let mut h = Harness::start(&dir, &Options::new());
     h.script.set_mode(Mode::Blocked);
-    // Block 0 in hand, and blocks 1 to 128 fill the FIFO. Block 129 finds it full:
-    // the router moves blocks 1 to 129 to the spool, which now holds a backlog.
-    // Each step waits for the one before, so a link thread that the machine
-    // starves for a while cannot reorder them.
+    // Block 0 in hand, and the next `fifo` blocks fill the FIFO. The block after
+    // them finds it full: the router moves those `fifo + 1` blocks to the spool,
+    // which now holds a backlog. Each step waits for the one before, so a link
+    // thread that the machine starves for a while cannot reorder them.
+    let fifo = u32::try_from(LINK_FIFO_BLOCKS).expect("small");
     h.offer(0..1, LARGE);
     wait_until("the link to wait with block 0 in hand", || {
         h.script.waits() >= 1
     });
-    h.offer(1..129, LARGE);
+    h.offer(1..fifo + 1, LARGE);
     wait_until("the FIFO to fill", || h.probe_fifo() == LINK_FIFO_BLOCKS);
     assert_eq!(h.spills(), 0);
-    h.offer(129..130, LARGE);
+    h.offer(fifo + 1..fifo + 2, LARGE);
     wait_until("the FIFO to spill", || {
         get(&h.stats.spooled) == LINK_FIFO_BLOCKS as u64 + 1
     });
@@ -358,16 +359,16 @@ fn a_failure_soon_after_a_spill_sends_the_live_rest_first_then_the_backlog() {
     assert_eq!(get(&h.stats.disconnected_dropped), 0);
     assert_eq!(get(&h.stats.disconnects), 1);
     // Newer frames follow the backlog in the spool.
-    h.offer(130..132, LARGE);
+    h.offer(fifo + 2..fifo + 4, LARGE);
 
     h.reconnect();
     wait_until("the last frame to arrive", || {
-        h.delivered().last() == Some(&131)
+        h.delivered().last() == Some(&(fifo + 3))
     });
-    // Session 1 got the live block (0) first, then the whole backlog (1 to 129,
-    // read again from the start), then the newer frames.
+    // Session 1 got the live block (0) first, then the whole backlog (1 to
+    // `fifo + 1`, read again from the start), then the newer frames.
     assert_eq!(h.script.session_frames(0), Vec::<u32>::new());
-    let expected: Vec<u32> = [0].into_iter().chain(1..132).collect();
+    let expected: Vec<u32> = [0].into_iter().chain(1..fifo + 4).collect();
     assert_eq!(h.script.session_frames(1), expected);
     assert_eq!(h.lost(), 0);
     assert_eq!(h.front_max(), FRONT_LIST_BLOCKS);
@@ -433,9 +434,10 @@ fn a_spill_while_the_link_holds_the_take_lock_keeps_capture_order_and_one_front_
     wait_until("the link to take block 0 under the lock", || {
         gate.runs() == 1
     });
-    // Blocks 1 to 128 fill the FIFO, and block 129 finds it full: the router
-    // needs the lock for the spill, and the link holds it.
-    h.offer(1..130, LARGE);
+    // The next `fifo` blocks fill the FIFO, and the one after finds it full: the
+    // router needs the lock for the spill, and the link holds it.
+    let fifo = u32::try_from(LINK_FIFO_BLOCKS).expect("small");
+    h.offer(1..fifo + 2, LARGE);
     wait_until("the router to take every block", || h.queued() == 0);
     thread::sleep(Duration::from_millis(100));
     assert_eq!(h.spills(), 0, "the spill waits for the lock");
@@ -461,11 +463,11 @@ fn a_spill_while_the_link_holds_the_take_lock_keeps_capture_order_and_one_front_
     assert_eq!(h.front_max(), FRONT_LIST_BLOCKS);
     h.reconnect();
     wait_until("the last frame to arrive", || {
-        h.delivered().last() == Some(&129)
+        h.delivered().last() == Some(&(fifo + 1))
     });
     // Block 0 goes first, then the whole backlog. The replay batches the router
     // had out went back to the spool, so none is lost.
-    let expected: Vec<u32> = [0].into_iter().chain(1..130).collect();
+    let expected: Vec<u32> = [0].into_iter().chain(1..fifo + 2).collect();
     assert_eq!(h.script.session_frames(1), expected);
     assert_eq!(get(&h.stats.disconnected_dropped), 0);
     assert_eq!(h.lost(), 0);
@@ -831,6 +833,34 @@ fn a_pause_of_one_server_quantum_never_touches_the_spool() {
 }
 
 #[test]
+fn a_pause_of_two_server_quanta_never_touches_the_spool() {
+    let dir = TestDir::new("fault-pause-two");
+    let mut h = Harness::start(&dir, &Options::new());
+    h.script.set_mode(Mode::Blocked);
+    // The lab saw late wakes of 195 to 216 ms on a busy guest, and a link thread
+    // can lose a second quantum before it runs. Two quanta (375 ms) are 236
+    // blocks at 41 MB/s: fewer than the FIFO takes, and more than the old FIFO of
+    // 128 took.
+    let blocks = 236;
+    assert!(usize::try_from(blocks).expect("small") < LINK_FIFO_BLOCKS);
+    h.offer(0..blocks, BLOCK_SEND_BYTES);
+    wait_until("the FIFO to take the pause", || {
+        h.queued() == 0
+            && h.script.waits() >= 1
+            && h.probe_fifo() == usize::try_from(blocks).expect("small") - 1
+    });
+    h.script.set_mode(Mode::open());
+    wait_until("every frame to arrive", || {
+        h.delivered().len() == blocks as usize
+    });
+    assert_eq!(h.delivered(), (0..blocks).collect::<Vec<_>>());
+    assert_eq!(get(&h.stats.spooled), 0);
+    assert_eq!(h.spills(), 0);
+    assert_eq!(h.lost(), 0);
+    h.finish().expect("clean STOP");
+}
+
+#[test]
 fn without_a_spool_a_full_fifo_backs_up_into_queue_dropped_only() {
     let dir = TestDir::new("fault-nospool");
     let mut h = Harness::start(
@@ -841,7 +871,7 @@ fn without_a_spool_a_full_fifo_backs_up_into_queue_dropped_only() {
         },
     );
     h.script.set_mode(Mode::Blocked);
-    // The link holds one block, the FIFO 128, and the channel 128. The first two
+    // The link holds one block, the FIFO 256, and the channel 256. The first two
     // are filled at the router's pace, so a router that a busy machine runs late
     // cannot make the parser drop before they are full.
     let in_link = u32::try_from(1 + LINK_FIFO_BLOCKS).expect("small");
@@ -1003,7 +1033,7 @@ enum Op {
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
-        4 => (1_u32..=130).prop_map(Op::Burst),
+        4 => (1_u32..=260).prop_map(Op::Burst),
         1 => (1_u32..=6).prop_map(Op::Big),
         2 => Just(Op::Block),
         2 => Just(Op::Open),

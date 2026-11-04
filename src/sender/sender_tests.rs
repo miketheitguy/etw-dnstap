@@ -627,7 +627,7 @@ fn live_data_does_not_wait_behind_a_replay() {
     let live = 600_u32;
     for number in backlog..backlog + live {
         // The router appends to the spool at disk speed. On a busy machine it can
-        // be descheduled for longer than the 128-block channel lasts at this rate,
+        // be descheduled for longer than the 256-block channel lasts at this rate,
         // so wait for room, as a stalled router would make this wait time out.
         wait_until("room in the send queue", || {
             queued(&sink) < SEND_QUEUE_BLOCKS - 8
