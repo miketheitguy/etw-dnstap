@@ -212,8 +212,9 @@ Protocol failures at startup are not.
   Each wait is uniform between half of a base delay and the base. The base starts at 250 ms,
   doubles, and caps at 30 seconds. A successful reconnect resets it. Every new session repeats
   READY, ACCEPT, and START.
-- **No resend:** The sink never sends a frame twice. Frames that arrive while the receiver is down
-  go to the spool, or count in `disconnected_dropped` without one.
+- **No resend:** A frame that the socket fully accepted is not sent again by a running
+  service. Frames that arrive while the receiver is down go to the spool, or count in
+  `disconnected_dropped` without one.
 - **Wrong content type after startup:** The attempt counts as failed, and the service keeps
   retrying. If the receiver was down at startup, the first attempt that reaches it logs one
   Event ID 4 error that names the cause. See [Failure class](#tls).
@@ -307,27 +308,32 @@ out afterward.
 
 For each block of frames, the router thread chooses one destination:
 
-- **Spool:** The receiver is down, the spool holds unsent frames, or the link queue is full. The
-  link queue holds 128 blocks (about 8 MiB) in memory. When it is full, the router moves the whole
-  queue to the spool, oldest first, and then the new block.
-- **Receiver:** The receiver is connected, and the spool is empty or not in use.
+- **Link FIFO:** The receiver is connected, and the spool holds no unsent frames. The link
+  FIFO holds 128 blocks (about 8 MiB) in memory, and the link thread takes blocks from it.
+- **Spool:** The receiver is down, the spool holds unsent frames, or the link FIFO is full.
+  When the FIFO is full, the router moves all of its blocks to the spool, oldest first, and
+  then the new block.
 - **Dropped:** No spool is in use, and the receiver is down. The frames count in
   `disconnected_dropped`.
 
-If the spool refuses a block, the frames count in `spool_dropped`. The link queue is in memory and
-absorbs a slow receiver, not an outage. The send queue between the parser and the router absorbs
-short delays of the router. When it is full, the parser drops frames, counted in `queue_dropped`.
-With a spool in use, `queue_dropped` means a slow disk held up the router.
+If the spool refuses a block, the frames count in `spool_dropped`. The link FIFO absorbs a
+slow receiver, not an outage. The send queue between the parser and the router absorbs short
+delays of the router. When it is full, the parser drops frames, counted in `queue_dropped`.
+With a spool in use, `queue_dropped` means a slow disk held up the router. With no spool, a
+full link FIFO stops the router, so the send queue fills and the parser counts `queue_dropped`.
 
 ### Order
 
 While the spool holds frames, every new block goes to the spool, even when the receiver is
-connected. Frames therefore reach the receiver in capture order. After a reconnect, the router replays the oldest frames in batches of up to 64 KiB, up to 127
-batches at a time, so the link thread can send about 0.2 seconds of replay at 41 MB/s without
-waiting for the router. The router reads at most 1 MiB from the spool, then moves queued blocks to the spool
-before it reads more. A segment stays on disk until the connection has taken all of it. Frames
-from an earlier run replay first. The file `cursor.bin` records the position after the last frame
-the connection took. Each run writes new segment files and never appends to an earlier run's.
+connected. Frames therefore reach the receiver in capture order. After a reconnect, the router
+replays the oldest frames in batches of up to 64 KiB, up to 127 batches at a time, so the link
+thread can send about 0.2 seconds of replay at 41 MB/s without waiting for the router. A batch
+is larger only when its first frame is. Each router pass first routes the blocks waiting from
+the parser, then reads replay, and it reads at most 1 MiB from the spool in one pass. A segment
+stays on disk until the connection has taken all of it. Frames from an earlier run replay
+first. The file `cursor.bin` records the position after the last frame the connection took,
+saved once per router pass. Each run writes new segment files and never appends to an earlier
+run's.
 
 ### Size limits and eviction
 
@@ -355,12 +361,13 @@ figures.
 
 ### Delivery after a failure, a stop, and a crash
 
-- A running service sends no frame twice. A frame that the socket fully accepted is never sent
-  again. A frame that it did not fully accept goes back, live frames to the router and replay
-  frames to the spool, and is sent in full on the next session. The receiver saw only a truncated
-  copy of a cut frame.
-- A failed connection loses nothing that the service counts. Data in the socket send buffer is
-  lost, uncounted. Windows sizes that buffer, and it can grow to several MiB on a fast link.
+- A running service does not send a frame again once the socket has fully accepted it. A frame
+  that the socket did not fully accept goes back, live frames to the router and replay frames to
+  the spool, and is sent in full on the next session. The receiver saw only a truncated copy of a
+  cut frame.
+- A failed connection with a spool counts no frame. Bytes that the socket accepted and the kernel
+  had not yet sent are lost without a count if the connection then fails. Windows sizes the kernel
+  send buffer, and it can grow to several MiB on a fast link.
 - A normal stop repeats nothing: the next run starts after the last frame the connection took.
 - A crash or kill (the process ends without a stop) sends frames again. `cursor.bin` holds the
   position after the last frame the connection took, saved once per router pass. After a crash the
@@ -372,7 +379,7 @@ figures.
 
 ### Shutdown
 
-At shutdown, the router routes the queued blocks, gives back to the spool the replay data that the
+At shutdown, the router routes the queued blocks, keeps on disk the replay data that the
 connection did not take, saves the position after the last frame the connection took in `cursor.bin`,
 and seals the active segment. The backlog stays on disk for the next run, and the service does
 not send it before exit. For the receiver write cutoff, see

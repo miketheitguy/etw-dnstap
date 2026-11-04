@@ -5,9 +5,10 @@
 // 256 palette entries (R, G, B), then one byte per pixel for every frame.
 //
 // The animation is a pure function of the time t, so every frame is repeatable.
-// The stages match docs/design/data-path.md. Stage 6 shows a receiver outage:
-// frames go to the disk spool and are replayed after the reconnect. All times
-// are slowed: they are not to scale.
+// The stages match docs/design/data-path.md. Stage 5 shows a slow receiver: the
+// link FIFO fills, the router spills to the disk spool, and the spool replays.
+// Stage 6 shows a receiver outage: frames go to the disk spool and are replayed
+// after the reconnect. All times are slowed: they are not to scale.
 
 using System;
 using System.Collections.Generic;
@@ -46,15 +47,15 @@ public static class PipelineAnimation
         "The ETW callback checks each event and copies it into a pool slot.",
         "A bounded channel holds the records. A full channel drops the newest event.",
         "The parser decodes each record in one pass and encodes it as dnstap.",
-        "The sender thread writes Frame Streams over TCP. TLS is on by default.",
+        "The router feeds the link FIFO. A full FIFO spills to the disk spool.",
         "While the receiver is down, frames go to the disk spool." };
     static readonly string[] StageSub = {
         "ETW keeps the events in session buffers. It delivers them about once per second.",
         "It checks the provider, event ID, and process ID. It does not wait or allocate.",
         "After each delivered ETW buffer, the buffer callback wakes the parser once.",
         "It packs the frames into 64 KiB blocks and queues them for the sender thread.",
-        "The sender owns the receiver link and the spool. The parser never waits on the network.",
-        "After the reconnect, the backlog is sent first, oldest first. No frame is sent twice." };
+        "The link thread writes without blocking. The router never waits on the socket.",
+        "After the reconnect, the spool replays oldest first. Unsent frames are sent again." };
 
     static Graphics g;
     static Color[] palette;
@@ -110,6 +111,17 @@ public static class PipelineAnimation
     // The receiver outage in stage 6, and the replay pace after the reconnect.
     const double DownAt = 30.3, UpAt = 33.0, ReplayStep = 0.25;
     const int SpoolCells = 5;
+    // A slow receiver in stage 5. From FullAt the link FIFO is full, and the router
+    // spills each block it cannot place to the spool. From ReplayFrom the spool
+    // replays the held blocks through the FIFO. Queue depth is illustrative.
+    const double FullAt = 25.2, Drained = 26.0, ReplayFrom = 26.8;
+    static bool Spilling(double d) { return d >= FullAt && d < Drained; }
+    static double FifoFill(double t)
+    {
+        if (t < 25.0) return 0;
+        if (t < FullAt) return (t - 25.0) / (FullAt - 25.0);
+        return t < Drained ? 1 : 0;
+    }
     static PointF SpoolCellPt(int i) { return new PointF(Left(4) + 22 + i * 14, BoxY + 164); }
     static bool ReceiverDown(double t) { return t >= DownAt && t < UpAt; }
 
@@ -195,7 +207,7 @@ public static class PipelineAnimation
         var sent = new List<Ev>();
         foreach (var e in events) if (!e.Foreign) sent.Add(e);
         sent.Sort((a, b) => a.FlushDepart.CompareTo(b.FlushDepart));
-        double backlogUntil = -1, nextReplay = UpAt + 0.4;
+        double backlogUntil = -1, nextReplay = 0;
         int cell = 0;
         PointF block = new PointF(Left(4) + 36, Spine);
         PointF link = new PointF(Left(4) + 104, Spine);
@@ -204,7 +216,7 @@ public static class PipelineAnimation
         {
             double d = e.FlushDepart;
             e.OutPath.Add(new KeyValuePair<double, PointF>(d, block));
-            if (!ReceiverDown(d) && d >= backlogUntil)
+            if (!ReceiverDown(d) && !Spilling(d) && d >= backlogUntil)
             {
                 e.OutPath.Add(new KeyValuePair<double, PointF>(d + 0.3, link));
                 e.OutPath.Add(new KeyValuePair<double, PointF>(d + 0.65, receiver));
@@ -217,13 +229,15 @@ public static class PipelineAnimation
             e.OutPath.Add(new KeyValuePair<double, PointF>(d + 0.15, new PointF(block.X, Spine + 20)));
             e.OutPath.Add(new KeyValuePair<double, PointF>(d + 0.5, slot));
             e.SpoolAt = d + 0.5;
-            e.ReplayDepart = Math.Max(nextReplay, e.SpoolAt + 0.3);
+            double from = ReceiverDown(d) ? UpAt + 0.4 : ReplayFrom;
+            e.ReplayDepart = Math.Max(Math.Max(nextReplay, e.SpoolAt + 0.3), from);
             nextReplay = e.ReplayDepart + ReplayStep;
             backlogUntil = e.ReplayDepart;
             e.OutPath.Add(new KeyValuePair<double, PointF>(e.ReplayDepart, slot));
-            e.OutPath.Add(new KeyValuePair<double, PointF>(e.ReplayDepart + 0.35, link));
-            e.OutPath.Add(new KeyValuePair<double, PointF>(e.ReplayDepart + 0.85, receiver));
-            e.ReceivedAt = e.ReplayDepart + 0.85;
+            e.OutPath.Add(new KeyValuePair<double, PointF>(e.ReplayDepart + 0.2, block));
+            e.OutPath.Add(new KeyValuePair<double, PointF>(e.ReplayDepart + 0.5, link));
+            e.OutPath.Add(new KeyValuePair<double, PointF>(e.ReplayDepart + 0.95, receiver));
+            e.ReceivedAt = e.ReplayDepart + 0.95;
         }
     }
 
@@ -350,7 +364,7 @@ public static class PipelineAnimation
         NodeFrame(1, "Intake", "ETW callback", Blue, stage == 1);
         NodeFrame(2, "Buffer", "pool + channel", Purple, stage == 2);
         NodeFrame(3, "Parser", "decode + encode", Green, stage == 3);
-        NodeFrame(4, "Sender", "dnstap-sender", Green, stage >= 4);
+        NodeFrame(4, "Router", "dnstap-sender", Green, stage >= 4);
         for (int i = 0; i < 4; i++) Rule(Left(i) + 6, Spine, Right(i), Spine, Line, 3);
         Rule(Left(4) + 6, Spine, Left(4) + 104, Spine, Line, 3);
 
@@ -464,11 +478,12 @@ public static class PipelineAnimation
         Text(Count(e => e.Spooled && t >= e.SpoolAt).ToString(), x0 + 86, BoxY + 68, 14, Amber, true);
         Text("replayed", x0 + 14, BoxY + 86, 13, Muted);
         Text(Count(e => e.Spooled && t >= e.ReplayDepart).ToString(), x0 + 86, BoxY + 86, 14, White, true);
-        int buffered = Count(e => !e.Foreign && t >= e.End && t < e.FlushDepart);
         bool sending = Count(e => !e.Foreign && t < e.ReceivedAt
             && t >= (e.Spooled ? e.ReplayDepart : e.FlushDepart)) > 0;
-        Chip(x0 + 8, Spine - 16, 56, 32, "64 KiB", buffered > 0, Green, buffered / 5.0);
-        Chip(x0 + 76, Spine - 16, 56, 32, "TCP", sending || down, down ? Red : Green);
+        double fifoLevel = FifoFill(t);
+        bool replaying = Count(e => e.Spooled && t >= e.ReplayDepart && t < e.ReplayDepart + 0.2) > 0;
+        Chip(x0 + 8, Spine - 16, 56, 32, "FIFO", fifoLevel > 0 || replaying, Purple, fifoLevel);
+        Chip(x0 + 76, Spine - 16, 56, 32, "link", sending || down, down ? Red : Green);
         if (down) Cross(new PointF(x0 + 104, Spine + 26), 5, Red);
 
         bool spooling = Count(e => e.Spooled && ((t >= e.FlushDepart && t < e.SpoolAt + 0.15)
@@ -497,7 +512,8 @@ public static class PipelineAnimation
         Text("etw-consumer thread", Left(1), 490, 12, Blue);
         Text("shared memory", Left(2), 490, 12, Purple);
         Text("dnstap-parser thread", Left(3), 490, 12, Green);
-        Text("dnstap-sender thread", Left(4), 490, 12, Green);
+        Text("dnstap-sender (router)", Left(4), 490, 12, Green);
+        Text("dnstap-link thread", Left(4), 519, 12, Green);
         using (var p = new SolidBrush(Line)) g.FillRectangle(p, Left(0), 509, BoxW, 3);
         using (var p = new SolidBrush(Blue)) g.FillRectangle(p, Left(1), 509, BoxW, 3);
         using (var p = new SolidBrush(Purple)) g.FillRectangle(p, Left(2), 509, BoxW, 3);
@@ -643,7 +659,7 @@ public static class PipelineAnimation
         BuildTimeline();
         BuildPalette();
         int frames = (int)(Loop * Fps);
-        int[] previews = { 12, 60, 92, 124, 152, 200, 210, 232, 246, 254, 262, 272, 280 };
+        int[] previews = { 12, 60, 92, 124, 152, 200, 204, 208, 214, 232, 246, 254, 262, 272, 280 };
         string previewDir = Path.Combine(outDir, "previews");
         Directory.CreateDirectory(previewDir);
         using (var image = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))

@@ -2,8 +2,9 @@
 
 These files build `docs/assets/pipeline/etw-to-tcp-pipeline.gif`. The GIF shows
 the [data path](../../../docs/design/data-path.md) from an ETW event to a TCP
-frame, in six stages of six seconds. Stage 6 shows a receiver outage: frames go
-to the disk spool and are replayed after the reconnect.
+frame, in six stages of six seconds. Stage 5 shows a slow receiver: when the link FIFO
+is full, the router spills to the disk spool, and the spool replays. Stage 6 shows a receiver outage:
+frames go to the disk spool and are replayed after the reconnect.
 
 | File | Job |
 | --- | --- |
@@ -35,7 +36,8 @@ frames. Edit these parts of `render.cs`:
 
 - `StageTitle` and `StageSub` hold the caption text of the six stages.
 - `BuildTimeline` holds the timing of each event. `RouteFrames` sends each
-  frame to the receiver or to the spool. `DownAt` and `UpAt` set the outage.
+  frame to the receiver, the FIFO, or the spool. `DownAt` and `UpAt` set the outage. `FullAt`,
+  `Drained`, and `ReplayFrom` set the slow receiver in stage 5, which `Spilling` and `FifoFill` read.
 - The functions `Boxes`, `ThreadStrip`, and `Tokens` draw the scene.
 
 Keep the caption text in step with the

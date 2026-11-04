@@ -1,6 +1,6 @@
 # Tune capture for load
 
-> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `13972d8` · **Reviewed:** 2026-11-04
 
 Use this guide to choose `--etw-*` and `--capacity` for your query rate, and
 `--spool-max-mib` for the outage you must cover. Option details are in the
@@ -182,10 +182,10 @@ including the 4-byte length prefix. Each query makes two frames: event 256 and e
 These are calculations from the 103-byte average. The lab has not run a spool outage, so no
 figure here is a measured result.
 
-While the receiver connection drains a backlog, the service holds up to about 9 MiB (127 batches
-of 64 KiB) that it has read and the connection has not yet taken. The segments that hold any of it
+While the receiver connection drains a backlog, the service holds up to about 8.7 MiB (127 batches
+each of at most 71,684 bytes) that it has read and the connection has not yet taken. The segments that hold any of it
 stay on disk whole and count in the cap and in `spool_bytes`, and the cap does not delete them.
-Those segments can hold more than the 9 MiB: that data plus two segments, which is 24.7 MiB at the
+Those segments can hold more than that: that data plus two segments, which is 24.7 MiB at the
 smallest cap (64 MiB, with 8 MiB segments) and about 137 MiB with 64 MiB segments (caps of 512 MiB
 and above). The smallest cap always has other segments to delete.
 
@@ -198,10 +198,11 @@ and above). The smallest cap always has other segments to delete.
 - During an outage, the disk takes writes at the bytes-per-second rate. The backlog drains at
   the rate the receiver accepts. At 200,000 queries per second, that is about 41 MB per second
   of writes, then reads at the same rate.
-- The send queue is in memory, 128 blocks of about 64 KiB (about 8 MiB). It absorbs short
-  sender delays, not an outage, because the sender writes to the spool as soon as the receiver
-  is down. It lasts about 4 seconds at 10,000 queries per second, and about 0.2 seconds at
-  200,000.
+- The send queue, between the parser and the router, is in memory: 128 blocks of about 64 KiB
+  (about 8 MiB). It absorbs short router delays. The link FIFO adds another 128 blocks (about
+  8 MiB) for a slow receiver. Neither absorbs an outage: while the receiver is down, the router
+  sends blocks to the spool. The send queue lasts about 4 seconds at 10,000 queries per second,
+  and about 0.2 seconds at 200,000.
 
 See [The receiver is slow](troubleshooting.md#the-receiver-is-slow) for the steps to take when
 the spool grows.

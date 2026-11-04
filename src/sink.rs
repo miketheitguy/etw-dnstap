@@ -35,8 +35,9 @@ pub(crate) struct SinkStats {
     /// did not fully accept (with TLS, including the frames of the one piece whose
     /// delivery was unconfirmed) go back to the spool and are sent again, and the
     /// spool keeps the replay frames that it did not fully accept. Bytes the
-    /// kernel already held are lost and not counted. A counted frame may still
-    /// have arrived, so this is an upper bound on the loss. Distinct from
+    /// kernel accepted before a failure are not counted, even if the connection
+    /// then loses them. A counted frame did not reach the receiver whole, except
+    /// in the TLS 1.3 key update window. Distinct from
     /// the intake counters, which count events dropped before reaching the parser.
     pub(crate) disconnected_dropped: AtomicU64,
     /// Blocks (about 64 KiB of frames) whose wait for the socket to become
