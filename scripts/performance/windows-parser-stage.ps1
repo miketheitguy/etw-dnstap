@@ -31,7 +31,12 @@ all_supported (default) or client_only.
 Operator approval of the run matrix.
 
 .OUTPUTS
-preflight.json, invocation.json, guards.jsonl, client/, service-stop.json, completion.json.
+preflight.json, invocation.json, guards.jsonl, client/, service-stop.json, receiver-stop/ (capture.txt and
+receiver-stop-capture.json), completion.json (with receiver_stop_finish: confirmed, not-seen or not-checked).
+
+The service exits 0 and logs nothing when the STOP/FINISH exchange does not complete, so the SCM exit code
+no longer proves FINISH. The receiver is asked instead (see receiver_stop_finish.py). A not-seen result does
+not fail the stop; a capture that cannot start is recorded as a failure.
 #>
 [CmdletBinding()]
 param(
@@ -69,6 +74,8 @@ if ((Get-PSDrive C).Free -lt 20GB) { throw 'Host disk preflight guard' }
 $session=Get-LabSession -Vm $vm
 $client=$null
 $started=$false
+$capture=$null
+$receiverStopFinish='not-checked'
 $failure=$null
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 if ([IO.Path]::GetFullPath((Resolve-Path -LiteralPath $ReceiverReadyReceipt).Path) -ne [IO.Path]::GetFullPath((Join-Path $out 'receiver-ready.json'))) { Copy-Item -LiteralPath $ReceiverReadyReceipt -Destination "$out/receiver-ready.json" }
@@ -95,6 +102,8 @@ try {
     New-Item -ItemType Directory -Path $clientOut | Out-Null
     $arguments=@('--server',"$($pre.ip):53",'--names',$names,'--mode',$Mode,'--threads','2','--duration',"$Duration",'--inflight','256','--timeout-ms','2000','--qps',"$Qps",'--output-dir',$clientOut)
     @{command=$exe;arguments=$arguments;exe_sha256=(Get-FileHash $exe).Hash;names_sha256=(Get-FileHash $names).Hash;host_ipv4=@(Get-NetIPAddress -AddressFamily IPv4 | Select-Object IPAddress,InterfaceAlias);host_start_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Depth 5 | Set-Content "$out/invocation.json" -Encoding UTF8
+    # Fail before any load if the receiver stop check cannot run (python, tcpdump, passwordless sudo).
+    Assert-LabReceiverStopCaptureReady
     $started=$true
     Invoke-LabGuest -Session $session -ArgumentList $config.windows_vm.service_name -ScriptBlock { param($serviceName) Start-Service $serviceName; if ((Get-Service $serviceName).Status -ne 'Running') { throw 'Service failed to start' } }
     $client=Start-Process -FilePath $exe -ArgumentList (Join-LabArguments -Arguments $arguments) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$clientOut/stdout.txt" -RedirectStandardError "$clientOut/stderr.txt"
@@ -124,6 +133,11 @@ try {
     if ($client -and -not $client.HasExited) { Stop-Process -Id $client.Id -ErrorAction SilentlyContinue }
 } finally {
     if ($started) {
+        # The service now exits 0 and logs nothing when STOP/FINISH does not complete, so the receiver is
+        # asked instead: a capture limited to tiny packets on TCP 6000 runs around the stop only.
+        # A capture that cannot start is reported but never prevents the stop.
+        try { $capture=Start-LabReceiverStopCapture -OutDirectory (Join-Path $out 'receiver-stop') -ServiceIp $pre.ip }
+        catch { $failure="$failure; receiver stop capture: $_" }
         try {
             $stop=Invoke-LabGuest -Session $session -ArgumentList $config.windows_vm.service_name -ScriptBlock { param($serviceName) Stop-Service $serviceName; Get-CimInstance Win32_Service -Filter "Name='$serviceName'" | Select-Object Name,State,ExitCode,ServiceSpecificExitCode,ProcessId }
             $stop | ConvertTo-Json | Set-Content "$out/service-stop.json" -Encoding UTF8
@@ -136,9 +150,17 @@ try {
                 throw 'SCM shutdown not clean'
             }
         } catch { $failure="$failure; SCM stop: $_" }
+        finally {
+            if ($capture) {
+                $null=Stop-LabReceiverStopCapture -State $capture
+                # Exit code 1 only means "not confirmed"; the verdict text is what is recorded.
+                $verdict=(& python (Join-Path $PSScriptRoot 'receiver_stop_finish.py') $out | Out-String | ConvertFrom-Json)
+                $receiverStopFinish=$verdict.receiver_stop_finish
+            }
+        }
     }
     Remove-PSSession $session
-    @{utc=[DateTime]::UtcNow.ToString('o');campaign_id=$CampaignId;expected_sha256=$ExpectedHash;run=$RunId;mode=$Mode;qps=$Qps;duration_seconds=$Duration;failure=$failure;service_started=$started;collector_end_marker_pending=$true} | ConvertTo-Json | Set-Content "$out/completion.json" -Encoding UTF8
+    @{utc=[DateTime]::UtcNow.ToString('o');campaign_id=$CampaignId;expected_sha256=$ExpectedHash;run=$RunId;mode=$Mode;qps=$Qps;duration_seconds=$Duration;failure=$failure;service_started=$started;receiver_stop_finish=$receiverStopFinish;collector_end_marker_pending=$true} | ConvertTo-Json | Set-Content "$out/completion.json" -Encoding UTF8
 }
 if ($failure) { throw $failure }
-Write-Output "WINDOWS_CLIENT_COMPLETE_AND_SCM_STOPPED $RunId; receiver drain plateau/end marker/count reconciliation required"
+Write-Output "WINDOWS_CLIENT_COMPLETE_AND_SCM_STOPPED $RunId receiver_stop_finish=$receiverStopFinish; receiver drain plateau/end marker/count reconciliation required"

@@ -312,6 +312,94 @@ function Get-LabServiceCommandLine {
     '"' + $exe + '" ' + (Join-LabArguments -Arguments $arguments)
 }
 
+function Get-LabSshArguments {
+    # ssh.exe arguments shared by the receiver checks (config and alias come from lab.json).
+    [CmdletBinding()] param()
+    $config = Get-LabConfig
+    @('-T', '-o', 'BatchMode=yes', '-F', (Resolve-LabPath $config.ubuntu_vm.ssh_config), $config.ubuntu_vm.ssh_alias)
+}
+
+function Assert-LabReceiverStopCaptureReady {
+    <#
+    .SYNOPSIS
+    Read-only receiver preflight for the STOP/FINISH capture: python on the host, tcpdump on the receiver,
+    and passwordless sudo. Throws when any is missing so the check can never pass by not running.
+    #>
+    [CmdletBinding()] param()
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw 'python is required on the host for the receiver STOP/FINISH check' }
+    $ErrorActionPreference = 'Continue'  # ssh stderr text must not become a terminating error in 5.1
+    $output = @(& ssh.exe @(Get-LabSshArguments) 'command -v tcpdump >/dev/null && sudo -n true && echo RECEIVER_STOP_CAPTURE_READY' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -notmatch 'RECEIVER_STOP_CAPTURE_READY') {
+        throw "Receiver STOP/FINISH capture is not possible (tcpdump missing, or sudo needs a password): $($output -join ' ')"
+    }
+}
+
+function Start-LabReceiverStopCapture {
+    <#
+    .SYNOPSIS
+    Starts the receiver-side STOP/FINISH capture and returns its state. Call it just before stopping the service.
+    .DESCRIPTION
+    Runs, over ssh on the receiver, a tcpdump limited to TCP port 6000 packets with a 1 to 16 byte payload or a
+    FIN/RST flag (the exact command is printed by receiver_stop_finish.py --print-command). Its text output goes
+    to stdout and into <OutDirectory>/capture.txt on the host. The receiver writes no pcap and no stream data.
+    Throws when the capture is not listening within 20 seconds; the capture is stopped first.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$OutDirectory, [Parameter(Mandatory)][string]$ServiceIp)
+    $command = (& python (Join-Path $PSScriptRoot 'receiver_stop_finish.py') --print-command | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $command) { throw 'Could not read the capture command from receiver_stop_finish.py' }
+    New-Item -ItemType Directory -Path $OutDirectory -Force | Out-Null
+    $state = [pscustomobject]@{
+        Process = $null; OutDirectory = $OutDirectory; ServiceIp = $ServiceIp; Command = $command
+        StartedUtc = [DateTime]::UtcNow.ToString('o'); Listening = $false; Stopped = $false
+    }
+    $arguments = @(Get-LabSshArguments) + @($command)
+    $state.Process = Start-Process -FilePath 'ssh.exe' -ArgumentList (Join-LabArguments -Arguments $arguments) -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput (Join-Path $OutDirectory 'capture.txt') -RedirectStandardError (Join-Path $OutDirectory 'capture-stderr.txt')
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ([DateTime]::UtcNow -lt $deadline -and -not $state.Listening -and -not $state.Process.HasExited) {
+        Start-Sleep -Milliseconds 250
+        $stream = $null
+        try {
+            $stream = [IO.File]::Open((Join-Path $OutDirectory 'capture-stderr.txt'), 'Open', 'Read', 'ReadWrite')
+            $text = (New-Object IO.StreamReader($stream)).ReadToEnd()
+            if ($text -match 'listening on') { $state.Listening = $true }
+        } catch { } finally { if ($stream) { $stream.Dispose() } }
+    }
+    if (-not $state.Listening) {
+        $null = Stop-LabReceiverStopCapture -State $state -SettleSeconds 0
+        throw 'Receiver STOP/FINISH capture did not start listening within 20 seconds'
+    }
+    $state
+}
+
+function Stop-LabReceiverStopCapture {
+    <#
+    .SYNOPSIS
+    Stops the capture (always, including after errors), cleans up the remote tcpdump and writes the capture receipt.
+    Never throws. Returns the receipt, which receiver_stop_finish.py turns into confirmed / not-seen.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$State, [int]$SettleSeconds = 5)
+    if ($SettleSeconds -gt 0 -and $State.Listening) { Start-Sleep -Seconds $SettleSeconds }
+    try { if ($State.Process -and -not $State.Process.HasExited) { Stop-Process -Id $State.Process.Id -Force -ErrorAction SilentlyContinue } } catch { }
+    try {
+        # The remote `timeout` bounds the capture if this fails; this removes it now. The [t] keeps
+        # the pattern from matching the remote shell that carries this very command line.
+        $ErrorActionPreference = 'Continue'
+        $kill = "sudo -n pkill -INT -f '[t]cpdump -i any -l -nn -tt -x -s 128' || true"
+        $null = & ssh.exe @(Get-LabSshArguments) $kill 2>&1
+    } catch { }
+    $State.Stopped = $true
+    $receipt = [ordered]@{
+        schema = 1; service_ip = $State.ServiceIp; command = $State.Command; capture_file = 'capture.txt'
+        started_utc = $State.StartedUtc; stopped_utc = [DateTime]::UtcNow.ToString('o'); listening_confirmed = [bool]$State.Listening
+    }
+    try { Write-LabJson -Path (Join-Path $State.OutDirectory 'receiver-stop-capture.json') -InputObject $receipt -Force } catch { }
+    $receipt
+}
+
 Export-ModuleMember -Function Get-LabRoot, Get-LabConfig, Resolve-LabPath, Write-LabText, Write-LabJson,
     Get-LabVm, Get-LabSession, Invoke-LabGuest, Receive-LabFile,
-    Receive-LabDirectory, Initialize-LabDnsZones, Invoke-LabNative, Join-LabArguments, Get-LabServiceCommandLine
+    Receive-LabDirectory, Initialize-LabDnsZones, Invoke-LabNative, Join-LabArguments, Get-LabServiceCommandLine,
+    Assert-LabReceiverStopCaptureReady, Start-LabReceiverStopCapture, Stop-LabReceiverStopCapture

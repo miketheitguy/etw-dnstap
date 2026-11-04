@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import receiver_stop_finish
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--raw', required=True, type=Path,
                     help='Stage-isolated journal -o cat capture, preserved unchanged')
@@ -145,6 +147,8 @@ if (client_exit.get('exit_code') != 0 or completion.get('failure') not in (None,
         or service_stop.get('State') != 'Stopped' or service_stop.get('ExitCode') != 0
         or service_stop.get('ServiceSpecificExitCode') != 0):
     raise SystemExit('Client exit or stage completion receipt indicates failure')
+# State 'Stopped' with exit code 0 is still required, but it no longer proves STOP/FINISH: the service
+# exits 0 when that exchange does not complete. The receiver-side verdict is recorded in the ledger below.
 if completion.get('run') != args.run_id or completion.get('mode') != args.mode:
     raise SystemExit('Stage completion run identity mismatch')
 
@@ -448,6 +452,9 @@ result['receiver_record_reconciliation_clean'] = (
     and (args.mode == 'authoritative' or (
         upstream_q is not None and upstream_r is not None
         and upstream_packet_deltas.get('upstream_other_dropped') == 0)))
+# Reported beside the reconciliation, not part of it: a receiver problem never fails the stop. Stages
+# recorded before the capture existed read as not-checked.
+result['receiver_stop_finish'] = receiver_stop_finish.stage_label(args.service_stop.parent)
 result['client_measured_send_duration_ns'] = client.get('measured_send_duration_ns')
 result['client_elapsed_with_drain_ns'] = client.get('elapsed_with_drain_ns')
 

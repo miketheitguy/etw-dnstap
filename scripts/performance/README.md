@@ -105,6 +105,29 @@ cleanup/evidence actions still work. Also archived (Python): the service-stop to
 
 Always run the Python destructive scripts without `--apply` first and read the plan.
 
+## Receiver STOP/FINISH check
+
+At a requested stop the service sends a Frame Streams STOP and the receiver answers FINISH. A stop whose
+STOP/FINISH does not complete no longer fails the service: it exits with code 0, logs nothing and does not
+count in `output_errors`. The SCM state and exit code are still required to be Stopped and 0, but they no
+longer prove FINISH. `windows-parser-stage.ps1` therefore asks the receiver, through `receiver_stop_finish.py`
+and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
+
+- The check runs `sudo -n tcpdump` over ssh on the receiver, only around the stop. The filter keeps TCP port
+  6000 packets with a 1 to 16 byte payload (the 12-byte STOP and FINISH control frames) and FIN/RST packets.
+  Text goes to stdout and is stored under `stages/<run>/receiver-stop/`. It writes no pcap and no stream data
+  on the receiver, in keeping with the collector output going to null. Print the exact command with
+  `python receiver_stop_finish.py --print-command`.
+- A preflight (`Assert-LabReceiverStopCaptureReady`) needs `python` on the host and `tcpdump` plus
+  passwordless sudo on the receiver. It fails before the load starts when either is missing.
+- The verdict is `receiver_stop_finish`: `confirmed` (STOP from the service, then FINISH from the receiver on
+  the same connection), `not-seen`, or `not-checked` (no capture, as in all earlier evidence). It is in
+  `completion.json`, `stage-summary.json`, the parser-ramp ledger and both reports. `not-seen` never fails the
+  stop, but it fails the strict stage pass. `not-checked` never fails anything.
+- `windows-startup-capacity.ps1` runs without a receiver and records `not-checked`.
+- Offline: `python receiver_stop_finish.py target/performance/<id>/stages/<run>`. Tests:
+  `python test_receiver_stop_finish.py`.
+
 ## Campaign IDs
 
 Campaign and run IDs are never hard coded. `-CampaignId` (1-64 letters, digits, `_`, `-`) is mandatory

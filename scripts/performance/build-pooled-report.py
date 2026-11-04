@@ -34,6 +34,8 @@ def strict_stage_pass(summary, receiver, stop, trace_gate):
             and stop["service"]["State"] == "Stopped"
             and stop["service"]["ProcessId"] == 0
             and stop["service"]["ExitCode"] == 0
+            # Exit 0 does not prove FINISH; only a receiver-side not-seen fails. Old stages are not-checked.
+            and summary.get("receiver_stop_finish", "not-checked") != "not-seen"
             and trace_gate is not None and trace_gate["trace_gate_pass"])
 
 
@@ -117,7 +119,7 @@ for path in sorted((base / "stages").glob("*/stage-summary.json"),
                  f"{summary['upstream_queries']:,} / {summary['upstream_responses']:,} ({100*summary['upstream_queries']/summary['client_sent']:.2f}%)",
                  f"{summary['received']:,} / {summary['encoded']:,}",
                  f"{summary['ring_dropped']:,} / {summary['pool_exhausted']:,} / {summary['receiver_disconnected']:,}",
-                 f"{final['output_errors']} / {stop['service']['ExitCode']}",
+                 f"{final['output_errors']} / {stop['service']['ExitCode']} / {summary.get('receiver_stop_finish', 'not-checked')}",
                  "exact" if receiver["receiver_exact_delivery_verified"] else "FAIL",
                  f"{summary['queue_high_water']:,}"])
     cpu = service["cpu_raw_time_weighted_percent"]
@@ -428,7 +430,7 @@ of client sends expose each recursive stage's actual workload intensity;
 repeated names and TTL zero do not imply one upstream query per client query.
 Received/encoded are ETW records, not DNS packet counts. Intake columns are
 ring-full / pool-exhausted / receiver-disconnected. Output/lifecycle columns
-show output operation errors / SCM exit code. HWM means observed queue high-water
+show output operation errors / SCM exit code / receiver STOP-FINISH (confirmed, not-seen, or not-checked for stages recorded before the receiver check). HWM means observed queue high-water
 mark in events. Exact receiver reconciliation
 means every encoded record matches durable JSON and all four ingress/egress
 counters, including correctly reconciled lossy stages. A strict stage pass

@@ -11,6 +11,7 @@ import re
 import sys
 from typing import Any
 from perf_common import sha256_file as sha256
+import receiver_stop_finish
 
 
 RUN_ID = re.compile(r"^(?:parser(?:-filtered)?|filtered)-(auth|rec)-(\d+)-(\d+)s-(\d+)$")
@@ -229,7 +230,7 @@ def diagnostic_lifecycle(stage: Path, ledger: dict[str, Any], pointer: dict[str,
                     candidates.append((abs((completion_time - event_time).total_seconds()), event_time))
             if candidates:
                 event_time = min(candidates)[1]
-                event_note = f"STOP/FINISH event 10054 at {event_time.isoformat()} (temporal correlation only)"
+                event_note = f"STOP/FINISH event 10054 at {event_time.isoformat()} (historical service event, temporal correlation only)"
 
     lifecycle = (f"FAILED SCM stop (ExitCode={service_stop.get('ExitCode')}, "
                  f"ServiceSpecificExitCode={service_stop.get('ServiceSpecificExitCode')})")
@@ -444,6 +445,9 @@ def load_stage(stage: Path, stage_root: Path) -> tuple[dict[str, Any] | None, di
         "capture_policy": ledger.get('capture_policy', 'all_supported'),
         "evidence_class": diagnostic_info.get("evidence_class", "canonical reconciliation ledger"),
         "lifecycle_status": lifecycle_status,
+        # The service no longer logs or fails a stop whose STOP/FINISH did not complete (exit 0), so the
+        # receiver-side capture is the evidence. Stages without the capture are not-checked, not failed.
+        "receiver_stop_finish": receiver_stop_finish.stage_label(stage),
         "lifecycle_failure": diagnostic_info.get("lifecycle_failure"),
         "service_error_event": diagnostic_info.get("service_error_event"),
         "mode": options["mode"],
@@ -517,7 +521,8 @@ def table_row(row: dict[str, Any]) -> str:
     )
     values["strict_pass"] = str(row["canonical_strict_pass"]).lower() if row["canonical_strict_pass"] is not None else "not stated"
     values["canonical_clean_label"] = str(row["canonical_clean"]).lower() if isinstance(row["canonical_clean"], bool) else "not stated"
-    lifecycle = f"{row['lifecycle_status']}; {row['evidence_class']}"
+    lifecycle = (f"{row['lifecycle_status']}; receiver STOP/FINISH "
+                 f"{row.get('receiver_stop_finish', receiver_stop_finish.NOT_CHECKED)}; {row['evidence_class']}")
     if row.get("lifecycle_failure"):
         lifecycle += f"; {row['lifecycle_failure'].strip(' ;')}"
     if row.get("service_error_event"):

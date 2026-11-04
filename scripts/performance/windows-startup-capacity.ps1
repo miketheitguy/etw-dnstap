@@ -205,6 +205,9 @@ try {
                 Stop-Service $serviceName -ErrorAction SilentlyContinue
                 Get-CimInstance Win32_Service -Filter "Name='$serviceName'" | Select-Object Name, State, ExitCode, ServiceSpecificExitCode, ProcessId
             }
+            # No receiver takes part in this check, so there is no STOP/FINISH to confirm (receiver_stop_finish is
+            # not-checked). An unreachable receiver must not fail the stop: the service has to reach Stopped with
+            # exit code 0 regardless, and that is the whole stop requirement here.
             if ($run -and ($stop.State -ne 'Stopped' -or $stop.ExitCode -ne 0)) { $failure = "$failure; SCM stop not clean (state $($stop.State), exit code $($stop.ExitCode))".TrimStart('; ') }
         } catch { $failure = "$failure; SCM stop: $_".TrimStart('; ') }
         try {
@@ -243,7 +246,7 @@ try {
             capacity = $Capacity; budget_seconds = $budgetSeconds
             candidate_sha256 = $(if ($CandidatePath) { $ExpectedHash } else { $null })
             preflight = $pre; path_name_under_test = $newPath; run = $run; stop = $stop; restore = $restore
-            restarted_original = $stoppedForCheck; failure = $failure; passed = ($null -eq $failure)
+            receiver_stop_finish = 'not-checked'; restarted_original = $stoppedForCheck; failure = $failure; passed = ($null -eq $failure)
         }
         Write-LabJson -Path (Join-Path $evidence "$ProofName.json") -InputObject $proof -Depth 8 -Force
     }

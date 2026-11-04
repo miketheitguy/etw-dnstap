@@ -7,6 +7,7 @@ from pathlib import Path
 
 from metrics_ledger import normalize_metrics
 from perf_common import read_json as read
+import receiver_stop_finish
 
 parser = argparse.ArgumentParser()
 parser.add_argument("campaign", type=Path)
@@ -59,6 +60,10 @@ lifecycle_clean = (final["output_errors"] == 0
                    and stop["service"]["ExitCode"] == 0
                    and stop["service"]["State"] == "Stopped"
                    and stop["service"]["ProcessId"] == 0)
+# The service exits 0 even when STOP/FINISH does not complete, so the exit code above is a necessary
+# condition only. FINISH is proven on the receiver; stages recorded before that check are not-checked.
+receiver_stop_finish_label = receiver_stop_finish.stage_label(base / "stages" / run)
+receiver_stop_finish_clean = receiver_stop_finish_label != receiver_stop_finish.NOT_SEEN
 guards = read(base / "stages" / run / "completion.json")
 orchestrator_assessment = base / "stages" / run / "completion-assessment.json"
 correction = read(orchestrator_assessment) if orchestrator_assessment.exists() else None
@@ -79,8 +84,9 @@ summary = {
     "capture_clean": capture_clean,
     "capture_event_loss_clean": capture_event_loss_clean,
     "lifecycle_clean": lifecycle_clean,
+    "receiver_stop_finish": receiver_stop_finish_label,
     "strict_stage_pass_before_wpr_review": (
-        capture_clean and lifecycle_clean and counts["successful"] == counts["sent"]
+        capture_clean and lifecycle_clean and receiver_stop_finish_clean and counts["successful"] == counts["sent"]
         and client_delivery_clean and rate >= requested * .98 and orchestrator_clean),
     "orchestrator_clean_after_explicit_assessment": orchestrator_clean,
     "ascent_clean_before_wpr_review": (capture_clean and client_delivery_clean
