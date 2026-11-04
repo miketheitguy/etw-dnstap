@@ -65,6 +65,8 @@ message.
 | `dnstap receiver refused the Frame Streams handshake before the first session` | 4 | Logged once. |
 | `could not start the dnstap reconnect thread` or `dnstap reconnect thread ended without a result` | 3, 4 | Retries with backoff. |
 | `dnstap receiver reconnected` | 2 | |
+| `dnstap link is saturated` | 3 | The spool backlog trended up over 10 samples with the receiver connected. See [The receiver is slow](#the-receiver-is-slow). |
+| `dnstap link is no longer saturated` | 2 | The backlog is empty or stopped growing. |
 | `shutting down while the dnstap receiver is disconnected` | 3 | No STOP sent. |
 | `spool folder is not usable` | 3 | The `reason` field names the failed check. |
 | `spool could not be opened` | 3 | The folder passed the checks. |
@@ -163,25 +165,49 @@ Otherwise, check the collector's listener, port, content type, and the firewall.
 
 When the send queue holds 96 of its 128 blocks, the sender writes new blocks to the
 spool. Signs: `spooled` and `spool_bytes` rise while `receiver_connected` stays
-`true`, and `slow_writes` and `write_max_us` rise.
+`true`.
 
 Frames still drop when a socket write stalls longer than the queue lasts
 (`queue_dropped`), or when the spool refuses blocks (`spool_dropped`). With no spool,
 a full queue drops frames in `queue_dropped`.
 
+These values show the state now. `bytes_sent` is a total, so read its rate. The two
+peaks cover the last 60 seconds ([definitions](monitoring.md#output-counters)).
+
+| Value | Reading | Means |
+| --- | --- | --- |
+| `link_saturated` | `true` | The spool backlog is larger than 10 samples ago (at least 10 seconds), with at least 7 of the 10 steps rising, and the receiver is connected. The receiver or the network path takes fewer bytes than the service captures. It keeps its value while the receiver is down, so read it with `receiver_connected`. |
+| `bytes_sent` | Rate below the capture byte rate | The link takes less than arrives. No counter reports the capture byte rate: it is the `bytes_sent` rate plus the growth of `spool_bytes` plus the `spool_dropped_bytes` rate. |
+| `spool_oldest_age_ms` | Large, and rising | The data that the link takes now is at most this old. At the cap, the spool deletes its oldest segments, which hold the oldest data. |
+| `send_queue_depth_max` | Near 96, or 128 | The sender thread falls behind. At 96 it spills to the spool. At 128 the parser drops frames. |
+| `write_max_recent_us` | 1,000,000 or more | A socket write blocks now. A write that stalls for 2 seconds ends the session. `write_max_us` is the maximum since the start, so it cannot show this. |
+
+When `link_saturated` becomes `true`, the service writes the warning `dnstap link is
+saturated` (Event ID 3). It gives `backlog_bytes`, `oldest_age_ms`, and
+`bytes_sent_per_second`. The event `dnstap link is no longer saturated` (Event ID 2)
+ends it. A receiver that is down does not set the state. See
+[the receiver section](#the-receiver-is-down-or-unreachable).
+
 Check these in order:
 
-1. `queue_dropped`. With a spool, a rise means a socket or disk write blocked the
-   sender longer than the queue lasts. Check `slow_writes`, `write_max_us`, the disk,
-   `spool_available`, and `spool_dropped`.
-2. `spool_bytes` against `--spool-max-mib`. If it grows for the whole run, the
-   receiver takes less than the input rate. At the cap, the spool removes its oldest
-   data, and `spool_dropped` shows the loss.
-3. `slow_writes` and `write_max_us`. Large values point to the receiver or the
-   network path.
-4. The spool disk. At 200,000 queries per second, the spool writes about 41 MB per
+1. `link_saturated` and the `bytes_sent` rate. If the state is `true`, the link does not
+   keep up. At the cap the spool removes its oldest data. In steady state the byte loss
+   is the `spool_dropped_bytes` rate, and the frame loss is the `spool_dropped` rate. The
+   time to the cap is `--spool-max-mib` minus `spool_bytes`, divided by the growth of
+   `spool_bytes`.
+   The state does not change how frames are routed.
+2. `queue_dropped`. With a spool, a rise means a socket or disk write blocked the
+   sender longer than the queue lasts. Check `write_max_recent_us`, `slow_writes`, the
+   disk, `spool_available`, and `spool_dropped`.
+3. `spool_bytes` against `--spool-max-mib`, and `spool_oldest_age_ms`. If they grow for
+   the whole run, the receiver takes less than the input rate. At the cap, the spool
+   removes its oldest data, and `spool_dropped` shows the loss.
+4. `write_max_recent_us` and `slow_writes`. Large values point to the receiver or the
+   network path. Small values with a saturated state point to the spool disk or the
+   sender thread, not to a blocked socket.
+5. The spool disk. At 200,000 queries per second, the spool writes about 41 MB per
    second. See [Spool sizing](tuning.md#spool-sizing).
-5. The collector's CPU, disk, and input queue.
+6. The collector's CPU, disk, and input queue.
 
 ## Spool warnings
 
@@ -273,7 +299,7 @@ shutdown. A restart resets every counter. The counter definitions are in
 | `pool_exhausted_regular`, `pool_exhausted_jumbo` | Raise `--jumbo-capacity` if `pool_exhausted_jumbo` rises. With `--jumbo-capacity 0`, every jumbo record counts here. |
 | `receiver_disconnected` | Check whether the parser stopped. This is the event channel, not TCP. See [restarts](#the-service-keeps-restarting). |
 | `disconnected_dropped` | Check `spool_available`. See [the receiver section](#the-receiver-is-down-or-unreachable). |
-| `queue_dropped` | See [The receiver is slow](#the-receiver-is-slow). |
+| `queue_dropped`, `link_saturated` | See [The receiver is slow](#the-receiver-is-slow). |
 | `spool_dropped`, `spool_dropped_bytes` | See [Spool warnings](#spool-warnings). Raise `--spool-max-mib` if the outage outlasts the cap. |
 | `spool_errors` | See [Spool warnings](#spool-warnings). |
 | `foreign_pid_rejected` | Normally 0. Nonzero during a DNS restart is expected. Otherwise investigate. |

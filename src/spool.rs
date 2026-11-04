@@ -17,7 +17,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use self::{
@@ -88,6 +88,17 @@ enum FreeSpace {
 /// Bytes in a MiB, for the free-space log.
 const MIB: u64 = 1024 * 1024;
 
+/// When a segment was created.
+#[derive(Clone, Copy)]
+enum Created {
+    /// A segment of this run, on the monotonic clock: a change of the wall clock
+    /// does not move it.
+    Run(Instant),
+    /// A leftover from an earlier run: the file's creation time (or its last
+    /// write time, when the volume has none). Only the wall clock can age it.
+    Leftover(SystemTime),
+}
+
 /// One segment file the spool knows about.
 struct SegmentInfo {
     sequence: u64,
@@ -100,6 +111,8 @@ struct SegmentInfo {
     frames_read: u64,
     /// Offset of the next unread byte; 0 while nothing has been read.
     read_offset: u64,
+    /// When the segment was created. Used only for the age of the backlog.
+    created: Created,
     /// True while the file may hold bytes past `bytes` that are not good data
     /// (the active segment, or one closed after a write error). A cleanly
     /// sealed segment or a leftover is read to the end of the file.
@@ -206,6 +219,37 @@ impl Spool {
     /// not write directly, while this is true, to keep frames in order.
     pub(crate) fn has_backlog(&self) -> bool {
         !self.segments.is_empty()
+    }
+
+    /// Bytes of segment files that are not yet read: the segment bytes less the
+    /// part of the first segment already handed out. Unlike the `spool_bytes`
+    /// gauge it falls as the replay reads, not when a whole segment is deleted,
+    /// so it shows whether the backlog is growing or draining.
+    pub(crate) fn unread_bytes(&self) -> u64 {
+        let total: u64 = self.segments.iter().map(|segment| segment.bytes).sum();
+        let read = self
+            .segments
+            .front()
+            .map_or(0, |head| head.read_offset.min(head.bytes));
+        total - read
+    }
+
+    /// How long ago the first segment was created, or zero with no backlog. The
+    /// first segment holds the oldest unsent frame, so this is an upper bound
+    /// on that frame's age: the segment is older than any frame in it, and part
+    /// of it may be read already. A segment of this run ages on the monotonic
+    /// clock (`now`), so a wall clock that is set back or forward does not move
+    /// it. A leftover from an earlier run ages on the wall clock (`wall`) from
+    /// the file's creation time, and a clock set back reads as zero.
+    pub(crate) fn oldest_age(&self, now: Instant, wall: SystemTime) -> Duration {
+        self.segments
+            .front()
+            .map_or(Duration::ZERO, |head| match head.created {
+                Created::Run(created) => now.saturating_duration_since(created),
+                Created::Leftover(created) => {
+                    wall.duration_since(created).unwrap_or(Duration::ZERO)
+                }
+            })
     }
 
     /// False while the spool is paused by an I/O error or by the free-space
@@ -492,6 +536,7 @@ impl Spool {
                         frames: Some(0),
                         frames_read: 0,
                         read_offset: 0,
+                        created: Created::Run(Instant::now()),
                         bounded: true,
                     });
                     self.total_bytes += START_LEN;
@@ -869,18 +914,26 @@ fn scan(dir: &Path) -> io::Result<Scan> {
         if fsinfo::is_reparse_point(&metadata) {
             continue;
         }
-        found.push((sequence, metadata.len()));
+        // Creation time is closest to the oldest frame in the file. Some
+        // volumes report none; the last write time then stands in, and a file
+        // with neither counts as new.
+        let created = metadata
+            .created()
+            .or_else(|_| metadata.modified())
+            .unwrap_or_else(|_| SystemTime::now());
+        found.push((sequence, metadata.len(), Created::Leftover(created)));
     }
-    found.sort_unstable();
-    found.dedup_by_key(|(sequence, _)| *sequence);
+    found.sort_unstable_by_key(|(sequence, bytes, _)| (*sequence, *bytes));
+    found.dedup_by_key(|(sequence, _, _)| *sequence);
     let segments = found
         .into_iter()
-        .map(|(sequence, bytes)| SegmentInfo {
+        .map(|(sequence, bytes, created)| SegmentInfo {
             sequence,
             bytes,
             frames: None,
             frames_read: 0,
             read_offset: 0,
+            created,
             bounded: false,
         })
         .collect();

@@ -39,6 +39,11 @@ use crate::{
 mod sockopt;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// [`IO_TIMEOUT`] for the sender tests, which check how long a stalled write lasts.
+#[cfg(test)]
+pub(crate) const TEST_IO_TIMEOUT: Duration = IO_TIMEOUT;
+
 const CONTROL_ACCEPT: u32 = 1;
 const CONTROL_READY: u32 = 4;
 const CONTROL_FINISH: u32 = 5;
@@ -799,6 +804,9 @@ impl NetworkSink {
                 return false;
             }
             self.unflushed_frames += in_chunk;
+            self.stats
+                .bytes_sent
+                .fetch_add(length as u64, Ordering::Relaxed);
             remaining -= in_chunk;
             rest = tail;
         }
@@ -816,7 +824,12 @@ impl FrameSink for NetworkSink {
             return Ok(());
         };
         match connection.write_frame(payload) {
-            Ok(()) => self.unflushed_frames += 1,
+            Ok(()) => {
+                self.unflushed_frames += 1;
+                self.stats
+                    .bytes_sent
+                    .fetch_add(payload.len() as u64 + 4, Ordering::Relaxed);
+            }
             Err(error) => self.connection_lost(&error, 1),
         }
         Ok(())
@@ -976,6 +989,9 @@ impl DeadlineTcp {
         if let Some(stats) = &self.stats {
             let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
             stats.write_max_us.fetch_max(micros, Ordering::Relaxed);
+            stats
+                .write_window_max_us
+                .fetch_max(micros, Ordering::Relaxed);
             if elapsed >= SLOW_WRITE {
                 stats.slow_writes.fetch_add(1, Ordering::Relaxed);
             }

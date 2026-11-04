@@ -569,6 +569,12 @@ fn slow_socket_writes_are_counted_with_their_maximum() {
     transport.record_write(Duration::from_millis(40));
     assert_eq!(stats.slow_writes.load(Ordering::Relaxed), 2);
     assert_eq!(stats.write_max_us.load(Ordering::Relaxed), 40_000);
+    // The accumulator for the per-window maximum sees the same writes. Taking
+    // it (as the sender thread does) leaves the since-start maximum alone.
+    assert_eq!(stats.write_window_max_us.swap(0, Ordering::Relaxed), 40_000);
+    transport.record_write(Duration::from_millis(7));
+    assert_eq!(stats.write_window_max_us.load(Ordering::Relaxed), 7_000);
+    assert_eq!(stats.write_max_us.load(Ordering::Relaxed), 40_000);
 }
 
 #[test]

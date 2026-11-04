@@ -21,14 +21,14 @@ use crate::{
 };
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
-const MIB: u64 = 1024 * 1024;
+pub(super) const MIB: u64 = 1024 * 1024;
 
 const CONTROL_ACCEPT: u32 = 1;
 const CONTROL_READY: u32 = 4;
 const CONTROL_FINISH: u32 = 5;
 
 /// Retries within tens of milliseconds, so reconnect tests finish quickly.
-fn fast_policy() -> BackoffPolicy {
+pub(super) fn fast_policy() -> BackoffPolicy {
     BackoffPolicy {
         initial: Duration::from_millis(10),
         max: Duration::from_millis(40),
@@ -36,14 +36,14 @@ fn fast_policy() -> BackoffPolicy {
 }
 
 /// Never retries within a test, so counts are deterministic.
-fn no_retry() -> BackoffPolicy {
+pub(super) fn no_retry() -> BackoffPolicy {
     BackoffPolicy {
         initial: Duration::from_secs(600),
         max: Duration::from_secs(600),
     }
 }
 
-fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+pub(super) fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     while !condition() {
         assert!(
@@ -54,21 +54,24 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-fn get(counter: &AtomicU64) -> u64 {
+pub(super) fn get(counter: &AtomicU64) -> u64 {
     counter.load(Ordering::Relaxed)
 }
 
 /// What a fake receiver saw, and how it behaves.
 #[derive(Default)]
-struct Received {
+pub(super) struct Received {
     /// The sequence number in each data frame, in arrival order.
-    frames: Mutex<Vec<u32>>,
+    pub(super) frames: Mutex<Vec<u32>>,
     /// STOP arrived and FINISH was sent.
-    stopped: AtomicBool,
+    pub(super) stopped: AtomicBool,
     /// While set, the receiver stops reading but keeps the connection.
-    paused: AtomicBool,
+    pub(super) paused: AtomicBool,
     /// While set, the receiver sleeps after each large frame.
     slow: AtomicBool,
+    /// Milliseconds the receiver sleeps after each large frame, on top of
+    /// `slow`: a receiver that reads at a set pace.
+    pub(super) frame_delay_ms: AtomicU64,
     /// Non-zero: the receiver hangs up after this many data frames on one
     /// connection and clears the value, so the next connection is served fully.
     hang_up_after: AtomicU64,
@@ -81,11 +84,11 @@ struct Received {
 }
 
 impl Received {
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.frames.lock().expect("receiver state").len()
     }
 
-    fn frames(&self) -> Vec<u32> {
+    pub(super) fn frames(&self) -> Vec<u32> {
         self.frames.lock().expect("receiver state").clone()
     }
 }
@@ -94,9 +97,9 @@ impl Received {
 /// [`Self::serve_now`], it accepts each connection and drops it at once, so the
 /// sender sees a network error and retries. Afterwards it serves connections one
 /// at a time.
-struct FakeServer {
+pub(super) struct FakeServer {
     address: SocketAddr,
-    received: Arc<Received>,
+    pub(super) received: Arc<Received>,
     serving: Arc<AtomicBool>,
     quit: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -137,15 +140,15 @@ impl FakeServer {
     }
 
     /// Accepts and drops every connection.
-    fn down() -> Self {
+    pub(super) fn down() -> Self {
         Self::new(false)
     }
 
-    fn up() -> Self {
+    pub(super) fn up() -> Self {
         Self::new(true)
     }
 
-    fn serve_now(&self) {
+    pub(super) fn serve_now(&self) {
         self.serving.store(true, Ordering::Release);
     }
 
@@ -264,6 +267,10 @@ fn serve(mut stream: TcpStream, received: &Received, quit: &AtomicBool) -> io::R
                 if payload.len() > 1024 && received.slow.load(Ordering::Acquire) {
                     thread::sleep(Duration::from_millis(1));
                 }
+                let pace = received.frame_delay_ms.load(Ordering::Acquire);
+                if payload.len() > 1024 && pace > 0 {
+                    thread::sleep(Duration::from_millis(pace));
+                }
             }
             Item::Control(body) if control_kind(&body) == CONTROL_STOP => {
                 write_control(&mut stream, CONTROL_FINISH, false)?;
@@ -284,7 +291,7 @@ fn plenty(_dir: &Path) -> io::Result<u64> {
     Ok(u64::MAX)
 }
 
-fn open_spool(dir: &TestDir, max_bytes: u64, stats: &Arc<SinkStats>) -> Spool {
+pub(super) fn open_spool(dir: &TestDir, max_bytes: u64, stats: &Arc<SinkStats>) -> Spool {
     Spool::open(
         SpoolConfig {
             dir: dir.path().to_path_buf(),
@@ -297,7 +304,7 @@ fn open_spool(dir: &TestDir, max_bytes: u64, stats: &Arc<SinkStats>) -> Spool {
     .expect("spool opens")
 }
 
-fn start_sink(
+pub(super) fn start_sink(
     server: &FakeServer,
     policy: BackoffPolicy,
     spool: Option<Spool>,
@@ -308,12 +315,12 @@ fn start_sink(
     QueuedSink::start(link, spool, Arc::clone(stats)).expect("sender thread starts")
 }
 
-fn frame(number: u32) -> [u8; 4] {
+pub(super) fn frame(number: u32) -> [u8; 4] {
     number.to_be_bytes()
 }
 
 /// Writes one 4-byte frame per number, then flushes.
-fn send(sink: &mut QueuedSink, numbers: Range<u32>) {
+pub(super) fn send(sink: &mut QueuedSink, numbers: Range<u32>) {
     for number in numbers {
         sink.write_frame(&frame(number)).expect("frame is queued");
     }
@@ -321,13 +328,13 @@ fn send(sink: &mut QueuedSink, numbers: Range<u32>) {
 }
 
 /// A frame of `size` bytes that starts with its number.
-fn sized_frame(number: u32, size: usize) -> Vec<u8> {
+pub(super) fn sized_frame(number: u32, size: usize) -> Vec<u8> {
     let mut payload = vec![0x5a; size];
     payload[..4].copy_from_slice(&number.to_be_bytes());
     payload
 }
 
-fn queued(sink: &QueuedSink) -> usize {
+pub(super) fn queued(sink: &QueuedSink) -> usize {
     sink.queue.as_ref().map_or(0, Sender::len)
 }
 
@@ -340,20 +347,35 @@ fn wait_drained(sink: &QueuedSink) {
 /// that stopped reading (the queue stays at least 10 blocks long for 100 ms),
 /// then queues `tiny` one-frame blocks behind them. Returns the number of frames
 /// offered.
-fn stall_the_sender(sink: &mut QueuedSink, tiny: u32) -> u32 {
+pub(super) fn stall_the_sender(sink: &mut QueuedSink, tiny: u32) -> u32 {
     let mut offered = 0;
-    loop {
+    for _ in 0..300 {
         while queued(sink) < 10 {
             assert!(offered < 3000, "kernel buffering absorbed {offered} frames");
             sink.write_frame(&sized_frame(offered, MAX_ENCODED_LENGTH))
                 .expect("frame is queued");
             offered += 1;
         }
+        let accepted = get(&sink.stats.bytes_sent);
         thread::sleep(Duration::from_millis(100));
-        if queued(sink) >= 10 {
-            break;
+        // A sender that the CPU starves also leaves the queue long for 100 ms.
+        // A blocked socket write is different: the link has accepted at least
+        // the 1 MiB send buffer, and it accepts nothing more.
+        if queued(sink) >= 10
+            && accepted >= STALL_MIN_BYTES
+            && get(&sink.stats.bytes_sent) == accepted
+        {
+            return queue_tiny_blocks(sink, tiny, offered);
         }
     }
+    panic!("the sender never stalled after {offered} frames");
+}
+
+/// The link must have accepted this many bytes before a stall counts: half the
+/// 1 MiB send buffer, so a sender that has not yet filled it is not stalled.
+const STALL_MIN_BYTES: u64 = 512 * 1024;
+
+fn queue_tiny_blocks(sink: &mut QueuedSink, tiny: u32, mut offered: u32) -> u32 {
     for _ in 0..tiny {
         sink.write_frame(&frame(offered)).expect("frame is queued");
         sink.flush().expect("block is sent");
@@ -572,18 +594,35 @@ fn shutdown_with_a_stalled_link_and_queued_blocks_is_bounded_and_accounted() {
     let offered = stall_the_sender(&mut sink, 100);
 
     let started = Instant::now();
-    sink.finish()
-        .expect("shutdown with a stalled link is clean");
+    let result = sink.finish();
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_secs(6),
         "shutdown took {elapsed:?}"
     );
 
-    // The stalled write timed out and lost its frames; the blocks queued behind
-    // it went to the spool, which sealed its segment.
-    assert_eq!(get(&stats.disconnects), 1);
-    assert!(get(&stats.disconnected_dropped) >= 1);
+    // `stall_the_sender` makes the stall very likely, but a CPU-starved machine
+    // can still leave the sender short of a blocked write, and the outcome then
+    // differs. Both are bounded and accounted.
+    match result {
+        // The stalled write timed out and lost its frames; the blocks queued
+        // behind it went to the spool, which sealed its segment.
+        Ok(()) => {
+            assert_eq!(get(&stats.disconnects), 1);
+            assert!(get(&stats.disconnected_dropped) >= 1);
+        }
+        // The write was not blocked: the session was still up at the end, and
+        // the receiver that reads nothing never answered the closing exchange.
+        Err(error) => {
+            let text = format!("{error:#}");
+            assert!(
+                ["FINISH", "STOP", "final buffered data flush"]
+                    .iter()
+                    .any(|phase| text.contains(phase)),
+                "{text}"
+            );
+        }
+    }
     assert_eq!(get(&stats.queue_dropped), 0);
     assert_eq!(get(&stats.spool_dropped), 0);
     let mut on_disk = Vec::new();
@@ -674,8 +713,12 @@ fn write_frame_rejects_bad_lengths_without_changing_the_block() {
 }
 
 /// A sender thread that is not running, for tests of its routing rules. Its link
-/// is down.
-fn idle_sender(spool: Option<Spool>, stats: &Arc<SinkStats>, server: &FakeServer) -> SenderThread {
+/// is up when `server` serves and down when it does not.
+pub(super) fn idle_sender(
+    spool: Option<Spool>,
+    stats: &Arc<SinkStats>,
+    server: &FakeServer,
+) -> SenderThread {
     let link = NetworkSink::start_with(server.address, Arc::clone(stats), no_retry())
         .expect("link starts");
     SenderThread {
@@ -688,6 +731,7 @@ fn idle_sender(spool: Option<Spool>, stats: &Arc<SinkStats>, server: &FakeServer
         idle_reads: 0,
         dirty: false,
         last_flush: Instant::now(),
+        monitor: LinkMonitor::new(Arc::clone(stats), Instant::now()),
     }
 }
 

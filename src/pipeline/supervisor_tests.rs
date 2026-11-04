@@ -781,3 +781,34 @@ fn supervisor_does_no_counter_work_without_a_publisher() {
     assert_eq!(queries, 0);
     assert_eq!(published.len(), 0);
 }
+
+#[test]
+fn the_output_report_carries_the_slow_receiver_signals() {
+    let (capture, parser, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    sink.write_max_us.store(9_000_000, Ordering::Relaxed);
+    sink.write_max_recent_us.store(2_500, Ordering::Relaxed);
+    sink.bytes_sent.store(123_456_789, Ordering::Relaxed);
+    sink.send_queue_depth_max.store(77, Ordering::Relaxed);
+    sink.spool_oldest_age_ms.store(93_250, Ordering::Relaxed);
+    sink.link_saturated.store(true, Ordering::Relaxed);
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        report_snapshot(&capture, &parser, &sink);
+        report_counts(&capture, &parser, &sink);
+    });
+    let text = logs.text();
+    for field in [
+        "write_max_us=9000000",
+        "write_max_recent_us=2500",
+        "bytes_sent=123456789",
+        "send_queue_depth_max=77",
+        "spool_oldest_age_ms=93250",
+        "link_saturated=true",
+    ] {
+        // Once on `output stats` and once on `output stopped`.
+        assert_eq!(logs.count(field), 2, "{field}: {text}");
+    }
+}

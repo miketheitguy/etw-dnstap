@@ -83,6 +83,18 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   manifest must be registered again on upgrade. `disconnected_dropped` now
   counts only frames lost in the sink, and the help text of counters 2, 11, and
   18 changed to match. See [configuration.md](docs/guide/configuration.md#spool).
+- Signals for a slow or saturated receiver. The `output stats` and `output stopped`
+  lines gain `bytes_sent`, `send_queue_depth_max`, `write_max_recent_us`,
+  `spool_oldest_age_ms`, and `link_saturated`. The two peaks cover the last 60 seconds and
+  the sender thread sets them once a second, so no reader resets them. The existing
+  `write_max_us` and `slow_writes` keep their meaning. The sender thread sets
+  `link_saturated` when the spool backlog trends up over 10 samples (at least 10 seconds,
+  with at least 7 of the 10 steps rising) with the receiver connected. It logs `dnstap link is saturated` (Event ID 3) and, at the end,
+  `dnstap link is no longer saturated` (Event ID 2). Nothing about routing changes. New
+  performance counters 61 to 66 are appended, and the updated manifest must be
+  registered again on upgrade. See
+  [monitoring.md](docs/guide/monitoring.md#the-saturated-state) and
+  [troubleshooting.md](docs/guide/troubleshooting.md#the-receiver-is-slow).
 - A data-path reference, [docs/design/data-path.md](docs/design/data-path.md), with an
   animation of the five stages from an ETW event to a TCP frame. The sources
   that build the GIF are in `scripts/docs/pipeline-animation/`.

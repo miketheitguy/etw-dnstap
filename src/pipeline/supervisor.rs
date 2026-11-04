@@ -709,8 +709,11 @@ fn combine_results(capture: Result<()>, parser: Result<()>) -> Result<()> {
 /// no fixed ratio to `spool_dropped` because a leftover segment's frame count is
 /// unknown. One case is in none of these counters: frames already in the send
 /// queue when the sender thread stops abnormally (the parser counts only the
-/// failed write in `output_failed_events`). `spool_bytes` and `spool_segments`
-/// are gauges, and `spool_available` is a flag.
+/// failed write in `output_failed_events`). `spool_bytes`, `spool_segments`,
+/// `write_max_recent_us`, `send_queue_depth_max`, and `spool_oldest_age_ms` are
+/// gauges, and `spool_available` and `link_saturated` are flags. The sender
+/// thread sets the last four on its own one-second clock, so the interval of
+/// this log does not change them. `bytes_sent` is a total.
 macro_rules! emit_counts {
     ($capture_message:literal, $output_message:literal, $capture:expr, $parser:expr, $sink:expr) => {{
         let (capture, parser, sink): (&CaptureCounters, &ParseCounters, &SinkStats) =
@@ -759,7 +762,12 @@ macro_rules! emit_counts {
             spool_available = sink.spool_available.load(Ordering::Relaxed),
             slow_writes = sink.slow_writes.load(Ordering::Relaxed),
             write_max_us = sink.write_max_us.load(Ordering::Relaxed),
+            write_max_recent_us = sink.write_max_recent_us.load(Ordering::Relaxed),
             queue_depth_max = parser.queue_depth_max.load(Ordering::Relaxed),
+            send_queue_depth_max = sink.send_queue_depth_max.load(Ordering::Relaxed),
+            bytes_sent = sink.bytes_sent.load(Ordering::Relaxed),
+            spool_oldest_age_ms = sink.spool_oldest_age_ms.load(Ordering::Relaxed),
+            link_saturated = sink.link_saturated.load(Ordering::Relaxed),
             $output_message
         );
     }};

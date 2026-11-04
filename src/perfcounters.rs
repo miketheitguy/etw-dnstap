@@ -87,6 +87,7 @@ pub(crate) struct CounterValues {
     pub(crate) etw_buffers_maximum: u64,
     pub(crate) receiver_connected: u64,
     pub(crate) spool_available: u64,
+    pub(crate) link_saturated: u64,
 }
 
 /// Reads the counters into the values to publish. Loads are relaxed and not
@@ -119,6 +120,7 @@ pub(crate) fn snapshot(
         etw_buffers_maximum: load(&capture.etw_buffers_maximum),
         receiver_connected: u64::from(sink.connected.load(Ordering::Relaxed)),
         spool_available: u64::from(sink.spool_available.load(Ordering::Relaxed)),
+        link_saturated: u64::from(sink.link_saturated.load(Ordering::Relaxed)),
     }
 }
 
@@ -159,7 +161,7 @@ impl CounterDef {
     }
 }
 
-const COUNTER_COUNT: usize = 36;
+const COUNTER_COUNT: usize = 42;
 
 static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     // Throughput rates.
@@ -277,6 +279,28 @@ static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     }),
     by_value(60, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |v| {
         v.spool_available
+    }),
+    // Slow and saturated receiver signals. Appended after the spool counters.
+    // The gauges are references to atomics that the sender thread stores once a
+    // second, so the log and PerfLib read the same value and neither resets it.
+    // The saturated flag is set on each tick like `spool_available`.
+    by_ref(61, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.bytes_sent
+    }),
+    by_ref(62, PERF_COUNTER_BULK_COUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.bytes_sent
+    }),
+    by_ref(63, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.send_queue_depth_max
+    }),
+    by_ref(64, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.write_max_recent_us
+    }),
+    by_ref(65, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
+        &s.sink.spool_oldest_age_ms
+    }),
+    by_value(66, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |v| {
+        v.link_saturated
     }),
 ];
 
@@ -563,12 +587,12 @@ mod tests {
     const MANIFEST: &str = include_str!("../packaging/perfcounters/etw-dnstap.man");
 
     /// The counters that `PerfLib` reads through a pointer.
-    const REFERENCE_IDS: [u32; 25] = [
+    const REFERENCE_IDS: [u32; 30] = [
         1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 32, 51, 52, 53, 54, 55, 56, 57,
-        58, 59,
+        58, 59, 61, 62, 63, 64, 65,
     ];
     /// The counters that the supervisor sets on each tick.
-    const VALUE_IDS: [u32; 11] = [30, 31, 33, 34, 40, 41, 42, 43, 44, 50, 60];
+    const VALUE_IDS: [u32; 12] = [30, 31, 33, 34, 40, 41, 42, 43, 44, 50, 60, 66];
 
     #[test]
     fn counter_types_match_their_winperf_definitions() {
@@ -704,9 +728,27 @@ mod tests {
         // of them in table order and in ID order.
         let ids: Vec<u32> = COUNTERS.iter().map(|def| def.id).collect();
         let position = ids.iter().position(|&id| id == 51).expect("counter 51");
-        assert_eq!(ids[position + 1..], [52, 53, 54, 55, 56, 57, 58, 59, 60]);
+        assert_eq!(
+            ids[position + 1..position + 10],
+            [52, 53, 54, 55, 56, 57, 58, 59, 60]
+        );
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(COUNTER_COUNT, 36);
+        assert_eq!(COUNTER_COUNT, 42);
+    }
+
+    #[test]
+    fn slow_receiver_counters_are_appended_after_the_spool_counters() {
+        let ids: Vec<u32> = COUNTERS.iter().map(|def| def.id).collect();
+        let position = ids.iter().position(|&id| id == 60).expect("counter 60");
+        assert_eq!(ids[position + 1..], [61, 62, 63, 64, 65, 66]);
+    }
+
+    #[test]
+    fn link_saturated_is_zero_or_one() {
+        let (capture, parse, sink) = counters();
+        assert_eq!(snapshot(&capture, &parse, &sink, 1024).link_saturated, 0);
+        sink.link_saturated.store(true, Ordering::Relaxed);
+        assert_eq!(snapshot(&capture, &parse, &sink, 1024).link_saturated, 1);
     }
 
     #[test]
@@ -719,6 +761,7 @@ mod tests {
             etw_buffers_maximum: 42,
             receiver_connected: 50,
             spool_available: 60,
+            link_saturated: 66,
         };
         let read = |id: u32| {
             let def = COUNTERS
@@ -731,8 +774,8 @@ mod tests {
             value(&values)
         };
         assert_eq!(
-            [30, 31, 40, 41, 42, 50, 60].map(read),
-            [30, 31, 40, 41, 42, 50, 60]
+            [30, 31, 40, 41, 42, 50, 60, 66].map(read),
+            [30, 31, 40, 41, 42, 50, 60, 66]
         );
         // A fraction is the gauge over its base.
         assert_eq!((read(33), read(34)), (30, 31));
@@ -779,6 +822,11 @@ mod tests {
             (57, sink.spool_errors.as_ptr()),
             (58, sink.spool_bytes.as_ptr()),
             (59, sink.spool_segments.as_ptr()),
+            (61, sink.bytes_sent.as_ptr()),
+            (62, sink.bytes_sent.as_ptr()),
+            (63, sink.send_queue_depth_max.as_ptr()),
+            (64, sink.write_max_recent_us.as_ptr()),
+            (65, sink.spool_oldest_age_ms.as_ptr()),
         ];
         assert_eq!(expected.len(), REFERENCE_IDS.len());
         for (id, pointer) in expected {
@@ -1043,9 +1091,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // The set has a name and a description; 34 displayed counters have both,
+        // The set has a name and a description; 40 displayed counters have both,
         // and the 2 base counters have a name only.
-        assert_eq!(checked, 2 + 34 * 2 + 2);
+        assert_eq!(checked, 2 + 40 * 2 + 2);
     }
 
     #[test]

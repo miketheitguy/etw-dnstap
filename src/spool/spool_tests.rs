@@ -1,4 +1,7 @@
-use std::{cell::Cell, fs, ops::Range, os::windows::fs::OpenOptionsExt, sync::atomic::AtomicU64};
+use std::{
+    cell::Cell, fs, ops::Range, os::windows::fs::OpenOptionsExt, sync::atomic::AtomicU64,
+    time::UNIX_EPOCH,
+};
 
 use super::*;
 use crate::spool::test_support::{
@@ -1501,4 +1504,132 @@ fn an_eviction_for_space_is_not_logged_as_a_discard() {
     });
     assert!(lines.count(EVICTION_MESSAGE) >= 1, "{}", lines.text());
     assert_eq!(lines.count(DISCARD_MESSAGE), 0);
+}
+
+// ---- the observation helpers: unread bytes and the age of the oldest segment ----
+
+/// Sets the creation time of a leftover segment file.
+fn backdate(dir: &TestDir, sequence: u64, age: Duration) {
+    use std::{fs::FileTimes, os::windows::fs::FileTimesExt};
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(dir.path().join(segment_name(sequence)))
+        .expect("segment opens");
+    let created = SystemTime::now() - age;
+    file.set_times(FileTimes::new().set_created(created))
+        .expect("creation time is set");
+}
+
+#[test]
+fn unread_bytes_fall_as_the_replay_reads_while_the_gauge_waits_for_the_segment() {
+    let dir = TestDir::new("spool-unread");
+    let (mut spool, stats) = open(&dir, 8 * MIB);
+    assert_eq!(spool.unread_bytes(), 0, "no segment, nothing unread");
+    assert_eq!(append_numbers(&mut spool, 0..20, 0), Appended::Stored);
+    let written = get(&stats.spool_bytes);
+    assert_eq!(spool.unread_bytes(), written);
+
+    let mut out = Vec::new();
+    spool.read_batch(&mut out, 1).expect("read succeeds");
+    let after_one = spool.unread_bytes();
+    assert!(after_one < written, "the read frame is no longer unread");
+    assert_eq!(
+        written - after_one,
+        START_LEN + out.len() as u64,
+        "by the bytes of the batch and the START that the first read passes"
+    );
+    spool.read_batch(&mut out, 1).expect("read succeeds");
+    assert!(spool.unread_bytes() < after_one);
+    // The file stays whole until its last frame is read.
+    assert_eq!(get(&stats.spool_bytes), written);
+
+    drain(&mut spool, 1_000);
+    assert_eq!(spool.unread_bytes(), 0);
+    assert!(!spool.has_backlog());
+}
+
+#[test]
+fn unread_bytes_count_every_segment_and_only_the_first_is_part_read() {
+    let dir = TestDir::new("spool-unread-two");
+    let first = leftover_segment(&dir, 1, &numbered(0..10, 0).0, true);
+    let second = leftover_segment(&dir, 2, &numbered(10..20, 0).0, true);
+    let (mut spool, _stats) = open(&dir, 8 * MIB);
+    assert_eq!(spool.unread_bytes(), first + second);
+    let mut out = Vec::new();
+    spool.read_batch(&mut out, 1).expect("read succeeds");
+    assert_eq!(
+        spool.unread_bytes(),
+        first + second - START_LEN - out.len() as u64
+    );
+}
+
+#[test]
+fn the_oldest_age_is_zero_without_a_backlog() {
+    let dir = TestDir::new("spool-age-none");
+    let (spool, _stats) = open(&dir, 8 * MIB);
+    assert_eq!(
+        spool.oldest_age(Instant::now(), SystemTime::now()),
+        Duration::ZERO
+    );
+}
+
+#[test]
+fn the_oldest_age_counts_from_the_creation_of_the_first_segment() {
+    let dir = TestDir::new("spool-age-live");
+    let (mut spool, _stats) = open(&dir, 8 * MIB);
+    assert_eq!(append_numbers(&mut spool, 0..3, 0), Appended::Stored);
+    // The caller passes the clocks, so the test does not wait.
+    let later = Instant::now() + Duration::from_secs(90);
+    let age = spool.oldest_age(later, SystemTime::now());
+    assert!(
+        age >= Duration::from_secs(90) && age < Duration::from_secs(95),
+        "{age:?}"
+    );
+    // With the backlog gone the age is zero again.
+    drain(&mut spool, 1_000);
+    assert_eq!(spool.oldest_age(later, SystemTime::now()), Duration::ZERO);
+}
+
+#[test]
+fn a_segment_of_this_run_ignores_the_wall_clock() {
+    let dir = TestDir::new("spool-age-wall");
+    let (mut spool, _stats) = open(&dir, 8 * MIB);
+    assert_eq!(append_numbers(&mut spool, 0..3, 0), Appended::Stored);
+    let now = Instant::now() + Duration::from_secs(30);
+    let day = Duration::from_hours(24);
+    // A wall clock set back to the epoch or forward by a day changes nothing.
+    for wall in [UNIX_EPOCH, SystemTime::now() + day] {
+        let age = spool.oldest_age(now, wall);
+        assert!(
+            age >= Duration::from_secs(30) && age < Duration::from_secs(35),
+            "{age:?}"
+        );
+    }
+}
+
+#[test]
+fn a_leftover_segment_is_as_old_as_its_file() {
+    let dir = TestDir::new("spool-age-leftover");
+    leftover_segment(&dir, 1, &numbered(0..3, 0).0, true);
+    leftover_segment(&dir, 2, &numbered(3..6, 0).0, true);
+    backdate(&dir, 1, Duration::from_secs(3_600));
+    backdate(&dir, 2, Duration::from_secs(60));
+    let (mut spool, _stats) = open(&dir, 8 * MIB);
+    let age = spool.oldest_age(Instant::now(), SystemTime::now());
+    assert!(
+        age >= Duration::from_secs(3_600) && age < Duration::from_secs(3_610),
+        "{age:?}"
+    );
+    // A wall clock set back before the file was created reads as zero.
+    assert_eq!(spool.oldest_age(Instant::now(), UNIX_EPOCH), Duration::ZERO);
+    // Once the first segment is read, the second one is the oldest.
+    let mut out = Vec::new();
+    while spool.segments.len() > 1 {
+        spool.read_batch(&mut out, 1).expect("read succeeds");
+    }
+    let second_age = spool.oldest_age(Instant::now(), SystemTime::now());
+    assert!(
+        second_age >= Duration::from_secs(60) && second_age < Duration::from_secs(70),
+        "{second_age:?}"
+    );
 }

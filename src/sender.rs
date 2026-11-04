@@ -22,7 +22,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::Result;
@@ -31,6 +31,7 @@ use crossbeam_channel::{
 };
 use crossbeam_queue::ArrayQueue;
 
+use self::monitor::{LinkMonitor, Observation};
 use crate::{
     dnstap::MAX_ENCODED_LENGTH,
     network::NetworkSink,
@@ -74,6 +75,8 @@ const MAX_IDLE_READS: u8 = 3;
 const SHUTDOWN_LINK_BUDGET: Duration = Duration::from_secs(1);
 const _: () = assert!(BLOCK_SEND_BYTES + MAX_ENCODED_LENGTH + 4 <= BLOCK_CAPACITY);
 const _: () = assert!(SPILL_BLOCKS < SEND_QUEUE_BLOCKS);
+
+mod monitor;
 
 /// Complete Frame Streams data frames (a 4-byte big-endian length, then the
 /// payload) and how many there are.
@@ -177,6 +180,7 @@ impl QueuedSink {
             idle_reads: 0,
             dirty: false,
             last_flush: Instant::now(),
+            monitor: LinkMonitor::new(Arc::clone(&stats), Instant::now()),
         };
         let thread = thread::Builder::new()
             .name("dnstap-sender".into())
@@ -337,6 +341,8 @@ struct SenderThread {
     /// Data was written to the link since the last flush.
     dirty: bool,
     last_flush: Instant,
+    /// Observes the link and the spool for the operator. It changes no routing.
+    monitor: LinkMonitor,
 }
 
 impl SenderThread {
@@ -368,6 +374,7 @@ impl SenderThread {
                 }
             };
             if let Some(block) = next {
+                self.monitor.note_queue_depth(receiver.len() + 1);
                 // The link state may have changed while waiting.
                 let link_up = self.link_up(deadline);
                 self.route(block, link_up, receiver.len());
@@ -378,6 +385,7 @@ impl SenderThread {
                 for _ in 0..SEND_QUEUE_BLOCKS {
                     match receiver.try_recv() {
                         Ok(block) => {
+                            self.monitor.note_queue_depth(receiver.len() + 1);
                             let link_up = self.link_up(deadline);
                             self.route(block, link_up, receiver.len());
                         }
@@ -390,6 +398,7 @@ impl SenderThread {
                 replay_progress = true;
                 self.idle_reads = 0;
             }
+            self.sample_monitor();
             // Past the link budget the flush is skipped; `finish` flushes anyway.
             if self.dirty
                 && self.link_up(deadline)
@@ -405,6 +414,33 @@ impl SenderThread {
     /// budget has not run out.
     fn link_up(&self, deadline: Option<Instant>) -> bool {
         self.link.is_connected() && deadline.is_none_or(|deadline| Instant::now() < deadline)
+    }
+
+    /// Takes a monitor sample when one is due. Reads the spool and the link
+    /// state only; routing never looks at the result.
+    fn sample_monitor(&mut self) {
+        let at = Instant::now();
+        if !self.monitor.due(at) {
+            return;
+        }
+        let (backlog_bytes, oldest_age, reads_paused) =
+            self.spool
+                .as_ref()
+                .map_or((0, Duration::ZERO, false), |spool| {
+                    (
+                        spool.unread_bytes(),
+                        spool.oldest_age(at, SystemTime::now()),
+                        spool.reads_paused(),
+                    )
+                });
+        self.monitor.sample(&Observation {
+            at,
+            link_up: self.link.is_connected(),
+            reads_paused,
+            backlog_bytes,
+            disconnects: self.stats.disconnects.load(Ordering::Relaxed),
+            oldest_age,
+        });
     }
 
     fn has_backlog(&self) -> bool {
@@ -508,3 +544,11 @@ impl SenderThread {
 #[cfg(test)]
 #[path = "sender/sender_tests.rs"]
 mod sender_tests;
+
+#[cfg(test)]
+#[path = "sender/saturation_tests.rs"]
+mod saturation_tests;
+
+#[cfg(test)]
+#[path = "sender/observation_tests.rs"]
+mod observation_tests;

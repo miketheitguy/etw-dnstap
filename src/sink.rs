@@ -10,7 +10,9 @@ use std::{
 ///
 /// The sink writes them; the supervisor reads them for periodic and final
 /// reports. Every counter is monotonic except the gauges (`spool_bytes`,
-/// `spool_segments`) and the flags (`connected`, `spool_available`).
+/// `spool_segments`, `send_queue_depth_max`, `write_max_recent_us`,
+/// `spool_oldest_age_ms`) and the flags (`connected`, `spool_available`,
+/// `link_saturated`).
 #[derive(Default)]
 pub(crate) struct SinkStats {
     /// True while a Frame Streams session is established.
@@ -29,8 +31,35 @@ pub(crate) struct SinkStats {
     /// Socket writes that took at least the slow-write threshold (blocked on a
     /// slow receiver).
     pub(crate) slow_writes: AtomicU64,
-    /// Longest single socket write in microseconds.
+    /// Longest single socket write in microseconds, since the service started.
     pub(crate) write_max_us: AtomicU64,
+    /// Accumulator for `write_max_recent_us`: the longest socket write since the
+    /// sender thread last took it. Only the sender thread resets it (with a
+    /// swap); no reader does. Not reported.
+    pub(crate) write_window_max_us: AtomicU64,
+    /// Gauge: the longest single socket write, in microseconds, in the last 60
+    /// seconds. The sender thread recomputes it every second, so every reader
+    /// sees the same value.
+    pub(crate) write_max_recent_us: AtomicU64,
+    /// Framed bytes (length prefix and payload) that the link accepted into its
+    /// write path, whether live or replayed. Bytes still buffered, and so lost
+    /// if the connection then fails, are included. Excludes the Frame Streams
+    /// control frames.
+    pub(crate) bytes_sent: AtomicU64,
+    /// Gauge: the most blocks (about 64 KiB each) waiting in the send queue in
+    /// the last 60 seconds, sampled by the sender thread after each receive. A
+    /// lower bound.
+    pub(crate) send_queue_depth_max: AtomicU64,
+    /// Gauge: milliseconds since the oldest unsent spool segment was created, 0
+    /// with no backlog. Updated every second. An upper bound on the age of the
+    /// oldest unsent frame: the segment is older than any frame in it.
+    pub(crate) spool_oldest_age_ms: AtomicU64,
+    /// Flag: true while the spool backlog trends up with the link connected
+    /// (larger than ten samples ago, with at least seven of the ten steps
+    /// rising), which means the link carries less than the capture rate. Cleared
+    /// when the backlog is empty or no longer larger than ten samples ago. Holds
+    /// its value while the link is down.
+    pub(crate) link_saturated: AtomicBool,
     /// Frames discarded on the parser thread because the send queue was full.
     pub(crate) queue_dropped: AtomicU64,
     /// Frames appended to the spool.

@@ -272,6 +272,50 @@
                    nameID="340" name="Spool Available"
                    descriptionID="342" description="1 while a spool is in use and accepting data; 0 with --no-spool, an unusable folder, or while paused by an I/O error or the free-space floor."
                    type="perf_counter_large_rawcount" detailLevel="standard" />
+          <counter id="61" uri="EtwDnstap.Pipeline.BytesSent"
+                   nameID="344" name="Bytes Sent"
+                   descriptionID="346" description="Total framed dnstap bytes (length prefix and payload) that the receiver connection accepted since the service started, live and replayed. Includes bytes still buffered when a connection failed."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="62" uri="EtwDnstap.Pipeline.BytesSentPerSec"
+                   nameID="348" name="Bytes Sent/sec"
+                   descriptionID="350" description="Rate of framed dnstap bytes that the receiver connection accepted. Add the growth of Spool Bytes to get the capture rate in bytes."
+                   type="perf_counter_bulk_count" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="63" uri="EtwDnstap.Pipeline.SendQueuePeakDepth"
+                   nameID="352" name="Send Queue Peak Depth"
+                   descriptionID="354" description="Most blocks (about 64 KiB each) waiting in the send queue in the last 60 seconds. The queue holds 128. A lower bound."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="64" uri="EtwDnstap.Pipeline.SocketWritePeakMicroseconds"
+                   nameID="356" name="Socket Write Peak (microseconds)"
+                   descriptionID="358" description="Longest single socket write to the receiver, in microseconds, in the last 60 seconds. A write that blocks on a slow receiver shows here."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="65" uri="EtwDnstap.Pipeline.SpoolOldestAgeMilliseconds"
+                   nameID="360" name="Spool Oldest Age (milliseconds)"
+                   descriptionID="362" description="Milliseconds since the oldest unsent spool segment was created; 0 with no backlog. An upper bound on the age of the oldest unsent frame."
+                   type="perf_counter_large_rawcount" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="reference" />
+            </counterAttributes>
+          </counter>
+          <counter id="66" uri="EtwDnstap.Pipeline.LinkSaturated"
+                   nameID="364" name="Link Saturated"
+                   descriptionID="366" description="1 while the spool backlog trends up over 10 samples with the receiver connected, so the link carries less than the capture rate; otherwise 0. Keeps its value while the receiver is down."
+                   type="perf_counter_large_rawcount" detailLevel="standard" />
         </counterSet>
       </provider>
     </counters>
