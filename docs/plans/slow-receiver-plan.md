@@ -1,6 +1,6 @@
 # Slow and saturated receiver plan
 
-> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, and F open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2 complete on 2026-11-04 (review V4); L, W, and F open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
 
 This plan covers a receiver that is connected but slow, and a link that carries less
 than the capture rate. It records what the code does today and the cost of each
@@ -201,7 +201,7 @@ the main working tree, one at a time, so they do not conflict.
 | I1 | 4 | Implement the approved H1 and H2 design. Flip the C1 assertions. | `voltagent-lang:rust-engineer` | xhigh | Code and tests. |
 | I2 | 4 | Implement H4: remove the fixed `SO_SNDBUF`, so Windows send autotuning stays on. Update the comment in `src/network/sockopt.rs`, or remove the function. Never set the buffer to 0. No H3 work: G2 kept H3a. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
 | L | 5 | Lab run. Limit the rate and add delay on the Ubuntu receiver with `tc` (`tbf` and `netem`). Run at 10,000 and 50,000 queries per second, before and after. Record loss by counter, spool growth, and delivered latency. Add an outage on a host with every CPU busy, to measure the replay rate (V3-M-A). Confirm that the lab collector discards a frame cut by a closed connection. Needs explicit authorization: it changes lab state. | `general-purpose` | high | `docs/history/slow-receiver-validation.md`. |
-| B2 | 6, next | Rewind the spool on a failure. Unsent replay data goes back to the spool instead of being lost, so the replay credit can grow to about the FIFO depth, with no loss. This fixes V3-M-A. It changes when the spool deletes a segment (only after the link has taken all of it), so it needs a design note, tests, and its own review. | `voltagent-lang:rust-engineer` | xhigh | Design note, code, and tests. |
+| B2 | 6, done | Rewind the spool on a failure. Unsent replay data goes back to the spool instead of being lost, so the replay credit can grow to about the FIFO depth, with no loss. This fixes V3-M-A. It changes when the spool deletes a segment (only after the link has taken all of it), so it needs a design note, tests, and its own review. | `voltagent-lang:rust-engineer` | xhigh | Design note, code, and tests. |
 | T | deferred | Optional. Implement D3 with `TCP_INFO_v0`, and add the `SndLim*` shares only where `TCP_INFO_v1` is available (see R1). Start it only if an operator needs to know whether the receiver or the network path limits the link. | `voltagent-lang:rust-engineer` | medium | Code and tests. |
 | F | before the next lab campaign | A failed FINISH no longer shows in the service exit code or in `output_errors`. Change the lab lifecycle checks to verify STOP/FINISH on the receiver side, from the receiver log or a packet capture. The affected scripts are `summarize-pooled-stage.py`, `build-pooled-report.py`, `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `windows-parser-stage.ps1`, and `windows-startup-capacity.ps1`. | `voltagent-lang:python-pro` | medium | Script changes and tests. |
 | W | 5 | Correct the counter meaning for F6 in `docs/guide/monitoring.md` and `docs/design/data-path.md`. Update `docs/design/data-path.md`, `docs/guide/configuration.md`, `docs/guide/tuning.md`, and the animation if stage 5 changes. | `voltagent-dev-exp:documentation-engineer` | medium | Guide changes. |
@@ -451,7 +451,7 @@ blocker. Every V2 finding is fixed, and the acceptance target passes.
 
 | ID | Severity | Finding | State |
 | --- | --- | --- | --- |
-| V3-M-A | Major | Replay still waits for a router wake per 64 KiB batch. With 2 busy threads per CPU it drains below the capture rate, so after a spill on such a host the backlog grows to the cap. `HEAD` recovers on that load. A credit of 4 measured only 11 to 19 MB/s. | Accepted as a known limit (design risk 10, CHANGELOG). Task B2 fixes it. |
+| V3-M-A | Major | Replay still waits for a router wake per 64 KiB batch. With 2 busy threads per CPU it drains below the capture rate, so after a spill on such a host the backlog grows to the cap. `HEAD` recovers on that load. A credit of 4 measured only 11 to 19 MB/s. | Accepted as a known limit on 2026-11-03; fixed by task B2 on 2026-11-04 (see B2 and V4 results). |
 | V3-m-A | Minor | Two guides said a thread panic fails the stop. Release builds abort on a panic. | Fixed by the coordinator. |
 | V3-nit | Nit | The remediation guide left out `--no-spool`. | Fixed by the coordinator. |
 
@@ -459,6 +459,49 @@ V2 also found that the handshake test
 `accept_trickled_one_byte_at_a_time_still_completes_the_handshake` fails on `HEAD`
 under heavy load (2 of 20 runs). It is an older timing margin, not caused by this
 work.
+
+### B2 and V4 results
+
+Task B2 was designed, built, and reviewed (V4) on 2026-11-04. The design and the
+as-built notes are in `docs/design/slow-receiver.md`, section "B2. Spool rewind".
+
+- The spool keeps a read position and a delivered position. A segment is deleted
+  only when the delivered position passes it. At a link failure, and at a vanished
+  link, the read position goes back to the delivered position, so no replay frame
+  is lost.
+- The replay credit is 127 (was 2). A router pass reads at most 1 MiB. The return
+  channel holds 129 messages. `POOL_BLOCKS` stays 260.
+- `cursor.bin` holds the delivered position, saved at most once per router pass.
+  A normal stop repeats nothing; a crash or kill sends the read-ahead again.
+- With TLS, the unconfirmed piece of a live block goes back to the router. With a
+  spool, a link failure counts no loss.
+
+The builder measured the V2/V3 harness again, rebuilt from the review notes (release,
+loopback, 103-byte frames, 24 logical CPUs, Windows 11 client, 10 runs each). The
+baseline is `7ac0c1c` on the same host.
+
+| Case (MB/s) | After B2 | `7ac0c1c` |
+| --- | --- | --- |
+| Replay drain, idle | 725 to 787 | 600 to 914 |
+| Replay drain, 1 busy thread per CPU | 320 to 505 | 12.8 to 41.9 |
+| Replay drain, 2 busy threads per CPU | 51 to 368 (median 73.9) | 4.7 to 9.0 |
+| Paced 41, idle / 1 / 2 busy per CPU | 41.2 / 41.0 / 40.7, nothing spooled or dropped | 41.2 / 41.2 / 40.7; 2,548 frames dropped at 2 busy |
+
+The client OS has a shorter scheduler quantum than Windows Server, so lab task L
+repeats the replay case on the server.
+
+| ID | Severity | Finding | State |
+| --- | --- | --- | --- |
+| V4-M1 | Major | Pre-existing. At the TLS 1.2 AES-GCM record limit (2^24 records), rustls refuses each record but reports the bytes taken, so the link discarded every later frame silently. B2 would also count them in `replayed` and delete them from the spool. | Fixed: `tls_offer` ends the session when the queued ciphertext is smaller than the plaintext plus a record header and tag. The hand-back returns the data, and the reconnect has new keys. |
+| V4-m1 | Minor | A reset while a TLS 1.3 KeyUpdate is pending after a fully written record leaves the piece unconfirmed, so its frames can arrive twice. | Documented as design risk 19; negligible. |
+| V4-m2 | Minor | Two unreachable defensive paths counted a frame in both `disconnected_dropped` and `replayed`. | Fixed: `Spool::written_off`. |
+| V4-m3 | Minor | Three checkpoint and rewind call sites had no test that failed without them; four guards were redundant; the fuzz target did not rewind. | Fixed: tests added, redundant code removed, the fuzz target rewinds. |
+| V4-m4 | Minor | Six doc and comment statements disagreed with the code, among them the guide's bound on the spool data eviction cannot take (24.7 MiB at the 64 MiB cap, not 9 MiB). | Fixed. |
+| V4-m5 | Minor | A cursor write failure in `Spool::seal` is counted and logged. | Kept: a disk fault at stop was already counted and logged before B2. The no-output rule covers receiver problems. |
+
+After the fixes: 584 library tests pass (553 at `7ac0c1c`), and the release tests,
+clippy with `-D warnings` (default, `bench`, `diag-timing`, `fuzzing`), fmt, and the
+link check are clean.
 
 ### Decisions
 
@@ -470,6 +513,18 @@ work.
 - 2026-11-03, user, for finding V3-M-A: replay that is slower than capture on a host
   with about two runnable threads per CPU is accepted as a known limit for now. B2,
   rewinding the spool on a failure, is the next task.
+- 2026-11-04, user, for the B2 design (`docs/design/slow-receiver.md`, "B2. Spool
+  rewind"):
+  - Across a crash or kill, the replay read-ahead is sent again. `cursor.bin` holds the
+    delivered position, so delivery across a crash becomes at least once: the receiver
+    can see up to 127 replay batches twice. A normal stop repeats nothing.
+  - `replayed` counts a spool frame when the connection accepts it, not when the
+    router reads it. `disconnected_dropped` no longer counts replay frames at a
+    failure.
+  - With TLS, the unconfirmed piece of a live block goes back to the router at a
+    failure, like the cut frame, instead of counting as lost.
+  - While replay batches are in flight, eviction deletes the oldest segment that
+    has not been read. This is still H3a.
 - 2026-11-03, user, for finding I1-1: a problem with the receiver never makes a
   requested stop fail. When STOP/FINISH does not complete at shutdown, the service
   stops with exit code 0 and writes nothing about it, so the MSI recovery action does
