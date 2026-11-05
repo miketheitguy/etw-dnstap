@@ -331,7 +331,7 @@ where to experiment; they are not recoverable-time or speedup estimates.
 ## Retained evidence and final lab state
 
 The campaign root is
-[`target/analysis/symbol-wpr/executed-100000`](../../target/analysis/symbol-wpr/executed-100000/) (local artifact).
+[`target/analysis/symbol-wpr/executed-100000`](../../target/analysis/symbol-wpr/executed-100000) (local artifact).
 The following receipts make the findings reviewable:
 
 | Evidence | Campaign-relative location |

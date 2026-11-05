@@ -1,6 +1,6 @@
 # Spool encryption plan
 
-> **Status:** Approved 2026-11-04; Wave 1 (K, C, I), Wave 2 (G), and task R complete, Wave 3 task L open · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-05
+> **Status:** Historical (implemented). Approved 2026-11-04; Wave 1 (K, C, I), Wave 2 (G), and task R complete, Wave 3 task L open · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-05
 
 The spool writes dnstap frames to disk while the receiver is down or slow. Today they are
 plaintext Frame Streams files. This plan encrypts what the spool writes, and only that:

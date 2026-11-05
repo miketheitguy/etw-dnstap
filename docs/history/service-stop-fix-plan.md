@@ -14,7 +14,7 @@ The Rust review found no confirmed intake, queue-drain, or ownership defect.
 DNS-collector 3.2.3 inherits `reset-conn: true`; its pinned close helper uses
 zero linger after sending FINISH. That can discard unacknowledged data, but
 the failed connection's packet ordering has not been captured. See the
-[existing shutdown analysis](../performance/pooled-vm-trace-analysis.md).
+[existing shutdown analysis](pooled-vm-trace-analysis.md).
 
 Implement shutdown diagnostics and regression coverage, and update the
 documented receiver configuration. Preserve the original I/O error in its

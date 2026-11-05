@@ -1,5 +1,5 @@
 //! Spool segment record layer: AES-128-GCM records (task C of
-//! `docs/plans/spool-encryption-plan.md`).
+//! `docs/history/spool-encryption-plan.md`).
 //!
 //! This module is pure: it works on byte slices and a reused `Vec<u8>` and does no I/O,
 //! no clock reads, and no random numbers. The caller supplies the key, the key id, and

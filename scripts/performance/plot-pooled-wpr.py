@@ -97,7 +97,7 @@ def render(run_id, source, output, previews):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
-    parser.add_argument("--output", type=Path, default=ROOT / "docs/assets/performance")
+    parser.add_argument("--output", type=Path, default=ROOT / "docs/history/assets/performance")
     parser.add_argument("--previews", type=Path,
                         default=ROOT / "target/performance/pooled-graph-previews")
     args = parser.parse_args()

@@ -34,7 +34,7 @@ Own lockfile. The executable imports Windows system DLLs only; inspect its impor
 #### Run a measured scenario
 
 - Verify the DNS server, zone, and recursive upstream with independent address and TTL probes. The example targets the recorded DNS VM `172.27.215.163`: verify its identity first.
-- It sets a **global 1,000 QPS ceiling** across two workers, as in the campaigns ([review](../../docs/history/performance-review-2026-10-28.md), [pooled VM review](../../docs/performance/pooled-vm-performance-review.md)). Achieved QPS can be lower.
+- It sets a **global 1,000 QPS ceiling** across two workers, as in the campaigns ([review](../../docs/history/performance-review-2026-10-28.md), [pooled VM review](../../docs/history/pooled-vm-performance-review.md)). Achieved QPS can be lower.
 - Recursive: recreate the `rec.stress.test` forwarder and Ubuntu upstream from the [performance test plan](../../docs/history/performance-test-plan.md), then use `rec-names.txt`, `--mode recursive`, a new `--output-dir`.
 - Authoritative sends RD=0 and checks AA=1. Recursive sends RD=1 and checks RA=1. Both check the echoed RD bit.
 - Success: RCODE=NOERROR, at least one answer, expected flags, TC=0. Record bounds are checked. Answer address and TTL aren't, so run independent fixture probes.

@@ -19,7 +19,7 @@ tables, hashes, and collector artifacts retain their historical meaning.
 The measurement correction and independent local review are complete. The
 finding in the next section describes the defect before that correction; the
 [verification record](#verification-record) describes the implemented result.
-The later [native VM review](../performance/pooled-vm-performance-review.md) applies the corrected
+The later [native VM review](pooled-vm-performance-review.md) applies the corrected
 all-category accounting to actual DNS traffic.
 
 ## Confirmed finding and evidence

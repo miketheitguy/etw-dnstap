@@ -17,7 +17,7 @@ This is the method and decision record for the original unpaced experiment,
 completed on October 28, 2026 PDT (October 29 UTC). The
 [three-run review](performance-review-2026-10-28.md) retains its overload and
 upstream-fixture findings. Its 1,024-entry allocation-based ring and schema 1
-ledgers are historical; use the [pooled VM plan](../performance/pooled-vm-performance-plan.md)
+ledgers are historical; use the [pooled VM plan](pooled-vm-performance-plan.md)
 for the later pooled campaign and all-category accounting.
 
 The commands here contain recorded lab addresses and campaign IDs. Before

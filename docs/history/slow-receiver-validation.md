@@ -3,7 +3,7 @@
 > **Status:** Historical · **Evidence dated:** 2026-11-04 (timestamps in UTC) · **Commits:** `a06f6fd` ("before") and `13972d8` ("after") · **Reviewed:** 2026-11-04
 
 This record covers task L of the
-[slow and saturated receiver plan](../plans/slow-receiver-plan.md): the first lab
+[slow and saturated receiver plan](slow-receiver-plan.md): the first lab
 run of the link writer, the progress liveness rule, and the spool rewind
 ([design](../design/slow-receiver.md)). It answers four questions:
 
@@ -305,7 +305,7 @@ frame, which is what B1 and B2 assume.
    CPU was 25 to 31 %, and the service process used 1.5 to 3 % of a CPU. So the
    router took no parser block for about 1 s, and did not spill. Two reruns and
    an unshaped run had 0. Later analysis (2026-11-04, task L1D in the
-   [plan](../plans/slow-receiver-plan.md#l-1-and-l-6-results)) found no cause in
+   [plan](slow-receiver-plan.md#l-1-and-l-6-results)) found no cause in
    the code, and found that the whole service process ran for only about 1.5 % of
    a CPU in the second before the drops. The new counters
    `router_wait_max_recent_us` and `router_pass_max_recent_us`, and a WPR trace,
@@ -388,7 +388,7 @@ frame, which is what B1 and B2 assume.
 ## Follow-up runs L1 and L5 (2026-11-04)
 
 Two follow-up tasks on the same lab, after the router wait and pass counters
-([plan](../plans/slow-receiver-plan.md#l-1-and-l-6-results)) were built:
+([plan](slow-receiver-plan.md#l-1-and-l-6-results)) were built:
 
 - **L1.** Repeat the L case `after-50k-ctl-d0` (open item 1, finding L-1) with the new
   counters, a WPR trace, and guest and host counters, to find out what holds the
@@ -1394,7 +1394,7 @@ are in `scripts/` of the same folder.
 
 `scripts/performance/plot-tier-runs.py` drew one graph per run and one per tier from the
 `runs/<run-id>/` folders. They are in
-[`docs/assets/performance/tiers-2026-11-04/`](../assets/performance/tiers-2026-11-04/). A run graph
+[`docs/history/assets/performance/tiers-2026-11-04/`](assets/performance/tiers-2026-11-04). A run graph
 shows dns.exe CPU, the service CPU for each pipeline stage (ETW consumer, parser, sender, link), the
 loss per second at each failure point, and the fill of the event channel, the send queue, and the ETW
 buffers. A tier graph compares the runs of one tier: dns.exe CPU (mean and maximum), the mean CPU of
@@ -1403,13 +1403,13 @@ their `run.json` has `"tier_summary": false`, so they are not in the tier graphs
 
 | Tier | Tier graph | Run graphs |
 | --- | --- | --- |
-| 10,000 QPS (default) | [tier-10000.png](../assets/performance/tiers-2026-11-04/tier-10000.png) | [p01](../assets/performance/tiers-2026-11-04/p01-b32x64-cap131k-idle-10k.png), [p02](../assets/performance/tiers-2026-11-04/p02-b32x64-cap131k-idle-10k-r2.png), [p03](../assets/performance/tiers-2026-11-04/p03-b32x64-cap131k-busy12-10k.png), [p04](../assets/performance/tiers-2026-11-04/p04-b32x64-cap131k-idle-10k-r3.png), [p05](../assets/performance/tiers-2026-11-04/p05-b32x64-cap131k-busy12-10k-r2.png) |
-| 50,000 QPS | [tier-50000.png](../assets/performance/tiers-2026-11-04/tier-50000.png) | [busy12](../assets/performance/tiers-2026-11-04/t50-c131k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t50-c131k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t50-c131k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t50-c131k-idle-r3.png) |
-| 100,000 QPS | [tier-100000.png](../assets/performance/tiers-2026-11-04/tier-100000.png) | [busy12](../assets/performance/tiers-2026-11-04/t100-c524k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t100-c524k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t100-c524k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t100-c524k-idle-r3.png) |
-| 200,000 QPS | [tier-200000.png](../assets/performance/tiers-2026-11-04/tier-200000.png) | 131,072: [busy12](../assets/performance/tiers-2026-11-04/t200-c131k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t200-c131k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t200-c131k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t200-c131k-idle-r3.png); 262,144: [busy12](../assets/performance/tiers-2026-11-04/t200-c262k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t200-c262k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t200-c262k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t200-c262k-idle-r3.png) |
-| Warning checks | none | [w01](../assets/performance/tiers-2026-11-04/w01-cap1024-50k.png), [w02](../assets/performance/tiers-2026-11-04/w02-etw4k-max24-200k.png), [w03](../assets/performance/tiers-2026-11-04/w03-spool64-outage-50k.png), [w04](../assets/performance/tiers-2026-11-04/w04-spool64-tbf40-50k.png), [w05](../assets/performance/tiers-2026-11-04/w05-nospool-outage-50k.png), [w06](../assets/performance/tiers-2026-11-04/w06-nospool-tbf40-50k.png), [w07](../assets/performance/tiers-2026-11-04/w07-spooldeny-outage-50k.png), [w08](../assets/performance/tiers-2026-11-04/w08-spool64-stop-in-outage-50k.png), [w09](../assets/performance/tiers-2026-11-04/w09-nospool-stop-in-outage-50k.png), [w10](../assets/performance/tiers-2026-11-04/w10-etw4k-max24-stop-in-loss-200k.png), [w11](../assets/performance/tiers-2026-11-04/w11-cap1024-stop-in-loss-50k.png) |
+| 10,000 QPS (default) | [tier-10000.png](assets/performance/tiers-2026-11-04/tier-10000.png) | [p01](assets/performance/tiers-2026-11-04/p01-b32x64-cap131k-idle-10k.png), [p02](assets/performance/tiers-2026-11-04/p02-b32x64-cap131k-idle-10k-r2.png), [p03](assets/performance/tiers-2026-11-04/p03-b32x64-cap131k-busy12-10k.png), [p04](assets/performance/tiers-2026-11-04/p04-b32x64-cap131k-idle-10k-r3.png), [p05](assets/performance/tiers-2026-11-04/p05-b32x64-cap131k-busy12-10k-r2.png) |
+| 50,000 QPS | [tier-50000.png](assets/performance/tiers-2026-11-04/tier-50000.png) | [busy12](assets/performance/tiers-2026-11-04/t50-c131k-busy12.png), [idle r1](assets/performance/tiers-2026-11-04/t50-c131k-idle-r1.png), [r2](assets/performance/tiers-2026-11-04/t50-c131k-idle-r2.png), [r3](assets/performance/tiers-2026-11-04/t50-c131k-idle-r3.png) |
+| 100,000 QPS | [tier-100000.png](assets/performance/tiers-2026-11-04/tier-100000.png) | [busy12](assets/performance/tiers-2026-11-04/t100-c524k-busy12.png), [idle r1](assets/performance/tiers-2026-11-04/t100-c524k-idle-r1.png), [r2](assets/performance/tiers-2026-11-04/t100-c524k-idle-r2.png), [r3](assets/performance/tiers-2026-11-04/t100-c524k-idle-r3.png) |
+| 200,000 QPS | [tier-200000.png](assets/performance/tiers-2026-11-04/tier-200000.png) | 131,072: [busy12](assets/performance/tiers-2026-11-04/t200-c131k-busy12.png), [idle r1](assets/performance/tiers-2026-11-04/t200-c131k-idle-r1.png), [r2](assets/performance/tiers-2026-11-04/t200-c131k-idle-r2.png), [r3](assets/performance/tiers-2026-11-04/t200-c131k-idle-r3.png); 262,144: [busy12](assets/performance/tiers-2026-11-04/t200-c262k-busy12.png), [idle r1](assets/performance/tiers-2026-11-04/t200-c262k-idle-r1.png), [r2](assets/performance/tiers-2026-11-04/t200-c262k-idle-r2.png), [r3](assets/performance/tiers-2026-11-04/t200-c262k-idle-r3.png) |
+| Warning checks | none | [w01](assets/performance/tiers-2026-11-04/w01-cap1024-50k.png), [w02](assets/performance/tiers-2026-11-04/w02-etw4k-max24-200k.png), [w03](assets/performance/tiers-2026-11-04/w03-spool64-outage-50k.png), [w04](assets/performance/tiers-2026-11-04/w04-spool64-tbf40-50k.png), [w05](assets/performance/tiers-2026-11-04/w05-nospool-outage-50k.png), [w06](assets/performance/tiers-2026-11-04/w06-nospool-tbf40-50k.png), [w07](assets/performance/tiers-2026-11-04/w07-spooldeny-outage-50k.png), [w08](assets/performance/tiers-2026-11-04/w08-spool64-stop-in-outage-50k.png), [w09](assets/performance/tiers-2026-11-04/w09-nospool-stop-in-outage-50k.png), [w10](assets/performance/tiers-2026-11-04/w10-etw4k-max24-stop-in-loss-200k.png), [w11](assets/performance/tiers-2026-11-04/w11-cap1024-stop-in-loss-50k.png) |
 
-![200,000 QPS tier: dns.exe CPU, service CPU by stage, and loss by failure point for the 8 runs at 131,072 and 262,144](../assets/performance/tiers-2026-11-04/tier-200000.png)
+![200,000 QPS tier: dns.exe CPU, service CPU by stage, and loss by failure point for the 8 runs at 131,072 and 262,144](assets/performance/tiers-2026-11-04/tier-200000.png)
 
 ### Method
 

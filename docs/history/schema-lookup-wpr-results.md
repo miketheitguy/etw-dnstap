@@ -158,7 +158,7 @@ additional trial is inferred or requested by these results.
 ## Retained evidence
 
 The lookup campaign is
-[`target/analysis/symbol-wpr/single-lookup-100000`](../../target/analysis/symbol-wpr/single-lookup-100000/) (local artifact).
+[`target/analysis/symbol-wpr/single-lookup-100000`](../../target/analysis/symbol-wpr/single-lookup-100000) (local artifact).
 The [baseline report](symbolized-release-wpr-results.md) retains the earlier
 trial's source, capture, and interpretation. The lookup campaign preserves
 `build/READY.json`, `build/previous-source-diff.patch`, source snapshots,

@@ -5,7 +5,7 @@
 This historical report helps maintainers assess the allocation-based
 capacity-only candidate measured on October 29, 2026 UTC. Its binary, test
 counts, and installed-state descriptions apply at the recorded restoration
-cutoff. The [pooled VM review](../performance/pooled-vm-performance-review.md) records later
+cutoff. The [pooled VM review](pooled-vm-performance-review.md) records later
 validation of a different implementation; these results do not validate its
 pool or jumbo admission limits.
 

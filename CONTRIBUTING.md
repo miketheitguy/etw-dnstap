@@ -78,11 +78,10 @@ Index: [docs/README.md](docs/README.md). Every `docs/` file starts with:
 
 Current uses **Describes** (`main` at commit `abc1234`) for **Commit**. Historical gives the commit or "not recorded" ([Status values](docs/README.md#status-values)). Status picks the folder:
 
-- `guide/`, `design/` (diagrams in `design/diagrams/`): Current.
-- `performance/`: the current record, plus records the report generator links. [pooled-vm-performance-review.md](docs/performance/pooled-vm-performance-review.md) stays Current until a later native campaign.
-- `plans/`: Proposed, moved to `history/` when executed.
-- `history/`: Historical and Superseded.
-- `assets/`: `performance/` (`plot-pooled-wpr.py` output), `pipeline/` (`scripts/docs/pipeline-animation/Build-Animation.ps1`), `loss-solutioning/` (Historical).
+- `guide/`, `design/`: Current.
+- `plans/`: Proposed. Move a plan to `history/` when it's executed.
+- `history/`: Historical and Superseded, with their diagrams (`history/diagrams/`) and assets (`history/assets/`, including the `plot-pooled-wpr.py` graphs).
+- `assets/pipeline/`: the Current data-path GIF (`scripts/docs/pipeline-animation/Build-Animation.ps1`).
 
 Rules:
 
@@ -107,7 +106,7 @@ One job per document:
 - **Reference** (`configuration.md`, `tuning.md`, `monitoring.md`, `measurement-terms.md`): options, defaults, ranges, counters, log events.
 - **Diagnosis** (`troubleshooting.md`): symptom, cause, fix.
 - **Design** (`data-path.md`, `pooled-intake.md`, `ring-buffer.md`, `single-pass-decoder.md`): how code works, and why.
-- **Record** (`docs/performance/`, `docs/history/`): one campaign, review, or plan.
+- **Record** (`docs/history/`): one campaign, review, or plan.
 
 ##### Writing style
 

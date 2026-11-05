@@ -19,7 +19,7 @@ tables, hashes, and collector artifacts retain their historical meaning.
 The local source, analysis, and documentation follow-up is complete, with no
 remaining blocker from its independent review. The validation requirements and
 ownership table preserve that work's scope. The separate
-[native VM campaign](../performance/pooled-vm-performance-review.md) later supplied deployment
+[native VM campaign](pooled-vm-performance-review.md) later supplied deployment
 and performance evidence for the same reviewed candidate. Its results do not
 alter the pending-at-build status in immutable local receipts or resume the
 stopped original benchmark matrix.
@@ -203,8 +203,8 @@ validation and no measured production improvement is claimed. Later performance/
 its own scope, exact binary identity, all-category loss accounting, and matched
 authoritative/recursive evidence.
 
-The later, separately authorized [native VM campaign](../performance/pooled-vm-performance-plan.md)
-and [performance review](../performance/pooled-vm-performance-review.md) record actual pooled
+The later, separately authorized [native VM campaign](pooled-vm-performance-plan.md)
+and [performance review](pooled-vm-performance-review.md) record actual pooled
 candidate validation, including two clean five-minute high-rate confirmations.
 That campaign has its own backup, build/deployment identity, exact receiver and
 all-category loss gates, full native traces, qualifications, and restoration

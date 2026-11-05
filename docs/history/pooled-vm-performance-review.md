@@ -1,6 +1,6 @@
 # Pooled intake VM performance review
 
-> **Status:** Current (the latest completed native performance record; the campaign binaries are historical) · **Evidence dated:** October 29, 2026 (campaign `pooled-vm-20261029-0942`) · **Commit:** `2c62a9f` documents these results · **Reviewed:** 2026-11-01
+> **Status:** Historical (the latest completed native performance record) · **Evidence dated:** October 29, 2026 (campaign `pooled-vm-20261029-0942`) · **Commit:** `2c62a9f` documents these results · **Reviewed:** 2026-11-01
 
 This report helps maintainers assess pooled Event Tracing for Windows (ETW)
 capture under actual Windows DNS traffic.
@@ -82,13 +82,13 @@ See the [graph methods, numeric CSVs, provenance, and reproduction command](pool
 The recursive baseline retains one RA=false response and remains a strict
 failure despite zero DNS delivery loss and capture loss.
 
-![Authoritative 1,000 QPS baseline: WPR service and DNS CPU with achieved client QPS over sending seconds 5–295.](../assets/performance/pooled-auth-1000-300s-2.svg)
+![Authoritative 1,000 QPS baseline: WPR service and DNS CPU with achieved client QPS over sending seconds 5–295.](assets/performance/pooled-auth-1000-300s-2.svg)
 
-![Recursive 1,000 QPS baseline: WPR process CPU and achieved client QPS; one RA=false response remains a strict failure.](../assets/performance/pooled-rec-1000-300s-2.svg)
+![Recursive 1,000 QPS baseline: WPR process CPU and achieved client QPS; one RA=false response remains a strict failure.](assets/performance/pooled-rec-1000-300s-2.svg)
 
-![Authoritative 48,000 requested QPS confirmation: WPR process CPU and achieved client QPS; full-sending mean 47,303.24 QPS.](../assets/performance/pooled-auth-48000-300s-1.svg)
+![Authoritative 48,000 requested QPS confirmation: WPR process CPU and achieved client QPS; full-sending mean 47,303.24 QPS.](assets/performance/pooled-auth-48000-300s-1.svg)
 
-![Recursive 28,000 requested QPS confirmation: WPR process CPU and achieved client QPS; full-sending mean 27,758.24 QPS.](../assets/performance/pooled-rec-28000-300s-1.svg)
+![Recursive 28,000 requested QPS confirmation: WPR process CPU and achieved client QPS; full-sending mean 27,758.24 QPS.](assets/performance/pooled-rec-28000-300s-1.svg)
 
 ## Build and measured configuration
 
@@ -277,7 +277,7 @@ the counted 37.32 MiB pool/channel budget.
 | `ringfix-capacity8192-rec-300s-1` (capacity-only; partial memory-mode WPR) | recursive | 999.56 | 3,018.29 | 50.98% | 1.0799 / 0.5400 | 3.2344 / 299.505 | 4.582 | 0.770047 | 1.000x | 1 |
 | `pooled-rec-1000-300s-2` (pooled; full file-mode WPR; clean observer) | recursive | 999.68 | 3,033.18 | 51.71% | 1.0591 / 0.5296 | 3.1718 / 299.471 | 41.797 | 0.753663 | 0.979x | 1 |
 
-The preserved [capacity-only report](../history/ring-buffer-fix-validation.md) supplies
+The preserved [capacity-only report](ring-buffer-fix-validation.md) supplies
 the historical method and limitations. Original pooled 1,000 QPS runs remain
 in the full tables with their management-observer qualification; the clean
 repeats provide the primary pooled baseline resource measurements.

@@ -40,7 +40,7 @@ validation failure even when the send receives a response.
 Both panels cover sending seconds 5–295, with one-second bin midpoints joined
 by straight lines and no smoothing. The trace mapping uses the same nominal UTC
 subtraction as the saved broad native views; guest-host clock offset is not
-corrected. The [source manifest](../assets/performance/data/source-manifest.json)
+corrected. The [source manifest](assets/performance/data/source-manifest.json)
 records before/after clock bounds and timestamp precision. This approximate
 alignment cannot establish subsecond CPU/QPS causality or recover sub-sample
 query timing.
@@ -59,37 +59,37 @@ loss and zero capture loss; the recursive baseline retains its strict failure.
 
 ## Authoritative baseline
 
-![Authoritative 1,000 requested QPS baseline: WPR service and Windows DNS CPU above achieved client QPS over sending seconds 5–295.](../assets/performance/pooled-auth-1000-300s-2.svg)
+![Authoritative 1,000 requested QPS baseline: WPR service and Windows DNS CPU above achieved client QPS over sending seconds 5–295.](assets/performance/pooled-auth-1000-300s-2.svg)
 
-[Download SVG](../assets/performance/pooled-auth-1000-300s-2.svg) ·
-[Plotted numeric CSV](../assets/performance/data/pooled-auth-1000-300s-2.csv)
+[Download SVG](assets/performance/pooled-auth-1000-300s-2.svg) ·
+[Plotted numeric CSV](assets/performance/data/pooled-auth-1000-300s-2.csv)
 
 ## Recursive baseline
 
-![Recursive 1,000 requested QPS baseline: WPR process CPU and achieved client QPS; strict failure retains one RA=false response with no delivery or capture loss.](../assets/performance/pooled-rec-1000-300s-2.svg)
+![Recursive 1,000 requested QPS baseline: WPR process CPU and achieved client QPS; strict failure retains one RA=false response with no delivery or capture loss.](assets/performance/pooled-rec-1000-300s-2.svg)
 
-[Download SVG](../assets/performance/pooled-rec-1000-300s-2.svg) ·
-[Plotted numeric CSV](../assets/performance/data/pooled-rec-1000-300s-2.csv)
+[Download SVG](assets/performance/pooled-rec-1000-300s-2.svg) ·
+[Plotted numeric CSV](assets/performance/data/pooled-rec-1000-300s-2.csv)
 
 ## Authoritative high-rate confirmation
 
-![Authoritative 48,000 requested QPS confirmation: WPR service and DNS CPU above achieved client QPS; full-sending achieved rate is 47,303.24 QPS.](../assets/performance/pooled-auth-48000-300s-1.svg)
+![Authoritative 48,000 requested QPS confirmation: WPR service and DNS CPU above achieved client QPS; full-sending achieved rate is 47,303.24 QPS.](assets/performance/pooled-auth-48000-300s-1.svg)
 
-[Download SVG](../assets/performance/pooled-auth-48000-300s-1.svg) ·
-[Plotted numeric CSV](../assets/performance/data/pooled-auth-48000-300s-1.csv)
+[Download SVG](assets/performance/pooled-auth-48000-300s-1.svg) ·
+[Plotted numeric CSV](assets/performance/data/pooled-auth-48000-300s-1.csv)
 
 ## Recursive high-rate confirmation
 
-![Recursive 28,000 requested QPS confirmation: WPR service and DNS CPU above achieved client QPS; full-sending achieved rate is 27,758.24 QPS.](../assets/performance/pooled-rec-28000-300s-1.svg)
+![Recursive 28,000 requested QPS confirmation: WPR service and DNS CPU above achieved client QPS; full-sending achieved rate is 27,758.24 QPS.](assets/performance/pooled-rec-28000-300s-1.svg)
 
-[Download SVG](../assets/performance/pooled-rec-28000-300s-1.svg) ·
-[Plotted numeric CSV](../assets/performance/data/pooled-rec-28000-300s-1.csv)
+[Download SVG](assets/performance/pooled-rec-28000-300s-1.svg) ·
+[Plotted numeric CSV](assets/performance/data/pooled-rec-28000-300s-1.csv)
 
 ## Reproduce the exports
 
 The [plot renderer](../../scripts/performance/plot-pooled-wpr.py) reads the derivative
 manifest and verifies each source CSV hash before exporting the four SVGs,
-numeric CSV copies, source manifest, and [plot provenance](../assets/performance/plot-provenance.json).
+numeric CSV copies, source manifest, and [plot provenance](assets/performance/plot-provenance.json).
 SVG text remains selectable; SVGs contain no scripts or external resources.
 PNG previews stay under `target/performance/pooled-graph-previews` for visual review.
 Rendering uses Python 3.15 and Matplotlib 3.11.2, installed in a task-local virtual

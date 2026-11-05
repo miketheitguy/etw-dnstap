@@ -46,5 +46,5 @@ Keep the sender as it is: no automatic resend, no longer shutdown timer.
 ### Common Gotchas
 
 - **The mechanism is unproven.** No capture shows the FINISH and close order, and a passing test doesn't prove the fix.
-- **"framestream reset by sender" isn't a TCP reset.** It's written when STOP handling returns EOF ([pooled VM trace analysis](../performance/pooled-vm-trace-analysis.md#finish-only-lifecycle-failure-at-56k)).
+- **"framestream reset by sender" isn't a TCP reset.** It's written when STOP handling returns EOF ([pooled VM trace analysis](../history/pooled-vm-trace-analysis.md#finish-only-lifecycle-failure-at-56k)).
 - **The service exit code doesn't show a failed FINISH.** A lifecycle pass can hide record loss, and a complete record count can hide a failed FINISH.

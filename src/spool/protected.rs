@@ -1,5 +1,5 @@
 //! The spool AES key, encrypted in RAM between uses (option A of
-//! `docs/plans/spool-encryption-plan.md`).
+//! `docs/history/spool-encryption-plan.md`).
 //!
 //! A [`SegmentKey`] owns one [`LockedPage`] (never written to the pagefile,
 //! left out of WER crash dumps, zeroed on drop) with two areas:

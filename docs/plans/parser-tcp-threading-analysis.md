@@ -61,7 +61,7 @@ is a capacity illustration, not a measured arrival distribution, occupancy,
 stall tolerance, or proof that the queue filled. Bursts and jumbo-pool admission
 have separate limits.
 
-The [historical native traces](../performance/pooled-vm-trace-analysis.md) demonstrate useful
+The [historical native traces](../history/pooled-vm-trace-analysis.md) demonstrate useful
 analysis methods, but their binaries and workload differ. Their function,
 scheduling, and metrics conclusions do not identify this build's bottleneck.
 

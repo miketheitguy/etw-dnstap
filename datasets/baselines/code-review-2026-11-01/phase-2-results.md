@@ -406,7 +406,7 @@ Both were built with `cargo build --locked --release` and passed
   compared with the state saved before the first run and matched after the last
   ([guest-state.json](lab/guest-state.json)). The staging directory on the guest was removed.
 
-Scripts and raw data are in [lab/](lab/): `run-<run>.json` (one per run, with
+Scripts and raw data are in [lab/](lab): `run-<run>.json` (one per run, with
 the snapshots, the polls, and the event log lines), `runs.csv` (one row per
 run), `summary.csv` (medians and spreads), `guest-state.json`, and `tools/` (the
 scripts that ran the lab, and the analyzer; `tools/common.ps1` has the user

@@ -9,7 +9,7 @@ authoritative expected records = 2 * client_sent
 recursive expected records     = 2 * client_sent + upstream_queries + upstream_replies
 ```
 
-Check units before adding counters. Reports such as the [pooled VM review](../performance/pooled-vm-performance-review.md)
+Check units before adding counters. Reports such as the [pooled VM review](../history/pooled-vm-performance-review.md)
 keep their own binary, workload, and evidence cutoff; read the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note)
 before using a campaign harness.
 
@@ -112,5 +112,5 @@ State units and time windows with every comparison.
 - **Keep windows separate:** sending interval, client drain, service session, PDH-valid
   intervals, trace views. A partial-window CPU integral over whole-run records isn't an
   exact CPU cost; nominal UTC alignment can't establish subsecond causality. See
-  [graph methods](../performance/pooled-vm-performance-graphs.md#read-the-graphs),
-  [trace interpretation](../performance/pooled-vm-trace-analysis.md#interpret-scheduling-and-symbols).
+  [graph methods](../history/pooled-vm-performance-graphs.md#read-the-graphs),
+  [trace interpretation](../history/pooled-vm-trace-analysis.md#interpret-scheduling-and-symbols).

@@ -8,7 +8,7 @@ the [validation report](ring-buffer-fix-validation.md) preserves its outcome.
 References to deployment approval and the installed service describe that
 campaign. The later pooled implementation and VM validation are documented in
 [Pooled ETW intake](../design/pooled-intake.md) and the
-[pooled VM review](../performance/pooled-vm-performance-review.md).
+[pooled VM review](pooled-vm-performance-review.md).
 
 This plan depends on the historical service JSONL metrics writer. It cannot
 measure the TCP-only service; new campaigns through its helpers are disabled.

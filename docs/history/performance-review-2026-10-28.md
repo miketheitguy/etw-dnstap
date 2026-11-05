@@ -6,7 +6,7 @@ This historical report helps maintainers interpret the original unpaced
 experiment on the 1,024-entry allocation-based ring. All binary identities,
 test counts, and installed-state descriptions apply at its recorded restoration
 cutoff. For the later bounded pooled campaign, see the
-[pooled VM review](../performance/pooled-vm-performance-review.md).
+[pooled VM review](pooled-vm-performance-review.md).
 
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
@@ -332,7 +332,7 @@ smoke run verified failure propagation and durable final ledger behavior.
 The original review proposed these investigations. The
 [1,000 QPS repeat](performance-1000qps-review.md),
 [capacity experiment](ring-buffer-fix-validation.md), and
-[pooled campaign](../performance/pooled-vm-performance-review.md) record subsequent work;
+[pooled campaign](pooled-vm-performance-review.md) record subsequent work;
 their results do not change this report's measurements or establish a causal
 explanation for the original loss:
 

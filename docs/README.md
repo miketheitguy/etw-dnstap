@@ -16,16 +16,13 @@ Every Markdown and diagram file in `docs/` is listed, except `docs/assets/`.
 
 | Folder | Contents | Status |
 | --- | --- | --- |
-| [`guide/`](guide/) | Guides | Current |
-| [`design/`](design/) | Design | Current |
-| [`performance/`](performance/) | Latest native record | Current review, Historical support |
-| [`plans/`](plans/) | Unexecuted plans | Proposed, Approved, In progress |
-| [`history/`](history/) | Finished and superseded work | Historical, Superseded |
-| [`assets/performance/`](assets/performance/) | Graphs, CSVs, manifests | Generated |
-| [`assets/pipeline/`](assets/pipeline/) | Data-path GIF | Current |
-| [`assets/loss-solutioning/`](assets/loss-solutioning/) | Event-loss GIFs | Historical |
+| [`guide/`](guide) | Guides | Current |
+| [`design/`](design) | Design | Current |
+| [`plans/`](plans) | Unexecuted plans | Proposed |
+| [`history/`](history) | Finished and superseded work, with its diagrams and assets | Historical, Superseded |
+| [`assets/pipeline/`](assets/pipeline) | Data-path GIF | Current |
 
-Generator scripts write to `assets/performance/` and link to `performance/`, so those files stay there. See [Document types](../CONTRIBUTING.md#document-types), [Writing style](../CONTRIBUTING.md#writing-style).
+`history/assets/` holds the generated performance graphs (`performance/`) and the event-loss GIFs (`loss-solutioning/`). See [Document types](../CONTRIBUTING.md#document-types), [Writing style](../CONTRIBUTING.md#writing-style).
 
 #### Status values
 
@@ -60,25 +57,12 @@ A record without a known commit says *not recorded*. History starts at `08254d4`
 - [Single-pass decoder](design/single-pass-decoder.md)
 - [Measurement terms and result gates](design/measurement-terms.md)
 - [Slow and saturated receiver](design/slow-receiver.md)
-- [Code-architecture diagram](design/diagrams/code-architecture.drawio): editable, out of date (see [Common Gotchas](#common-gotchas))
-
-#### Performance
-
-[`performance/`](performance/) records the latest completed native campaign, `pooled-vm-20261029-0942`. It ran under LocalSystem, not the LocalService restricted-SID profile.
-
-- [Pooled intake VM performance review](performance/pooled-vm-performance-review.md)
-- [Pooled VM CPU and QPS graphs](performance/pooled-vm-performance-graphs.md)
-- [Pooled VM trace analysis](performance/pooled-vm-trace-analysis.md)
-- [Pooled intake VM performance plan](performance/pooled-vm-performance-plan.md)
-
-`target/performance/pooled-vm-20261029-0942` is a local artifact. `build-pooled-report.py` and `plot-pooled-wpr.py` generate the review and graphs: edit the script template and regenerate ([scripts/performance/README.md](../scripts/performance/README.md)).
+- [Code-architecture diagram](history/diagrams/code-architecture.drawio): editable, out of date (see [Common Gotchas](#common-gotchas))
 
 #### Plans
 
 A plan moves to `history/` when it's executed and merged.
 
-- [Spool encryption plan](plans/spool-encryption-plan.md): implemented on `spool-encryption` ([validation](history/spool-encryption-validation.md))
-- [Slow and saturated receiver plan](plans/slow-receiver-plan.md): in progress, findings L-7 and L-8 open
 - [Filtered DNS ramp plan](plans/filtered-ramp-plan.md): regenerate before the next campaign
 - [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md)
 - [Parallel parser workers plan](plans/parallel-parser-workers-plan.md)
@@ -102,6 +86,7 @@ A plan moves to `history/` when it's executed and merged.
 
 - [Performance test plan, Oct 28](history/performance-test-plan.md), [review](history/performance-review-2026-10-28.md)
 - [Repeat at 1,000 QPS: plan](history/performance-1000qps-plan.md), [review](history/performance-1000qps-review.md)
+- [Pooled intake VM campaign `pooled-vm-20261029-0942`](history/pooled-vm-performance-review.md) (LocalSystem, not the LocalService restricted-SID profile): [graphs](history/pooled-vm-performance-graphs.md), [trace analysis](history/pooled-vm-trace-analysis.md), [plan](history/pooled-vm-performance-plan.md). `build-pooled-report.py` and `plot-pooled-wpr.py` generate the review and graphs: edit the script template and regenerate ([scripts/performance/README.md](../scripts/performance/README.md)). The campaign directory `target/performance/pooled-vm-20261029-0942` is a local artifact.
 - [Single-pass four-CPU test plan](history/singlepass-four-core-test-plan.md)
 - [Single-pass four-CPU test results](history/singlepass-four-core-test-results.md)
 - [Filtered DNS ramp review](history/filtered-ramp-review.md): in-progress snapshot, no maximum rate
@@ -143,6 +128,8 @@ A plan moves to `history/` when it's executed and merged.
 #### Feature plans, executed
 
 - [No console output plan](history/no-console-output-plan.md), lab-validated 2026-11-03
+- [Spool encryption plan](history/spool-encryption-plan.md): implemented on `spool-encryption` ([validation](history/spool-encryption-validation.md))
+- [Slow and saturated receiver plan](history/slow-receiver-plan.md): findings L-7 and L-8 open ([validation](history/slow-receiver-validation.md))
 - [MSI installer plan](history/msi-installer-plan.md)
 - [Code review findings fix plan](history/code-review-findings-fix-plan.md): F1 to F12, MSI lab validation open
 - [Code review remediation plan](history/code-review-remediation-plan.md): 2026-11-01 findings, merged
@@ -156,7 +143,7 @@ A plan moves to `history/` when it's executed and merged.
 
 - [DNS workload provenance](../datasets/performance/README.md)
 - [DNS stress client](../tools/dns-stress/README.md)
-- `docs/assets/performance/`: graphs, CSV copies, `data/source-manifest.json`, `plot-provenance.json`
+- `docs/history/assets/performance/`: graphs, CSV copies, `data/source-manifest.json`, `plot-provenance.json`
 
 ### Common Gotchas
 

@@ -2,7 +2,7 @@
 
 > **Status:** Historical · **Evidence dated:** 2026-11-04 (lab guest local time, UTC-8; the UTC timestamps below read 2026-11-05 from 07:38) · **Commit:** `27a5464` (branch `spool-encryption`) · **Reviewed:** not yet
 
-This record covers task L of the [spool encryption plan](../plans/spool-encryption-plan.md): the
+This record covers task L of the [spool encryption plan](spool-encryption-plan.md): the
 first lab run of the encrypted spool, the key lifecycle in the MSI, and the two upgrade cases. It
 ran at 10,000 queries per second only (1 `dns-stress` thread, authoritative mode), with the
 default buffer settings of the service: `--etw-buffer-kib 32`, `--etw-min-buffers 12`,

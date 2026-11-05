@@ -49,7 +49,7 @@ the host, and states how far a session can drift.
 - This is a developer desktop, not the lab guest. Compare these numbers only
   with later runs on the same host. The system-level reference for the service
   stays
-  [docs/performance/pooled-vm-performance-review.md](../../../docs/performance/pooled-vm-performance-review.md).
+  [docs/history/pooled-vm-performance-review.md](../../../docs/history/pooled-vm-performance-review.md).
 - Conditions of every session: the benchmark process ran at High priority,
   pinned to logical processors 4 and 6 (two physical cores, no SMT siblings;
   mask `0x50`). The two cores serve the single-thread groups and, in

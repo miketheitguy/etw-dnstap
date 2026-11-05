@@ -601,7 +601,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - Lab performance scripts are hardened and consolidated under `scripts/`. Commit
   `f1475d8`. This commit does not change runtime behavior.
 - Documentation is reorganized into `docs/guide/`, `docs/design/`,
-  `docs/performance/`, `docs/plans/`, and `docs/history/` by status. Commit
+  `docs/history/`, `docs/plans/`, and `docs/history/` by status. Commit
   `a2ae289`. See the [documentation index](docs/README.md#layout).
 - **Breaking.** The service starts with the delayed automatic start type and a
   dependency on `DNS` (`sc.exe config EtwDnstap start= delayed-auto depend= DNS`).

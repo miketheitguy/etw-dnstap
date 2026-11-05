@@ -103,4 +103,4 @@ data, and output buffers. Payload pages are initialized before native delivery.
 - Live samples read separate relaxed atomics and can briefly break the [identities](../guide/monitoring.md); final samples follow native completion and the parser join.
 - Supervisor receiver references can hide a parser exit from `receiver_disconnected`; the supervisor still ends capture, reports it, and keeps the backlog in the final ledger.
 - Zero loss means every intake loss category is zero; invalid final statistics (see `etw_stats_errors`) can't establish it.
-- Local tests (no real TDH, no live ETW) cover ownership, wake, and allocation, and claim no throughput or CPU gain. See the [native VM performance review](../performance/pooled-vm-performance-review.md).
+- Local tests (no real TDH, no live ETW) cover ownership, wake, and allocation, and claim no throughput or CPU gain. See the [native VM performance review](../history/pooled-vm-performance-review.md).

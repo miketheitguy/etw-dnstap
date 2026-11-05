@@ -1,5 +1,5 @@
 //! Spool key: generation, wrapping with the installer's CNG machine key, and the
-//! `WrappedKey` registry value (task K of `docs/plans/spool-encryption-plan.md`).
+//! `WrappedKey` registry value (task K of `docs/history/spool-encryption-plan.md`).
 //!
 //! The spool encrypts its segments with a random AES-128 key. In memory it is
 //! a [`SegmentKey`]: 16 bytes in a locked page, encrypted with

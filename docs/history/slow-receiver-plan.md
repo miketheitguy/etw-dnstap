@@ -1,6 +1,6 @@
 # Slow and saturated receiver plan
 
-> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, F, L1D, L1, L5, S, and Q complete on 2026-11-04; findings L-7 and L-8 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** Historical (executed); Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, F, L1D, L1, L5, S, and Q complete on 2026-11-04; findings L-7 and L-8 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
 
 This plan covers a receiver that is connected but slow, and a link that carries less
 than the capture rate. It records what the code does today and the cost of each
@@ -227,7 +227,7 @@ After Wave 4:
 ## Out of scope
 
 - Several TCP connections to one receiver. See
-  [Parser and TCP threading analysis](parser-tcp-threading-analysis.md).
+  [Parser and TCP threading analysis](../plans/parser-tcp-threading-analysis.md).
 - Async I/O.
 - Changes to the dead-receiver path, except where H2 changes when a session ends.
 
@@ -511,7 +511,7 @@ link check are clean.
 
 Tasks W and F were done on 2026-11-04 (commits `9489e9b` and `ce363ca`). Task L ran on
 the lab on 2026-11-04 and is recorded in
-[Slow receiver lab validation](../history/slow-receiver-validation.md). It compared
+[Slow receiver lab validation](slow-receiver-validation.md). It compared
 `a06f6fd` ("before") with `13972d8` ("after") on Windows Server 2025 (6 vCPU), with the
 receiver shaped by `tc` (ingress `tbf` through `ifb`, and `netem` delay). Each query makes
 two frames, so 10,000 and 50,000 queries per second are 2.06 and 10.3 MB/s.
@@ -541,7 +541,7 @@ two frames, so 10,000 and 50,000 queries per second are 2.06 and 10.3 MB/s.
 | L-4 | Bytes the guest's TCP accepted that the receiver never got, at a failed connection (uncounted): up to about 1.08 MB on "before" (fixed 1 MiB send buffer), 0.58 MB on "after" on an idle host, and about 4.2 MB on "after" on a busy host (autotuned buffer). | Design risk 4, now measured. |
 | L-5 | Risk 9 (the 128-block FIFO at a Server quantum). Lab task L5: no spill and no `queue_dropped` in 8 unshaped runs, including 40.4 MB/s on an idle guest and 39.4 MB/s with 3 busy threads. With 12 busy threads the capture loses 97 % of events in ETW before the link, so 41.2 MB/s on a fully busy 6-vCPU guest cannot be produced. | Closed by task S. With the 256-block FIFO on 12 vCPUs, 22 of 22 runs had no spill and no `queue_dropped`, including 40.6 MB/s with 12 busy threads (guest 100 % busy) and 40.5 MB/s with 24 busy threads and a router wait of 198 ms, above one quantum. |
 | L-7 | Events reach the service about 2 s late, then come in one burst (lab task L1: 8 of 14 runs at 50,000 queries per second, and once unshaped at 200,000). ETW lost nothing and its buffers stayed at 6 to 11 % used. The service threads were idle, and the host, memory, and paging were ruled out. The burst overflowed the event channel in 4 runs (`intake_dropped` 23,549 to 60,439) and caused a spill on a shaped link. The load-start spill of L-2 also came with `intake_dropped` in 3 runs and may be the same delay. | Open. Capture side, outside the sending path. Cause unknown; one candidate is the timestamp ordering in `ProcessTrace`. Task S: the larger queues absorb it in the L-1 case. On 12 vCPUs it is worse; see L-8. |
-| L-8 | On the 12-vCPU guest at 100,000 queries per second, unshaped and idle, events received fell to near 0 for 1 to 3 s several times a run, then came back in a burst that overflowed the event channel in 7 of 7 runs: `intake_dropped` 7 to 12 % of events at 65,536, about half that at 131,072, and 0.2 to 1.3 % at 262,144. On 6 vCPUs the same load lost nothing. At 200,000 queries per second nothing was lost. ETW lost nothing, and the host was 47 to 51 % busy. | Open. The same late delivery as L-7, more often with more processors. One candidate: ETW delivers in timestamp order across the per-processor buffers, so a quiet processor holds delivery until its buffer is flushed (1 s). Smaller buffers ruled out: `--etw-buffer-kib 64` did not reduce the loss beyond the run-to-run spread (9.7 % against 9.3 % at 65,536, 2.5 % against 2.6 to 3.9 % at 131,072) and cost 3 to 4 points of service CPU at 200,000 queries per second; see [ETW buffer size 64 KiB](../history/slow-receiver-validation.md#etw-buffer-size-64-kib-at-100000-qps-2026-11-04). Still untested: the 1 s flush timer, the consumer thread being descheduled, and delays in DNS Server's own writes. Channel size: `--capacity` now accepts up to 524,288 (`3333703`). 262,144 dropped in 4 of 5 runs; 524,288 dropped nothing in 3 of 3, with the channel at most 53 % full and a working set of about 1.4 GB; see [Event channel 262,144 and 524,288](../history/slow-receiver-validation.md#event-channel-262144-and-524288-at-100000-qps-2026-11-04). The default stays 131,072. |
+| L-8 | On the 12-vCPU guest at 100,000 queries per second, unshaped and idle, events received fell to near 0 for 1 to 3 s several times a run, then came back in a burst that overflowed the event channel in 7 of 7 runs: `intake_dropped` 7 to 12 % of events at 65,536, about half that at 131,072, and 0.2 to 1.3 % at 262,144. On 6 vCPUs the same load lost nothing. At 200,000 queries per second nothing was lost. ETW lost nothing, and the host was 47 to 51 % busy. | Open. The same late delivery as L-7, more often with more processors. One candidate: ETW delivers in timestamp order across the per-processor buffers, so a quiet processor holds delivery until its buffer is flushed (1 s). Smaller buffers ruled out: `--etw-buffer-kib 64` did not reduce the loss beyond the run-to-run spread (9.7 % against 9.3 % at 65,536, 2.5 % against 2.6 to 3.9 % at 131,072) and cost 3 to 4 points of service CPU at 200,000 queries per second; see [ETW buffer size 64 KiB](slow-receiver-validation.md#etw-buffer-size-64-kib-at-100000-qps-2026-11-04). Still untested: the 1 s flush timer, the consumer thread being descheduled, and delays in DNS Server's own writes. Channel size: `--capacity` now accepts up to 524,288 (`3333703`). 262,144 dropped in 4 of 5 runs; 524,288 dropped nothing in 3 of 3, with the channel at most 53 % full and a working set of about 1.4 GB; see [Event channel 262,144 and 524,288](slow-receiver-validation.md#event-channel-262144-and-524288-at-100000-qps-2026-11-04). The default stays 131,072. |
 | L-6 | `send_queue_depth_max` read 33 to 61 at 10,000 queries per second in every "after" run, including the control, with no loss. | Closed by review V5: one ETW flush burst (about 2 MB, 31 to 33 blocks) waits while the idle router wakes. Not a defect. |
 
 ### L-1 and L-6 results
@@ -583,7 +583,7 @@ samples of the L run.
   wake showed only with every CPU busy (140 to 216 ms, L5).
 - **Lab tasks L1 and L5** ran on 2026-11-04 with the new counters, WPR traces, and
   host counters. Results:
-  [follow-up runs](../history/slow-receiver-validation.md#follow-up-runs-l1-and-l5-2026-11-04).
+  [follow-up runs](slow-receiver-validation.md#follow-up-runs-l1-and-l5-2026-11-04).
 
 ### S results
 
@@ -591,7 +591,7 @@ Task S, 2026-11-04. Commit `6c8dd65` set the send queue and the link FIFO to 256
 each (16 MiB each, 0.41 s at 41.2 MB/s), the block pool to 516 blocks (68.5 MiB), and the
 ETW defaults to `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128`. The
 lab then ran 22 runs on the guest at 12 vCPUs and 8 GiB static memory:
-[200,000 QPS sizing runs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
+[200,000 QPS sizing runs](slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
 
 - **Risk 9 is closed.** 22 of 22 runs had `spooled` 0 and `queue_dropped` 0. 9 of them
   put about 40 MB/s on the link. With 12 busy threads (guest 100 % busy) 40.6 MB/s
@@ -624,8 +624,8 @@ a review found in it. Commit `f070a41` added the CPU of the ETW consumer, parser
 sender, and link threads as counters and stats fields. Commit `1a7ecbe` added
 `scripts/performance/plot-tier-runs.py`. The lab then ran 32 runs on the guest at 12
 vCPUs and 8 GiB:
-[default and tier sizing runs](../history/slow-receiver-validation.md#default-and-tier-sizing-runs-on-12-vcpus-2026-11-04).
-The graphs are in `docs/assets/performance/tiers-2026-11-04/`.
+[default and tier sizing runs](slow-receiver-validation.md#default-and-tier-sizing-runs-on-12-vcpus-2026-11-04).
+The graphs are in `docs/history/assets/performance/tiers-2026-11-04/`.
 
 - **Defaults for 10,000 queries per second:** `--etw-buffer-kib 32 --etw-min-buffers 12
   --etw-max-buffers 64 --capacity 131072`. 5 of 5 runs lost nothing at any stage. At

@@ -14,7 +14,7 @@ The defaults fit up to 10,000 queries per second. Above that, pass tier settings
 --etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128 --capacity 524288
 ```
 
-Watch `ring_dropped` and `etw_lost` ([monitoring.md](monitoring.md)). Ranges: [configuration reference](configuration.md#options). Lab results: [docs/history/](../history/).
+Watch `ring_dropped` and `etw_lost` ([monitoring.md](monitoring.md)). Ranges: [configuration reference](configuration.md#options). Lab results: [docs/history/](../history).
 
 ### Steps / Configuration
 
@@ -39,7 +39,7 @@ Sized for 10,000 queries per second: about 20,000 events per second, 2.06 MB per
 - 131,072 events keeps a margin over the 27 % peak, since ETW sometimes delivers late in one burst.
 - Cost: ETW buffers at most 2 MiB, counted storage 283.03 MiB ([Storage](configuration.md#storage)), working set about 356 to 400 MB. The startup deadline grows with `--capacity` ([deadlines](configuration.md#startup-and-shutdown-deadlines)).
 
-![10,000 queries per second: CPU and loss, no loss](../assets/performance/tiers-2026-11-04/tier-10000.png)
+![10,000 queries per second: CPU and loss, no loss](../history/assets/performance/tiers-2026-11-04/tier-10000.png)
 
 #### Recommended settings for higher rates
 
@@ -53,19 +53,19 @@ Not defaults. Changing any ETW value or `--capacity` turns off the [rate warning
 
 ##### 50,000 queries per second
 
-![50,000 queries per second: CPU and loss, no loss](../assets/performance/tiers-2026-11-04/tier-50000.png)
+![50,000 queries per second: CPU and loss, no loss](../history/assets/performance/tiers-2026-11-04/tier-50000.png)
 
 ##### 100,000 queries per second
 
 ETW delivers in 1 to 3 second gaps then a burst. Smaller channels dropped events: 65,536 up to 1.40 million, 131,072 up to 0.46 million, 262,144 up to 0.16 million ([record](../history/slow-receiver-validation.md#event-channel-262144-and-524288-at-100000-qps-2026-11-04)).
 
-![100,000 queries per second: CPU and loss, no loss](../assets/performance/tiers-2026-11-04/tier-100000.png)
+![100,000 queries per second: CPU and loss, no loss](../history/assets/performance/tiers-2026-11-04/tier-100000.png)
 
 ##### 200,000 queries per second
 
 With 131,072 the busy run dropped 63,443 events (0.27 %) at the channel ([validation](../history/200k-qps-validation.md)).
 
-![200,000 queries per second: CPU and loss, no loss at 262,144](../assets/performance/tiers-2026-11-04/tier-200000.png)
+![200,000 queries per second: CPU and loss, no loss at 262,144](../history/assets/performance/tiers-2026-11-04/tier-200000.png)
 
 ##### Sizing for other rates
 

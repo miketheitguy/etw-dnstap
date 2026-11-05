@@ -543,7 +543,7 @@ python scripts/performance/build-pooled-report.py `
 ```
 
 > **Path changed:** the review now lives at
-> `docs/performance/pooled-vm-performance-review.md`. Pass that path as the
+> `docs/history/pooled-vm-performance-review.md`. Pass that path as the
 > output argument when you regenerate it. The command above is the recorded text.
 
 `--complete` requires exact receiver/domain/ledger closure for all 22 stages,

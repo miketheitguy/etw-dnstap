@@ -22,7 +22,7 @@ Confirm that `auth-names.txt` and `rec-names.txt` each contain 5,000 names and
 that the generated `provenance.json` records the source SHA-256 and fixture
 values. The directory also contains `relative-names.txt` and
 `auth.stress.test.dns`. Generation does not install the Windows DNS zone or
-Ubuntu upstream. Use the [campaign plan](../../docs/performance/pooled-vm-performance-plan.md)
+Ubuntu upstream. Use the [campaign plan](../../docs/history/pooled-vm-performance-plan.md)
 for the recorded fixture and readiness requirements, then the
 [DNS stress client guide](../../tools/dns-stress/README.md) to run load.
 

@@ -147,7 +147,7 @@ overlaps. All five retained packet-capture file hashes match their receipts.
 
 ## Evidence locations
 
-The local [campaign directory](../../target/performance/service-stop-20261030-0633/) (local artifact)
+The local [campaign directory](../../target/performance/service-stop-20261030-0633) (local artifact)
 contains the source receipts. These ignored `target/` artifacts are not part
 of a fresh checkout. The following paths exist under each arm's directory in
 `stages/`:

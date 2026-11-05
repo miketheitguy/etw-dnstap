@@ -31,7 +31,7 @@ WPA evidence and limitations. Measure loss,
 queue high water, and memory on the intended DNS host before selecting capacity
 for another workload.
 
-The later [pooled VM campaign](../performance/pooled-vm-performance-review.md) measures a
+The later [pooled VM campaign](pooled-vm-performance-review.md) measures a
 historical pooled binary with a JSONL metrics writer. The TCP-only service has
 no durable metrics export. It logs its counters to the event log and samples the
 deepest queue depth as a lower bound (`queue_depth_max`); see the

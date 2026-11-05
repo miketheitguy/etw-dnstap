@@ -6,7 +6,7 @@ This historical review helps maintainers compare the original paced workloads
 on the unchanged 1,024-entry ring. The runs and restoration occurred on
 October 29, 2026 UTC. Binary, test, and installed-state descriptions apply at
 that cutoff. Later results are in the [capacity validation](ring-buffer-fix-validation.md)
-and [pooled VM review](../performance/pooled-vm-performance-review.md).
+and [pooled VM review](pooled-vm-performance-review.md).
 
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its

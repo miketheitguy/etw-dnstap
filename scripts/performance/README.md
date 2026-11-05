@@ -108,7 +108,7 @@ Host (each has `--help`):
 ```powershell
 python -m venv target/plot-venv
 target/plot-venv/Scripts/pip install -r scripts/performance/requirements.txt
-target/plot-venv/Scripts/python scripts/performance/plot-tier-runs.py --runs <runs-root> --out docs/assets/performance [--tier 10000]
+target/plot-venv/Scripts/python scripts/performance/plot-tier-runs.py --runs <runs-root> --out docs/history/assets/performance [--tier 10000]
 ```
 
 Loss percent = lost events over events offered (received plus `etw_lost`). `"tier_summary": false` in `run.json` excludes a run. Test (same venv): `python -I scripts/performance/test_plot_tier_runs.py`.

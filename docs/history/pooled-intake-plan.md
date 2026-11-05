@@ -25,7 +25,7 @@ plan](pooled-intake-audit-plan.md). That follow-up also records the metrics fix
 and documentation reconciliation. At this plan's local-validation cutoff, no
 candidate VM deployment or native ETW performance validation had occurred.
 
-The later [pooled VM campaign](../performance/pooled-vm-performance-review.md) completed native
+The later [pooled VM campaign](pooled-vm-performance-review.md) completed native
 validation of the reviewed `98FD…1F5D7C` candidate, including both high-rate
 five-minute confirmations. That separate campaign does not execute or resume
 the stopped synthetic matrix. Treat the ownership table and commands here as
