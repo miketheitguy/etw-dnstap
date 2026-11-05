@@ -80,3 +80,14 @@ fn startup_budget_scales_with_capacity() {
     // SCM checkpoint inside every second of the allocation budget.
     assert_eq!(PoolManager::PROGRESS_INTERVAL, 16_384);
 }
+
+#[test]
+fn the_key_load_wait_is_well_inside_the_startup_budget() {
+    // A hung key store must end in a spool warning, not in the startup
+    // watchdog, which aborts the process. The wait leaves most of the base
+    // budget to the receiver connection (up to about 6 s) and the capture start.
+    assert!(KEY_LOAD_TIMEOUT * 2 <= STARTUP_BASE_BUDGET);
+    assert!(KEY_LOAD_TIMEOUT < CAPTURE_START_TIMEOUT);
+    // The wait is longer than a healthy RSA unwrap through key isolation.
+    assert!(KEY_LOAD_TIMEOUT >= Duration::from_secs(1));
+}

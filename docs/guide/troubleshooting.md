@@ -289,16 +289,18 @@ Event fields, and the repeat rule for messages that log more than once, are in
 ### Spool key errors
 
 The spool key is an AES key, stored wrapped in the registry value
-`HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey\WrappedKey`. The
+`HKLM\SOFTWARE\ETW-DNSTapService\Protect\WrappedKey`. A major upgrade keeps it, because it
+is outside the service key. The
 installer's CNG key `EtwDnstap Spool Key` wraps it. See
 [Spool encryption key](install.md#spool-encryption-key). The `reason` field of
 `spool key is not usable` names the failed step and its status code:
 
 | `reason` starts with | Cause | Fix |
 | --- | --- | --- |
-| ``cannot open the CNG key `EtwDnstap Spool Key` `` with `0x80090016` | `NTE_BAD_KEYSET`: the key is missing, or the service account has no access to it. The Key Storage Provider gives the same code for both. | Repair the MSI, which creates the key if it is missing and sets its DACL again. Then restart the service. |
+| ``cannot open the CNG key `EtwDnstap Spool Key` `` with `0x80090016` | `NTE_BAD_KEYSET`: the key is missing, or the service account has no access to it. The Key Storage Provider gives the same code for both. | Repair the MSI, which creates the key if it is missing and sets its DACL again. Then restart the service. **If the repair made a new key:** a new CNG key cannot unwrap an existing `WrappedKey`, so the service then logs `cannot unwrap the spool key`. Delete the `WrappedKey` value too, with the steps below the table. The service then makes a new spool key at the next start, deletes every segment, and counts their bytes in `spool_dropped_bytes`. |
+| ``the key store did not answer within 3s`` | The Key Storage Provider did not answer in time, for example while the `KeyIso` service starts. The service does not wait longer. It runs without a spool for this run. | Restart the service when the `KeyIso` service is running. If it repeats, check that the `EtwDnstap` service depends on `KeyIso`. |
 | ``cannot open the CNG key`` with another code, or ``cannot unwrap the spool key`` | The key exists, but the service cannot use it, or `WrappedKey` was made with another CNG key. | Repair the MSI. If the error stays, force a new key (below). |
-| ``cannot open the registry key`` with `Win32 error 2` | The `SpoolKey` subkey is missing. The service never creates it. | Repair the MSI. |
+| ``cannot open the registry key`` with `Win32 error 2` | The `HKLM\SOFTWARE\ETW-DNSTapService\Protect` key is missing. The service never creates it. | Repair the MSI. |
 | ``cannot open the registry key``, ``cannot read``, or ``cannot write the `WrappedKey` registry value`` with `Win32 error 5` | Access denied: the subkey DACL does not give the service SID query value and set value. | Repair the MSI, which sets the DACL again. |
 | ``the `WrappedKey` registry value is not valid`` | The value is damaged or was written by hand. | Force a new key (below). |
 | ``cannot make random spool key bytes`` | The system random number generator failed. | Restart the service. If it fails again, report it. |
@@ -309,7 +311,7 @@ an administrator deletes the value and restarts the service:
 
 ```powershell
 Stop-Service EtwDnstap
-Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey' -Name WrappedKey
+Remove-ItemProperty -Path 'HKLM:\SOFTWARE\ETW-DNSTapService\Protect' -Name WrappedKey
 Start-Service EtwDnstap
 ```
 

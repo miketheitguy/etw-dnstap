@@ -285,7 +285,8 @@ that the service does not create. See [Create the spool folder](install.md#creat
 
 **The spool stores DNS data.** Each frame is a complete dnstap message with client addresses and
 query names. The service encrypts every segment file with a key that only the service, SYSTEM,
-and Administrators can use. The folder ACL still keeps other accounts out. See
+and Administrators can use. The folder ACL still keeps other accounts out. The encryption does
+not protect an offline copy of a system volume that BitLocker does not protect. See
 [Encryption](#encryption) and [SECURITY.md](../../SECURITY.md).
 
 ### Requirements
@@ -321,13 +322,33 @@ The key:
   See [Install](install.md).
 - At its first start, the service makes a random AES key, wraps it with the RSA key, and stores the
   wrapped key in the registry value
-  `HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey\WrappedKey`.
+  `HKLM\SOFTWARE\ETW-DNSTapService\Protect\WrappedKey`. This key is outside the service key, so a
+  major upgrade keeps it. Uninstall deletes it.
 - At every start, the service unwraps the key once. It keeps the AES key schedule in one locked
-  memory page that is never written to the pagefile and is left out of crash dumps, and it zeroes
-  the page at stop.
+  memory page that is never written to the pagefile and is left out of WER crash dumps, and it
+  zeroes the page at stop.
 - If the key cannot be loaded, the service runs without a spool and logs one warning that names
-  the cause. It never writes the spool in plaintext. See
+  the cause. It never writes the spool in plaintext. The service waits at most 3 seconds for the
+  key store, so a key problem never holds the service start or stops the service. See
   [Spool key errors](troubleshooting.md#spool-key-errors).
+
+What the encryption protects against:
+
+- A copy or backup of the spool folder alone.
+- Other local accounts.
+- A disk, image, or backup of a volume that BitLocker protects, with a TPM. The copied-disk case
+  needs BitLocker.
+
+What it does not protect against:
+
+- An offline copy of a system volume without BitLocker. The key file of the machine key is
+  protected by machine DPAPI. The DPAPI secret is in the SECURITY and SYSTEM registry hives on
+  the same volume, and `WrappedKey` is in the SOFTWARE hive. Standard offline DPAPI tools recover
+  the RSA key, and with it every segment.
+- SYSTEM, Administrators, and code running as the service.
+- A VM saved state or memory checkpoint, the hibernation file (`hiberfil.sys`), and a complete
+  kernel memory dump. They contain the locked key page. The WER exclusion covers WER crash dumps
+  only.
 
 Startup deletes every segment the service cannot read, and counts its bytes in
 `spool_dropped_bytes`:

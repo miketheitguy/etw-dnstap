@@ -308,8 +308,8 @@ fn create_test_key(path: &str) {
 /// `WRITE_DAC`: the owner of a registry key has it without an ACE.
 const WRITE_DAC: u32 = 0x0004_0000;
 
-/// Volatile `HKCU\Software\<unique>\Parameters` and, if asked,
-/// `...\Parameters\SpoolKey`, the test copy of the installer's layout. All of
+/// Volatile `HKCU\Software\<unique>\ETW-DNSTapService` and, if asked,
+/// `...\ETW-DNSTapService\Protect`, the test copy of the installer's layout. All of
 /// it is deleted on drop.
 struct TestRegistry {
     root: String,
@@ -319,9 +319,9 @@ struct TestRegistry {
 impl TestRegistry {
     fn create(with_subkey: bool) -> Self {
         let root = format!(r"Software\{}", unique("EtwDnstapKeyTest"));
-        let parameters = format!(r"{root}\Parameters");
-        create_test_key(&parameters);
-        let subkey = format!(r"{parameters}\SpoolKey");
+        let product = format!(r"{root}\ETW-DNSTapService");
+        create_test_key(&product);
+        let subkey = format!(r"{product}\Protect");
         if with_subkey {
             create_test_key(&subkey);
         }
@@ -341,7 +341,7 @@ impl TestRegistry {
         read_value(Hive::CurrentUser, &self.subkey).expect("test value is readable")
     }
 
-    /// Replaces the DACL of the `SpoolKey` subkey, as the owner, who has
+    /// Replaces the DACL of the `Protect` subkey, as the owner, who has
     /// `WRITE_DAC` whatever the DACL says.
     fn set_subkey_dacl(&self, sddl: &str) -> Result<(), u32> {
         let descriptor = Descriptor::parse(sddl);
@@ -661,7 +661,7 @@ fn load_or_create_never_overwrites_a_value_it_cannot_use() {
 
 #[test]
 fn load_or_create_needs_the_subkey_and_does_not_create_it() {
-    // `Parameters` exists, `Parameters\SpoolKey` does not.
+    // `ETW-DNSTapService` exists, `ETW-DNSTapService\Protect` does not.
     let reg = TestRegistry::create(false);
     let location = KeyLocation {
         wrapping_key: "unused",
@@ -798,11 +798,8 @@ fn production_location_matches_the_installer() {
     assert_eq!(location.scope.flags(), NCRYPT_MACHINE_KEY_FLAG);
     assert_eq!(location.hive, Hive::LocalMachine);
     assert_eq!(location.hive.handle(), HKEY_LOCAL_MACHINE);
-    assert_eq!(
-        location.subkey,
-        r"SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey"
-    );
-    assert_eq!(location.subkey, SPOOL_KEY_SUBKEY);
+    assert_eq!(location.subkey, r"SOFTWARE\ETW-DNSTapService\Protect");
+    assert_eq!(location.subkey, PROTECT_SUBKEY);
     assert_eq!(VALUE_NAME, "WrappedKey");
     assert_eq!(SUBKEY_ACCESS, 0x3, "KEY_QUERY_VALUE | KEY_SET_VALUE only");
 }

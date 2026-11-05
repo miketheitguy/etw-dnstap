@@ -9,9 +9,10 @@
 //! DACL on every use.
 //!
 //! The installer creates the RSA key and its DACL, and the registry key
-//! `Parameters\SpoolKey` with its own DACL. This module only opens the RSA key,
-//! encrypts, decrypts, and reads and writes one registry value in that subkey,
-//! which it opens with `KEY_QUERY_VALUE | KEY_SET_VALUE` and no other right.
+//! `HKLM\SOFTWARE\ETW-DNSTapService\Protect` with its own DACL. The registry
+//! key lies outside the service key, so a major upgrade keeps it. This module
+//! only opens the RSA key, encrypts, decrypts, and reads and writes one registry
+//! value in that subkey, which it opens with `KEY_QUERY_VALUE | KEY_SET_VALUE` and no other right.
 //! It never calls `NCryptCreatePersistedKey`, `NCryptSetProperty`, or
 //! `NCryptFinalizeKey`, which the CNG documentation forbids in a service start
 //! routine, and it never creates a registry key.
@@ -49,6 +50,10 @@ use windows_sys::{
     core::HRESULT,
 };
 
+/// `ERROR_SUCCESS`, the only success `SECURITY_STATUS` of the `NCrypt` calls used
+/// here. Any other value, positive or negative, is a failure.
+const SEC_OK: HRESULT = 0;
+
 /// Bytes in an AES-128 key.
 pub(crate) const KEY_LEN: usize = KEY_LEN_U32 as usize;
 /// Bytes in a key id. Each segment header names the key id it was written with.
@@ -64,11 +69,10 @@ pub(crate) const WRAPPING_KEY_NAME: &str = "EtwDnstap Spool Key";
 /// The registry key under `HKEY_LOCAL_MACHINE` that holds [`VALUE_NAME`]. The
 /// installer creates it with a DACL that gives the service SID query value, set
 /// value, and read control; the service never creates it.
-pub(crate) const SPOOL_KEY_SUBKEY: &str =
-    r"SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey";
+pub(crate) const PROTECT_SUBKEY: &str = r"SOFTWARE\ETW-DNSTapService\Protect";
 /// Name of the `REG_BINARY` value that holds the wrapped spool key.
 pub(crate) const VALUE_NAME: &str = "WrappedKey";
-/// The only rights the service asks for on [`SPOOL_KEY_SUBKEY`].
+/// The only rights the service asks for on [`PROTECT_SUBKEY`].
 const SUBKEY_ACCESS: REG_SAM_FLAGS = KEY_QUERY_VALUE | KEY_SET_VALUE;
 
 /// The only `WrappedKey` layout version.
@@ -104,12 +108,12 @@ pub(crate) struct KeyLocation<'a> {
 
 impl KeyLocation<'static> {
     /// The installed service: the machine key [`WRAPPING_KEY_NAME`] and
-    /// `HKLM\` [`SPOOL_KEY_SUBKEY`].
+    /// `HKLM\` [`PROTECT_SUBKEY`].
     pub(crate) const PRODUCTION: Self = Self {
         wrapping_key: WRAPPING_KEY_NAME,
         scope: KeyScope::Machine,
         hive: Hive::LocalMachine,
-        subkey: SPOOL_KEY_SUBKEY,
+        subkey: PROTECT_SUBKEY,
     };
 }
 
@@ -472,7 +476,7 @@ fn open_provider() -> Result<NcryptHandle, KeyError> {
     // NUL-terminated wide string.
     let status =
         unsafe { NCryptOpenStorageProvider(&raw mut provider, MS_KEY_STORAGE_PROVIDER, 0) };
-    if status < 0 {
+    if status != SEC_OK {
         return Err(KeyError::ProviderOpen { status });
     }
     Ok(NcryptHandle(provider))
@@ -502,7 +506,7 @@ impl WrappingKey {
                 scope.flags() | NCRYPT_SILENT_FLAG,
             )
         };
-        if status < 0 {
+        if status != SEC_OK {
             return Err(KeyError::KeyOpen {
                 name: name.to_owned(),
                 status,
@@ -537,7 +541,7 @@ impl WrappingKey {
                 flags,
             )
         };
-        if sized < 0 {
+        if sized != SEC_OK {
             return Err(KeyError::Encrypt { status: sized });
         }
         let mut wrapped = vec![0_u8; needed as usize];
@@ -555,7 +559,7 @@ impl WrappingKey {
                 flags,
             )
         };
-        if status < 0 {
+        if status != SEC_OK {
             return Err(KeyError::Encrypt { status });
         }
         wrapped.truncate(written as usize);
@@ -589,7 +593,7 @@ impl WrappingKey {
                 NCRYPT_PAD_OAEP_FLAG | NCRYPT_SILENT_FLAG,
             )
         };
-        if status < 0 {
+        if status != SEC_OK {
             return Err(KeyError::Decrypt { status });
         }
         if written as usize != KEY_LEN {

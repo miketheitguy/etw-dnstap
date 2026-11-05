@@ -1,6 +1,6 @@
 # Spool encryption plan
 
-> **Status:** Approved 2026-11-04; Wave 1 (K, C, I) and Wave 2 (G) complete, Wave 3 (R, L) open · **Describes:** `main` at commit `64b5e91` · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-04
+> **Status:** Approved 2026-11-04; Wave 1 (K, C, I), Wave 2 (G), and task R complete, Wave 3 task L open · **Describes:** `main` at commit `64b5e91` · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-04
 
 The spool writes dnstap frames to disk while the receiver is down or slow. Today they are
 plaintext Frame Streams files. This plan encrypts what the spool writes, and only that:
@@ -12,7 +12,7 @@ segment before its frames go back to the router.
 | Topic | Decision |
 | --- | --- |
 | Cipher | AES-128-GCM, one record per spool append. GCM is CTR mode with an authentication tag, so a changed or torn record is detected and counted, not replayed. |
-| Key protection | A persisted, non-exportable RSA-3072 machine key in the Microsoft Software Key Storage Provider, created by the installer. Its DACL grants use to `NT SERVICE\EtwDnstap`. The AES key is wrapped with RSA-OAEP (SHA-256) and stored as `REG_BINARY` in the subkey `Parameters\SpoolKey`, which has its own DACL. The ACL of `Parameters` is not changed. |
+| Key protection | A persisted, non-exportable RSA-3072 machine key in the Microsoft Software Key Storage Provider, created by the installer. Its DACL grants use to `NT SERVICE\EtwDnstap`. The AES key is wrapped with RSA-OAEP (SHA-256) and stored as `REG_BINARY` in the value `WrappedKey` of `HKLM\SOFTWARE\ETW-DNSTapService\Protect`, which has its own DACL and lies outside the service key, so a major upgrade keeps it (user, 2026-11-04). Nothing under `Services\EtwDnstap\Parameters` is used. |
 | Disk I/O | Keep cached file I/O. No `FILE_FLAG_NO_BUFFERING`. |
 | Old segments | At startup, delete every segment the service cannot read (plaintext segments from earlier versions, and segments made with another key) and count them as dropped. |
 | Key in memory | Unwrapped once per start; the expanded key is held in one VirtualLock'ed page, excluded from WER dumps, zeroed on drop; never copied (user, 2026-11-04). |
@@ -38,24 +38,42 @@ segment before its frames go back to the router.
   place without allocating.
 - **Random keys:** `BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG` (Microsoft SDL
   cryptographic recommendations).
-- **Caveat:** the docs say a service must not call `NCryptCreatePersistedKey` or
-  `NCryptSetProperty` from its start routine. Only the installer creates the key and sets
-  its DACL; the service only opens it, encrypts with the public half, and decrypts.
+- **Caveat:** the Microsoft Learn note says a service must not call CNG key functions from
+  its start routine, because the call can deadlock with the key isolation service. The note
+  applies to `NCryptOpenKey`, `NCryptEncrypt`, `NCryptDecrypt`, and others, not only to
+  `NCryptCreatePersistedKey` and `NCryptSetProperty`. Only the installer creates the key and
+  sets its DACL, but the service still opens the key and decrypts at start. Mitigation (review
+  finding F2): the service depends on `KeyIso` (installer), and the code loads the key on a
+  helper thread with a 3-second wait, so a hung key store never holds `START_PENDING` and
+  never stops the service. See "Review R findings".
 
 ## Threat model
 
-Protects spool files and the wrapped key at rest against: a copied disk, VM image, or
-backup taken off the machine; and local accounts other than the service, SYSTEM, and
-Administrators. Does not protect against SYSTEM or Administrators (they can always use or
-re-ACL the key), a process running as the service, or memory inspection of the running
-service. The AES key is zeroed when the spool closes; `ring`'s expanded key schedule is not
-zeroed by `ring`.
+Protects spool files and the wrapped key at rest against: a copy or backup of the spool
+folder alone; local accounts other than the service, SYSTEM, and Administrators; and a disk,
+image, or backup of a volume that BitLocker protects, with a TPM. The copied-disk case needs
+BitLocker.
+
+Does not protect against:
+
+- An offline copy of a system volume without BitLocker. The key file of the Software KSP
+  machine key is protected by machine DPAPI. The DPAPI_SYSTEM LSA secret is in the SECURITY
+  and SYSTEM hives on the same volume, and `WrappedKey` is in the SOFTWARE hive. Standard offline
+  DPAPI tools recover the RSA key, and with it every segment.
+- SYSTEM or Administrators (they can always use or re-ACL the key), and a process running as
+  the service.
+- Memory inspection of the running service. The locked page is in physical memory, so a VM
+  saved state or memory checkpoint, `hiberfil.sys`, and a complete kernel memory dump contain
+  it. `WerRegisterExcludedMemoryBlock` covers WER crash dumps only.
+
+The AES key is zeroed when the spool closes; `ring`'s expanded key schedule is not zeroed by
+`ring`.
 
 Key in memory (task G): the service unwraps the key once for each start and builds the
 `ring` key schedule once. The raw key bytes are zeroed as soon as the schedule is built. The
 schedule lives in one page of its own (`src/spool/locked.rs`), locked with `VirtualLock` so it
 is never written to the pagefile, registered with `WerRegisterExcludedMemoryBlock` so WER
-leaves it out of crash dumps, shared by every writer and reader through an `Arc`, and zeroed
+leaves it out of WER crash dumps, shared by every writer and reader through an `Arc`, and zeroed
 before the page is freed. Limits: `ring` builds the schedule on the stack during
 construction, and it is moved into the page, so stack residue of it may remain; SYSTEM and
 Administrators can read the memory of the process; and the key is in the clear in that
@@ -71,14 +89,15 @@ unavailable, and the key is never kept in pageable memory.
    export policy 0 (not exportable), and the DACL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;<service SID>)`
    (read is what `NCryptDecrypt` needs; the agent confirms the minimum right in a test).
    If the key already exists, keep it and reapply the DACL. A major upgrade keeps it
-   (`UPGRADINGPRODUCTCODE`, as for the spool). Uninstall deletes the key and the
-   `Parameters\SpoolKey` subkey.
+   (`UPGRADINGPRODUCTCODE`, as for the spool). Uninstall deletes the key, the `Protect`
+   registry key, and the `ETW-DNSTapService` key when it is empty.
 2. **First start** (no `WrappedKey` value): `BCryptGenRandom` makes 16 key bytes and an 8-byte
    key id. `NCryptOpenKey` + `NCryptEncrypt` (OAEP, SHA-256) wrap the key. The service writes
    `WrappedKey` and deletes any segments it finds (they cannot be read with a new key).
 3. **Every start:** read `WrappedKey`, `NCryptDecrypt` unwraps it inside key isolation, the
    KSP checks the service token against the key DACL. The key lives in a type that zeroes
-   it on drop.
+   it on drop. The load runs on a helper thread and the start waits at most 3 seconds for it;
+   a timeout takes the failure path below.
 4. **Failure:** if the KSP key is missing or unusable, the registry cannot be read or
    written, or an existing `WrappedKey` does not unwrap, the spool is disabled with one
    warning that names the cause (the existing spool-unavailable path). The service keeps
@@ -89,15 +108,17 @@ unavailable, and the key is never kept in pageable memory.
 wrapping algorithm `u8` = 1 (RSA-OAEP-SHA256, with the key id as the OAEP label, so a
 changed key id fails the unwrap), wrapped length `u16`, wrapped key bytes.
 
-Registry (user decision, 2026-11-04: do not change the ACL of `Parameters`): the value
-`WrappedKey` lives in its own subkey,
-`HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey`. The installer
-creates `Parameters` only if it is missing, with its default inherited ACL, and never
-changes the ACL of `Parameters`. It creates the `SpoolKey` subkey with a protected DACL,
-`D:P(A;;KA;;;SY)(A;;KA;;;BA)(A;;0x20003;;;<service SID>)`: SYSTEM and Administrators full
-control, and the service SID query value, set value, and read control on that subkey only.
+Registry (user decision, 2026-11-04: store `WrappedKey` permanently in
+`HKLM\SOFTWARE\ETW-DNSTapService\Protect` with its own DACL; no upgrade copy): the value
+`WrappedKey` lives in the key `HKLM\SOFTWARE\ETW-DNSTapService\Protect`, outside the service
+key. Deleting a service deletes its own registry key, but not this one, so a major upgrade
+keeps the wrapped key with no copy step. The installer creates `Protect` with a protected
+DACL, `D:P(A;;KA;;;SY)(A;;KA;;;BA)(A;;0x20003;;;<service SID>)`: SYSTEM and Administrators
+full control, and the service SID query value, set value, and read control on that key only.
 The service runs with a restricted service SID, so its write needs this allow entry for the
-service SID. The service never creates the subkey.
+service SID. The service never creates the key. Uninstall deletes `Protect`, and the
+`ETW-DNSTapService` key when it is empty. Nothing under `Services\EtwDnstap\Parameters` is
+used.
 
 **Wave 1 findings (2026-11-04).**
 
@@ -106,14 +127,14 @@ service SID. The service never creates the subkey.
   A caller with no access gets `NTE_BAD_KEYSET`, the same code as a missing key. With read
   only, the service cannot change the key's DACL or delete it. SYSTEM and Administrators
   need `GENERIC_ALL` to reapply the DACL and to delete the key.
-- The service opens `Parameters\SpoolKey` with exactly `KEY_QUERY_VALUE | KEY_SET_VALUE`;
+- The service opens `Protect` with exactly `KEY_QUERY_VALUE | KEY_SET_VALUE`;
   with query value alone the open fails (error 5). On first start it also unwraps the new
   key once before writing it, so a key it could not read back is never stored.
-- Deleting a service deletes its whole registry key, so a major upgrade (which removes the
-  old product first) would delete `WrappedKey`. The installer copies the value to the
-  protected key `HKLM\SOFTWARE\EtwDnstapUpgrade` before the old service is deleted, and the
-  new install restores it and deletes the copy. The copy is still wrapped. The CNG key lies
-  outside the service key and is not affected. To be confirmed in the lab.
+- Deleting a service deletes its whole registry key, so a value under the service key would
+  not survive a major upgrade (which removes the old product first). The first design copied
+  the value during the upgrade. The user decision (2026-11-04) replaced it: store `WrappedKey` permanently in
+  `HKLM\SOFTWARE\ETW-DNSTapService\Protect` with its own DACL; no upgrade copy. The CNG key
+  lies outside the service key and is not affected. To be confirmed in the lab.
 
 ### Segment format, version 1
 
@@ -176,13 +197,29 @@ file sizes, which now include 32 bytes a segment and 28 bytes a record.
 
 | ID | Wave | Task | Agent (model) | Effort | Output |
 | --- | --- | --- | --- | --- | --- |
-| K | 1 | Key module `src/spool/key.rs`: random key and key id, wrap and unwrap with a named CNG key (`NCryptOpenStorageProvider`, `NCryptOpenKey`, `NCryptEncrypt`/`NCryptDecrypt` with OAEP SHA-256), `WrappedKey` encode and decode, registry read and write in the `Parameters\SpoolKey` subkey, zero on drop. Tests use a per-user test key that the test creates with a DACL for the current user, and delete it. | `voltagent-lang:rust-engineer` (Opus) | high | Code and tests. |
+| K | 1 | Key module `src/spool/key.rs`: random key and key id, wrap and unwrap with a named CNG key (`NCryptOpenStorageProvider`, `NCryptOpenKey`, `NCryptEncrypt`/`NCryptDecrypt` with OAEP SHA-256), `WrappedKey` encode and decode, registry read and write in the `Protect` key, zero on drop. Tests use a per-user test key that the test creates with a DACL for the current user, and delete it. | `voltagent-lang:rust-engineer` (Opus) | high | Code and tests. |
 | C | 1 | Record layer `src/spool/crypt.rs`: the segment format above with `ring` AES-128-GCM, writer and incremental reader over byte slices, no I/O. Known-answer tests, tamper tests for every field, and property tests (round trip, any truncation is `WriterPosition`/`CutOff`, any bit flip is `Corrupt`). | `voltagent-lang:rust-engineer` (Sonnet) | high | Code and tests. |
-| I | 1 | Installer: create the KSP key and its DACL, create the `Parameters\SpoolKey` subkey with its DACL (never change the ACL of `Parameters`), keep both on major upgrade, delete both on uninstall. Update `docs/guide/install.md`. | `voltagent-lang:powershell-5.1-expert` (Sonnet) | medium | Installer and provisioning changes. |
+| I | 1 | Installer: create the KSP key and its DACL, create `HKLM\SOFTWARE\ETW-DNSTapService\Protect` with its DACL, keep both on major upgrade (no upgrade copy), delete both on uninstall. Update `docs/guide/install.md`. | `voltagent-lang:powershell-5.1-expert` (Sonnet) | medium | Installer and provisioning changes. |
 | G | 2 | Integration: `SegmentWriter`/`SegmentReader` use C, the spool opens with K, failures take the spool-unavailable path, unreadable segments are deleted and counted at startup, cursor resume by logical offset. Update the guides, the design notes, and the CHANGELOG. | `voltagent-lang:rust-engineer` (Opus) | high | Done 2026-11-04: code, tests, docs. |
-| R | 3 | Security and correctness review of K, C, I, and G. | `voltagent-qa-sec:code-reviewer` (Opus) | high | Findings, then fixes. |
+| R | 3 | Security and correctness review of K, C, I, and G. | `voltagent-qa-sec:code-reviewer` (Opus) | high | Done 2026-11-04: findings F1 to F7, fixes in code, installer, and docs (see "Review R findings"). |
 | L | 3 | Lab: first start creates `WrappedKey`; restart and major upgrade keep it; an outage spills and replays with no loss; a changed byte in a segment is counted as corrupt; another local account cannot unwrap; spool throughput at 50,000 and 200,000 QPS. Needs explicit authorization. | `general-purpose` (Sonnet) | high | History section. |
 
 Wave 1 tasks touch separate files. `Cargo.toml` (the `ring` dependency and the
 `Win32_System_Registry` feature) and the module declarations in `src/spool.rs` are set
 up before Wave 1 starts, so the agents do not edit the same file.
+
+## Review R findings (2026-11-04)
+
+| ID | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| F1 | High | The docs said a copied disk, image, or backup cannot read the frames. That is wrong for a system volume without BitLocker: the machine DPAPI secret that protects the Software KSP key file is in the SECURITY and SYSTEM hives on the same volume, and `WrappedKey` is in the SOFTWARE hive. Offline DPAPI tools recover the RSA key and so every segment. The locked page also appears in VM saved states and checkpoints, `hiberfil.sys`, and complete kernel memory dumps. | Fixed in the docs. SECURITY.md, the Threat model above, `docs/guide/configuration.md#encryption`, the CHANGELOG, `docs/design/data-path.md`, and the comments in `src/spool/locked.rs` and `src/spool/crypt.rs` now say what is protected (a copy of the spool folder alone, other local accounts, a BitLocker volume) and what is not (an offline copy of an unencrypted system volume, SYSTEM, Administrators, VM saved state, the hibernation file, full memory dumps). They say "WER crash dumps" for the exclusion. |
+| F2 | Medium-High | The CNG calls ran in `connect` during `START_PENDING`. Microsoft Learn warns that a service must not call CNG key functions from its start routine (possible deadlock). The service-level startup watchdog (`service.rs`, armed with the full startup budget before `run_capture`) covered the call, but its expiry aborts the process, so a hung key store would have stopped the service. | Fixed in code and installer. Installer: the service depends on `KeyIso` (another agent). Code: `load_key_bounded` in `src/pipeline/supervisor.rs` runs the key source on the `spool-key-load` helper thread and waits at most `KEY_LOAD_TIMEOUT` (3 s, `src/pipeline/watchdog.rs`). A timeout, a panic, or a thread that cannot start is a key error: the one `spool key is not usable` warning and a run without a spool. The helper is not joined; a late answer is dropped, which zeroes it. The startup deadline formula (10 s plus one second per 16,384 slots) and the watchdog are unchanged. The wait is a third of the base budget, so a slow receiver connect, which has its own 2-second I/O timeouts, still fits the budget, and an ordinary key load takes milliseconds. Tests: a hung source, a panicking source, a timely source, and the timeout against the budget. |
+| F3 | Medium | The upgrade copy of `WrappedKey` was deleted while later install steps could still fail; a rollback then left no `WrappedKey` anywhere, and the next start made a new key and deleted every segment. | Superseded by the new location of `WrappedKey` (`HKLM\SOFTWARE\ETW-DNSTapService\Protect`, see Registry above). |
+| F4 | Low-Medium | Recreating the CNG key leaves an existing `WrappedKey` that the new key cannot unwrap. | Docs part: the troubleshooting row for `0x80090016` now says that after a repair that made a new key the administrator must also delete `WrappedKey`, which forces a new spool key; segments are then deleted and counted. The installer part is fixed by another agent. |
+| F5 | Low | The upgrade copy key inherited the HKLM\SOFTWARE ACL (Users read) until its DACL was set, and stayed readable if setting the DACL failed. | Superseded by the new location of `WrappedKey` (`HKLM\SOFTWARE\ETW-DNSTapService\Protect`, see Registry above). |
+| F6 | Low | A failed CNG key delete stopped the uninstall, unlike the other cleanup steps, which only warn. | Fixed in the installer by another agent. |
+| F7 | Informational | Two behaviors of the record layer. | Nothing exploitable. Removing the end record of a sealed segment reads as `EndOfFile`, the same as a crash, so the frames before it are replayed. `skip_to` walks the record headers, which are not authenticated until the record is decrypted, so a changed header can only move the resume point inside data that was already delivered. No change. |
+
+Minor: `src/spool/key.rs` now treats any `SECURITY_STATUS` other than `ERROR_SUCCESS` (0) as a
+failure, not only negative values. No documented success code other than 0 applies to the
+`NCrypt` calls used.

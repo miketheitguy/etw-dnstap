@@ -8,6 +8,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError},
     },
     thread,
     time::{Duration, Instant},
@@ -19,7 +20,7 @@ use super::{
     alerts::{Alerts, Limits, Readings, SpoolLimits},
     config::{CaptureArgs, DEFAULT_CAPACITY, DiagContext, PipelineConfig, SpoolSettings},
     parser::{ParseCounters, join_parser, spawn_parser},
-    watchdog::{CAPTURE_START_TIMEOUT, ShutdownWatchdog},
+    watchdog::{CAPTURE_START_TIMEOUT, KEY_LOAD_TIMEOUT, ShutdownWatchdog},
 };
 use crate::{
     etw::{
@@ -169,6 +170,7 @@ fn build_sink(
             check: fsinfo::check_spool_dir,
             free_space: fsinfo::available_bytes,
             key_source: production_key,
+            key_timeout: KEY_LOAD_TIMEOUT,
         },
     )
 }
@@ -187,6 +189,9 @@ struct SpoolDeps {
     check: SpoolCheck,
     free_space: FreeSpace,
     key_source: KeySource,
+    /// How long [`open_spool`] waits for `key_source`. Production passes
+    /// [`KEY_LOAD_TIMEOUT`].
+    key_timeout: Duration,
 }
 
 /// The service's spool key: the `WrappedKey` value, unwrapped with the
@@ -202,13 +207,52 @@ enum SpoolKeyError {
     Load(#[from] KeyError),
     #[error(transparent)]
     Memory(#[from] CryptError),
+    /// The key store did not answer in time. The helper thread may still be
+    /// inside the CNG call; the run goes on without a spool.
+    #[error("the key store did not answer within {0:?}")]
+    Timeout(Duration),
+    #[error("cannot start the thread that loads the spool key: {0}")]
+    Thread(io::Error),
+    #[error("the thread that loads the spool key ended without a result")]
+    Lost,
 }
 
-/// Unwraps the spool key with `source`, once, and builds the AES key schedule
-/// in its locked page. The raw key bytes are zeroed when `loaded` drops at the
-/// end of this function; only the locked schedule is kept.
-fn spool_key(source: KeySource) -> Result<(Arc<SegmentKey>, KeyOrigin), SpoolKeyError> {
-    let loaded = source()?;
+/// Calls `source` on a helper thread and waits at most `timeout` for it.
+///
+/// The CNG calls behind the key source must not block the service start. The
+/// documentation warns that a service which calls CNG from its start routine
+/// can deadlock with the key isolation service, and a hung call would hold the
+/// service in `START_PENDING` until the startup watchdog aborted the process.
+/// A key problem must never stop the service, so a late answer is a key error:
+/// the caller runs without a spool. The helper thread is not joined. If it
+/// finishes later, its result is dropped, which zeroes any key bytes in it.
+fn load_key_bounded(source: KeySource, timeout: Duration) -> Result<LoadedKey, SpoolKeyError> {
+    // A bound of one, so the helper never blocks on `send`, also when the
+    // receiver is gone.
+    let (send, receive) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("spool-key-load".into())
+        .spawn(move || {
+            // A closed channel returns the value in the error; dropping it
+            // zeroes the key.
+            drop(send.send(source()));
+        })
+        .map_err(SpoolKeyError::Thread)?;
+    match receive.recv_timeout(timeout) {
+        Ok(result) => Ok(result?),
+        Err(RecvTimeoutError::Timeout) => Err(SpoolKeyError::Timeout(timeout)),
+        Err(RecvTimeoutError::Disconnected) => Err(SpoolKeyError::Lost),
+    }
+}
+
+/// Unwraps the spool key with `source`, once, within `timeout`, and builds the
+/// AES key schedule in its locked page. The raw key bytes are zeroed when
+/// `loaded` drops at the end of this function; only the locked schedule is kept.
+fn spool_key(
+    source: KeySource,
+    timeout: Duration,
+) -> Result<(Arc<SegmentKey>, KeyOrigin), SpoolKeyError> {
+    let loaded = load_key_bounded(source, timeout)?;
     let key = SegmentKey::new(loaded.key.key_bytes(), loaded.key.key_id())?;
     let origin = if loaded.created {
         KeyOrigin::Created
@@ -261,7 +305,7 @@ fn open_spool(settings: &SpoolSettings, stats: &Arc<SinkStats>, deps: SpoolDeps)
         );
         return None;
     }
-    let (key, origin) = match spool_key(deps.key_source) {
+    let (key, origin) = match spool_key(deps.key_source, deps.key_timeout) {
         Ok(found) => found,
         Err(error) => {
             tracing::warn!(

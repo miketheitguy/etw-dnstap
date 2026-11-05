@@ -33,6 +33,10 @@ The uninstall exits with code `3010`. Restart the computer. ETW removes the gran
   and the Application event log source `EtwDnstap`. Existing entries stay.
 - `C:\ProgramData\EtwDnstap\spool` and `backup`, then the `EtwDnstap` folder if it is empty.
 - The registry key `HKLM\SOFTWARE\EtwDnstap`, which holds the remembered settings.
+- The spool key: the CNG key `EtwDnstap Spool Key` and the registry key
+  `HKLM\SOFTWARE\ETW-DNSTapService\Protect`, which holds `WrappedKey`. The uninstall also deletes
+  the `ETW-DNSTapService` key when it is empty. A major upgrade keeps both, because they lie
+  outside the service key.
 
 > **Warning.** The uninstall deletes the spool. Frames that the collector has not received are
 > lost. Check `spool_segments` in the last `output stopped` line first. See
@@ -165,9 +169,10 @@ Run it after step 1 and before step 8. Step 8 removes the manifest that the comm
 ## 7. Delete the spool folder
 
 The spool holds frames that never reached the collector. They include client addresses and
-query names. They are encrypted, and once the MSI uninstall deletes the spool key, nobody can
-read them. Delete them anyway so that no copy is left. Step 1 stopped the service, so nothing
-writes to the folder.
+query names. They are encrypted, and the MSI uninstall deletes the spool key. A copy of the
+folder alone is then unreadable. A copy of the system volume from before the uninstall still
+holds the key. Delete the folder anyway so that no copy is left. Step 1 stopped the service, so
+nothing writes to the folder.
 
 If the service ran with `--spool-dir`, set `$spoolDirectory` to that path. The binary path in
 the `sc.exe qc EtwDnstap` output from before step 3 shows it. The command stops if it finds a

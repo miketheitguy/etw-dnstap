@@ -285,10 +285,13 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 - **Breaking.** Spool segments are encrypted. Each block the spool stores is one
   AES-128-GCM record, and a segment starts with a 32-byte header instead of a Frame
   Streams START. Frames in memory and on the wire do not change. The installer must have
-  created the CNG key `EtwDnstap Spool Key` and the `Parameters\SpoolKey` registry subkey.
+  created the CNG key `EtwDnstap Spool Key` and the registry key
+  `HKLM\SOFTWARE\ETW-DNSTapService\Protect`, which holds `WrappedKey`. That key lies outside
+  the service key, so a major upgrade keeps the spool key. Uninstall deletes `Protect`, the
+  `ETW-DNSTapService` key when it is empty, and the CNG key.
   At its first start the service makes the AES key and stores it wrapped in the
   `WrappedKey` value. It unwraps the key once at each start and keeps the key schedule in
-  one locked memory page, left out of crash dumps and zeroed at stop. Without a usable key
+  one locked memory page, left out of WER crash dumps and zeroed at stop. Without a usable key
   the service runs without a spool and logs `spool key is not usable` (Event ID 26) with
   the cause; it never writes the spool in plaintext. The first start deletes the plaintext
   segments of earlier versions, and every segment it cannot decrypt, counts their bytes in
@@ -299,7 +302,15 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   file bytes, which include 28 bytes for each record. `cursor.bin` keeps its format, but its
   offset is now a position in the decrypted frames, so a cursor of an earlier version
   points into a deleted segment and is ignored. `spool in use` has a new field,
-  `new_spool_key`. See [Encryption](docs/guide/configuration.md#encryption) and
+  `new_spool_key`. The service waits at most 3 seconds for the key store. If it does not
+  answer, the service logs the same warning with the reason `the key store did not answer
+  within 3s` and runs without a spool; the service start is never held and the service
+  never stops because of a key problem. The encryption protects a copy of the spool folder
+  alone, other local accounts, and a volume that BitLocker protects. It does not protect an
+  offline copy of a system volume without BitLocker (the machine key is protected by
+  machine DPAPI, whose secret is on the same volume), SYSTEM, Administrators, a VM saved
+  state or checkpoint, the hibernation file, or a complete memory dump. See
+  [Encryption](docs/guide/configuration.md#encryption), [SECURITY.md](SECURITY.md), and
   [Spool key errors](docs/guide/troubleshooting.md#spool-key-errors).
 - **Breaking.** The service writes nothing at stop except `capture stopped` and
   `output stopped`. Three messages that operators may filter on are removed:

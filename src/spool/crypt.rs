@@ -102,8 +102,8 @@ const FIXED_PREFIX_LEN: usize = 8;
 /// The AES-128 key and the id that names it in segment headers.
 ///
 /// The expanded key schedule lives in one locked page of its own (see
-/// [`super::locked`]): never paged out, left out of crash dumps, and zeroed on
-/// drop. The type is not `Clone`: writers and readers share one key through an
+/// [`super::locked`]): never written to the pagefile, left out of WER crash
+/// dumps, and zeroed on drop. The type is not `Clone`: writers and readers share one key through an
 /// `Arc<SegmentKey>`, so the schedule is never copied. The raw key bytes are not
 /// kept; the owner of the 16-byte key (task K) zeroes its copy.
 pub(crate) struct SegmentKey {

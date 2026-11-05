@@ -159,12 +159,28 @@ spool opens. The service builds the AES key schedule from the 16 key bytes once,
 into one page of its own (`src/spool/locked.rs`), and drops the raw key bytes, which zeroes
 them. The page is locked with `VirtualLock`, so it is never written to the pagefile, and
 registered with `WerRegisterExcludedMemoryBlock`, so Windows Error Reporting leaves it out of
-crash dumps. Every writer and reader shares that one schedule through an `Arc`; nothing copies
+WER crash dumps. Every writer and reader shares that one schedule through an `Arc`; nothing copies
 it. When the spool closes, the page is zeroed, unlocked, and freed. Limits: `ring` expands the
 schedule on the stack before it is moved into the page, so stack residue can remain; the key
 is in the clear in the locked page while the service runs; SYSTEM and Administrators can read
-the memory of the process. If the key cannot be loaded or locked, the run continues without a
-spool, with one warning; the spool never writes plaintext.
+the memory of the process; and the locked page is in physical memory, so it is in a VM saved
+state or memory checkpoint, in `hiberfil.sys`, and in a complete kernel memory dump (the WER
+exclusion covers WER crash dumps only). If the key cannot be loaded or locked, the run continues
+without a spool, with one warning; the spool never writes plaintext.
+
+The key is loaded on a helper thread (`spool-key-load`) and the start waits at most 3 seconds
+for it (`KEY_LOAD_TIMEOUT`). The CNG calls must not hold the service start: Microsoft Learn warns
+that a service which calls them from its start routine can deadlock, and a hung call would end
+in the startup watchdog, which aborts the process. If the key store does not answer, the run
+continues without a spool, with the same one warning, and the helper's late answer is dropped,
+which zeroes it. The installer also makes the service depend on `KeyIso`.
+
+What the encryption protects against: a copy or backup of the spool folder alone, other local
+accounts, and a disk or image of a volume that BitLocker protects. What it does not protect
+against: an offline copy of a system volume without BitLocker, because the machine key file is
+protected by machine DPAPI, whose secret is in the SECURITY and SYSTEM hives on the same volume,
+and `WrappedKey` is in the SOFTWARE hive; SYSTEM and Administrators; and the memory copies above.
+See [SECURITY.md](../../SECURITY.md).
 
 At open, the spool reads the header of each leftover segment. It deletes the plaintext
 segments of earlier versions, other files, and segments sealed with another key, counts their

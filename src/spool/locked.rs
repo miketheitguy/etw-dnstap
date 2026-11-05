@@ -3,15 +3,16 @@
 //! [`Locked`] moves a value into a page that `VirtualAlloc` commits for it alone.
 //! `VirtualLock` keeps the page in physical memory, so the memory manager never
 //! writes it to the pagefile, and `WerRegisterExcludedMemoryBlock` (best effort)
-//! leaves it out of the crash dumps that Windows Error Reporting collects. On
-//! drop the value is dropped in place, the whole page is overwritten with zeros
-//! that the compiler cannot remove, and the page is unlocked, unregistered, and
-//! freed.
+//! leaves it out of Windows Error Reporting (WER) crash dumps. On drop the
+//! value is dropped in place, the whole page is overwritten with zeros that the
+//! compiler cannot remove, and the page is unlocked, unregistered, and freed.
 //!
 //! Limits: the value is built on the caller's stack and copied into the page,
 //! so stack residue of it can remain. SYSTEM, Administrators, and code in this
-//! process can read the page while it exists. A failed `VirtualLock` is an
-//! error: the value is never kept in pageable memory.
+//! process can read the page while it exists. The page is in physical memory, so
+//! it is in a VM saved state or memory checkpoint, in `hiberfil.sys`, and in a
+//! complete kernel memory dump; the WER exclusion covers WER dumps only. A
+//! failed `VirtualLock` is an error: the value is never kept in pageable memory.
 
 use std::{
     fmt, io,

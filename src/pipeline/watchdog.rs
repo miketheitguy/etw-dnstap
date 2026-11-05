@@ -20,8 +20,15 @@ pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 /// independently: a slow session start is not a slow stop. Both are 10 s today.
 pub(crate) const CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Longest the start waits for the spool key (the CNG calls that unwrap it). It
+/// is far below [`STARTUP_BASE_BUDGET`], so a hung key store ends in a spool
+/// warning and a service that runs without a spool, never in the startup
+/// watchdog, which would abort the process.
+pub(crate) const KEY_LOAD_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Startup budget before `--capacity` is known: the identity checks, the
-/// argument hand-over, the receiver connection, and the capture start.
+/// argument hand-over, the receiver connection, the bounded spool key load
+/// ([`KEY_LOAD_TIMEOUT`]), and the capture start.
 pub(crate) const STARTUP_BASE_BUDGET: Duration = Duration::from_secs(10);
 
 /// Startup budget: the base budget plus one second per

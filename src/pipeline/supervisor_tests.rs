@@ -34,6 +34,8 @@ fn deps(check: SpoolCheck, free_space: FreeSpace) -> SpoolDeps {
         check,
         free_space,
         key_source: test_key_source,
+        // Far above any real wait, so a loaded test machine never times out.
+        key_timeout: Duration::from_secs(30),
     }
 }
 
@@ -369,6 +371,84 @@ fn a_spool_key_error_runs_without_a_spool_and_logs_one_warning() {
     assert!(text.contains("0x80090016"), "{text}");
     // No segment or cursor file is made without a key.
     assert_eq!(std::fs::read_dir(dir.path()).expect("folder").count(), 0);
+}
+
+/// Set by [`slow_key_source`] when it has returned its key.
+static SLOW_KEY_DONE: AtomicBool = AtomicBool::new(false);
+
+/// A key store that answers long after the test's wait.
+fn slow_key_source() -> Result<LoadedKey, KeyError> {
+    thread::sleep(Duration::from_millis(600));
+    let key = test_key_source();
+    SLOW_KEY_DONE.store(true, Ordering::SeqCst);
+    key
+}
+
+#[test]
+fn a_hung_key_store_runs_without_a_spool_and_does_not_hold_the_start() {
+    use crate::spool::test_support::TestDir;
+    let dir = TestDir::new("key-timeout-spool");
+    let settings = SpoolSettings {
+        dir: dir.path().to_path_buf(),
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let mut spool = None;
+    let began = Instant::now();
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        spool = open_spool(
+            &settings,
+            &stats,
+            SpoolDeps {
+                key_source: slow_key_source,
+                key_timeout: Duration::from_millis(50),
+                ..deps(accept_any_folder, plenty_of_space)
+            },
+        );
+    });
+    let waited = began.elapsed();
+    // The wait ends at the timeout, not when the key store answers.
+    assert!(waited < Duration::from_millis(500), "{waited:?}");
+    assert!(
+        !SLOW_KEY_DONE.load(Ordering::SeqCst),
+        "the key store answered before the wait ended"
+    );
+    assert!(spool.is_none());
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    let text = lines.text();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("WARN"), "{text}");
+    assert_eq!(text.matches("etw_dnstap::event::26").count(), 1, "{text}");
+    assert!(text.contains("spool key is not usable"), "{text}");
+    assert!(text.contains("did not answer within 50ms"), "{text}");
+    // No segment or cursor file is made without a key.
+    assert_eq!(std::fs::read_dir(dir.path()).expect("folder").count(), 0);
+    // The late answer is dropped without effect.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !SLOW_KEY_DONE.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the helper thread never ended");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_key_source_that_panics_is_a_key_error_not_a_service_failure() {
+    fn panicking_key() -> Result<LoadedKey, KeyError> {
+        panic!("the key store failed");
+    }
+    let error =
+        load_key_bounded(panicking_key, Duration::from_secs(30)).expect_err("a panic gives no key");
+    assert!(matches!(error, SpoolKeyError::Lost), "{error}");
+    assert!(error.to_string().contains("ended without a result"));
+}
+
+#[test]
+fn a_key_that_arrives_in_time_is_used() {
+    let (key, origin) = spool_key(test_key_source, Duration::from_secs(30)).expect("key");
+    assert_eq!(origin, KeyOrigin::Loaded);
+    drop(key);
 }
 
 #[test]
