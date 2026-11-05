@@ -20,18 +20,23 @@ works after the service was deleted by hand. If that step fails, the script prin
 a WARNING line and continues with the grant removal and the folder removal.
 
 Install also creates the non-exportable RSA-3072 machine key 'EtwDnstap Spool Key' and the
-Parameters\SpoolKey registry subkey of the service, each with a protected DACL that is read
-back and checked. The ACL of Parameters is never changed. Uninstall deletes the key and the
-SpoolKey subkey. An existing key and an existing WrappedKey value are kept.
+registry key HKLM\SOFTWARE\ETW-DNSTapService\Protect, each with a protected DACL that is read
+back and checked. The service keeps its wrapped spool key in the WrappedKey value of Protect.
+That key is outside the service key and outside HKLM\SOFTWARE\EtwDnstap, so a major upgrade
+(which deletes both) keeps it. The installer never writes WrappedKey. It deletes a stale
+WrappedKey only when this install created a new CNG key, because the old value cannot be
+unwrapped by it. The installer does not create or change anything under
+Services\EtwDnstap\Parameters; it only deletes the obsolete Parameters\SpoolKey subkey that an
+earlier build made. Uninstall (a real removal, not a major upgrade) deletes Protect, then
+SOFTWARE\ETW-DNSTapService if it is empty, then the CNG key. A failure of any of these deletes is
+a WARNING and the uninstall continues. An existing CNG key is kept.
 
 Each change prints one line, which the MSI log keeps. Apart from that warning, the
 script exits 1 on the first failure and writes no secrets. It is run by WixQuietExec
 from the install folder, by full path, as SYSTEM, with no profile.
 
 .PARAMETER Action
-Install, Uninstall, or PreserveForUpgrade. PreserveForUpgrade runs when a major upgrade removes
-the old product. It copies the WrappedKey value out of the service key, because deleting the
-service deletes that key. The next Install puts it back.
+Install or Uninstall.
 
 .PARAMETER SessionName
 The --session-name of the service. 1 to 128 characters: ASCII letters, digits, '_', '.', '-'.
@@ -43,7 +48,7 @@ IP:port of the collector, as IPv4 or [IPv6]:port. Required for Install.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Install', 'Uninstall', 'PreserveForUpgrade')]
+    [ValidateSet('Install', 'Uninstall')]
     [string]$Action,
 
     # Case-sensitive and anchored with \z: the default ValidatePattern ignores case,
@@ -210,15 +215,16 @@ $DaclSecurityInformation = [System.Security.Cryptography.CngPropertyOptions]4
 $SpoolKeyServiceRight = 'GR'
 $SpoolKeyName = 'EtwDnstap Spool Key'
 $SpoolKeyBits = 3072
-# Parameters is created if it is missing and its ACL is never changed. The SpoolKey
-# subkey under it holds the WrappedKey value and has its own protected DACL.
-$ParametersSubKey = 'SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters'
-$SpoolKeySubKey = $ParametersSubKey + '\SpoolKey'
+# The wrapped spool key lives in HKLM\SOFTWARE\ETW-DNSTapService\Protect, value WrappedKey. It
+# is outside the service key (DeleteServices deletes that, Parameters included) and outside
+# HKLM\SOFTWARE\EtwDnstap (the old product deletes that), so a major upgrade keeps it. The
+# parent is created if missing with the default inherited ACL, which is never changed.
+$ProtectParentSubKey = 'SOFTWARE\ETW-DNSTapService'
+$ProtectSubKey = $ProtectParentSubKey + '\Protect'
 $WrappedKeyValueName = 'WrappedKey'
-# Holds a copy of the WrappedKey value while a major upgrade removes the old product.
-# Deleting the service (DeleteServices) deletes its whole registry key, Parameters
-# included. This key is outside HKLM\SOFTWARE\EtwDnstap, which the old product removes.
-$UpgradeBackupSubKey = 'SOFTWARE\EtwDnstapUpgrade'
+# An earlier build made this subkey. It is obsolete; install deletes it, best effort.
+# Nothing else under Parameters is created, read, or changed.
+$ObsoleteSpoolKeySubKey = 'SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey'
 
 function Get-Hklm {
     return [Microsoft.Win32.RegistryKey]::OpenBaseKey(
@@ -230,8 +236,8 @@ function Get-SpoolKeySddl([string]$ServiceSid) {
 }
 
 # The service queries and sets values (0x20003: query value, set value, read control)
-# on this subkey only. It cannot change the DACL or create subkeys.
-function Get-SpoolKeySubKeySddl([string]$ServiceSid) {
+# on Protect only. It cannot change the DACL or create subkeys.
+function Get-ProtectKeySddl([string]$ServiceSid) {
     return "D:P(A;;KA;;;SY)(A;;KA;;;BA)(A;;0x20003;;;$ServiceSid)"
 }
 
@@ -272,8 +278,10 @@ function Test-DaclMatches {
     }
 }
 
+# Returns $true if this run created the key, $false if it accepted an existing one.
 function Initialize-SpoolKey {
     [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [string]$Name = $SpoolKeyName,
         [string]$ServiceSid = $ServiceSidText,
@@ -282,6 +290,7 @@ function Initialize-SpoolKey {
     $provider = [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
     $openOptions = if ($MachineKey) { [System.Security.Cryptography.CngKeyOpenOptions]::MachineKey } else { [System.Security.Cryptography.CngKeyOpenOptions]::None }
     $key = $null
+    $created = $false
     try {
         if ([System.Security.Cryptography.CngKey]::Exists($Name, $provider, $openOptions)) {
             $key = [System.Security.Cryptography.CngKey]::Open($Name, $provider, $openOptions)
@@ -304,6 +313,7 @@ function Initialize-SpoolKey {
                 'Length', [BitConverter]::GetBytes([int]$SpoolKeyBits), [System.Security.Cryptography.CngPropertyOptions]::None)
             $creation.Parameters.Add($length)
             $key = [System.Security.Cryptography.CngKey]::Create([System.Security.Cryptography.CngAlgorithm]::Rsa, $Name, $creation)
+            $created = $true
             Write-Step "Created key '$Name' (RSA-$SpoolKeyBits, not exportable)."
         }
 
@@ -322,6 +332,9 @@ function Initialize-SpoolKey {
     finally {
         if ($null -ne $key) { $key.Dispose() }
     }
+    # True when this run created the key. The caller needs it: a WrappedKey that was
+    # wrapped by an older key cannot be unwrapped by a new one.
+    return $created
 }
 
 function Remove-SpoolKey {
@@ -332,17 +345,24 @@ function Remove-SpoolKey {
     )
     $provider = [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
     $openOptions = if ($MachineKey) { [System.Security.Cryptography.CngKeyOpenOptions]::MachineKey } else { [System.Security.Cryptography.CngKeyOpenOptions]::None }
-    if (-not [System.Security.Cryptography.CngKey]::Exists($Name, $provider, $openOptions)) {
-        Write-Step "No key '$Name'."
-        return
+    # A failure is a warning, as for the group membership: the uninstall must finish.
+    try {
+        if (-not [System.Security.Cryptography.CngKey]::Exists($Name, $provider, $openOptions)) {
+            Write-Step "No key '$Name'."
+            return
+        }
+        $key = [System.Security.Cryptography.CngKey]::Open($Name, $provider, $openOptions)
+        $key.Delete()   # Delete also releases the handle.
+        Write-Step "Deleted key '$Name'."
     }
-    $key = [System.Security.Cryptography.CngKey]::Open($Name, $provider, $openOptions)
-    $key.Delete()   # Delete also releases the handle.
-    Write-Step "Deleted key '$Name'."
+    catch {
+        Write-Step ("WARNING: could not delete the CNG key '$Name'. The uninstall continues. " +
+            'Delete the key by hand. Error: ' + $_.Exception.Message)
+    }
 }
 
 # Opens a key with only the rights asked for, so that a key whose DACL gives less than
-# KEY_READ (the SpoolKey subkey in the test) can still be checked. Returns $null if missing.
+# KEY_READ (the Protect key in the test) can still be checked. Returns $null if missing.
 function Open-RegistryKey {
     param($Hive, [string]$Path, [System.Security.AccessControl.RegistryRights]$Rights, [bool]$Writable = $false)
     $check = if ($Writable) { [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree } else { [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadSubTree }
@@ -371,117 +391,119 @@ function Set-RegistryKeyDacl {
     Test-DaclMatches -ActualDescriptor $readBack -ExpectedSddl $Sddl -What $What
 }
 
-# Creates Parameters only if it is missing, with the default inherited ACL, and never
-# changes its ACL. Creates the SpoolKey subkey and sets its protected DACL on every run.
-# The WrappedKey value is never touched.
-function Initialize-SpoolKeySubKey {
+# Creates SOFTWARE\ETW-DNSTapService if it is missing (default ACL, never changed). Creates
+# Protect with its protected DACL in the CreateSubKey call, so it never exists with the
+# inherited ACL. Reapplies and checks the DACL on every run. Never writes WrappedKey.
+# -KeyWasCreated: this install made a new CNG key, so a WrappedKey that is already there was
+# wrapped by an older key and cannot be unwrapped. It is deleted.
+function Initialize-ProtectKey {
     [CmdletBinding()]
     param(
         $Hive = (Get-Hklm),
-        [string]$ParametersPath = $ParametersSubKey,
-        [string]$SubKeyPath = $SpoolKeySubKey,
-        [string]$ServiceSid = $ServiceSidText
+        [string]$ParentPath = $ProtectParentSubKey,
+        [string]$ProtectPath = $ProtectSubKey,
+        [string]$ServiceSid = $ServiceSidText,
+        [bool]$KeyWasCreated = $false
     )
-    $parameters = Open-RegistryKey $Hive $ParametersPath $RegistryExists
-    if ($null -eq $parameters) {
-        $Hive.CreateSubKey($ParametersPath).Dispose()
-        Write-Step "Created registry key $ParametersPath (default ACL, not changed)."
+    $parent = Open-RegistryKey $Hive $ParentPath $RegistryExists
+    if ($null -eq $parent) {
+        $Hive.CreateSubKey($ParentPath).Dispose()
+        Write-Step "Created registry key $ParentPath (default ACL, not changed)."
     }
     else {
-        $parameters.Dispose()
-        Write-Step "Accepted existing registry key $ParametersPath (its ACL is not changed)."
+        $parent.Dispose()
+        Write-Step "Accepted existing registry key $ParentPath (its ACL is not changed)."
     }
-    $subKey = Open-RegistryKey $Hive $SubKeyPath $RegistryExists
-    if ($null -eq $subKey) {
-        $Hive.CreateSubKey($SubKeyPath).Dispose()
-        Write-Step "Created registry key $SubKeyPath."
+    $sddl = Get-ProtectKeySddl $ServiceSid
+    $existing = Open-RegistryKey $Hive $ProtectPath $RegistryExists
+    if ($null -eq $existing) {
+        $security = New-Object System.Security.AccessControl.RegistrySecurity
+        $security.SetSecurityDescriptorSddlForm($sddl, [System.Security.AccessControl.AccessControlSections]::Access)
+        $Hive.CreateSubKey($ProtectPath, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, $security).Dispose()
+        Write-Step "Created registry key $ProtectPath with its protected DACL."
     }
     else {
-        $subKey.Dispose()
-        Write-Step "Accepted existing registry key $SubKeyPath (an existing $WrappedKeyValueName value is kept)."
+        $existing.Dispose()
+        Write-Step "Accepted existing registry key $ProtectPath (an existing $WrappedKeyValueName value is kept)."
     }
-    Set-RegistryKeyDacl -Hive $Hive -SubKey $SubKeyPath -Sddl (Get-SpoolKeySubKeySddl $ServiceSid) -What "registry key $SubKeyPath"
-    Write-Step "Set and checked the DACL of $SubKeyPath : SYSTEM and Administrators full control, service SID $ServiceSid query value, set value, read control."
-}
-
-# Upgrade, old product, before DeleteServices: copy WrappedKey out of the service key.
-# A failure is a warning: the service then makes a new spool key at its next start.
-function Save-WrappedKeyForUpgrade {
-    [CmdletBinding()]
-    param(
-        $Hive = (Get-Hklm),
-        [string]$SubKeyPath = $SpoolKeySubKey,
-        [string]$BackupPath = $UpgradeBackupSubKey,
-        [string]$BackupSddl = 'D:P(A;;KA;;;SY)(A;;KA;;;BA)'
-    )
-    try {
-        $key = Open-RegistryKey $Hive $SubKeyPath $RegistryReadValue
-        $value = $null
-        if ($null -ne $key) {
-            try { $value = $key.GetValue($WrappedKeyValueName, $null) } finally { $key.Dispose() }
-        }
-        if ($value -isnot [byte[]]) {
-            Write-Step "No $WrappedKeyValueName value in $SubKeyPath to keep for the upgrade."
-            return
-        }
-        $backup = $Hive.CreateSubKey($BackupPath)
-        try { $backup.SetValue($WrappedKeyValueName, $value, [Microsoft.Win32.RegistryValueKind]::Binary) } finally { $backup.Dispose() }
-        Set-RegistryKeyDacl -Hive $Hive -SubKey $BackupPath -Sddl $BackupSddl -What "registry key $BackupPath"
-        Write-Step "Kept the $WrappedKeyValueName value in $BackupPath for the upgrade ($($value.Length) bytes)."
-    }
-    catch {
-        Write-Step ("WARNING: could not keep the $WrappedKeyValueName value for the upgrade. " +
-            'The service makes a new spool key at its next start and deletes the spool segments it cannot read. ' +
-            'Error: ' + $_.Exception.Message)
-    }
-}
-
-# Install, new product: put the kept WrappedKey back if the service key lost it, then
-# delete the copy. Needs the SpoolKey subkey to exist.
-function Restore-WrappedKeyAfterUpgrade {
-    [CmdletBinding()]
-    param(
-        $Hive = (Get-Hklm),
-        [string]$SubKeyPath = $SpoolKeySubKey,
-        [string]$BackupPath = $UpgradeBackupSubKey
-    )
-    $backup = Open-RegistryKey $Hive $BackupPath $RegistryReadValue
-    if ($null -eq $backup) { return }
-    try { $saved = $backup.GetValue($WrappedKeyValueName, $null) } finally { $backup.Dispose() }
-    if ($saved -is [byte[]]) {
-        $key = Open-RegistryKey $Hive $SubKeyPath $RegistryWriteValue $true
+    Set-RegistryKeyDacl -Hive $Hive -SubKey $ProtectPath -Sddl $sddl -What "registry key $ProtectPath"
+    Write-Step "Set and checked the DACL of $ProtectPath : SYSTEM and Administrators full control, service SID $ServiceSid query value, set value, read control."
+    if ($KeyWasCreated) {
+        $key = Open-RegistryKey $Hive $ProtectPath $RegistryWriteValue $true
         try {
-            if ($null -eq $key.GetValue($WrappedKeyValueName, $null)) {
-                $key.SetValue($WrappedKeyValueName, $saved, [Microsoft.Win32.RegistryValueKind]::Binary)
-                Write-Step "Restored the $WrappedKeyValueName value from $BackupPath ($($saved.Length) bytes)."
-            }
-            else {
-                Write-Step "The $WrappedKeyValueName value is still in $SubKeyPath. The copy is not needed."
+            if ($null -ne $key.GetValue($WrappedKeyValueName, $null)) {
+                $key.DeleteValue($WrappedKeyValueName)
+                Write-Step ("This install created a new CNG key, so the $WrappedKeyValueName value in $ProtectPath cannot be unwrapped. " +
+                    'It was deleted. The service makes a new spool key at its next start and deletes the spool segments it cannot read.')
             }
         }
         finally { $key.Dispose() }
     }
-    $Hive.DeleteSubKeyTree($BackupPath, $false)
-    Write-Step "Deleted registry key $BackupPath."
 }
 
-# Deletes the SpoolKey subkey and the upgrade copy. Parameters and its other values stay.
-function Remove-SpoolKeySubKey {
+# Install: deletes the Parameters\SpoolKey subkey that an earlier build made. Best effort:
+# a failure is a warning. Parameters and its other contents are not touched.
+function Remove-ObsoleteSpoolKeySubKey {
     [CmdletBinding()]
     param(
         $Hive = (Get-Hklm),
-        [string]$SubKeyPath = $SpoolKeySubKey,
-        [string]$BackupPath = $UpgradeBackupSubKey
+        [string]$SubKeyPath = $ObsoleteSpoolKeySubKey
     )
-    foreach ($path in $SubKeyPath, $BackupPath) {
-        $key = Open-RegistryKey $Hive $path $RegistryExists
-        if ($null -eq $key) {
-            Write-Step "No registry key $path."
-            continue
-        }
+    try {
+        $key = Open-RegistryKey $Hive $SubKeyPath $RegistryExists
+        if ($null -eq $key) { return }
         $key.Dispose()
-        $Hive.DeleteSubKeyTree($path, $false)
-        Write-Step "Deleted registry key $path."
+        $Hive.DeleteSubKeyTree($SubKeyPath, $false)
+        Write-Step "Deleted the obsolete registry key $SubKeyPath (an earlier build made it)."
+    }
+    catch {
+        Write-Step ("WARNING: could not delete the obsolete registry key $SubKeyPath. It is harmless; delete it by hand. " +
+            'Error: ' + $_.Exception.Message)
+    }
+}
+
+# Uninstall: deletes Protect, then its parent only if the parent is then empty (no subkeys,
+# no values). A failure of either delete is a warning, so that the uninstall finishes.
+function Remove-ProtectKey {
+    [CmdletBinding()]
+    param(
+        $Hive = (Get-Hklm),
+        [string]$ParentPath = $ProtectParentSubKey,
+        [string]$ProtectPath = $ProtectSubKey
+    )
+    try {
+        $key = Open-RegistryKey $Hive $ProtectPath $RegistryExists
+        if ($null -eq $key) {
+            Write-Step "No registry key $ProtectPath."
+        }
+        else {
+            $key.Dispose()
+            $Hive.DeleteSubKeyTree($ProtectPath, $false)
+            Write-Step "Deleted registry key $ProtectPath."
+        }
+    }
+    catch {
+        Write-Step ("WARNING: could not delete the registry key $ProtectPath. The uninstall continues. " +
+            'Delete the key by hand. Error: ' + $_.Exception.Message)
+    }
+    try {
+        $parent = Open-RegistryKey $Hive $ParentPath $RegistryReadValue
+        if ($null -eq $parent) {
+            Write-Step "No registry key $ParentPath."
+            return
+        }
+        try { $empty = ($parent.SubKeyCount -eq 0) -and ($parent.ValueCount -eq 0) } finally { $parent.Dispose() }
+        if ($empty) {
+            $Hive.DeleteSubKey($ParentPath, $false)
+            Write-Step "Deleted the empty registry key $ParentPath."
+        }
+        else {
+            Write-Step "KEPT: registry key $ParentPath is not empty (EtwDnstap did not create all of it)."
+        }
+    }
+    catch {
+        Write-Step ("WARNING: could not delete the registry key $ParentPath. The uninstall continues. " +
+            'Delete the key by hand if it is empty. Error: ' + $_.Exception.Message)
     }
 }
 
@@ -664,9 +686,9 @@ function Invoke-Install {
     Initialize-DataFolders
 
     # The key and the subkey first: the service that starts after the restart needs both.
-    Initialize-SpoolKey
-    Initialize-SpoolKeySubKey
-    Restore-WrappedKeyAfterUpgrade
+    $keyWasCreated = [bool](Initialize-SpoolKey)
+    Initialize-ProtectKey -KeyWasCreated $keyWasCreated
+    Remove-ObsoleteSpoolKeySubKey
 
     $group = Get-PerformanceLogUsersName
     if (Test-ServiceInGroupForInstall $group) {
@@ -686,6 +708,7 @@ function Invoke-Install {
     & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/60000 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "sc.exe failure failed (exit code $LASTEXITCODE)." }
     Write-Step 'Set the recovery policy: restart after 5 s, 5 s, 60 s; reset after 86400 s.'
+
 }
 
 # ---- W7 uninstall steps ----------------------------------------------------------
@@ -767,7 +790,7 @@ function Invoke-Uninstall {
     Invoke-Grant @{ Remove = $true }
     Write-Step 'Removed the ETW grants of the service SID.'
 
-    Remove-SpoolKeySubKey
+    Remove-ProtectKey
     Remove-SpoolKey
 
     if (Test-Path -LiteralPath $DataRoot) {
@@ -797,7 +820,6 @@ try {
     switch ($Action) {
         'Install' { Invoke-Install }
         'Uninstall' { Invoke-Uninstall }
-        'PreserveForUpgrade' { Save-WrappedKeyForUpgrade }
     }
     exit 0
 }

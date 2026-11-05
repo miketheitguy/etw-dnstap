@@ -14,7 +14,7 @@ the Rust build and the CI checks first.
 | `EtwDnstap.wixproj` | The project. `WixToolset.Sdk` 7.0.1 and `WixToolset.Util.wixext` 7.0.1, pinned. The WiX v7 OSMF EULA acceptance (`AcceptEula` = `wix7`) is in this file, with its source. |
 | `Product.wxs` | The package: `MajorUpgrade` with `AllowSameVersionUpgrades="yes"` (every build has a new `ProductCode`, so a same-version rebuild replaces the installed build), launch conditions, the public properties and their remembered values, the install folder, the service with its SCM policy and ACL, the event source, the performance counter manifest, and `ScheduleReboot`. |
 | `CustomActions.wxs` | The provisioning custom actions and their sequence rows. Install runs after `InstallServices`, and only when the executable component is installed in the same pass (`NOT REMOVE AND ($EtwDnstapExe = 3)`). A maintenance `msiexec /i` with no `REINSTALL` skips it, so the grant and the service's binary path never differ. Uninstall runs after `StopServices` and before `DeleteServices`. Rollback runs only for a failed first install, with the same component condition as the install. |
-| `Invoke-EtwDnstapProvisioning.ps1` | The script that the custom actions run as SYSTEM with Windows PowerShell 5.1. It checks the receiver, creates or checks the data folders, manages the service SID's group membership, runs the grant script, and sets the service recovery policy with `sc.exe failure`. It reads and removes the group membership by the service SID (`NetLocalGroupGetMembers` and `NetLocalGroupDelMembers`), so the uninstall does not need `NT SERVICE\EtwDnstap` to resolve. A failure of that step on uninstall is a warning, and the uninstall continues. On uninstall it deletes only what EtwDnstap created. It also creates and removes the spool encryption key and its registry subkey (see below). With `-Action PreserveForUpgrade` it copies the `WrappedKey` value out of the service key during a major upgrade. |
+| `Invoke-EtwDnstapProvisioning.ps1` | The script that the custom actions run as SYSTEM with Windows PowerShell 5.1. It checks the receiver, creates or checks the data folders, manages the service SID's group membership, runs the grant script, and sets the service recovery policy with `sc.exe failure`. It reads and removes the group membership by the service SID (`NetLocalGroupGetMembers` and `NetLocalGroupDelMembers`), so the uninstall does not need `NT SERVICE\EtwDnstap` to resolve. A failure of that step on uninstall is a warning, and the uninstall continues. On uninstall it deletes only what EtwDnstap created. It also creates and removes the spool encryption key and the `Protect` registry key (see below). Its actions are `Install` and `Uninstall`. |
 
 The `SESSION_NAME` property takes 1 to 128 ASCII letters, digits, underscore, dot,
 or hyphen, and it is case-sensitive. The first character must not be a hyphen,
@@ -46,19 +46,47 @@ after they are set.
 | Item | Created | DACL |
 | --- | --- | --- |
 | CNG key `EtwDnstap Spool Key` | RSA-3072, Microsoft Software KSP, machine scope, export policy none. | Protected. SYSTEM and Administrators: all. `NT SERVICE\EtwDnstap`: read. The right is the `$SpoolKeyServiceRight` constant in the script. |
-| `HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey` | The `Parameters` key is created only if missing and its ACL is never changed. The `SpoolKey` subkey is always checked and its DACL set. | Protected. SYSTEM and Administrators: full control. The service SID: `0x20003` (query value, set value, read control). |
+| `HKLM\SOFTWARE\ETW-DNSTapService\Protect` | The parent `HKLM\SOFTWARE\ETW-DNSTapService` is created only if missing, with the default ACL, which is never changed. `Protect` is created with its protected DACL in the `CreateSubKey` call, and the DACL is set and checked again on every install and repair. | Protected. SYSTEM and Administrators: full control. The service SID: `0x20003` (query value, set value, read control). |
 
-The KSP stores the generic rights `GA` and `GR` as file rights (`0xD01F01FF` and
-`0x80120089`). The check maps the expected generic rights the same way before it compares.
-The service SID is the constant already used for the install folder. The script checks it
-against `NT SERVICE\EtwDnstap` before this step.
+The service keeps its wrapped spool key in the `WrappedKey` value (`REG_BINARY`) of `Protect`.
+The installer never writes `WrappedKey`. `Protect` is outside the service key and outside
+`HKLM\SOFTWARE\EtwDnstap`. Deleting the service (`DeleteServices`) deletes its whole registry
+key, and the old product's removal deletes `SOFTWARE\EtwDnstap`. Neither touches
+`SOFTWARE\ETW-DNSTapService`, so a major upgrade keeps the CNG key and `WrappedKey` without any
+copy step. WiX does not author or remove `SOFTWARE\ETW-DNSTapService`: only the script does.
 
-A major upgrade keeps both items. The old product's removal would delete the whole service
-registry key, so a `ProvisionPreserve` action (`UPGRADINGPRODUCTCODE` set, before
-`DeleteServices`) copies `WrappedKey` to `HKLM\SOFTWARE\EtwDnstapUpgrade`. The new install
-restores the value if it is missing and deletes the copy. A failed copy is a warning.
-The CNG key is not in the service key, so it stays. A real uninstall deletes the CNG key,
-the `SpoolKey` subkey, and the copy. It does not delete `Parameters`.
+The installer does not create, read, or change anything under
+`HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters`, and never changes the ACL of
+`Parameters`. An earlier build created `Parameters\SpoolKey`. Install deletes that obsolete
+subkey if it exists (a failure is a warning).
+
+If the install creates a new CNG key (none existed) and a `WrappedKey` value is already in
+`Protect`, the old value cannot be unwrapped by the new key. The install deletes it and logs the
+deletion. An existing CNG key is accepted and kept.
+
+The uninstall steps (a real removal; they do not run during a major upgrade) delete `Protect`,
+then `SOFTWARE\ETW-DNSTapService` only if it is then empty, then the CNG key. Each failure is a
+`WARNING` line in the log, like the group-membership step, and the uninstall finishes. Delete
+what is left by hand. A rollback of a failed first install runs the same uninstall action. The
+script cannot tell at that point whether the install created the CNG key or accepted an existing
+one, so a rollback also deletes a CNG key that the failed install only accepted. That needs a key
+that was left behind by hand or by a failed uninstall.
+
+The service depends on two services, both set in `Product.wxs` with `ServiceDependency`:
+
+- `DNS`, the DNS Server service, as before.
+- `KeyIso`, the CNG Key Isolation service. The service calls `NCryptOpenStorageProvider`,
+  `NCryptOpenKey`, `NCryptDecrypt`, and `NCryptEncrypt` while it starts, and Microsoft Learn
+  warns that a service must not call these from its start routine without `KeyIso`
+  already running (it can deadlock). SCM starts `KeyIso` first. `KeyIso` is the service name of
+  "CNG Key Isolation" and is present on Windows Server 2019 and later (it has existed since
+  Windows Vista).
+
+`ServiceInstall` writes the dependency list when it creates the service. A major upgrade removes
+the old service and installs the new one, so the new list applies. A repair or `REINSTALL=ALL`
+runs `InstallServices` again, which rewrites the service configuration. A plain maintenance
+`msiexec /i` runs neither. An MSI from before this change has only `DNS`; upgrade it with a
+major upgrade (any new build) or repair. Check with `sc.exe qc EtwDnstap`.
 
 To test the key and registry functions without an install, run
 `powershell.exe -NoProfile -File packaging\msi\Test-EtwDnstapProvisioningKeys.ps1`. It uses a
@@ -67,7 +95,7 @@ per-user key and a throwaway `HKCU` path, and deletes both.
 | Run | Install steps | Uninstall steps |
 | --- | --- | --- |
 | First install | Run | Skip |
-| Major upgrade, including a same-version rebuild | Run | Skip (`PreserveForUpgrade` runs for the old product) |
+| Major upgrade, including a same-version rebuild | Run | Skip |
 | Repair (`/fvomus`, `/fvamus`) or `REINSTALL=ALL` | Run | Skip |
 | Maintenance `msiexec /i`, no `REINSTALL` | Skip | Skip |
 | Uninstall | Skip | Run |

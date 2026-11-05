@@ -135,22 +135,30 @@ The MSI also creates what the encrypted spool needs. The service does not create
 | --- | --- |
 | CNG key | `EtwDnstap Spool Key`, RSA-3072, in the Microsoft Software Key Storage Provider, machine scope. It is not exportable. |
 | Key DACL | Protected (no inheritance). SYSTEM and `BUILTIN\Administrators`: all rights. `NT SERVICE\EtwDnstap`: read. |
-| Registry key | `HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey`. |
-| Registry DACL | Protected. SYSTEM and Administrators: full control. `NT SERVICE\EtwDnstap`: query value, set value, and read control (`0x20003`) on this subkey only. |
+| Registry key | `HKLM\SOFTWARE\ETW-DNSTapService\Protect`. |
+| Registry DACL | Protected, set when the key is created and checked again on every install. SYSTEM and Administrators: full control. `NT SERVICE\EtwDnstap`: query value, set value, and read control (`0x20003`) on this key only. |
 
-The service writes the wrapped spool key to the `WrappedKey` value in the `SpoolKey` subkey.
+The service writes the wrapped spool key to the `WrappedKey` value in the `Protect` key.
 Only the service, SYSTEM, and Administrators can use the CNG key. Nobody can export it.
 
-The installer creates `Parameters` only if it is missing. It never changes the ACL of
-`Parameters`. It checks both DACLs after it sets them, and the install fails with a message
-that names the item if a DACL is not as expected. A repair or reinstall sets them again. It
-never replaces an existing CNG key or deletes an existing `WrappedKey` value.
+The `Protect` key is outside the service key, so deleting the old service during a major upgrade
+does not delete it. The installer never writes `WrappedKey`, and it does not create, read, or
+change anything under `Services\EtwDnstap\Parameters`. It deletes the `Parameters\SpoolKey`
+subkey that an earlier build made. It checks both DACLs after it sets them, and the install fails
+with a message that names the item if a DACL is not as expected. A repair or reinstall sets them
+again. It never replaces an existing CNG key. If it has to create a new CNG key and a `WrappedKey`
+value is already there, the old value cannot be unwrapped, so the installer deletes it and logs
+that. The service then makes a new spool key at its next start and deletes the spool segments it
+cannot read.
 
-A major upgrade keeps the CNG key and the `WrappedKey` value. Deleting the old service
-deletes its registry key, so the old product copies `WrappedKey` to
-`HKLM\SOFTWARE\EtwDnstapUpgrade` first, and the new install copies it back and deletes the
-copy. Uninstall deletes the CNG key and the `SpoolKey` subkey. It leaves `Parameters` and
-any other value in it.
+A major upgrade keeps the CNG key and the `WrappedKey` value. Uninstall deletes `Protect`, then
+`HKLM\SOFTWARE\ETW-DNSTapService` if it is empty, then the CNG key. A failed delete is a warning
+in the MSI log, and the uninstall finishes; delete what is left by hand. A rollback of a failed
+first install also deletes a CNG key that the install only accepted.
+
+The service depends on `DNS` and on `KeyIso` (CNG Key Isolation). The service uses CNG while it
+starts, and a service must not do that without `KeyIso` running, so SCM starts `KeyIso` first.
+A major upgrade or a repair writes the dependency list again. Check it with `sc.exe qc EtwDnstap`.
 
 ## Prerequisites
 
@@ -250,7 +258,7 @@ Copy-Item '.\packaging\perfcounters\etw-dnstap.man' $installDirectory
 $imagePath = '"{0}\etw-dnstap.exe" --receiver "{1}" --capacity 131072' -f `
     $installDirectory, $Receiver
 New-Service -Name EtwDnstap -BinaryPathName $imagePath `
-    -StartupType Manual -DependsOn DNS
+    -StartupType Manual -DependsOn DNS, KeyIso
 icacls.exe $installDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(RX)'
 lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"
 ```
@@ -485,7 +493,7 @@ sc.exe failureflag EtwDnstap 1
 - `failureflag 1` applies the actions to non-crash failures.
 
 A restart does not resend lost data. A restart while `DNS` is stopped fails at startup, unless
-the service depends on `DNS` (see [Start type](#start-type)). SCM counts every failure,
+the service depends on `DNS` and `KeyIso` (see [Start type](#start-type)). SCM counts every failure,
 including a refused start. See [troubleshooting.md](troubleshooting.md#the-service-keeps-restarting).
 
 Check the policy:
@@ -502,12 +510,12 @@ sc.exe qfailureflag EtwDnstap
 start:
 
 ```powershell
-cmd.exe /c 'sc.exe config EtwDnstap start= delayed-auto depend= DNS'
+cmd.exe /c 'sc.exe config EtwDnstap start= delayed-auto depend= DNS/KeyIso'
 sc.exe qc EtwDnstap
 ```
 
-- `depend= DNS` keeps the dependency, so the dependency does not change.
-- With `depend= DNS`, stopping `DNS` on request also stops `EtwDnstap`. `Restart-Service DNS`
+- `depend= DNS/KeyIso` keeps both dependencies, so the dependencies do not change. `KeyIso` is the CNG Key Isolation service, which the service needs when it starts.
+- With the `DNS` dependency, stopping `DNS` on request also stops `EtwDnstap`. `Restart-Service DNS`
   fails, so use `Restart-Service DNS -Force`. In the lab, that command stopped `EtwDnstap` with
   exit code 0, and the new DNS Server process was captured in under 2 seconds. After
   `Stop-Service DNS -Force` and `Start-Service DNS`, start `EtwDnstap` by hand.

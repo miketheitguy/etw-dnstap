@@ -64,8 +64,6 @@
     <CustomActionRef Id="SetProvisionInstallRollback" />
     <CustomActionRef Id="ProvisionUninstall" />
     <CustomActionRef Id="SetProvisionUninstall" />
-    <CustomActionRef Id="ProvisionPreserve" />
-    <CustomActionRef Id="SetProvisionPreserve" />
 
     <Feature Id="Main" Title="EtwDnstap" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
@@ -110,6 +108,11 @@
                         Interactive="no"
                         Vital="yes">
           <ServiceDependency Id="DNS" />
+          <!-- The service calls NCryptOpenStorageProvider, NCryptOpenKey, NCryptDecrypt and
+               NCryptEncrypt while it starts. Microsoft Learn says a service must not call
+               these from its start routine without the CNG Key Isolation service (KeyIso)
+               running first, because the call can deadlock. SCM starts KeyIso before this service. -->
+          <ServiceDependency Id="KeyIso" />
           <!-- W5: MsiServiceConfig. Delayed start, restricted SID, one privilege, non-crash failure flag. -->
           <ServiceConfig DelayedAutoStart="yes"
                          ServiceSid="restricted"

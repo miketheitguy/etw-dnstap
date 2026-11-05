@@ -22,11 +22,11 @@ $ErrorActionPreference = 'Stop'
 $scriptPath = Join-Path $PSScriptRoot 'Invoke-EtwDnstapProvisioning.ps1'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
 
-$functionNames = 'Write-Step', 'Get-Hklm', 'Get-SpoolKeySddl', 'Get-SpoolKeySubKeySddl', 'Test-DaclMatches',
-    'Initialize-SpoolKey', 'Remove-SpoolKey', 'Open-RegistryKey', 'Set-RegistryKeyDacl', 'Initialize-SpoolKeySubKey',
-    'Save-WrappedKeyForUpgrade', 'Restore-WrappedKeyAfterUpgrade', 'Remove-SpoolKeySubKey'
+$functionNames = 'Write-Step', 'Get-Hklm', 'Get-SpoolKeySddl', 'Get-ProtectKeySddl', 'Test-DaclMatches',
+    'Initialize-SpoolKey', 'Remove-SpoolKey', 'Open-RegistryKey', 'Set-RegistryKeyDacl', 'Initialize-ProtectKey',
+    'Remove-ObsoleteSpoolKeySubKey', 'Remove-ProtectKey'
 $variableNames = 'DaclSecurityInformation', 'SpoolKeyServiceRight', 'SpoolKeyName', 'SpoolKeyBits',
-    'ParametersSubKey', 'SpoolKeySubKey', 'WrappedKeyValueName', 'UpgradeBackupSubKey', 'ServiceSidText', 'RegistryExists', 'RegistryReadValue', 'RegistryWriteValue'
+    'ProtectParentSubKey', 'ProtectSubKey', 'WrappedKeyValueName', 'ObsoleteSpoolKeySubKey', 'ServiceSidText', 'RegistryExists', 'RegistryReadValue', 'RegistryWriteValue'
 
 foreach ($name in $functionNames) {
     $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true))
@@ -40,6 +40,12 @@ foreach ($name in $variableNames) {
                 $n.Left.VariablePath.UserPath -eq $name }, $false))
     if ($found.Count -ne 1) { throw "Variable $name not assigned exactly once at the top of the provisioning script." }
     Invoke-Expression $found[0].Extent.Text
+}
+
+# The original text of a function, to put it back after a test replaced it.
+function Get-FunctionText([string]$Name) {
+    $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true))
+    return $found[0].Extent.Text
 }
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -63,11 +69,10 @@ $suffix = [guid]::NewGuid().ToString('N')
 $keyName = "EtwDnstap Spool Key Test $suffix"
 $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
 $root = "Software\EtwDnstapTest$suffix"
-$parameters = "$root\Parameters"
-$subKey = "$parameters\SpoolKey"
-$backup = "$root\UpgradeBackup"
-# Test only: the test user can read the copy. SYSTEM and Administrators only in the real install.
-$backupSddl = "D:P(A;;KA;;;SY)(A;;KA;;;BA)(A;;KA;;;$userSid)"
+$parent = "$root\ETW-DNSTapService"
+$protect = "$parent\Protect"
+$parametersPath = "$root\Parameters"
+$obsolete = "$parametersPath\SpoolKey"
 $provider = [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
 $none = [System.Security.Cryptography.CngKeyOpenOptions]::None
 
@@ -79,7 +84,8 @@ function Get-DaclSddl([string]$Path) {
 
 try {
     [Console]::Out.WriteLine('Spool key')
-    Initialize-SpoolKey -Name $keyName -ServiceSid $userSid -MachineKey $false | Out-Null
+    $created = Initialize-SpoolKey -Name $keyName -ServiceSid $userSid -MachineKey $false
+    Assert-That (($created -is [bool]) -and $created) 'F4: Initialize-SpoolKey returns true when it created the key'
     Assert-That ([System.Security.Cryptography.CngKey]::Exists($keyName, $provider, $none)) 'key exists after the first run'
     $key = [System.Security.Cryptography.CngKey]::Open($keyName, $provider, $none)
     Assert-That ($key.KeySize -eq 3072) 'key is RSA-3072'
@@ -95,7 +101,8 @@ try {
     $broken.GetBinaryForm($brokenBytes, 0)
     $key.SetProperty([System.Security.Cryptography.CngProperty]::new('Security Descr', $brokenBytes, $DaclSecurityInformation))
     $key.Dispose()
-    Initialize-SpoolKey -Name $keyName -ServiceSid $userSid -MachineKey $false | Out-Null
+    $created = Initialize-SpoolKey -Name $keyName -ServiceSid $userSid -MachineKey $false
+    Assert-That (($created -is [bool]) -and -not $created) 'F4: Initialize-SpoolKey returns false when it accepted an existing key'
     $key = [System.Security.Cryptography.CngKey]::Open($keyName, $provider, $none)
     $after = $key.GetProperty('Security Descr', $DaclSecurityInformation).GetValue()
     $key.Dispose()
@@ -113,79 +120,142 @@ try {
     Remove-SpoolKey -Name $keyName -MachineKey $false | Out-Null
     Assert-That $true 'removing a missing key is not an error'
 
-    [Console]::Out.WriteLine('SpoolKey registry subkey')
-    # Parameters exists first, with another value and its default ACL. It must not change.
-    $hive.CreateSubKey($parameters).Dispose()
-    $p = $hive.OpenSubKey($parameters, $true)
-    $p.SetValue('Other', 'keep', [Microsoft.Win32.RegistryValueKind]::String)
-    $p.Dispose()
-    $parametersAclBefore = Get-DaclSddl $parameters
+    # F6: a CNG failure while the key is looked up or deleted is a warning, not an exception.
+    # A name of 5000 characters makes the provider throw.
+    $threw = $false
+    try { Remove-SpoolKey -Name ('a' * 5000) -MachineKey $false | Out-Null } catch { $threw = $true }
+    Assert-That (-not $threw) 'F6: a failed key delete does not throw'
 
-    Initialize-SpoolKeySubKey -Hive $hive -ParametersPath $parameters -SubKeyPath $subKey -ServiceSid $userSid | Out-Null
-    Assert-That ((Get-DaclSddl $parameters) -eq $parametersAclBefore) 'the ACL of Parameters is unchanged'
-    $subSddl = Get-DaclSddl $subKey
-    Assert-That ($subSddl.StartsWith('D:P')) 'the subkey DACL is protected'
-    $subDescriptor = New-Object System.Security.AccessControl.RawSecurityDescriptor $subSddl
-    $serviceAces = @($subDescriptor.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier.Value -eq $userSid })
-    Assert-That (($serviceAces.Count -eq 1) -and ($serviceAces[0].AccessMask -eq 0x20003)) 'the service SID has exactly 0x20003 on the subkey'
-    Assert-That ($subDescriptor.DiscretionaryAcl.Count -eq 3) 'the subkey DACL has three ACEs (SYSTEM, Administrators, service SID)'
+    [Console]::Out.WriteLine('Protect registry key')
+    # Test only: the test user holds just 0x20003 on Protect, so it needs full control
+    # before a delete. SYSTEM and Administrators hold it in the real install.
+    $fullFor = "D:P(A;;KA;;;$userSid)"
 
-    # A WrappedKey value survives a second run.
-    $s = (Open-RegistryKey $hive $subKey $RegistryWriteValue $true)
+    Initialize-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect -ServiceSid $userSid | Out-Null
+    Assert-That ($null -ne (Open-RegistryKey $hive $parent $RegistryExists)) 'a missing parent key is created'
+    $protectSddl = Get-DaclSddl $protect
+    Assert-That ($protectSddl.StartsWith('D:P')) 'the Protect DACL is protected'
+    $descriptor = New-Object System.Security.AccessControl.RawSecurityDescriptor $protectSddl
+    $serviceAces = @($descriptor.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier.Value -eq $userSid })
+    Assert-That (($serviceAces.Count -eq 1) -and ($serviceAces[0].AccessMask -eq 0x20003)) 'the service SID has exactly 0x20003 on Protect'
+    Assert-That ($descriptor.DiscretionaryAcl.Count -eq 3) 'the Protect DACL has three ACEs (SYSTEM, Administrators, service SID)'
+    Assert-That ($null -eq (Open-RegistryKey $hive $parametersPath $RegistryExists)) 'nothing is created under Parameters'
+
+    # A second run keeps the parent ACL and puts a broken Protect DACL back.
+    $parentAclBefore = Get-DaclSddl $parent
+    Set-RegistryKeyDacl -Hive $hive -SubKey $protect -Sddl $fullFor -What 'test Protect'
+    Initialize-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect -ServiceSid $userSid | Out-Null
+    Assert-That ((Get-DaclSddl $parent) -eq $parentAclBefore) 'the ACL of the parent key is unchanged'
+    Assert-That ((Get-DaclSddl $protect) -eq $protectSddl) 'a second run puts the Protect DACL back'
+
+    # An existing WrappedKey is never written or deleted by a normal install.
+    $s = Open-RegistryKey $hive $protect $RegistryWriteValue $true
     $s.SetValue($WrappedKeyValueName, [byte[]](1, 2, 3, 4), [Microsoft.Win32.RegistryValueKind]::Binary)
     $s.Dispose()
-    Initialize-SpoolKeySubKey -Hive $hive -ParametersPath $parameters -SubKeyPath $subKey -ServiceSid $userSid | Out-Null
-    $s = Open-RegistryKey $hive $subKey $RegistryReadValue
+    Initialize-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect -ServiceSid $userSid -KeyWasCreated $false | Out-Null
+    $s = Open-RegistryKey $hive $protect $RegistryReadValue
     $value = $s.GetValue($WrappedKeyValueName)
     $s.Dispose()
-    Assert-That (($value -join ',') -eq '1,2,3,4') 'a second run keeps WrappedKey'
+    Assert-That (($value -join ',') -eq '1,2,3,4') 'a normal install keeps WrappedKey'
 
-    # Upgrade: save, lose the subkey (DeleteServices), run install again, value is back.
-    Save-WrappedKeyForUpgrade -Hive $hive -SubKeyPath $subKey -BackupPath $backup -BackupSddl $backupSddl | Out-Null
-    Assert-That ($null -ne (Open-RegistryKey $hive $backup $RegistryExists)) 'the upgrade copy exists'
-    # Test only: the test user holds just 0x20003 on the subkey, so give it full control
-    # before the delete. SYSTEM and Administrators hold it in the real install.
-    Set-RegistryKeyDacl -Hive $hive -SubKey $subKey -Sddl "D:P(A;;KA;;;$userSid)" -What 'test subkey'
-    $hive.DeleteSubKeyTree($subKey)
-    Initialize-SpoolKeySubKey -Hive $hive -ParametersPath $parameters -SubKeyPath $subKey -ServiceSid $userSid | Out-Null
-    Restore-WrappedKeyAfterUpgrade -Hive $hive -SubKeyPath $subKey -BackupPath $backup | Out-Null
-    $s = Open-RegistryKey $hive $subKey $RegistryReadValue
-    $value = $s.GetValue($WrappedKeyValueName)
+    # F4: the install made a new CNG key. The stale value cannot be unwrapped and is deleted.
+    Initialize-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect -ServiceSid $userSid -KeyWasCreated $true | Out-Null
+    $s = Open-RegistryKey $hive $protect $RegistryReadValue
+    Assert-That ($null -eq $s.GetValue($WrappedKeyValueName, $null)) 'F4: a new CNG key deletes the stale WrappedKey'
     $s.Dispose()
-    Assert-That (($value -join ',') -eq '1,2,3,4') 'the upgrade copy restores WrappedKey'
-    Assert-That ($null -eq (Open-RegistryKey $hive $backup $RegistryExists)) 'the upgrade copy is deleted after the restore'
+    Initialize-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect -ServiceSid $userSid -KeyWasCreated $true | Out-Null
+    Assert-That $true 'F4: a new CNG key with no WrappedKey is not an error'
 
-    # Restore does not replace a WrappedKey that is already there.
-    Save-WrappedKeyForUpgrade -Hive $hive -SubKeyPath $subKey -BackupPath $backup -BackupSddl $backupSddl | Out-Null
-    $s = (Open-RegistryKey $hive $subKey $RegistryWriteValue $true)
-    $s.SetValue($WrappedKeyValueName, [byte[]](9, 9), [Microsoft.Win32.RegistryValueKind]::Binary)
+    # The Protect DACL is part of the CreateSubKey call. The DACL step after it is replaced
+    # by one that throws; the key must still have the protected DACL from its creation.
+    Set-RegistryKeyDacl -Hive $hive -SubKey $protect -Sddl $fullFor -What 'test Protect'
+    $hive.DeleteSubKeyTree($protect)
+    $realSetDacl = Get-FunctionText 'Set-RegistryKeyDacl'
+    function Set-RegistryKeyDacl { throw 'mocked DACL failure' }
+    $threw = $false
+    try { Initialize-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect -ServiceSid $userSid | Out-Null } catch { $threw = $true }
+    finally { . ([scriptblock]::Create($realSetDacl)) }
+    Assert-That $threw 'a failed DACL step fails the install step'
+    Assert-That ($null -ne (Open-RegistryKey $hive $protect $RegistryExists)) 'F5: the Protect key was created'
+    # SetAccessControl only adds the AI flag; the ACEs are the same.
+    Assert-That (((Get-DaclSddl $protect) -replace '^D:PAI', 'D:P') -eq ($protectSddl -replace '^D:PAI', 'D:P')) 'F5: Protect has its protected DACL from its creation (no inherited Users ACE)'
+
+    [Console]::Out.WriteLine('Obsolete Parameters\SpoolKey subkey')
+    $hive.CreateSubKey($parametersPath).Dispose()
+    $s = $hive.OpenSubKey($parametersPath, $true)
+    $s.SetValue('Other', 'keep', [Microsoft.Win32.RegistryValueKind]::String)
     $s.Dispose()
-    Restore-WrappedKeyAfterUpgrade -Hive $hive -SubKeyPath $subKey -BackupPath $backup | Out-Null
-    $s = Open-RegistryKey $hive $subKey $RegistryReadValue
-    $value = $s.GetValue($WrappedKeyValueName)
+    $parametersAclBefore = Get-DaclSddl $parametersPath
+    $hive.CreateSubKey($obsolete).Dispose()
+    Remove-ObsoleteSpoolKeySubKey -Hive $hive -SubKeyPath $obsolete | Out-Null
+    Assert-That ($null -eq (Open-RegistryKey $hive $obsolete $RegistryExists)) 'the obsolete SpoolKey subkey is deleted'
+    $s = $hive.OpenSubKey($parametersPath)
+    Assert-That ($null -ne $s -and $s.GetValue('Other') -eq 'keep') 'Parameters and its other value stay'
     $s.Dispose()
-    Assert-That (($value -join ',') -eq '9,9') 'a restore keeps an existing WrappedKey'
+    Assert-That ((Get-DaclSddl $parametersPath) -eq $parametersAclBefore) 'the ACL of Parameters is unchanged'
+    Remove-ObsoleteSpoolKeySubKey -Hive $hive -SubKeyPath $obsolete | Out-Null
+    Assert-That $true 'removing a missing obsolete subkey is not an error'
+    # A subkey that cannot be deleted is a warning (the old subkey gave the service 0x20003 only).
+    $hive.CreateSubKey($obsolete).Dispose()
+    Set-RegistryKeyDacl -Hive $hive -SubKey $obsolete -Sddl "D:P(A;;0x20003;;;$userSid)" -What 'test obsolete'
+    $threw = $false
+    try { Remove-ObsoleteSpoolKeySubKey -Hive $hive -SubKeyPath $obsolete | Out-Null } catch { $threw = $true }
+    Assert-That (-not $threw) 'F6: a failed delete of the obsolete subkey is a warning'
+    Assert-That ($null -ne (Open-RegistryKey $hive $obsolete $RegistryExists)) 'F6: the obsolete subkey is still there after the failed delete'
+    Set-RegistryKeyDacl -Hive $hive -SubKey $obsolete -Sddl $fullFor -What 'test obsolete'
 
-    # Uninstall: the subkey goes, Parameters and its other values stay. A second run is quiet.
-    Set-RegistryKeyDacl -Hive $hive -SubKey $subKey -Sddl "D:P(A;;KA;;;$userSid)" -What 'test subkey'
-    Remove-SpoolKeySubKey -Hive $hive -SubKeyPath $subKey -BackupPath $backup | Out-Null
-    Assert-That ($null -eq (Open-RegistryKey $hive $subKey $RegistryExists)) 'the SpoolKey subkey is deleted'
-    $p = $hive.OpenSubKey($parameters)
-    Assert-That ($null -ne $p -and $p.GetValue('Other') -eq 'keep') 'Parameters and its other value stay'
-    $p.Dispose()
-    Remove-SpoolKeySubKey -Hive $hive -SubKeyPath $subKey -BackupPath $backup | Out-Null
-    Assert-That $true 'removing a missing subkey is not an error'
+    [Console]::Out.WriteLine('Uninstall')
+    # F6: Protect has 0x20003 only for the test user, so its delete fails: a warning, no throw,
+    # and the parent stays because it still holds Protect.
+    $threw = $false
+    try { Remove-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect | Out-Null } catch { $threw = $true }
+    Assert-That (-not $threw) 'F6: a failed Protect delete does not throw'
+    Assert-That ($null -ne (Open-RegistryKey $hive $protect $RegistryExists)) 'F6: Protect is still there after the failed delete'
+    Assert-That ($null -ne (Open-RegistryKey $hive $parent $RegistryExists)) 'the parent stays while Protect is there'
 
-    # Parameters missing: it is created.
-    $hive.DeleteSubKeyTree($root)
-    Initialize-SpoolKeySubKey -Hive $hive -ParametersPath $parameters -SubKeyPath $subKey -ServiceSid $userSid | Out-Null
-    Assert-That ($null -ne (Open-RegistryKey $hive $subKey $RegistryExists)) 'a missing Parameters key is created with the subkey'
+    # A parent with another value is kept.
+    Set-RegistryKeyDacl -Hive $hive -SubKey $protect -Sddl $fullFor -What 'test Protect'
+    $s = $hive.OpenSubKey($parent, $true)
+    $s.SetValue('Other', 'keep', [Microsoft.Win32.RegistryValueKind]::String)
+    $s.Dispose()
+    Remove-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect | Out-Null
+    Assert-That ($null -eq (Open-RegistryKey $hive $protect $RegistryExists)) 'uninstall deletes Protect'
+    Assert-That ($null -ne (Open-RegistryKey $hive $parent $RegistryExists)) 'uninstall keeps a parent key that is not empty'
+
+    # A parent with a subkey of another product is kept; an empty one is deleted.
+    $s = $hive.OpenSubKey($parent, $true)
+    $s.DeleteValue('Other')
+    $s.Dispose()
+    $hive.CreateSubKey("$parent\Other").Dispose()
+    Remove-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect | Out-Null
+    Assert-That ($null -ne (Open-RegistryKey $hive $parent $RegistryExists)) 'uninstall keeps a parent key that has another subkey'
+    $hive.DeleteSubKey("$parent\Other")
+    Remove-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect | Out-Null
+    Assert-That ($null -eq (Open-RegistryKey $hive $parent $RegistryExists)) 'uninstall deletes the empty parent key'
+    Remove-ProtectKey -Hive $hive -ParentPath $parent -ProtectPath $protect | Out-Null
+    Assert-That $true 'a second uninstall run is not an error'
+
+    [Console]::Out.WriteLine('Packaging')
+    $script = Get-Content -LiteralPath $scriptPath -Raw
+    $wxs = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'CustomActions.wxs') -Raw
+    $product = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Product.wxs') -Raw
+    Assert-That ($script -notmatch 'PreserveForUpgrade|EtwDnstapUpgrade|Restore-WrappedKey|Save-WrappedKey|CommitInstall') 'no upgrade copy code is left in the script'
+    Assert-That ($wxs -notmatch 'Preserve|CommitInstall|RollbackInstall|Execute="commit"') 'no upgrade copy custom action is left'
+    Assert-That ($product -notmatch 'Preserve') 'Product.wxs has no upgrade copy action'
+    Assert-That ($product -notmatch 'ETW-DNSTapService') 'WiX does not author the Protect key'
+    Assert-That ($script -match "ProtectParentSubKey = 'SOFTWARE\\ETW-DNSTapService'") 'the Protect key is under SOFTWARE\ETW-DNSTapService'
+    Assert-That ($product -match '<ServiceDependency Id="DNS"') 'F2: the service depends on DNS'
+    Assert-That ($product -match '<ServiceDependency Id="KeyIso"') 'F2: the service depends on KeyIso'
+    $install = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Install' }, $true))
+    Assert-That ($install[0].Extent.Text -notmatch 'SetValue|DeleteSubKey') 'Invoke-Install itself writes no registry value and deletes no key'
 }
 finally {
     try { Remove-SpoolKey -Name $keyName -MachineKey $false | Out-Null } catch { }
     try {
-        if ($null -ne (Open-RegistryKey $hive $subKey $RegistryExists)) {
-            Set-RegistryKeyDacl -Hive $hive -SubKey $subKey -Sddl "D:P(A;;KA;;;$userSid)" -What 'test subkey'
+        foreach ($path in $protect, $obsolete) {
+            if ($null -ne (Open-RegistryKey $hive $path $RegistryExists)) {
+                Set-RegistryKeyDacl -Hive $hive -SubKey $path -Sddl "D:P(A;;KA;;;$userSid)" -What 'test key'
+            }
         }
         $hive.DeleteSubKeyTree($root, $false)
     }
