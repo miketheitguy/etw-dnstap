@@ -1,6 +1,6 @@
 # Spool encryption lab validation
 
-> **Status:** Historical · **Evidence dated:** 2026-11-04 (lab guest local time, UTC-8; the UTC timestamps below read 2026-11-05 from 07:38) · **Commit:** `27a5464` (branch `spool-encryption`) · **Reviewed:** not yet
+> **Status:** Historical · **Evidence dated:** 2026-11-04 (lab guest local time, UTC-8; the UTC timestamps below read 2026-11-05 from 07:38) · **Commit:** `27a5464` (branch `spool-encryption`) · **Reviewed:** 2026-11-05, with open defects (see Review notes)
 
 This record covers task L of the [spool encryption plan](spool-encryption-plan.md): the
 first lab run of the encrypted spool, the key lifecycle in the MSI, and the two upgrade cases. It
@@ -101,7 +101,7 @@ with `certutil -key`):
 
 ## 4. First start and restart
 
-The delayed-start service came up by itself after the restart. Event Log, first start (UTC):
+The delayed-start service came up by itself after the restart. Event Log, first start:
 
 ```
 23:43:22 ID14 WARN dnstap spool deleted segments it cannot read at startup: segments of an earlier version or of another spool key segments=1 bytes=49243424 earlier_format=1 other_key=0 new_key=true
@@ -133,7 +133,7 @@ than the planned 30 s because two segment copies ran during it).
 | 07:46:49 | `spooled=710434 spool_bytes=73217794 spool_segments=2` (the first segment rotated at about 64 MiB) |
 | 07:46:51.6 | Block off. |
 | 07:46:52.5 | `dnstap receiver reconnected` (ID 2). |
-| 07:46:54 | `spooled=791787 replayed=791787 spool_dropped=0 spool_dropped_bytes=0 spool_bytes=0 spool_segments=0`. The replay of the 73 MB took under 3 s. |
+| 07:46:54 | `spooled=791787 replayed=791787 spool_dropped=0 spool_dropped_bytes=0 spool_bytes=0 spool_segments=0`. The replay of the 791,787 spooled frames (about 81.6 MB) took under 3 s. |
 
 The spool grew at about 2.1 MB a second (20,000 frames a second). The sender thread used 0.0 to
 0.3 percent of a logical processor while it spilled, and 1.9 percent in the replay interval (the
@@ -141,7 +141,7 @@ counter has clock-tick resolution).
 
 **Delivery.** Final counters: `received=999998 encoded=999998 ring_dropped=0 etw_lost=0`,
 `spooled=791787`, `replayed=791787`, `spool_dropped=0`, `disconnected_dropped=0`,
-`bytes_sent=103014994` (exactly 103.015 bytes for each of the 999,998 frames).
+`bytes_sent=103014994` (an average of 103.0152 bytes for each of the 999,998 frames).
 
 | Receiver connection | Service `bytes_sent` | Receiver `bytes_received` (minus 84 handshake) |
 | --- | --- | --- |
@@ -151,8 +151,8 @@ counter has clock-tick resolution).
 Everything the service sent on the new connection arrived, byte for byte. The first connection
 received 1,049,697 bytes (about 10,190 frames) less than the service counted as sent. Those are
 the bytes that the guest kernel had accepted into its send buffer when the stall began; they are
-lost without a count, as [monitoring.md](../guide/monitoring.md) states ("Bytes that the kernel
-accepted before a connection failed are lost without a count") and the
+lost without a count, as [monitoring.md](../guide/monitoring.md) states ("Some loss is never counted. Bytes the kernel
+accepted before a connection failed (they're in `bytes_sent`)") and the
 [slow receiver design](../design/slow-receiver.md) records. The plaintext build showed the same
 effect in step 2: it counted 137,701 bytes sent just before its block, and the receiver's
 connection ended at 84 bytes. This loss does not come from the encryption. It is the reason the
@@ -339,3 +339,22 @@ stopped` (`stop_sent=true spool_backlog_kept=false`) and nothing else, apart fro
 - `DNSTap-Ubuntu2604`: no iptables rule of the run is left. The record of tc, iptables, ip6tables,
   and nft is identical to the first record, line for line. The collector still has the `devnull`
   output and `StandardOutput=null`.
+
+## Review notes
+
+Reviewed 2026-11-05 against the plan, the source, and the byte accounting. The record is not
+corrected for the points below, because only the raw lab data on the host can settle the first two.
+
+- **Scope.** The run used commit `27a5464`. The in-memory key protection (`CryptProtectMemory`,
+  commit `068f148`) came later, so the lab never ran the current key handling.
+- **Step 5, segment 328.** Both copies are said to hold 848 data records. The smaller copy
+  (28,258,652 bytes) was taken earlier and is a prefix of the larger one (53,809,634 bytes), so it
+  cannot hold all 848 records. Check the record walk of that copy.
+- **Step 2, block time.** The record says the receiver was blocked from 2 seconds after the start.
+  The counters and the 84-byte receiver connection suggest the block came before any data flowed.
+- **Wording.** "All three strings" in the positive control has no referent, and "seven starts"
+  needs a start that the record does not list.
+
+Corrected in this review: the "(UTC)" label on a guest local time in step 4, the replayed volume
+in step 5 (791,787 frames, about 81.6 MB), the average frame size in step 5 (103.0152 bytes), and
+the monitoring guide quote in step 5.
