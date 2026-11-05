@@ -96,8 +96,14 @@ fn each_cause_has_its_own_loss_notice() {
         ("etw events", |r| r.etw_lost = 5),
         ("etw buffers", |r| r.etw_buffers_lost = 5),
         ("channel", |r| r.ring_dropped = 5),
-        ("regular pool", |r| r.pool_exhausted_regular = 5),
-        ("jumbo pool", |r| r.pool_exhausted_jumbo = 5),
+        ("regular pool", |r| {
+            r.pool_exhausted = 5;
+            r.pool_exhausted_regular = 5;
+        }),
+        ("jumbo pool", |r| {
+            r.pool_exhausted = 5;
+            r.pool_exhausted_jumbo = 5;
+        }),
         ("disconnected", |r| r.disconnected_dropped = 5),
         ("send queue", |r| r.queue_dropped = 5),
     ];
@@ -136,6 +142,7 @@ fn the_loss_notices_match_their_causes() {
     let mut current = healthy();
     current.etw_lost = 7;
     current.ring_dropped = 8;
+    current.pool_exhausted = 9;
     current.pool_exhausted_jumbo = 9;
     current.queue_dropped = 10;
     current.spool_dropped = 11;
@@ -359,6 +366,7 @@ fn a_raised_risk_is_not_repeated_and_clears_once() {
     current.channel_peak = 750;
     assert_eq!(next(&mut alerts, &current), [], "inside the margin: holds");
     current.channel_peak = 699;
+    assert_eq!(next(&mut alerts, &current), [], "one low check holds");
     let notices = next(&mut alerts, &current);
     assert_eq!(cleared(&notices).len(), 1, "{notices:?}");
     assert_eq!(next(&mut alerts, &current), [], "cleared once");
@@ -602,6 +610,7 @@ fn readings_come_from_the_counters_and_take_the_channel_peak() {
             etw_lost: 1,
             etw_buffers_lost: 2,
             ring_dropped: 3,
+            pool_exhausted: 10,
             pool_exhausted_regular: 6,
             pool_exhausted_jumbo: 4,
             disconnected_dropped: 15,
@@ -872,4 +881,59 @@ fn the_text_names_no_host_path() {
             assert!(!text.contains(forbidden), "{forbidden}: {text}");
         }
     }
+}
+
+#[test]
+fn a_shifted_pool_split_with_an_equal_total_is_not_a_loss() {
+    // The writer adds to the total first, then to the jumbo count, so a read
+    // between the two moves the split by one without a new loss.
+    let (mut alerts, start) = checker();
+    let mut torn = healthy();
+    torn.pool_exhausted = 5;
+    torn.pool_exhausted_regular = 5;
+    torn.pool_exhausted_jumbo = 0;
+    assert_eq!(losses(&check(&mut alerts, start, &torn)).len(), 1);
+    let mut settled = torn;
+    settled.pool_exhausted_regular = 4;
+    settled.pool_exhausted_jumbo = 1;
+    let found = losses(&alerts.check(start + seconds(120), &settled));
+    assert!(
+        found.iter().all(|loss| !matches!(loss, Loss::Pool { .. })),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_rising_pool_total_is_one_pool_loss() {
+    let (mut alerts, start) = checker();
+    let mut current = healthy();
+    current.pool_exhausted = 3;
+    current.pool_exhausted_regular = 2;
+    current.pool_exhausted_jumbo = 1;
+    let found = losses(&check(&mut alerts, start, &current));
+    assert!(matches!(
+        found[..],
+        [Loss::Pool { regular, jumbo, .. }] if regular.by == 2 && jumbo.by == 1
+    ));
+}
+
+#[test]
+fn the_channel_risk_clears_only_after_two_low_checks_in_a_row() {
+    let (mut alerts, start) = checker();
+    let mut at = start;
+    let mut next = |state: &mut Alerts, peak: u64| {
+        let mut readings = healthy();
+        readings.channel_peak = peak;
+        at += seconds(60);
+        state.check(at, &readings)
+    };
+    assert_eq!(raised(&next(&mut alerts, 850)).len(), 1);
+    for _ in 0..3 {
+        assert_eq!(next(&mut alerts, 500), [], "one low check holds");
+        assert_eq!(next(&mut alerts, 850), [], "a burst resets the count");
+    }
+    assert_eq!(next(&mut alerts, 500), [], "first low check");
+    let notices = next(&mut alerts, 500);
+    assert_eq!(cleared(&notices).len(), 1, "{notices:?}");
+    assert_eq!(raised(&next(&mut alerts, 850)).len(), 1, "raises again");
 }

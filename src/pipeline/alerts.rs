@@ -11,7 +11,11 @@
 //!   A risk is raised when its condition starts and cleared (an information
 //!   event, ID 2) when it ends. It is not repeated while it holds. Percentage
 //!   thresholds clear [`CLEAR_MARGIN_PERCENT`] points below the level that
-//!   raised them, so a value near the threshold does not flap.
+//!   raised them. The channel risk (ID 20) uses a peak that restarts every
+//!   check, so it also clears only after [`CHANNEL_CLEAR_CHECKS`] checks in a
+//!   row below that line. A load that bursts above the line at least every
+//!   other check can still hold it raised, but a single quiet check does not
+//!   clear it.
 //!
 //! The supervisor owns the clock and never calls [`Alerts::check`] once
 //! shutdown has begun, so nothing here is written at stop. The IDs are in
@@ -39,6 +43,10 @@ pub(super) const SPOOL_PERCENT: u64 = 80;
 pub(super) const FLOOR_RAISE_SEGMENTS: u64 = 2;
 /// Segments above the floor at which a raised spool risk clears.
 pub(super) const FLOOR_CLEAR_SEGMENTS: u64 = 3;
+/// Consecutive checks below the clear line before the channel risk (ID 20)
+/// clears. The channel peak restarts every check, so one quiet check proves
+/// little.
+pub(super) const CHANNEL_CLEAR_CHECKS: u8 = 2;
 /// Points below the raising percentage at which a risk clears.
 pub(super) const CLEAR_MARGIN_PERCENT: u64 = 10;
 
@@ -50,6 +58,9 @@ pub(super) struct Readings {
     pub(super) etw_lost: u64,
     pub(super) etw_buffers_lost: u64,
     pub(super) ring_dropped: u64,
+    /// Every pool exhaustion, regular and jumbo. This one counter decides the
+    /// pool loss (ID 12); the split below is for the message only.
+    pub(super) pool_exhausted: u64,
     pub(super) pool_exhausted_regular: u64,
     pub(super) pool_exhausted_jumbo: u64,
     pub(super) disconnected_dropped: u64,
@@ -87,12 +98,15 @@ impl Readings {
         sink: &SinkStats,
         volume_free: Option<u64>,
     ) -> Self {
-        let pool_exhausted = capture.pool_exhausted.load(Ordering::Relaxed);
+        // The writer increments the total first, then the jumbo count. Reading the
+        // jumbo count first keeps it from exceeding the total.
         let pool_exhausted_jumbo = capture.pool_exhausted_jumbo.load(Ordering::Relaxed);
+        let pool_exhausted = capture.pool_exhausted.load(Ordering::Relaxed);
         Self {
             etw_lost: capture.etw_lost.load(Ordering::Relaxed),
             etw_buffers_lost: capture.etw_buffers_lost.load(Ordering::Relaxed),
             ring_dropped: capture.dropped.load(Ordering::Relaxed),
+            pool_exhausted,
             pool_exhausted_regular: pool_exhausted.saturating_sub(pool_exhausted_jumbo),
             pool_exhausted_jumbo,
             disconnected_dropped: sink.disconnected_dropped.load(Ordering::Relaxed),
@@ -271,6 +285,9 @@ struct Raised {
     channel: bool,
     etw_buffers: bool,
     send_queue: bool,
+    /// Checks in a row, while the channel risk is raised, that the peak was
+    /// below the clear line.
+    channel_low_checks: u8,
     receiver_down: bool,
     spool_limit: bool,
     etw_stats: bool,
@@ -286,7 +303,8 @@ pub(super) struct Alerts {
 
 impl Alerts {
     /// Starts the checks. `baseline` is the reading at `now`, so the first
-    /// check reports what changed since then.
+    /// check reports what changed since then. The supervisor passes the zero
+    /// reading, so the first check covers everything since capture started.
     pub(super) fn new(limits: Limits, now: Instant, baseline: Readings) -> Self {
         Self {
             limits,
@@ -334,8 +352,24 @@ impl Alerts {
             },
             dropped.any(),
         );
-        let regular = Rise::between(before.pool_exhausted_regular, now.pool_exhausted_regular);
-        let jumbo = Rise::between(before.pool_exhausted_jumbo, now.pool_exhausted_jumbo);
+        // Only the total decides. A read that fell between the writer's two
+        // increments shifts the split by one, so the split is clamped to never
+        // go backwards and is shown for the message only.
+        let total = Rise::between(before.pool_exhausted, now.pool_exhausted);
+        let regular = Rise {
+            by: now
+                .pool_exhausted_regular
+                .saturating_sub(before.pool_exhausted_regular),
+            total: now
+                .pool_exhausted_regular
+                .max(before.pool_exhausted_regular),
+        };
+        let jumbo = Rise {
+            by: now
+                .pool_exhausted_jumbo
+                .saturating_sub(before.pool_exhausted_jumbo),
+            total: now.pool_exhausted_jumbo.max(before.pool_exhausted_jumbo),
+        };
         push(
             Loss::Pool {
                 regular,
@@ -343,7 +377,7 @@ impl Alerts {
                 jumbo_capacity: self.limits.jumbo_capacity,
                 seconds,
             },
-            regular.any() || jumbo.any(),
+            total.any(),
         );
         let disconnected = Rise::between(before.disconnected_dropped, now.disconnected_dropped);
         let queue = Rise::between(before.queue_dropped, now.queue_dropped);
@@ -403,14 +437,26 @@ impl Alerts {
             *raised = near;
         };
 
+        let channel_near = near(
+            was.channel,
+            now.channel_peak,
+            widen(limits.capacity),
+            CHANNEL_PERCENT,
+        );
+        // Raise at once; clear only after CHANNEL_CLEAR_CHECKS checks in a row
+        // below the clear line.
+        if channel_near || !was.channel {
+            next.channel_low_checks = 0;
+        } else {
+            next.channel_low_checks = was.channel_low_checks.saturating_add(1);
+        }
+        let channel_holds = was.channel && next.channel_low_checks < CHANNEL_CLEAR_CHECKS;
+        if !channel_near && !channel_holds {
+            next.channel_low_checks = 0;
+        }
         change(
             &mut next.channel,
-            near(
-                was.channel,
-                now.channel_peak,
-                widen(limits.capacity),
-                CHANNEL_PERCENT,
-            ),
+            channel_near || channel_holds,
             Risk::Channel {
                 peak: now.channel_peak,
                 capacity: limits.capacity,

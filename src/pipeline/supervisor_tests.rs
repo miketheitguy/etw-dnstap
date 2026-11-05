@@ -1079,6 +1079,7 @@ fn no_spool_logs_the_disabled_warning_once_at_start() -> Result<()> {
     let text = lines.text();
     assert_eq!(text.matches("etw_dnstap::event::26").count(), 1, "{text}");
     assert!(text.contains("--no-spool"), "{text}");
+    assert!(text.contains("receiver is down"), "{text}");
     // Nothing else of the loss and risk kinds is written, at start or at stop.
     assert_eq!(text.matches("etw_dnstap::event::").count(), 1, "{text}");
     Ok(())
@@ -1212,4 +1213,26 @@ fn publishing_counters_carries_the_cpu_of_the_registered_threads() {
     assert_eq!(later.stage_cpu[LINK].used_100ns, 0);
     assert_eq!(later.stage_cpu[LINK].percent(), 0.0);
     assert_eq!(later.stage_cpu[LINK].total_ms, link_cpu.total_ms);
+}
+
+#[test]
+fn loss_counted_before_supervision_starts_is_reported_by_the_first_check() {
+    let config = config_from(&[]);
+    let (capture, parse, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    capture.dropped.store(7, Ordering::Relaxed);
+    let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        monitor.check_alerts(Instant::now());
+    });
+    let text = lines.text();
+    assert_eq!(text.matches("etw_dnstap::event::11").count(), 1, "{text}");
+    assert_eq!(
+        text.matches("etw_dnstap::event::28").count(),
+        0,
+        "a startup ETW error alone raises no risk: {text}"
+    );
 }

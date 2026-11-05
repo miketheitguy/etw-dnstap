@@ -198,7 +198,7 @@ fn build_sink_with(
 fn warn_spool_disabled() {
     tracing::warn!(
         target: crate::event_ids::RISK_SPOOL_DISABLED,
-        "spool is disabled (--no-spool); frames are dropped and counted while the receiver is          down, and when the send queue is full"
+        "spool is disabled (--no-spool); frames are dropped and counted while the receiver is down, and when the send queue is full"
     );
 }
 
@@ -495,7 +495,9 @@ impl<'a> Monitor<'a> {
                 segment: segment_bytes_for(spool.max_bytes()),
             }),
         };
-        let baseline = Readings::read(capture, parse, sink, None);
+        // A zero baseline: the first check covers everything since capture
+        // started, including loss counted before supervision began.
+        let baseline = Readings::default();
         Self {
             capture,
             parse,
