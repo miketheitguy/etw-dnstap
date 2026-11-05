@@ -1149,3 +1149,127 @@ fn the_router_sets_and_clears_link_saturated_from_the_spool_it_owns() {
     assert_eq!(logs.count("dnstap link is saturated"), 1);
     assert_eq!(logs.count("dnstap link is no longer saturated"), 1);
 }
+
+// ---- a spool whose key is lost ----
+
+/// A spool on `dir` with a key of its own (the test key's bytes and id), so a
+/// test can break the key and a later run can still read the files.
+fn spool_with_breakable_key(
+    dir: &TestDir,
+    stats: &Arc<SinkStats>,
+) -> (Spool, Arc<crate::spool::crypt::SegmentKey>) {
+    use crate::spool::{
+        KeyOrigin, SpoolConfig,
+        crypt::SegmentKey,
+        test_support::{TEST_KEY_BYTES, TEST_KEY_ID},
+    };
+    let key =
+        Arc::new(SegmentKey::from_bytes(&TEST_KEY_BYTES, TEST_KEY_ID).expect("the key page locks"));
+    let spool = Spool::open(
+        SpoolConfig {
+            dir: dir.path().to_path_buf(),
+            max_bytes: 8 * MIB,
+            min_free_bytes: 0,
+        },
+        Arc::clone(&key),
+        KeyOrigin::Loaded,
+        Arc::clone(stats),
+        |_| Ok(u64::MAX),
+    )
+    .expect("spool opens");
+    (spool, key)
+}
+
+/// With the key lost, the backlog is frozen for the run: live frames go to the
+/// link while it is up instead of waiting behind a backlog that is not read.
+#[test]
+fn with_a_lost_key_live_frames_go_to_the_link_while_it_is_up() {
+    let dir = TestDir::new("key-lost-live");
+    let stats = Arc::new(SinkStats::default());
+    let (mut spool, key) = spool_with_breakable_key(&dir, &stats);
+    assert_eq!(spool.append(&block(1).bytes, 1), Appended::Stored);
+    let mut rig = rig(Some(spool), &stats, true);
+    assert_eq!(rig.router.destination(), Route::Spool, "behind the backlog");
+
+    key.zero_for_test();
+    assert_eq!(rig.router.destination(), Route::Link);
+    rig.router.route_live(block(2));
+    assert_eq!(fifo_numbers(&rig.fifo), vec![2]);
+    assert_eq!(get(&stats.spooled), 1, "nothing more is spooled");
+    assert_eq!(get(&stats.spool_dropped), 0);
+    assert!(
+        !rig.router.has_unread(),
+        "the frozen backlog is not replayed"
+    );
+}
+
+/// With the key lost and the link down, live frames are refused by the spool
+/// and counted in `spool_dropped`.
+#[test]
+fn with_a_lost_key_and_the_link_down_live_frames_are_refused_and_counted() {
+    let dir = TestDir::new("key-lost-down");
+    let stats = Arc::new(SinkStats::default());
+    let (spool, key) = spool_with_breakable_key(&dir, &stats);
+    let mut rig = rig(Some(spool), &stats, false);
+    key.zero_for_test();
+    assert_eq!(rig.router.destination(), Route::Spool);
+    for number in 0..3 {
+        rig.router.route_live(block(number));
+    }
+    assert_eq!(get(&stats.spool_dropped), 3);
+    assert_eq!(get(&stats.spooled), 0);
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+    assert!(rig.fifo.is_empty());
+    assert_eq!(fs::read_dir(dir.path()).expect("listed").count(), 0);
+}
+
+/// With the key lost, a full FIFO stops intake, as with no spool: the router
+/// does not spill the FIFO to a spool that refuses everything.
+#[test]
+fn with_a_lost_key_a_full_fifo_stops_intake_instead_of_spilling() {
+    let dir = TestDir::new("key-lost-no-spill");
+    let stats = Arc::new(SinkStats::default());
+    let (spool, key) = spool_with_breakable_key(&dir, &stats);
+    let mut rig = rig(Some(spool), &stats, true);
+    key.zero_for_test();
+    for number in 0..blocks(LINK_FIFO_BLOCKS) {
+        assert!(rig.router.can_take(), "block {number}");
+        rig.router.route_live(block(number));
+    }
+    assert_eq!(rig.fifo.len(), LINK_FIFO_BLOCKS);
+    assert!(
+        !rig.router.can_take(),
+        "the parser channel backs up instead"
+    );
+    assert_eq!(spills(&rig.shared), 0);
+    assert_eq!(get(&stats.spool_dropped), 0);
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+}
+
+/// At shutdown a lost key is neither a seal error nor a spool error, and the
+/// backlog it froze is reported as kept; the next run replays it.
+#[test]
+fn a_seal_with_a_lost_key_keeps_the_backlog_and_reports_no_error() {
+    let dir = TestDir::new("key-lost-seal");
+    let stats = Arc::new(SinkStats::default());
+    let (mut spool, key) = spool_with_breakable_key(&dir, &stats);
+    for number in 0..3 {
+        assert_eq!(spool.append(&block(number).bytes, 1), Appended::Stored);
+    }
+    let rig = rig(Some(spool), &stats, true);
+    key.zero_for_test();
+    let (_input, parser) = bounded::<Block>(1);
+    let Rig {
+        router, returns, ..
+    } = rig;
+    drop(returns);
+    stats.begin_stop();
+    router.seal(&parser).expect("seal");
+    assert!(stats.spool_backlog_kept.load(Ordering::Relaxed));
+    assert_eq!(stats.spool_seal_error(), None);
+    assert_eq!(get(&stats.spool_errors), 0);
+
+    let next = Arc::new(SinkStats::default());
+    let mut next_run = open_spool(&dir, 64 * MIB, &next);
+    assert_eq!(drain_spool(&mut next_run), vec![0, 1, 2]);
+}

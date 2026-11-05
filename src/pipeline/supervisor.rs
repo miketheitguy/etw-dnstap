@@ -33,7 +33,7 @@ use crate::{
     sink::{FrameSink, SinkStats},
     spool::{
         KeyOrigin, Spool, SpoolConfig,
-        crypt::{CryptError, SegmentKey},
+        crypt::SegmentKey,
         fsinfo::{self, SpoolDirError},
         key::{self, KeyError, KeyLocation, LoadedKey},
         segment_bytes_for,
@@ -205,8 +205,6 @@ fn production_key() -> Result<LoadedKey, KeyError> {
 enum SpoolKeyError {
     #[error(transparent)]
     Load(#[from] KeyError),
-    #[error(transparent)]
-    Memory(#[from] CryptError),
     /// The key store did not answer in time. The helper thread may still be
     /// inside the CNG call; the run goes on without a spool.
     #[error("the key store did not answer within {0:?}")]
@@ -225,7 +223,7 @@ enum SpoolKeyError {
 /// service in `START_PENDING` until the startup watchdog aborted the process.
 /// A key problem must never stop the service, so a late answer is a key error:
 /// the caller runs without a spool. The helper thread is not joined. If it
-/// finishes later, its result is dropped, which zeroes any key bytes in it.
+/// finishes later, its result is dropped, which zeroes and frees the key page.
 fn load_key_bounded(source: KeySource, timeout: Duration) -> Result<LoadedKey, SpoolKeyError> {
     // A bound of one, so the helper never blocks on `send`, also when the
     // receiver is gone.
@@ -234,7 +232,7 @@ fn load_key_bounded(source: KeySource, timeout: Duration) -> Result<LoadedKey, S
         .name("spool-key-load".into())
         .spawn(move || {
             // A closed channel returns the value in the error; dropping it
-            // zeroes the key.
+            // zeroes and frees the key page.
             drop(send.send(source()));
         })
         .map_err(SpoolKeyError::Thread)?;
@@ -245,21 +243,20 @@ fn load_key_bounded(source: KeySource, timeout: Duration) -> Result<LoadedKey, S
     }
 }
 
-/// Unwraps the spool key with `source`, once, within `timeout`, and builds the
-/// AES key schedule in its locked page. The raw key bytes are zeroed when
-/// `loaded` drops at the end of this function; only the locked schedule is kept.
+/// Unwraps the spool key with `source`, once, within `timeout`. The source
+/// unwraps it straight into its locked page and encrypts it there with
+/// `CryptProtectMemory`; the page moves into the `Arc` without a copy.
 fn spool_key(
     source: KeySource,
     timeout: Duration,
 ) -> Result<(Arc<SegmentKey>, KeyOrigin), SpoolKeyError> {
     let loaded = load_key_bounded(source, timeout)?;
-    let key = SegmentKey::new(loaded.key.key_bytes(), loaded.key.key_id())?;
     let origin = if loaded.created {
         KeyOrigin::Created
     } else {
         KeyOrigin::Loaded
     };
-    Ok((Arc::new(key), origin))
+    Ok((Arc::new(loaded.key), origin))
 }
 
 /// [`build_sink`] with the folder check, the free-space probe, and the key

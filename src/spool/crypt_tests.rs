@@ -16,12 +16,12 @@ const SEQUENCE: u64 = 0x0102_0304_0506_0708;
 fn key() -> Arc<SegmentKey> {
     static KEY: std::sync::OnceLock<Arc<SegmentKey>> = std::sync::OnceLock::new();
     Arc::clone(KEY.get_or_init(|| {
-        Arc::new(SegmentKey::new(&KEY_BYTES, KEY_ID).expect("a 16-byte key is accepted"))
+        Arc::new(SegmentKey::from_bytes(&KEY_BYTES, KEY_ID).expect("a 16-byte key is accepted"))
     }))
 }
 
 fn key_with(bytes: [u8; KEY_LEN], id: [u8; KEY_ID_LEN]) -> Arc<SegmentKey> {
-    Arc::new(SegmentKey::new(&bytes, id).expect("a 16-byte key is accepted"))
+    Arc::new(SegmentKey::from_bytes(&bytes, id).expect("a 16-byte key is accepted"))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -70,6 +70,7 @@ enum Stop {
     Incomplete,
     Corrupt(CorruptKind),
     Header(HeaderError),
+    Key(CryptError),
 }
 
 /// What a full read returned: the data records (plaintext, logical start) and why it stopped.
@@ -118,6 +119,7 @@ fn read_all(key: &Arc<SegmentKey>, bytes: &[u8]) -> Read {
                 break Stop::Incomplete;
             }
             Next::Corrupt(kind) => break Stop::Corrupt(kind),
+            Next::KeyUnusable(error) => break Stop::Key(error),
         }
     };
     Read { records, stop }
@@ -647,6 +649,31 @@ fn a_segment_read_with_the_wrong_key_bytes_is_corrupt_not_data() {
     assert_eq!(read.records.len(), 0);
 }
 
+/// A key that a memory-protection failure zeroed seals nothing (an append
+/// error) and reads no record: the result is a key error, not corruption.
+#[test]
+fn a_zeroed_key_fails_seal_and_open_closed() {
+    let bytes = build(&sample_chunks(), true);
+    let zeroed = key_with(KEY_BYTES, KEY_ID);
+    let mut sealer = RecordSealer::new(Arc::clone(&zeroed), SEQUENCE, PREFIX);
+    let mut out = sealer.file_header().to_vec();
+    sealer.seal_data(b"before", &mut out).expect("seals");
+    let before_zeroing = out.clone();
+    zeroed.zero_for_test();
+
+    assert_eq!(
+        sealer.seal_data(b"after", &mut out),
+        Err(CryptError::KeyZeroed)
+    );
+    assert_eq!(out, before_zeroing, "nothing is appended");
+    assert_eq!(sealer.seal_end(&mut out), Err(CryptError::KeyZeroed));
+    assert_eq!(out, before_zeroing);
+
+    let read = read_all(&zeroed, &bytes);
+    assert_eq!(read.stop, Stop::Key(CryptError::KeyZeroed));
+    assert_eq!(read.records.len(), 0);
+}
+
 #[test]
 fn nothing_follows_the_end_record() {
     let bytes = build(&[vec![1; 3]], true);
@@ -784,6 +811,7 @@ fn an_incomplete_record_completes_when_the_rest_arrives() {
                 return;
             }
             Next::Corrupt(kind) => panic!("corrupt: {kind:?}"),
+            Next::KeyUnusable(error) => panic!("key: {error}"),
         }
     }
     assert!(saw_incomplete);

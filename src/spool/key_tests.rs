@@ -397,12 +397,12 @@ fn bad_value(value: &[u8]) -> &'static str {
 
 #[test]
 fn generate_gives_distinct_keys_and_ids() {
-    let a = SpoolKey::generate().expect("random key");
-    let b = SpoolKey::generate().expect("random key");
-    assert_ne!(a.key_bytes(), b.key_bytes());
-    assert_ne!(a.key_id(), b.key_id());
-    assert_ne!(a.key_bytes(), &[0; KEY_LEN], "key bytes were filled");
-    assert_ne!(a.key_id(), [0; KEY_ID_LEN], "key id was filled");
+    let (a, a_id) = generate().expect("random key");
+    let (b, b_id) = generate().expect("random key");
+    assert_ne!(a.bytes(), b.bytes());
+    assert_ne!(a_id, b_id);
+    assert_ne!(a.bytes(), &[0; KEY_LEN], "key bytes were filled");
+    assert_ne!(a_id, [0; KEY_ID_LEN], "key id was filled");
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn debug_does_not_show_key_bytes() {
         0xde, 0xad, 0xbe, 0xef, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x01, 0x23, 0x45,
         0x67,
     ];
-    let key = SpoolKey::from_parts(key_bytes, [0xaa; KEY_ID_LEN]);
+    let key = SegmentKey::from_bytes(&key_bytes, [0xaa; KEY_ID_LEN]).expect("the page locks");
     let shown = format!("{key:?} {key:#?}");
     assert!(
         shown.contains("aaaaaaaaaaaaaaaa"),
@@ -493,8 +493,8 @@ fn debug_does_not_show_key_bytes() {
 #[test]
 fn errors_name_the_step_and_the_status() {
     let missing = unique("EtwDnstap Missing Test Key");
-    let key = SpoolKey::generate().expect("random key");
-    let err = wrap_key(&key, &missing, KeyScope::User).expect_err("no such key");
+    let (key, id) = generate().expect("random key");
+    let err = wrap_key(key.bytes(), id, &missing, KeyScope::User).expect_err("no such key");
     assert!(
         matches!(
             err,
@@ -513,12 +513,12 @@ fn errors_name_the_step_and_the_status() {
 #[test]
 fn wrap_and_unwrap_round_trip_and_detect_changes() {
     let cng = TestCngKey::create();
-    let key = SpoolKey::generate().expect("random key");
-    let wrapped = wrap_key(&key, cng.name(), KeyScope::User).expect("wraps");
-    assert_eq!(wrapped.key_id, key.key_id());
+    let (key, id) = generate().expect("random key");
+    let wrapped = wrap_key(key.bytes(), id, cng.name(), KeyScope::User).expect("wraps");
+    assert_eq!(wrapped.key_id, id);
     assert_eq!(wrapped.wrapped.len(), 384, "one RSA-3072 block");
     assert_ne!(
-        wrap_key(&key, cng.name(), KeyScope::User)
+        wrap_key(key.bytes(), id, cng.name(), KeyScope::User)
             .expect("wraps")
             .wrapped,
         wrapped.wrapped,
@@ -526,13 +526,13 @@ fn wrap_and_unwrap_round_trip_and_detect_changes() {
     );
 
     let back = unwrap_key(&wrapped, cng.name(), KeyScope::User).expect("unwraps");
-    assert_eq!(back.key_bytes(), key.key_bytes());
-    assert_eq!(back.key_id(), key.key_id());
+    assert_eq!(back.plaintext_for_test().expect("usable"), *key.bytes());
+    assert_eq!(back.id(), id);
 
     // Through the registry encoding too.
     let decoded = WrappedKey::decode(&wrapped.encode().expect("encodes")).expect("decodes");
     let back = unwrap_key(&decoded, cng.name(), KeyScope::User).expect("unwraps");
-    assert_eq!(back.key_bytes(), key.key_bytes());
+    assert_eq!(back.plaintext_for_test().expect("usable"), *key.bytes());
 
     for index in [0, 1, 191, 383] {
         let mut tampered = wrapped.clone();
@@ -555,12 +555,44 @@ fn wrap_and_unwrap_round_trip_and_detect_changes() {
     assert!(matches!(err, KeyError::Decrypt { .. }), "{err:?}");
 }
 
+/// `NCryptDecrypt` writes into the key page, which is encrypted in place at
+/// once: between uses the page never holds the key in the clear.
+#[test]
+fn an_unwrapped_key_is_encrypted_in_its_page() {
+    let cng = TestCngKey::create();
+    let (key, id) = generate().expect("random key");
+    let wrapped = wrap_key(key.bytes(), id, cng.name(), KeyScope::User).expect("wraps");
+    let back = unwrap_key(&wrapped, cng.name(), KeyScope::User).expect("unwraps");
+    let snapshot = back.snapshot();
+    assert_ne!(&snapshot.raw, key.bytes(), "encrypted in place");
+    assert!(snapshot.scratch.iter().all(|&byte| byte == 0));
+    assert_eq!(back.plaintext_for_test().expect("usable"), *key.bytes());
+}
+
+/// A new key is generated in its page and encrypted there before it is
+/// stored; the stored value unwraps to the same bytes.
+#[test]
+fn a_created_key_is_encrypted_in_its_page() {
+    let cng = TestCngKey::create();
+    let reg = TestRegistry::create(true);
+    let location = reg.location(&cng);
+    let created = load_or_create(&location).expect("creates");
+    assert!(created.created);
+    let plain = created.key.plaintext_for_test().expect("usable");
+    let snapshot = created.key.snapshot();
+    assert_ne!(snapshot.raw, plain, "encrypted in place");
+    assert!(snapshot.scratch.iter().all(|&byte| byte == 0));
+    let stored = WrappedKey::decode(&reg.value().expect("written")).expect("valid");
+    let back = unwrap_key(&stored, cng.name(), KeyScope::User).expect("unwraps");
+    assert!(back.matches(&plain).expect("usable"));
+}
+
 #[test]
 fn a_different_wrapping_key_cannot_unwrap() {
     let first = TestCngKey::create();
     let second = TestCngKey::create();
-    let key = SpoolKey::generate().expect("random key");
-    let wrapped = wrap_key(&key, first.name(), KeyScope::User).expect("wraps");
+    let (key, id) = generate().expect("random key");
+    let wrapped = wrap_key(key.bytes(), id, first.name(), KeyScope::User).expect("wraps");
     let err = unwrap_key(&wrapped, second.name(), KeyScope::User).expect_err("other key");
     assert!(matches!(err, KeyError::Decrypt { .. }), "{err:?}");
 }
@@ -573,8 +605,8 @@ fn a_different_wrapping_key_cannot_unwrap() {
 fn generic_read_on_the_key_is_enough_to_unwrap() {
     let cng = TestCngKey::create();
     let sid = current_user_sid();
-    let key = SpoolKey::generate().expect("random key");
-    let wrapped = wrap_key(&key, cng.name(), KeyScope::User).expect("wraps");
+    let (key, id) = generate().expect("random key");
+    let wrapped = wrap_key(key.bytes(), id, cng.name(), KeyScope::User).expect("wraps");
 
     // The only entry is GENERIC_READ for the caller. As the key file's owner
     // the caller also keeps READ_CONTROL and WRITE_DAC, which grant no use of
@@ -582,10 +614,10 @@ fn generic_read_on_the_key_is_enough_to_unwrap() {
     cng.set_dacl(&format!("D:P(A;;GR;;;{sid})"))
         .expect("read-only DACL");
     let back = unwrap_key(&wrapped, cng.name(), KeyScope::User).expect("unwraps with GR");
-    assert_eq!(back.key_bytes(), key.key_bytes());
-    let again = wrap_key(&key, cng.name(), KeyScope::User).expect("wraps with GR");
+    assert_eq!(back.plaintext_for_test().expect("usable"), *key.bytes());
+    let again = wrap_key(key.bytes(), id, cng.name(), KeyScope::User).expect("wraps with GR");
     let back = unwrap_key(&again, cng.name(), KeyScope::User).expect("unwraps with GR");
-    assert_eq!(back.key_bytes(), key.key_bytes());
+    assert_eq!(back.plaintext_for_test().expect("usable"), *key.bytes());
 
     // With read only, the caller cannot change the key's DACL through the KSP.
     assert!(cng.set_dacl(&format!("D:P(A;;GA;;;{sid})")).is_err());
@@ -619,12 +651,15 @@ fn load_or_create_creates_once_then_loads() {
     assert!(first.created);
     let stored = reg.value().expect("value written");
     let decoded = WrappedKey::decode(&stored).expect("valid value");
-    assert_eq!(decoded.key_id, first.key.key_id());
+    assert_eq!(decoded.key_id, first.key.id());
 
     let second = load_or_create(&location).expect("loads");
     assert!(!second.created);
-    assert_eq!(second.key.key_bytes(), first.key.key_bytes());
-    assert_eq!(second.key.key_id(), first.key.key_id());
+    assert_eq!(
+        second.key.plaintext_for_test().expect("usable"),
+        first.key.plaintext_for_test().expect("usable")
+    );
+    assert_eq!(second.key.id(), first.key.id());
     assert_eq!(reg.value().as_deref(), Some(&stored[..]), "value unchanged");
 }
 
@@ -656,7 +691,10 @@ fn load_or_create_never_overwrites_a_value_it_cannot_use() {
     write_value(Hive::CurrentUser, &reg.subkey, &stored).expect("writes");
     let back = load_or_create(&location).expect("loads");
     assert!(!back.created);
-    assert_eq!(back.key.key_bytes(), good.key.key_bytes());
+    assert_eq!(
+        back.key.plaintext_for_test().expect("usable"),
+        good.key.plaintext_for_test().expect("usable")
+    );
 }
 
 #[test]
@@ -705,7 +743,10 @@ fn the_installer_subkey_rights_are_enough() {
     assert!(first.created);
     let second = load_or_create(&location).expect("loads with 0x20003");
     assert!(!second.created);
-    assert_eq!(second.key.key_bytes(), first.key.key_bytes());
+    assert_eq!(
+        second.key.plaintext_for_test().expect("usable"),
+        first.key.plaintext_for_test().expect("usable")
+    );
 }
 
 /// The subkey is opened for query and set together, so a DACL without set

@@ -66,11 +66,12 @@
 //! present, which reads as [`Next::Incomplete`] and never as a decrypted record. It
 //! becomes [`Next::Corrupt`] once enough bytes follow.
 
-use std::{fmt, ops::Range, sync::Arc};
+use std::{ops::Range, sync::Arc};
 
-use ring::aead::{AES_128_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+use ring::aead::{Aad, NONCE_LEN, Nonce};
 
-use super::locked::{LockError, Locked};
+use super::locked::LockError;
+pub(crate) use super::protected::SegmentKey;
 
 /// File header length in bytes.
 pub(crate) const FILE_HEADER_LEN: usize = 32;
@@ -99,64 +100,34 @@ const AAD_LEN: usize = FILE_HEADER_LEN + RECORD_HEADER_LEN;
 /// Bytes at the start of the file header that every version 1 segment shares.
 const FIXED_PREFIX_LEN: usize = 8;
 
-/// The AES-128 key and the id that names it in segment headers.
-///
-/// The expanded key schedule lives in one locked page of its own (see
-/// [`super::locked`]): never written to the pagefile, left out of WER crash
-/// dumps, and zeroed on drop. The type is not `Clone`: writers and readers share one key through an
-/// `Arc<SegmentKey>`, so the schedule is never copied. The raw key bytes are not
-/// kept; the owner of the 16-byte key (task K) zeroes its copy.
-pub(crate) struct SegmentKey {
-    key: Locked<LessSafeKey>,
-    id: [u8; KEY_ID_LEN],
-}
-
-impl SegmentKey {
-    /// Builds the key from 16 bytes and its 8-byte id, in a new locked page.
-    ///
-    /// `ring` expands the schedule on the stack before it is moved into the
-    /// page, so stack residue of it can remain.
-    ///
-    /// # Errors
-    ///
-    /// [`CryptError::BadKey`] if the cipher rejects the key (it cannot for 16
-    /// bytes), [`CryptError::Memory`] if the locked page cannot be made.
-    pub(crate) fn new(key: &[u8; KEY_LEN], id: [u8; KEY_ID_LEN]) -> Result<Self, CryptError> {
-        let unbound = UnboundKey::new(&AES_128_GCM, key).map_err(|_| CryptError::BadKey)?;
-        let schedule = Locked::new(LessSafeKey::new(unbound)).map_err(CryptError::Memory)?;
-        Ok(Self { key: schedule, id })
-    }
-
-    /// The key id written to and checked in segment headers.
-    pub(crate) const fn id(&self) -> [u8; KEY_ID_LEN] {
-        self.id
-    }
-
-    /// The address of the key schedule, so tests can show that every user
-    /// shares the one copy.
-    #[cfg(test)]
-    pub(crate) fn schedule_address(&self) -> usize {
-        std::ptr::from_ref::<LessSafeKey>(&self.key) as usize
-    }
-}
-
-impl fmt::Debug for SegmentKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SegmentKey")
-            .field("id", &self.id)
-            .finish_non_exhaustive()
-    }
-}
-
 /// Failure to build a key or seal a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CryptError {
     /// The cipher rejected the key.
     #[error("the cipher rejected the spool key")]
     BadKey,
-    /// The key schedule could not be put in a locked page.
+    /// The locked page for the key could not be made.
     #[error(transparent)]
     Memory(LockError),
+    /// `CryptUnprotectMemory` failed on the key (nothing changed; a later use
+    /// may succeed), or `CryptProtectMemory` failed twice (the key bytes were
+    /// overwritten with zeros and the key is lost for the run).
+    #[error("{call} failed on the spool key (Win32 error {code})")]
+    MemoryProtection {
+        /// The call that failed.
+        call: &'static str,
+        /// Its Win32 error code.
+        code: u32,
+    },
+    /// `CryptUnprotectMemory` returned bytes that do not match the key check
+    /// value. The key bytes were overwritten with zeros.
+    #[error("the spool key failed its check after CryptUnprotectMemory; the key is zeroed")]
+    KeyCheck,
+    /// An earlier memory protection failure zeroed the key.
+    #[error(
+        "the spool key was zeroed after a memory protection failure; the spool cannot seal or open records until the service restarts"
+    )]
+    KeyZeroed,
     /// A data record carries 1 byte to [`MAX_PLAINTEXT_LEN`] bytes.
     #[error("a data record must hold between 1 byte and 1 MiB")]
     BadPlaintextLength,
@@ -169,6 +140,17 @@ pub(crate) enum CryptError {
     /// The cipher failed to seal. It cannot for these inputs.
     #[error("the cipher failed to seal a record")]
     Seal,
+}
+
+impl CryptError {
+    /// True for a failure of the key itself (its memory protection), not of the
+    /// record: the record may be fine and must not be treated as corrupt.
+    pub(crate) const fn is_key_error(self) -> bool {
+        matches!(
+            self,
+            Self::BadKey | Self::MemoryProtection { .. } | Self::KeyCheck | Self::KeyZeroed
+        )
+    }
 }
 
 /// A fixed-size segment file header.
@@ -435,14 +417,19 @@ impl RecordSealer {
         out.reserve(plaintext.len() + RECORD_OVERHEAD);
         out.extend_from_slice(&header);
         out.extend_from_slice(plaintext);
-        let sealed = self.key.key.seal_in_place_separate_tag(
-            nonce_for(self.nonce_prefix, index),
-            Aad::from(aad.as_slice()),
-            &mut out[start + RECORD_HEADER_LEN..],
-        );
-        let Ok(tag) = sealed else {
-            out.truncate(start);
-            return Err(CryptError::Seal);
+        let nonce = nonce_for(self.nonce_prefix, index);
+        let body = &mut out[start + RECORD_HEADER_LEN..];
+        let sealed = self.key.with_aead(|key| {
+            key.seal_in_place_separate_tag(nonce, Aad::from(aad.as_slice()), body)
+        });
+        let tag = match sealed {
+            Ok(Ok(tag)) => tag,
+            failed => {
+                out.truncate(start);
+                // A key that cannot be used gives its own error; the cipher's
+                // own failure is `Seal`.
+                return Err(failed.err().unwrap_or(CryptError::Seal));
+            }
         };
         out.extend_from_slice(tag.as_ref());
         self.next_index += 1;
@@ -477,6 +464,10 @@ pub(crate) enum Next {
     },
     /// The record is invalid. The rest of the segment cannot be trusted.
     Corrupt(CorruptKind),
+    /// The key could not be used (see [`CryptError::is_key_error`]), so the
+    /// record was not checked. Nothing changed: the buffer and the opener are
+    /// as before the call. This is not corruption; the record may be fine.
+    KeyUnusable(CryptError),
 }
 
 /// The result of [`RecordOpener::skip_to`].
@@ -619,14 +610,16 @@ impl RecordOpener {
             return Next::Incomplete { needed: total };
         }
         let aad = aad_for(&self.file_header, &buf[..RECORD_HEADER_LEN]);
-        let opened = self.key.key.open_in_place(
-            nonce_for(self.header.nonce_prefix, header.index),
-            Aad::from(aad.as_slice()),
-            &mut buf[RECORD_HEADER_LEN..total],
-        );
+        let nonce = nonce_for(self.header.nonce_prefix, header.index);
+        let body = &mut buf[RECORD_HEADER_LEN..total];
+        let opened = self.key.with_aead(|key| {
+            key.open_in_place(nonce, Aad::from(aad.as_slice()), body)
+                .map(|plain| plain.len())
+        });
         match opened {
-            Ok(plain) if plain.len() == header.plaintext_len => {}
-            _ => return Next::Corrupt(CorruptKind::BadTag),
+            Ok(Ok(len)) if len == header.plaintext_len => {}
+            Ok(_) => return Next::Corrupt(CorruptKind::BadTag),
+            Err(error) => return Next::KeyUnusable(error),
         }
         let logical_start = self.logical_offset;
         self.advance(&header);

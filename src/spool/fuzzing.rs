@@ -76,7 +76,7 @@ fn segment_name(sequence: u64) -> String {
 fn fuzz_key() -> Option<Arc<SegmentKey>> {
     static KEY: OnceLock<Option<Arc<SegmentKey>>> = OnceLock::new();
     KEY.get_or_init(|| {
-        SegmentKey::new(&[0x46; 16], *b"fuzzkey!")
+        SegmentKey::from_bytes(&[0x46; 16], *b"fuzzkey!")
             .ok()
             .map(Arc::new)
     })

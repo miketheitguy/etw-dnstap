@@ -98,48 +98,101 @@ pub(super) struct SegmentWriter {
     len: u64,
 }
 
-impl SegmentWriter {
-    /// Creates the file with `create_new` (it never opens an existing file) and
-    /// writes the file header with a new random nonce prefix. On failure the
-    /// half-made file is removed.
-    pub(super) fn create(path: &Path, key: Arc<SegmentKey>, sequence: u64) -> io::Result<Self> {
+/// A segment that has its sequence, nonce prefix, and sealer, but no file yet.
+/// The spool seals the first block with it before it deletes or creates
+/// anything, so a key failure is found while the folder is untouched.
+pub(super) struct PreparedSegment {
+    sealer: RecordSealer,
+    sequence: u64,
+}
+
+impl PreparedSegment {
+    /// A new segment `sequence` with a new random nonce prefix.
+    pub(super) fn new(key: Arc<SegmentKey>, sequence: u64) -> io::Result<Self> {
         let mut nonce_prefix = [0_u8; NONCE_PREFIX_LEN];
         SystemRandom::new()
             .fill(&mut nonce_prefix)
             .map_err(|_| io::Error::other("cannot make a random spool nonce prefix"))?;
-        let sealer = RecordSealer::new(key, sequence, nonce_prefix);
+        Ok(Self {
+            sealer: RecordSealer::new(key, sequence, nonce_prefix),
+            sequence,
+        })
+    }
+
+    /// The segment's sequence number.
+    pub(super) const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Seals `framed` into `buf` as [`SegmentWriter::seal_block`] does.
+    pub(super) fn seal_block(&mut self, framed: &[u8], buf: &mut Vec<u8>) -> io::Result<()> {
+        seal_block(&mut self.sealer, framed, buf)
+    }
+
+    /// Creates the file with `create_new` (it never opens an existing file) and
+    /// writes the file header. On failure the half-made file is removed.
+    pub(super) fn create(self, path: &Path) -> io::Result<SegmentWriter> {
         let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        if let Err(error) = file.write_all(&sealer.file_header()) {
+        if let Err(error) = file.write_all(&self.sealer.file_header()) {
             drop(file);
             let _ = fs::remove_file(path);
             return Err(error);
         }
-        Ok(Self {
+        Ok(SegmentWriter {
             file,
-            sealer,
+            sealer: self.sealer,
             len: HEADER_LEN,
         })
     }
+}
+
+/// Seals `framed`, which holds complete data frames, as one record (or one per
+/// 1 MiB of frames) in `buf`, which is cleared first. Nothing is written.
+fn seal_block(sealer: &mut RecordSealer, framed: &[u8], buf: &mut Vec<u8>) -> io::Result<()> {
+    buf.clear();
+    let mut rest = framed;
+    while !rest.is_empty() {
+        let length = next_chunk(rest).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a spool block over 1 MiB does not split into whole frames",
+            )
+        })?;
+        sealer
+            .seal_data(&rest[..length], buf)
+            .map_err(io::Error::other)?;
+        rest = &rest[length..];
+    }
+    Ok(())
+}
+
+impl SegmentWriter {
+    /// Creates segment `sequence` at `path` with a new random nonce prefix.
+    #[cfg(test)]
+    pub(super) fn create(path: &Path, key: Arc<SegmentKey>, sequence: u64) -> io::Result<Self> {
+        PreparedSegment::new(key, sequence)?.create(path)
+    }
+
+    /// Seals `framed` and writes it with one call ([`Self::seal_block`], then
+    /// [`Self::write_sealed`]).
+    #[cfg(test)]
+    pub(super) fn append(&mut self, framed: &[u8], buf: &mut Vec<u8>) -> io::Result<()> {
+        self.seal_block(framed, buf)?;
+        self.write_sealed(buf)
+    }
 
     /// Seals `framed`, which holds complete data frames, as one record (or one
-    /// per 1 MiB of frames) in `buf` and writes it with one call. `buf` is reused
-    /// between calls, so a warm buffer allocates nothing. After an error the
-    /// length no longer describes the file; close the segment.
-    pub(super) fn append(&mut self, framed: &[u8], buf: &mut Vec<u8>) -> io::Result<()> {
-        buf.clear();
-        let mut rest = framed;
-        while !rest.is_empty() {
-            let length = next_chunk(rest).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "a spool block over 1 MiB does not split into whole frames",
-                )
-            })?;
-            self.sealer
-                .seal_data(&rest[..length], buf)
-                .map_err(io::Error::other)?;
-            rest = &rest[length..];
-        }
+    /// per 1 MiB of frames) in `buf`, without writing it. `buf` is reused
+    /// between calls, so a warm buffer allocates nothing. The records take the
+    /// next record indexes, so [`Self::write_sealed`] must follow, or the
+    /// segment must be closed.
+    pub(super) fn seal_block(&mut self, framed: &[u8], buf: &mut Vec<u8>) -> io::Result<()> {
+        seal_block(&mut self.sealer, framed, buf)
+    }
+
+    /// Writes records that [`Self::seal_block`] sealed, with one call. After an
+    /// error the length no longer describes the file; close the segment.
+    pub(super) fn write_sealed(&mut self, buf: &[u8]) -> io::Result<()> {
         self.file.write_all(buf)?;
         self.len += buf.len() as u64;
         Ok(())
@@ -546,6 +599,9 @@ impl SegmentReader {
                     }
                 }
                 Next::Corrupt(_) => return self.stop_dropping(batch, EndReason::Corrupt, bounds),
+                // Not corruption: nothing is dropped and the reader's place is
+                // kept. The caller sees the error and decides.
+                Next::KeyUnusable(error) => return Err(io::Error::other(error)),
             }
         }
     }

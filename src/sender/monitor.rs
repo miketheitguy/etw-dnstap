@@ -110,6 +110,9 @@ pub(super) struct Observation {
     pub(super) disconnects: u64,
     /// Age of the oldest spooled data; zero with no backlog.
     pub(super) oldest_age: Duration,
+    /// The spool lost its key and is suspended for the run: its backlog is
+    /// not read again before a restart, so it says nothing about the link.
+    pub(super) spool_suspended: bool,
 }
 
 /// Why `link_saturated` went back to false.
@@ -119,6 +122,8 @@ pub(super) enum ClearReason {
     BacklogEmpty,
     /// The backlog is not larger than [`TREND_SAMPLES`] samples ago.
     BacklogStopped,
+    /// The spool lost its key and is suspended for the run.
+    SpoolSuspended,
 }
 
 impl ClearReason {
@@ -126,6 +131,7 @@ impl ClearReason {
         match self {
             Self::BacklogEmpty => "the backlog is empty",
             Self::BacklogStopped => "the backlog stopped growing",
+            Self::SpoolSuspended => "the spool is suspended until the service restarts",
         }
     }
 }
@@ -163,7 +169,8 @@ impl Saturation {
 
     /// Takes one sample and returns the change it causes, if any.
     ///
-    /// - With no backlog the state clears at once.
+    /// - With no backlog, or with a spool suspended by a lost key, the state
+    ///   clears at once.
     /// - While the link is down, reads are paused, or a session was lost since
     ///   the last sample, the window restarts and the state holds (a reconnect
     ///   that flaps does not log). The growth of an outage is not a saturated
@@ -177,11 +184,15 @@ impl Saturation {
             .disconnects
             .replace(observation.disconnects)
             .is_some_and(|before| before != observation.disconnects);
-        if observation.backlog_bytes == 0 {
+        if observation.backlog_bytes == 0 || observation.spool_suspended {
             self.window.clear();
             self.since_change = 0;
-            return std::mem::take(&mut self.saturated)
-                .then_some(Change::Cleared(ClearReason::BacklogEmpty));
+            let reason = if observation.spool_suspended {
+                ClearReason::SpoolSuspended
+            } else {
+                ClearReason::BacklogEmpty
+            };
+            return std::mem::take(&mut self.saturated).then_some(Change::Cleared(reason));
         }
         if !observation.link_up || observation.reads_paused || session_lost {
             self.window.clear();

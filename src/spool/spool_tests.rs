@@ -2276,11 +2276,11 @@ fn spool_size_accounting_counts_the_header_and_the_record_overhead() {
 }
 
 #[test]
-fn every_writer_and_reader_shares_the_spool_key_schedule() {
+fn every_writer_and_reader_shares_the_spool_key_page() {
     let dir = TestDir::new("spool-one-key");
     let key = test_key();
     let (mut spool, _stats) = open(&dir, MIB);
-    let address = key.schedule_address();
+    let address = key.page_address();
     for round in 0..4 {
         assert_eq!(
             append_numbers(&mut spool, round * 10..round * 10 + 10, 5000),
@@ -2288,12 +2288,12 @@ fn every_writer_and_reader_shares_the_spool_key_schedule() {
         );
         let writer = spool.writer.as_ref().expect("a writer is active");
         assert!(Arc::ptr_eq(writer.key(), &spool.key));
-        assert_eq!(writer.key().schedule_address(), address);
+        assert_eq!(writer.key().page_address(), address);
         let mut out = Vec::new();
         spool.read_and_deliver(&mut out, 20_000).expect("read");
         let (_, reader) = spool.reader.as_ref().expect("a reader is open");
         assert!(Arc::ptr_eq(reader.key(), &spool.key));
-        assert_eq!(reader.key().schedule_address(), address);
+        assert_eq!(reader.key().page_address(), address);
     }
     assert!(Arc::ptr_eq(&spool.key, &key));
 }
@@ -2316,4 +2316,372 @@ fn a_bad_frame_inside_a_record_is_counted_once_across_a_rewind() {
     assert_eq!(get(&stats.spool_dropped_bytes), lost, "counted once");
     assert_eq!(get(&stats.replayed), 3);
     assert_eq!(all_files(dir.path()), Vec::<String>::new());
+}
+
+// ---- a key that cannot be used ----
+
+/// A key of its own for a test that breaks it, with the test key's bytes and
+/// id, so files it writes read back with the test key.
+fn breakable_key() -> Arc<SegmentKey> {
+    Arc::new(
+        SegmentKey::from_bytes(&test_support::TEST_KEY_BYTES, test_support::TEST_KEY_ID)
+            .expect("the key page locks"),
+    )
+}
+
+fn open_with_key(dir: &TestDir, max_bytes: u64, key: Arc<SegmentKey>) -> (Spool, Arc<SinkStats>) {
+    set_free(u64::MAX, 0);
+    let stats = Arc::new(SinkStats::default());
+    let spool = Spool::open(
+        SpoolConfig {
+            dir: dir.path().to_path_buf(),
+            max_bytes,
+            min_free_bytes: 0,
+        },
+        key,
+        KeyOrigin::Loaded,
+        Arc::clone(&stats),
+        fake_free,
+    )
+    .expect("spool opens");
+    (spool, stats)
+}
+
+/// Every file in the folder (segments and the cursor) with its bytes.
+fn folder_contents(dir: &TestDir) -> Vec<(String, Vec<u8>)> {
+    names_in(dir.path())
+        .into_iter()
+        .map(|name| {
+            let bytes = fs::read(dir.path().join(&name)).expect("file is readable");
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// The counters a key loss must not move, in a fixed order.
+fn loss_counters(stats: &SinkStats) -> [u64; 6] {
+    [
+        get(&stats.spooled),
+        get(&stats.replayed),
+        get(&stats.spool_dropped_bytes),
+        get(&stats.spool_errors),
+        get(&stats.spool_segments),
+        get(&stats.spool_bytes),
+    ]
+}
+
+/// A key lost for the run (two failed `CryptProtectMemory` calls) suspends the
+/// spool: reads stop without dropping anything, appends are refused before any
+/// eviction or new segment, one warning names the cause, and every file and the
+/// cursor stay for the next start, which reads the whole backlog.
+#[test]
+fn a_lost_key_suspends_the_spool_and_keeps_every_file_and_the_cursor() {
+    let dir = TestDir::new("spool-key-lost");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    // About 800 KB under a 1 MiB cap: 30 more blocks would evict.
+    for block in 0..80 {
+        assert_eq!(
+            append_numbers(&mut spool, block * 10..block * 10 + 10, 1000),
+            Appended::Stored
+        );
+    }
+    let mut delivered = Vec::new();
+    assert!(
+        spool
+            .read_and_deliver(&mut delivered, 30_000)
+            .expect("read")
+            > 0
+    );
+    spool.checkpoint();
+    let delivered = numbers(&delivered);
+    let before = folder_contents(&dir);
+    let cursor = read_cursor(&dir);
+    let counters = loss_counters(&stats);
+    let dropped = get(&stats.spool_dropped);
+    assert!(
+        segment_files(dir.path()).len() >= 6,
+        "a backlog of several segments"
+    );
+
+    key.zero_for_test();
+    let lines = capture_logs(|| {
+        let mut out = Vec::new();
+        assert_eq!(
+            spool.read_batch(&mut out, 30_000).expect("no read error"),
+            0
+        );
+        assert_eq!(out, Vec::<u8>::new());
+        for block in 80..110 {
+            assert_eq!(
+                append_numbers(&mut spool, block * 10..block * 10 + 10, 1000),
+                Appended::Dropped
+            );
+        }
+        assert_eq!(
+            spool.read_batch(&mut out, 30_000).expect("no read error"),
+            0
+        );
+        spool.rewind();
+        spool.checkpoint();
+        spool.seal().expect("nothing to seal");
+    });
+
+    assert_eq!(
+        folder_contents(&dir),
+        before,
+        "no file is deleted, created, or changed"
+    );
+    assert_eq!(read_cursor(&dir), cursor, "the cursor is unchanged");
+    assert_eq!(loss_counters(&stats), counters, "nothing else is counted");
+    assert_eq!(
+        get(&stats.spool_dropped),
+        dropped + 300,
+        "only the refused blocks"
+    );
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    assert!(!spool.is_usable());
+    assert!(spool.reads_paused());
+    assert!(!spool.has_unread());
+    assert!(
+        !spool.has_backlog(),
+        "live frames no longer wait behind the backlog"
+    );
+    assert!(spool.keeps_segments());
+
+    let text = lines.text();
+    assert_eq!(lines.count("WARN"), 1, "{text}");
+    assert_eq!(lines.count("etw_dnstap::event::26"), 1, "{text}");
+    assert!(
+        text.contains(
+            "the spool key is unusable after a memory protection failure (CryptProtectMemory, \
+             Win32 error 87); the spool is suspended until the service restarts; spooled files \
+             are kept"
+        ),
+        "{text}"
+    );
+
+    // The next start unwraps the key again and reads everything not delivered.
+    drop(spool);
+    let (mut next, next_stats) = open_with_key(&dir, MIB, breakable_key());
+    let rest = numbers(&drain(&mut next, 64 * 1024));
+    let mut all = delivered;
+    all.extend_from_slice(&rest);
+    assert_eq!(all, (0..800).collect::<Vec<u64>>());
+    assert_eq!(get(&next_stats.spool_dropped_bytes), 0);
+}
+
+/// A key lost during an append (the re-protect fails twice) refuses that block
+/// and every later one without an I/O error, and keeps the segment it wrote.
+#[test]
+fn a_key_lost_during_an_append_refuses_the_block_and_keeps_the_segment() {
+    let dir = TestDir::new("spool-key-lost-append");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    assert_eq!(append_numbers(&mut spool, 0..3, 10), Appended::Stored);
+    let before = folder_contents(&dir);
+
+    key.fail_protect_for_test(2);
+    let lines = capture_logs(|| {
+        assert_eq!(append_numbers(&mut spool, 3..6, 10), Appended::Dropped);
+        assert_eq!(append_numbers(&mut spool, 6..9, 10), Appended::Dropped);
+    });
+    assert_eq!(
+        folder_contents(&dir),
+        before,
+        "the segment is kept as written"
+    );
+    assert_eq!(get(&stats.spool_dropped), 6);
+    assert_eq!(
+        get(&stats.spool_errors),
+        0,
+        "a key loss is not an I/O error"
+    );
+    assert_eq!(lines.count("etw_dnstap::event::26"), 1, "{}", lines.text());
+    assert!(lines.text().contains("CryptProtectMemory, Win32 error 87"));
+    assert!(spool.seal().is_ok());
+    drop(spool);
+
+    let (mut next, _stats) = open_with_key(&dir, MIB, breakable_key());
+    assert_eq!(numbers(&drain(&mut next, 1000)), [0, 1, 2]);
+}
+
+/// A failed `CryptUnprotectMemory` does not lose the key: an append is an
+/// ordinary append error and a read is an ordinary transient read error.
+/// Nothing is dropped from the backlog, and later operations succeed.
+#[test]
+fn a_failed_unprotect_is_an_ordinary_error_and_the_key_is_kept() {
+    let dir = TestDir::new("spool-unprotect-fails");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    spool.pause = Duration::ZERO;
+    assert_eq!(append_numbers(&mut spool, 0..3, 10), Appended::Stored);
+
+    key.fail_unprotect_for_test(1);
+    let lines = capture_logs(|| {
+        assert_eq!(append_numbers(&mut spool, 3..6, 10), Appended::Dropped);
+        let mut out = Vec::new();
+        key.fail_unprotect_for_test(1);
+        let error = spool
+            .read_batch(&mut out, 1000)
+            .expect_err("the read fails");
+        assert!(
+            error.to_string().contains("CryptUnprotectMemory"),
+            "{error}"
+        );
+        assert_eq!(out, Vec::<u8>::new());
+    });
+    assert_eq!(key.loss(), None, "the key is not lost");
+    assert_eq!(get(&stats.spool_errors), 2, "one append and one read error");
+    assert_eq!(get(&stats.spool_dropped), 3, "the refused block only");
+    assert_eq!(
+        get(&stats.spool_dropped_bytes),
+        0,
+        "nothing read is dropped"
+    );
+    assert_eq!(lines.count("etw_dnstap::event::26"), 0, "{}", lines.text());
+
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2]);
+    spool.suspended_until = Some(Instant::now());
+    assert_eq!(append_numbers(&mut spool, 6..9, 10), Appended::Stored);
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [6, 7, 8]);
+    assert!(spool.is_usable());
+    assert_eq!(get(&stats.spool_dropped_bytes), 0);
+}
+
+/// A loss found inside a read (the re-protect fails twice during an open)
+/// goes through the read error path to the suspension: nothing is dropped or
+/// counted, and the files and the cursor stay.
+#[test]
+fn a_key_lost_during_a_read_suspends_without_dropping_anything() {
+    let dir = TestDir::new("spool-key-lost-read");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    for block in 0..5 {
+        assert_eq!(
+            append_numbers(&mut spool, block * 10..block * 10 + 10, 100),
+            Appended::Stored
+        );
+    }
+    let mut first = Vec::new();
+    assert!(spool.read_and_deliver(&mut first, 1500).expect("read") > 0);
+    spool.checkpoint();
+    let before = folder_contents(&dir);
+    let cursor = read_cursor(&dir);
+    let counters = loss_counters(&stats);
+
+    key.fail_protect_for_test(2);
+    let lines = capture_logs(|| {
+        let mut out = Vec::new();
+        assert_eq!(
+            spool.read_batch(&mut out, 100_000).expect("no read error"),
+            0
+        );
+        assert_eq!(out, Vec::<u8>::new());
+    });
+    assert!(key.loss().is_some());
+    assert!(spool.is_suspended());
+    assert_eq!(folder_contents(&dir), before);
+    assert_eq!(read_cursor(&dir), cursor);
+    assert_eq!(loss_counters(&stats), counters, "no error and no drop");
+    assert_eq!(lines.count("etw_dnstap::event::26"), 1, "{}", lines.text());
+    spool.seal().expect("a lost key is not a seal error");
+    drop(spool);
+
+    let (mut next, _stats) = open_with_key(&dir, MIB, breakable_key());
+    let mut all = numbers(&first);
+    all.extend(numbers(&drain(&mut next, 100_000)));
+    assert_eq!(all, (0..50).collect::<Vec<u64>>());
+}
+
+/// Bytes that fail the key check after a decrypt lose the key at spool level
+/// too, with the cause in the warning.
+#[test]
+fn a_key_check_failure_suspends_the_spool_and_names_the_cause() {
+    let dir = TestDir::new("spool-key-check");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    assert_eq!(append_numbers(&mut spool, 0..3, 10), Appended::Stored);
+    let before = folder_contents(&dir);
+
+    key.tamper_for_test();
+    let lines = capture_logs(|| {
+        assert_eq!(append_numbers(&mut spool, 3..6, 10), Appended::Dropped);
+    });
+    assert_eq!(folder_contents(&dir), before);
+    assert_eq!(get(&stats.spool_dropped), 3);
+    assert_eq!(get(&stats.spool_errors), 0);
+    assert!(
+        lines.text().contains(
+            "the spool key is unusable after a memory protection failure (CryptUnprotectMemory \
+             returned bytes that fail the key check)"
+        ),
+        "{}",
+        lines.text()
+    );
+}
+
+/// Once the service is stopping, the suspension is not logged.
+#[test]
+fn a_key_loss_during_shutdown_is_not_logged() {
+    let dir = TestDir::new("spool-key-lost-stopping");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    stats.begin_stop();
+    key.zero_for_test();
+    let lines = capture_logs(|| {
+        assert_eq!(append_numbers(&mut spool, 0..3, 10), Appended::Dropped);
+        spool.seal().expect("seal");
+    });
+    assert_eq!(lines.text(), "");
+    assert_eq!(get(&stats.spool_dropped), 3);
+    assert!(spool.is_suspended());
+}
+
+/// The append that finds the key lost does not evict, roll, or create
+/// anything, also when it would have evicted for the size cap: the block is
+/// sealed before anything is deleted.
+#[test]
+fn the_append_that_finds_the_key_lost_neither_evicts_nor_creates() {
+    let dir = TestDir::new("spool-key-lost-no-evict");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    let mut next = 0;
+    let (block, frames) = loop {
+        let candidate = numbered(next..next + 10, 1000);
+        let sealed = segment::sealed_len(&candidate.0).expect("fits a record");
+        let evicts = spool.total_bytes + spool.new_segment_bytes() + sealed + END_LEN
+            > spool.config.max_bytes;
+        if evicts && spool.writer.is_some() {
+            break candidate;
+        }
+        assert_eq!(spool.append(&candidate.0, candidate.1), Appended::Stored);
+        next += 10;
+    };
+    let before = folder_contents(&dir);
+    let counters = loss_counters(&stats);
+    let dropped = get(&stats.spool_dropped);
+
+    key.fail_protect_for_test(2);
+    assert_eq!(spool.append(&block, frames), Appended::Dropped);
+    assert_eq!(folder_contents(&dir), before, "nothing evicted or created");
+    assert_eq!(loss_counters(&stats), counters);
+    assert_eq!(get(&stats.spool_dropped), dropped + u64::from(frames));
+
+    // A spool with no active segment creates none either.
+    drop(spool);
+    let (mut reopened, reopened_stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    assert!(reopened.writer.is_none());
+    assert_eq!(reopened.append(&block, frames), Appended::Dropped);
+    assert_eq!(folder_contents(&dir), before);
+    assert_eq!(get(&reopened_stats.spool_dropped), u64::from(frames));
+
+    // With a usable key the same block evicts as before: the test reached the cap.
+    let (mut working, working_stats) = open_with_key(&dir, MIB, breakable_key());
+    assert_eq!(working.append(&block, frames), Appended::Stored);
+    // A leftover's frame count is unknown, so the eviction counts its bytes.
+    assert!(
+        get(&working_stats.spool_dropped_bytes) > 0,
+        "the cap evicted"
+    );
 }

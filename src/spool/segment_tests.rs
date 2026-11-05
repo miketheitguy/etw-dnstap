@@ -601,7 +601,7 @@ fn the_readable_data_can_end_before_the_file() {
 }
 
 #[test]
-fn the_writer_and_the_reader_share_the_one_key_schedule() {
+fn the_writer_and_the_reader_share_the_one_key_page() {
     let dir = TestDir::new("segment-shared-key");
     let path = segment_path(&dir);
     let key = test_key();
@@ -611,10 +611,7 @@ fn the_writer_and_the_reader_share_the_one_key_schedule() {
         .expect("header");
     assert!(Arc::ptr_eq(writer.key(), &key));
     assert!(Arc::ptr_eq(reader.key(), &key));
-    assert_eq!(
-        writer.key().schedule_address(),
-        reader.key().schedule_address()
-    );
+    assert_eq!(writer.key().page_address(), reader.key().page_address());
 }
 
 #[test]

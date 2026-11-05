@@ -4,10 +4,7 @@ use super::*;
 use crate::{
     etw::Win32Status,
     pipeline::{config::parse_args_from, test_support::config_from},
-    spool::{
-        key::SpoolKey,
-        test_support::{TEST_KEY_BYTES, TEST_KEY_ID, capture_logs_at},
-    },
+    spool::test_support::{TEST_KEY_BYTES, TEST_KEY_ID, capture_logs_at},
 };
 use std::{
     io::{Read, Write},
@@ -17,13 +14,9 @@ use std::{
 };
 
 /// The spool key of the tests: the test key, stored before.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the signature is the key source's function pointer type"
-)]
 fn test_key_source() -> Result<LoadedKey, KeyError> {
     Ok(LoadedKey {
-        key: SpoolKey::from_parts(TEST_KEY_BYTES, TEST_KEY_ID),
+        key: SegmentKey::from_bytes(&TEST_KEY_BYTES, TEST_KEY_ID)?,
         created: false,
     })
 }
@@ -454,13 +447,9 @@ fn a_key_that_arrives_in_time_is_used() {
 #[test]
 fn a_new_spool_key_deletes_the_old_segments_before_use() {
     use crate::spool::test_support::{TestDir, numbered, sealed_segment, test_key};
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "the signature is the key source's function pointer type"
-    )]
     fn created_key() -> Result<LoadedKey, KeyError> {
         Ok(LoadedKey {
-            key: SpoolKey::from_parts(TEST_KEY_BYTES, TEST_KEY_ID),
+            key: SegmentKey::from_bytes(&TEST_KEY_BYTES, TEST_KEY_ID)?,
             created: true,
         })
     }

@@ -1,8 +1,11 @@
 //! Spool key: generation, wrapping with the installer's CNG machine key, and the
 //! `WrappedKey` registry value (task K of `docs/plans/spool-encryption-plan.md`).
 //!
-//! The spool encrypts its segments with a random AES-128 key, the [`SpoolKey`].
-//! The key is stored only in wrapped form: RSA-OAEP (SHA-256) with a persisted,
+//! The spool encrypts its segments with a random AES-128 key. In memory it is
+//! a [`SegmentKey`]: 16 bytes in a locked page, encrypted with
+//! `CryptProtectMemory` between uses (see [`super::protected`]).
+//! `NCryptDecrypt` and `BCryptGenRandom` write the key straight into that page;
+//! no other buffer holds it. On disk the key is stored only in wrapped form: RSA-OAEP (SHA-256) with a persisted,
 //! non-exportable RSA key in the Microsoft Software Key Storage Provider, named
 //! [`WRAPPING_KEY_NAME`]. The private half of that key stays in the LSA key
 //! isolation process, and the KSP checks the caller's token against the key's
@@ -23,11 +26,7 @@
 //! [`load_or_create`] is the entry point. It never replaces an existing
 //! `WrappedKey` value: an administrator deletes the value to force a new key.
 
-use std::{
-    fmt,
-    ptr::{self, NonNull},
-    sync::atomic::{Ordering, compiler_fence},
-};
+use std::ptr::{self, NonNull};
 
 use windows_sys::{
     Win32::{
@@ -48,6 +47,11 @@ use windows_sys::{
         },
     },
     core::HRESULT,
+};
+
+use super::{
+    crypt::{CryptError, SegmentKey},
+    protected::KeyBuffer,
 };
 
 /// `ERROR_SUCCESS`, the only success `SECURITY_STATUS` of the `NCrypt` calls used
@@ -184,6 +188,9 @@ pub(crate) enum KeyError {
     BadValue(&'static str),
     #[error("a new spool key did not unwrap to the bytes that were wrapped")]
     Verify,
+    /// The locked page for the key, or its memory protection, failed.
+    #[error(transparent)]
+    Memory(#[from] CryptError),
     #[error("the {0} has a NUL character")]
     Nul(&'static str),
 }
@@ -207,84 +214,19 @@ const fn registry_hint(code: u32) -> &'static str {
     }
 }
 
-/// An AES-128 spool key and its key id.
+/// A new random key, generated straight into a new locked page, and a new
+/// random key id, both from the system-preferred RNG. The key bytes are in
+/// the clear until the caller protects the buffer.
 ///
-/// The key bytes are on the heap, so moving a `SpoolKey` copies only a pointer,
-/// and they are overwritten with zeros when the `SpoolKey` drops. `Debug` shows
-/// the key id only. The type is not `Clone`: there is one copy of the key bytes.
-pub(crate) struct SpoolKey {
-    key: Box<[u8; KEY_LEN]>,
-    id: [u8; KEY_ID_LEN],
-}
-
-impl SpoolKey {
-    /// A new random key and key id from the system-preferred RNG.
-    ///
-    /// # Errors
-    /// [`KeyError::Random`] if `BCryptGenRandom` fails.
-    pub(crate) fn generate() -> Result<Self, KeyError> {
-        let mut key = Self {
-            key: Box::new([0; KEY_LEN]),
-            id: [0; KEY_ID_LEN],
-        };
-        random(&mut key.key[..])?;
-        random(&mut key.id)?;
-        Ok(key)
-    }
-
-    /// A key from known bytes, for tests of the record layer.
-    #[cfg(test)]
-    pub(crate) fn from_parts(key: [u8; KEY_LEN], id: [u8; KEY_ID_LEN]) -> Self {
-        Self {
-            key: Box::new(key),
-            id,
-        }
-    }
-
-    /// The AES-128 key bytes. Do not copy them into a value that outlives the
-    /// `SpoolKey` without zeroing it.
-    pub(crate) fn key_bytes(&self) -> &[u8; KEY_LEN] {
-        &self.key
-    }
-
-    /// The key id. It is not secret: segment headers carry it in the clear.
-    pub(crate) const fn key_id(&self) -> [u8; KEY_ID_LEN] {
-        self.id
-    }
-}
-
-impl Drop for SpoolKey {
-    fn drop(&mut self) {
-        zero(&mut self.key[..]);
-    }
-}
-
-impl fmt::Debug for SpoolKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpoolKey")
-            .field("id", &format_args!("{}", Hex(&self.id)))
-            .field("key", &format_args!("<redacted>"))
-            .finish()
-    }
-}
-
-/// Lowercase hex of a byte string, for the key id.
-struct Hex<'a>(&'a [u8]);
-
-impl fmt::Display for Hex<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
-    }
-}
-
-/// Overwrites `buf` with zeros in a way the compiler does not remove as a dead
-/// store.
-fn zero(buf: &mut [u8]) {
-    for byte in buf.iter_mut() {
-        // SAFETY: `byte` is a valid, aligned, exclusive reference to a `u8`.
-        unsafe { ptr::write_volatile(byte, 0) };
-    }
-    compiler_fence(Ordering::SeqCst);
+/// # Errors
+/// [`KeyError::Memory`] if the page cannot be made, [`KeyError::Random`] if
+/// `BCryptGenRandom` fails.
+pub(crate) fn generate() -> Result<(KeyBuffer, [u8; KEY_ID_LEN]), KeyError> {
+    let mut key = KeyBuffer::new()?;
+    random(key.bytes_mut())?;
+    let mut id = [0; KEY_ID_LEN];
+    random(&mut id)?;
+    Ok((key, id))
 }
 
 /// Fills `buf` from the system-preferred RNG.
@@ -378,8 +320,8 @@ fn checked_wrapped_len(len: usize) -> Result<u16, KeyError> {
 /// The result of [`load_or_create`].
 #[derive(Debug)]
 pub(crate) struct LoadedKey {
-    /// The spool key.
-    pub(crate) key: SpoolKey,
+    /// The spool key, encrypted in its locked page.
+    pub(crate) key: SegmentKey,
     /// True when no `WrappedKey` value existed and this call made and stored a
     /// new key. Segments already in the spool cannot be read with it, so the
     /// caller deletes them.
@@ -389,15 +331,18 @@ pub(crate) struct LoadedKey {
 /// Loads the spool key from the `WrappedKey` registry value, or makes and stores
 /// a new one when the value does not exist.
 ///
-/// A new key is wrapped, unwrapped again to prove the service can decrypt with
-/// the wrapping key, and only then written. An existing value is never
-/// replaced, also when it does not unwrap.
+/// A new key is generated into its locked page, wrapped from there, and
+/// protected with `CryptProtectMemory`. It is then unwrapped again into a
+/// second locked page, to prove the service can decrypt with the wrapping key,
+/// compared in constant time, and only then written; the second page is zeroed
+/// when it drops. An existing value is never replaced, also when it does not
+/// unwrap.
 ///
 /// # Errors
 /// The [`KeyError`] of the step that failed: the registry key is missing or
 /// cannot be opened, the value cannot be read or written, the value is
 /// malformed, the KSP or the wrapping key cannot be opened, or encryption or
-/// decryption fails.
+/// decryption fails, or the locked page or its memory protection fails.
 pub(crate) fn load_or_create(location: &KeyLocation<'_>) -> Result<LoadedKey, KeyError> {
     let subkey = RegKey::open(location.hive, location.subkey)?;
     if let Some(value) = subkey.read()? {
@@ -408,43 +353,54 @@ pub(crate) fn load_or_create(location: &KeyLocation<'_>) -> Result<LoadedKey, Ke
             created: false,
         });
     }
-    let key = SpoolKey::generate()?;
+    // Opened first, so the new key is in the clear only across the wrap.
     let wrapping = WrappingKey::open(location.wrapping_key, location.scope)?;
-    let wrapped = wrapping.wrap(&key)?;
-    let check = wrapping.unwrap(&wrapped)?;
-    if check.key_bytes() != key.key_bytes() || check.key_id() != key.key_id() {
+    let (fresh, id) = generate()?;
+    let wrapped = wrapping.wrap(fresh.bytes(), id)?;
+    let key = fresh.protect(id)?;
+    let mut check = KeyBuffer::new()?;
+    // The key id is the OAEP label, so this unwrap also proves the stored id.
+    wrapping.unwrap_into(&wrapped, check.bytes_mut())?;
+    if !key.matches(check.bytes())? {
         return Err(KeyError::Verify);
     }
+    drop(check);
     subkey.write(&wrapped.encode()?)?;
     Ok(LoadedKey { key, created: true })
 }
 
-/// Wraps `key` with the persisted RSA key `name`. Production code wraps only
-/// inside [`load_or_create`].
+/// Wraps `key`, named `id`, with the persisted RSA key `name`. Production
+/// code wraps only inside [`load_or_create`].
 ///
 /// # Errors
 /// [`KeyError::ProviderOpen`], [`KeyError::KeyOpen`], or [`KeyError::Encrypt`].
 #[cfg(test)]
 pub(crate) fn wrap_key(
-    key: &SpoolKey,
+    key: &[u8; KEY_LEN],
+    id: [u8; KEY_ID_LEN],
     name: &str,
     scope: KeyScope,
 ) -> Result<WrappedKey, KeyError> {
-    WrappingKey::open(name, scope)?.wrap(key)
+    WrappingKey::open(name, scope)?.wrap(key, id)
 }
 
-/// Unwraps `wrapped` with the persisted RSA key `name`.
+/// Unwraps `wrapped` with the persisted RSA key `name`, straight into a new
+/// locked page, and protects it there with `CryptProtectMemory`.
 ///
 /// # Errors
 /// [`KeyError::ProviderOpen`], [`KeyError::KeyOpen`], [`KeyError::Decrypt`]
-/// (also for a wrong key, changed wrapped bytes, or a changed key id), or
-/// [`KeyError::BadValue`] if the plaintext is not 16 bytes.
+/// (also for a wrong key, changed wrapped bytes, a changed key id, or a
+/// plaintext longer than 16 bytes), [`KeyError::BadValue`] if the plaintext is
+/// shorter than 16 bytes, or [`KeyError::Memory`].
 pub(crate) fn unwrap_key(
     wrapped: &WrappedKey,
     name: &str,
     scope: KeyScope,
-) -> Result<SpoolKey, KeyError> {
-    WrappingKey::open(name, scope)?.unwrap(wrapped)
+) -> Result<SegmentKey, KeyError> {
+    let wrapping = WrappingKey::open(name, scope)?;
+    let mut key = KeyBuffer::new()?;
+    wrapping.unwrap_into(wrapped, key.bytes_mut())?;
+    Ok(key.protect(wrapped.key_id)?)
 }
 
 /// An open CNG object handle, freed on drop.
@@ -520,11 +476,9 @@ impl WrappingKey {
 
     /// RSA-OAEP-SHA256 encryption of the key bytes, with the key id as the
     /// OAEP label so the id cannot be changed without decryption failing.
-    fn wrap(&self, key: &SpoolKey) -> Result<WrappedKey, KeyError> {
-        let id = key.key_id();
+    fn wrap(&self, input: &[u8; KEY_LEN], id: [u8; KEY_ID_LEN]) -> Result<WrappedKey, KeyError> {
         let padding = oaep_padding(&id);
         let flags = NCRYPT_PAD_OAEP_FLAG | NCRYPT_SILENT_FLAG;
-        let input = key.key_bytes();
         let mut needed = 0_u32;
         // SAFETY: `self.key.0` is an open key handle. `input` is 16 readable
         // bytes. `padding` and the label it points to (`id`) live across the
@@ -569,26 +523,26 @@ impl WrappingKey {
         })
     }
 
-    /// RSA-OAEP-SHA256 decryption. The plaintext buffer is zeroed before it is
-    /// released, also on failure.
-    fn unwrap(&self, wrapped: &WrappedKey) -> Result<SpoolKey, KeyError> {
+    /// RSA-OAEP-SHA256 decryption straight into `out`, the key area of a
+    /// locked page. No other buffer of this process receives the plaintext.
+    /// On failure `out` may hold part of it; the caller's page is zeroed when
+    /// it drops.
+    fn unwrap_into(&self, wrapped: &WrappedKey, out: &mut [u8; KEY_LEN]) -> Result<(), KeyError> {
         let input_len = u32::from(checked_wrapped_len(wrapped.wrapped.len())?);
         let padding = oaep_padding(&wrapped.key_id);
-        let mut plain = Plaintext([0; MAX_WRAPPED_LEN]);
         let mut written = 0_u32;
         // SAFETY: `self.key.0` is an open key handle. The input is
         // `input_len` readable bytes. `padding` and its label live across the
-        // call. `plain.0` is a writable buffer of `MAX_WRAPPED_LEN` bytes, at
-        // least one RSA block for every key the KSP makes, and `written` is a
-        // live out parameter.
+        // call. `out` is a writable buffer of `KEY_LEN_U32` bytes; the KSP
+        // writes at most that many. `written` is a live out parameter.
         let status = unsafe {
             NCryptDecrypt(
                 self.key.0,
                 wrapped.wrapped.as_ptr(),
                 input_len,
                 (&raw const padding).cast(),
-                plain.0.as_mut_ptr(),
-                MAX_WRAPPED_LEN_U32,
+                out.as_mut_ptr(),
+                KEY_LEN_U32,
                 &raw mut written,
                 NCRYPT_PAD_OAEP_FLAG | NCRYPT_SILENT_FLAG,
             )
@@ -599,21 +553,7 @@ impl WrappingKey {
         if written as usize != KEY_LEN {
             return Err(KeyError::BadValue("the unwrapped key is not 16 bytes"));
         }
-        let mut key = SpoolKey {
-            key: Box::new([0; KEY_LEN]),
-            id: wrapped.key_id,
-        };
-        key.key.copy_from_slice(&plain.0[..KEY_LEN]);
-        Ok(key)
-    }
-}
-
-/// A plaintext buffer that is zeroed on drop.
-struct Plaintext([u8; MAX_WRAPPED_LEN]);
-
-impl Drop for Plaintext {
-    fn drop(&mut self) {
-        zero(&mut self.0);
+        Ok(())
     }
 }
 

@@ -46,9 +46,12 @@ use std::{
 };
 
 use self::{
-    crypt::SegmentKey,
+    crypt::{CryptError, SegmentKey},
     cursor::{Cursor, CursorFile, CursorRead},
-    segment::{Bounds, END_LEN, EndReason, HEADER_LEN, HeaderCheck, SegmentReader, SegmentWriter},
+    segment::{
+        Bounds, END_LEN, EndReason, HEADER_LEN, HeaderCheck, PreparedSegment, SegmentReader,
+        SegmentWriter,
+    },
 };
 use crate::sink::SinkStats;
 
@@ -62,6 +65,8 @@ pub(crate) mod fuzzing;
 pub(crate) mod key;
 #[allow(unsafe_code)]
 mod locked;
+#[allow(unsafe_code)]
+mod protected;
 mod segment;
 
 /// The largest segment: a segment is sealed at `min(this, max_bytes / 8)`.
@@ -257,8 +262,8 @@ struct Span {
 /// The spool: segments on disk, one writer, one reader.
 pub(crate) struct Spool {
     config: SpoolConfig,
-    /// The one key schedule, in its locked page, shared with every writer and
-    /// reader.
+    /// The one spool key, encrypted in its locked page between uses, shared
+    /// with every writer and reader.
     key: Arc<SegmentKey>,
     /// The writer's record buffer, reused for every append and segment.
     record_buf: Vec<u8>,
@@ -299,6 +304,11 @@ pub(crate) struct Spool {
     low_space_blocks: u64,
     /// How long a pause lasts. Tests shorten it.
     pause: Duration,
+    /// The key was lost for the rest of the run (a memory protection failure
+    /// zeroed it). The spool is suspended: it refuses every block before it
+    /// deletes or creates anything, reads nothing, and keeps its files and the
+    /// cursor for the next start, which unwraps the key again.
+    key_lost: bool,
 }
 
 impl Spool {
@@ -357,6 +367,7 @@ impl Spool {
             discards: 0,
             low_space_blocks: 0,
             pause: PAUSE,
+            key_lost: false,
         };
         let created = origin == KeyOrigin::Created;
         spool.drop_unreadable(created);
@@ -376,7 +387,24 @@ impl Spool {
     /// True while segments hold data that is not yet delivered: unread, or read
     /// and held. Routing must append, not write directly, while this is true, to
     /// keep frames in order.
+    ///
+    /// False once the key is lost: this run cannot read the backlog, so live
+    /// frames go straight to the receiver while it is up, and the files wait
+    /// for the next start ([`Self::keeps_segments`]).
     pub(crate) fn has_backlog(&self) -> bool {
+        !self.is_suspended() && !self.segments.is_empty()
+    }
+
+    /// True once the key is lost for the run (see [`Self::key_lost`]): the
+    /// spool takes no block and reads nothing until the service restarts. Also
+    /// true before the spool's next operation has noticed the loss.
+    pub(crate) fn is_suspended(&self) -> bool {
+        self.key_lost || self.key.is_lost()
+    }
+
+    /// True while segment files stay in the folder for the next start, also
+    /// when this run cannot read them.
+    pub(crate) fn keeps_segments(&self) -> bool {
         !self.segments.is_empty()
     }
 
@@ -384,9 +412,11 @@ impl Spool {
     /// frames. False while everything is held, or the reader waits for the next
     /// append.
     pub(crate) fn has_unread(&self) -> bool {
-        self.segments
-            .iter()
-            .any(|segment| !segment.ended && !segment.at_end)
+        !self.is_suspended()
+            && self
+                .segments
+                .iter()
+                .any(|segment| !segment.ended && !segment.at_end)
     }
 
     /// Bytes of segment files that are not yet read: the bytes of the segments
@@ -422,22 +452,27 @@ impl Spool {
     }
 
     /// False while the spool is paused by an I/O error or by the free-space
-    /// floor. Also refreshes the `spool_available` flag.
+    /// floor, and for good once the key is lost. Also refreshes the
+    /// `spool_available` flag.
     pub(crate) fn is_usable(&self) -> bool {
         let now = Instant::now();
-        let usable = [self.suspended_until, self.blocked_until]
-            .into_iter()
-            .flatten()
-            .all(|until| now >= until);
+        let usable = !self.is_suspended()
+            && [self.suspended_until, self.blocked_until]
+                .into_iter()
+                .flatten()
+                .all(|until| now >= until);
         self.stats.spool_available.store(usable, Ordering::Relaxed);
         usable
     }
 
-    /// True while reads are paused after a transient read error.
-    /// [`Self::read_batch`] then returns 0 although a backlog remains.
+    /// True while reads are paused after a transient read error, and for good
+    /// once the key is lost. [`Self::read_batch`] then returns 0 although a
+    /// backlog remains.
     pub(crate) fn reads_paused(&self) -> bool {
-        self.read_paused_until
-            .is_some_and(|until| Instant::now() < until)
+        self.is_suspended()
+            || self
+                .read_paused_until
+                .is_some_and(|until| Instant::now() < until)
     }
 
     /// Appends a block of complete data frames (`frames` of them) to the active
@@ -452,6 +487,10 @@ impl Spool {
     /// floor leaves nothing to delete, the block can never fit, it is empty but
     /// claims frames, it is over 1 MiB and does not split into whole frames, or
     /// an I/O error occurred. An I/O error also pauses the spool for 10 s.
+    ///
+    /// Once the key is lost every block is refused at once: nothing is evicted
+    /// and no segment is created. A key failure that leaves the key usable (a
+    /// failed `CryptUnprotectMemory`) is an ordinary append error.
     pub(crate) fn append(&mut self, bytes: &[u8], frames: u32) -> Appended {
         if bytes.is_empty() {
             return if frames == 0 {
@@ -459,6 +498,9 @@ impl Spool {
             } else {
                 self.refuse(frames)
             };
+        }
+        if self.key_lost() {
+            return self.refuse(frames);
         }
         let now = Instant::now();
         let paused = [self.suspended_until, self.blocked_until]
@@ -485,6 +527,7 @@ impl Spool {
                 self.stats.spool_available.store(false, Ordering::Relaxed);
                 self.refuse(frames)
             }
+            Err(_) if self.key_lost() => self.refuse(frames),
             Err(error) => {
                 self.note_error(&error);
                 // Close the active segment without its end record and pause the
@@ -516,7 +559,7 @@ impl Spool {
     ///   unread data counted as dropped.
     /// - Any other read error ends the segment the same way.
     pub(crate) fn read_batch(&mut self, out: &mut Vec<u8>, limit: usize) -> io::Result<u32> {
-        if self.reads_paused() {
+        if self.key_lost() || self.reads_paused() {
             return Ok(0);
         }
         loop {
@@ -526,7 +569,7 @@ impl Spool {
             };
             let sequence = self.segments[first].sequence;
             if let Err(error) = self.ensure_reader(first) {
-                return Err(self.read_failed(error, sequence));
+                return self.read_error(error, sequence);
             }
             // `ensure_reader` ends, and may delete, a segment with a bad header.
             let Some(index) = self
@@ -548,7 +591,7 @@ impl Spool {
             let disk_before = active_reader.file_position();
             let batch = match active_reader.read_batch(out, limit, bounds) {
                 Ok(batch) => batch,
-                Err(error) => return Err(self.read_failed(error, sequence)),
+                Err(error) => return self.read_error(error, sequence),
             };
             let position = active_reader.position();
             let disk = active_reader.file_position();
@@ -671,16 +714,27 @@ impl Spool {
         } else {
             self.bounds(0)
         };
+        let mut key_failed = false;
         let kept = match (self.reader.as_mut(), first) {
-            (Some((owner, reader)), Some((sequence, offset))) if *owner == sequence => reader
-                .rewind(offset, bounds)
-                .ok()
-                .map(|()| reader.file_position()),
+            (Some((owner, reader)), Some((sequence, offset))) if *owner == sequence => {
+                match reader.rewind(offset, bounds) {
+                    Ok(()) => Some(reader.file_position()),
+                    Err(error) => {
+                        key_failed = is_key_error(&error);
+                        None
+                    }
+                }
+            }
             _ => None,
         };
         match (kept, self.segments.front_mut()) {
             (Some(disk), Some(front)) => front.read_disk = disk,
             _ => self.reader = None,
+        }
+        if key_failed {
+            // A lost key suspends the spool here; a key that is still usable
+            // only makes the next read open the segment again.
+            self.key_lost();
         }
     }
 
@@ -727,11 +781,17 @@ impl Spool {
     /// # Errors
     /// Returns the I/O error; the segment is then closed without its end
     /// record, which a later run reads as an unsealed leftover.
+    ///
+    /// A lost key is not a seal error: the active segment was closed without
+    /// its end record when the loss was found, or is closed so now.
     pub(crate) fn seal(&mut self) -> io::Result<()> {
+        self.key_lost();
         self.cursor_blocked_until = None;
         self.checkpoint();
-        self.seal_active()
-            .inspect_err(|error| self.note_error(error))
+        match self.seal_active() {
+            Err(error) if is_key_error(&error) && self.key_lost() => Ok(()),
+            result => result.inspect_err(|error| self.note_error(error)),
+        }
     }
 
     // ---- appending ----
@@ -739,6 +799,10 @@ impl Spool {
     /// Returns [`FreeSpace::Met`] when the block is stored, and
     /// [`FreeSpace::Short`] when the free-space floor leaves nothing to delete.
     /// `sealed` is the file bytes of the block's records.
+    ///
+    /// The block is sealed before anything is deleted or created, so a key
+    /// failure leaves the folder as it was: only a roll, whose end record is
+    /// itself a use of the key, comes first.
     fn try_append(&mut self, bytes: &[u8], sealed: u64, frames: u32) -> io::Result<FreeSpace> {
         // Start a new segment when this block would overfill the active one.
         if self.writer.as_ref().is_some_and(|writer| {
@@ -746,9 +810,17 @@ impl Spool {
         }) {
             self.seal_active()?;
         }
+        let mut prepared = match self.writer.as_mut() {
+            Some(writer) => {
+                writer.seal_block(bytes, &mut self.record_buf)?;
+                None
+            }
+            None => Some(self.prepare_segment(bytes)?),
+        };
         // Make room under the size cap, oldest first, skipping the segments that
         // hold read data. A new segment also needs its header, and the end record
         // is reserved so a sealed segment still fits.
+        let had_writer = self.writer.is_some();
         while self.total_bytes + self.new_segment_bytes() + sealed + END_LEN > self.config.max_bytes
         {
             if !self.evict_oldest(false) {
@@ -758,17 +830,22 @@ impl Spool {
                 break;
             }
         }
-        if self.writer.is_none() {
+        if had_writer && self.writer.is_none() {
+            // The eviction removed the active segment: its sealed records are
+            // void, so seal the block again for a new segment.
+            prepared = Some(self.prepare_segment(bytes)?);
+        }
+        if let Some(segment) = prepared {
             let space = self.ensure_free_space()?;
             if space != FreeSpace::Met {
                 return Ok(space);
             }
-            self.create_segment()?;
+            self.create_segment(segment, bytes)?;
         }
         let Some(writer) = self.writer.as_mut() else {
             return Err(io::Error::other("no active spool segment"));
         };
-        writer.append(bytes, &mut self.record_buf)?;
+        writer.write_sealed(&self.record_buf)?;
         let written = writer.len();
         if let Some(active) = self.segments.back_mut() {
             self.total_bytes += written - active.bytes;
@@ -814,6 +891,19 @@ impl Spool {
         }
     }
 
+    /// A new segment for the next sequence number, with `bytes` sealed into the
+    /// record buffer. The sequence is not taken and no file is made yet.
+    fn prepare_segment(&mut self, bytes: &[u8]) -> io::Result<PreparedSegment> {
+        if self.next_sequence > MAX_SEQUENCE {
+            return Err(io::Error::other(
+                "spool segment sequence numbers are used up",
+            ));
+        }
+        let mut segment = PreparedSegment::new(Arc::clone(&self.key), self.next_sequence)?;
+        segment.seal_block(bytes, &mut self.record_buf)?;
+        Ok(segment)
+    }
+
     /// Hands out the next sequence number.
     fn take_sequence(&mut self) -> io::Result<u64> {
         let sequence = self.next_sequence;
@@ -828,14 +918,21 @@ impl Spool {
         }
     }
 
-    /// Creates the next segment. A name that is already taken, by an entry the
-    /// scan did not see, is skipped.
-    fn create_segment(&mut self) -> io::Result<()> {
+    /// Creates the file of `prepared`, whose first block (`bytes`) is sealed in
+    /// the record buffer. A name that is already taken, by an entry the scan
+    /// did not see, is skipped; the block is then sealed again for the next
+    /// sequence number.
+    fn create_segment(&mut self, prepared: PreparedSegment, bytes: &[u8]) -> io::Result<()> {
         self.retry_pending();
+        let mut next = Some(prepared);
         for _ in 0..CREATE_ATTEMPTS {
+            let segment = match next.take() {
+                Some(segment) if segment.sequence() == self.next_sequence => segment,
+                _ => self.prepare_segment(bytes)?,
+            };
             let sequence = self.take_sequence()?;
             let path = self.segment_path(sequence);
-            match SegmentWriter::create(&path, Arc::clone(&self.key), sequence) {
+            match segment.create(&path) {
                 Ok(writer) => {
                     self.writer = Some(writer);
                     self.segments.push_back(SegmentInfo::new(
@@ -919,6 +1016,53 @@ impl Spool {
                 "dnstap spool I/O error"
             );
         }
+    }
+
+    /// Handles a read error. A key error is not a problem of the segment: the
+    /// segment, its read position, and the cursor stay as they are. When the
+    /// key is lost, reads stop for the run without a count or an error;
+    /// otherwise (a failed `CryptUnprotectMemory`) the error is counted and
+    /// reads pause, as for a transient read error. Any other error goes to
+    /// [`Self::read_failed`].
+    fn read_error(&mut self, error: io::Error, sequence: u64) -> io::Result<u32> {
+        if !is_key_error(&error) {
+            return Err(self.read_failed(error, sequence));
+        }
+        // The reader may have moved past frames it did not hand out; the next
+        // read opens the segment again at the recorded read position.
+        self.reader = None;
+        if self.key_lost() {
+            return Ok(0);
+        }
+        self.note_error(&error);
+        self.read_paused_until = Some(Instant::now() + self.pause);
+        Err(error)
+    }
+
+    /// True once the key is lost for the run. The first call that finds it
+    /// lost suspends the spool: the active segment is closed without its end
+    /// record (the next start reads it as an unsealed leftover), the reader is
+    /// dropped, `spool_available` goes false, and one warning names the cause.
+    /// No file is deleted and the cursor is not written.
+    fn key_lost(&mut self) -> bool {
+        if self.key_lost {
+            return true;
+        }
+        let Some(loss) = self.key.loss() else {
+            return false;
+        };
+        self.key_lost = true;
+        self.writer = None;
+        self.reader = None;
+        self.stats.spool_available.store(false, Ordering::Relaxed);
+        if !self.stats.is_stopping() {
+            tracing::warn!(
+                target: crate::event_ids::RISK_SPOOL_DISABLED,
+                "the spool key is unusable after a memory protection failure ({loss}); the spool \
+                 is suspended until the service restarts; spooled files are kept"
+            );
+        }
+        true
     }
 
     /// Handles a read error: counts it and drops the reader. A transient error
@@ -1421,6 +1565,16 @@ fn scan(dir: &Path) -> io::Result<Scan> {
         .map(|(sequence, bytes, created)| SegmentInfo::new(sequence, bytes, None, created, false))
         .collect();
     Ok(Scan { segments, highest })
+}
+
+/// True when `error` carries a failure of the spool key itself (see
+/// [`CryptError::is_key_error`]), not of the file or the record.
+fn is_key_error(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<CryptError>())
+        .copied()
+        .is_some_and(CryptError::is_key_error)
 }
 
 /// The sequence in `seg-<20 digits>.fstrm` (any letter case), or `None` for any

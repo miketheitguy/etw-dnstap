@@ -295,9 +295,18 @@ impl Router {
 
     /// Whether the router may take another block from the parser channel. With no
     /// spool, a full FIFO stops intake: the channel fills, and the parser counts
-    /// `queue_dropped`. With a spool, a full FIFO spills instead.
+    /// `queue_dropped`. With a spool, a full FIFO spills instead. A spool that
+    /// lost its key ([`Spool::is_suspended`]) counts as no spool here: it
+    /// refuses every block, so a spill would only drop the FIFO in a burst.
     fn can_take(&self) -> bool {
-        !self.is_up() || self.spool.is_some() || self.fifo_has_room()
+        !self.is_up() || self.has_working_spool() || self.fifo_has_room()
+    }
+
+    /// A spool that takes blocks: present and not suspended by a lost key.
+    fn has_working_spool(&self) -> bool {
+        self.spool
+            .as_ref()
+            .is_some_and(|spool| !spool.is_suspended())
     }
 
     fn fifo_has_room(&self) -> bool {
@@ -382,7 +391,7 @@ impl Router {
     /// holds the lock, so x1..xn and the new block reach the spool in capture
     /// order. The spool then holds a backlog, and the router is in Draining.
     fn fifo_full(&mut self, block: Block) {
-        if self.spool.is_none() {
+        if !self.has_working_spool() {
             self.discard(block);
             return;
         }
@@ -789,16 +798,17 @@ impl Router {
         if !self.monitor.due(at) {
             return;
         }
-        let (backlog_bytes, oldest_age, reads_paused) =
-            self.spool
-                .as_ref()
-                .map_or((0, Duration::ZERO, false), |spool| {
-                    (
-                        spool.unread_bytes(),
-                        spool.oldest_age(at, SystemTime::now()),
-                        spool.reads_paused(),
-                    )
-                });
+        let (backlog_bytes, oldest_age, reads_paused, spool_suspended) = self
+            .spool
+            .as_ref()
+            .map_or((0, Duration::ZERO, false, false), |spool| {
+                (
+                    spool.unread_bytes(),
+                    spool.oldest_age(at, SystemTime::now()),
+                    spool.reads_paused(),
+                    spool.is_suspended(),
+                )
+            });
         self.monitor.sample(&Observation {
             at,
             link_up: self.stats.connected.load(Ordering::Relaxed),
@@ -806,6 +816,7 @@ impl Router {
             backlog_bytes,
             disconnects: self.stats.disconnects.load(Ordering::Relaxed),
             oldest_age,
+            spool_suspended,
         });
     }
 
@@ -846,7 +857,7 @@ impl Router {
             self.route_sealed(block);
         }
         if let Some(spool) = self.spool.as_mut() {
-            let backlog = spool.has_backlog();
+            let backlog = spool.keeps_segments();
             // Nothing is logged at shutdown: the `output stopped` report carries
             // both results.
             if let Err(error) = spool.seal() {

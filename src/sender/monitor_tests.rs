@@ -25,6 +25,7 @@ fn observation(base: Instant, second: u64, backlog_bytes: u64) -> Observation {
         backlog_bytes,
         disconnects: 0,
         oldest_age: Duration::ZERO,
+        spool_suspended: false,
     }
 }
 
@@ -366,6 +367,32 @@ fn paused_spool_reads_do_not_count_as_a_saturated_link() {
         let mut sample = observation(base, second, 1_000 * second);
         sample.reads_paused = true;
         monitor.sample(&sample);
+    }
+    assert!(!flag(&stats));
+}
+
+#[test]
+fn a_suspended_spool_clears_the_state_at_once_and_never_sets_it() {
+    let (mut monitor, stats, base) = monitor();
+    let (second, last) = saturate(&mut monitor, &stats, base);
+    let mut sample = observation(base, second, last + 1);
+    sample.spool_suspended = true;
+    let lines = capture_logs_at(Level::INFO, || monitor.sample(&sample));
+    assert!(
+        !flag(&stats),
+        "the frozen backlog says nothing about the link"
+    );
+    assert!(
+        lines
+            .text()
+            .contains("the spool is suspended until the service restarts"),
+        "{}",
+        lines.text()
+    );
+    for later in 1..=60 {
+        let mut rising = observation(base, second + later, last + 1_000 * later);
+        rising.spool_suspended = true;
+        monitor.sample(&rising);
     }
     assert!(!flag(&stats));
 }

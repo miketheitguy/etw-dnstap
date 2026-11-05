@@ -1,24 +1,23 @@
-//! One value in a locked page of its own, for the spool key schedule.
+//! One locked page of its own, for the spool key (see [`super::protected`]).
 //!
-//! [`Locked`] moves a value into a page that `VirtualAlloc` commits for it alone.
-//! `VirtualLock` keeps the page in physical memory, so the memory manager never
-//! writes it to the pagefile, and `WerRegisterExcludedMemoryBlock` (best effort)
-//! leaves it out of Windows Error Reporting (WER) crash dumps. On drop the
-//! value is dropped in place, the whole page is overwritten with zeros that the
-//! compiler cannot remove, and the page is unlocked, unregistered, and freed.
+//! [`LockedPage`] is a page that `VirtualAlloc` commits for it alone, filled
+//! with zeros. `VirtualLock` keeps the page in physical memory, so the memory
+//! manager never writes it to the pagefile, and `WerRegisterExcludedMemoryBlock`
+//! (best effort) leaves it out of Windows Error Reporting (WER) crash dumps. On
+//! drop the whole page is overwritten with zeros that the compiler cannot
+//! remove, and the page is unlocked, unregistered, and freed.
 //!
-//! Limits: the value is built on the caller's stack and copied into the page,
-//! so stack residue of it can remain. SYSTEM, Administrators, and code in this
-//! process can read the page while it exists. The page is in physical memory, so
-//! it is in a VM saved state or memory checkpoint, in `hiberfil.sys`, and in a
-//! complete kernel memory dump; the WER exclusion covers WER dumps only. A
-//! failed `VirtualLock` is an error: the value is never kept in pageable memory.
+//! The page holds raw bytes only. Its owner places values in it through
+//! [`LockedPage::base`] and drops them before the page drops.
+//!
+//! Limits: SYSTEM, Administrators, and code in this process can read the page
+//! while it exists. The page is in physical memory, so it is in a VM saved
+//! state or memory checkpoint, in `hiberfil.sys`, and in a complete kernel
+//! memory dump; the WER exclusion covers WER dumps only. A failed
+//! `VirtualLock` is an error: the key is never kept in pageable memory.
 
 use std::{
     fmt, io,
-    marker::PhantomData,
-    mem,
-    ops::Deref,
     ptr::{self, NonNull},
     sync::atomic::{Ordering, compiler_fence},
 };
@@ -32,12 +31,12 @@ use windows_sys::Win32::System::{
 };
 
 /// Bytes in the allocation: one page on every Windows architecture.
-const PAGE_BYTES: usize = PAGE_BYTES_U32 as usize;
+pub(crate) const PAGE_BYTES: usize = PAGE_BYTES_U32 as usize;
 /// [`PAGE_BYTES`] as the `u32` that `WerRegisterExcludedMemoryBlock` takes.
 const PAGE_BYTES_U32: u32 = 4096;
 
-/// Why a value could not be put in a locked page. Each variant carries the
-/// Win32 error code of the failed call.
+/// Why a locked page could not be made. Each variant carries the Win32 error
+/// code of the failed call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum LockError {
     /// `VirtualAlloc` failed.
@@ -49,31 +48,28 @@ pub(crate) enum LockError {
     Lock(u32),
 }
 
-/// A `T` alone in a committed, locked page that is zeroed and freed on drop.
-pub(crate) struct Locked<T> {
-    /// The start of the page, which holds the `T`.
-    value: NonNull<T>,
+/// A committed, locked, zero-filled page that is zeroed and freed on drop.
+pub(crate) struct LockedPage {
+    /// The start of the page.
+    base: NonNull<u8>,
     /// The page is registered with Windows Error Reporting as excluded.
     excluded: bool,
-    _owns: PhantomData<T>,
 }
 
-// SAFETY: `Locked<T>` owns its `T` as a `Box<T>` would; the page is private to
-// it. Sending it sends the `T`.
-unsafe impl<T: Send> Send for Locked<T> {}
-// SAFETY: `Locked<T>` hands out only `&T`, so sharing it shares a `&T`.
-unsafe impl<T: Sync> Sync for Locked<T> {}
+// SAFETY: `LockedPage` owns its page as a `Box<[u8; PAGE_BYTES]>` would; no
+// other value points into it. Sending it sends the page.
+unsafe impl Send for LockedPage {}
+// SAFETY: a shared `LockedPage` gives out only the raw base address. Every
+// read or write through it is `unsafe`, and the owner (`protected.rs`)
+// serializes them with a mutex.
+unsafe impl Sync for LockedPage {}
 
-impl<T> Locked<T> {
-    /// Moves `value` into a new locked page.
+impl LockedPage {
+    /// A new committed, locked page. Its bytes are zero.
     ///
     /// # Errors
-    /// [`LockError::Alloc`] or [`LockError::Lock`]. `value` is dropped then.
-    pub(crate) fn new(value: T) -> Result<Self, LockError> {
-        const {
-            assert!(mem::size_of::<T>() <= PAGE_BYTES);
-            assert!(mem::align_of::<T>() <= PAGE_BYTES);
-        }
+    /// [`LockError::Alloc`] or [`LockError::Lock`].
+    pub(crate) fn new() -> Result<Self, LockError> {
         // SAFETY: a null address lets the system choose; the size and flags are
         // valid. The result is checked for null below.
         let page = unsafe {
@@ -100,16 +96,16 @@ impl<T> Locked<T> {
         // owns until drop, where it is unregistered before it is freed.
         let excluded =
             unsafe { WerRegisterExcludedMemoryBlock(page.as_ptr(), PAGE_BYTES_U32) } >= 0;
-        let slot = page.cast::<T>();
-        // SAFETY: the page is writable and holds no value. It is page-aligned,
-        // and the const assertions above show a `T` fits and its alignment
-        // divides the page alignment.
-        unsafe { slot.as_ptr().write(value) };
         Ok(Self {
-            value: slot,
+            base: page.cast(),
             excluded,
-            _owns: PhantomData,
         })
+    }
+
+    /// The first byte of the page. The page is [`PAGE_BYTES`] bytes long,
+    /// page-aligned, readable, and writable until this value drops.
+    pub(crate) const fn base(&self) -> NonNull<u8> {
+        self.base
     }
 
     /// Whether Windows Error Reporting accepted the page as excluded from dumps.
@@ -119,20 +115,9 @@ impl<T> Locked<T> {
     }
 }
 
-impl<T> Deref for Locked<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: `new` wrote a valid `T` there, and it lives until drop.
-        unsafe { self.value.as_ref() }
-    }
-}
-
-impl<T> Drop for Locked<T> {
+impl Drop for LockedPage {
     fn drop(&mut self) {
-        // SAFETY: the `T` is valid and is dropped only here, once.
-        unsafe { ptr::drop_in_place(self.value.as_ptr()) };
-        let base = self.value.as_ptr().cast::<u8>();
+        let base = self.base.as_ptr();
         for at in 0..PAGE_BYTES {
             // SAFETY: `base + at` lies in the committed, writable page.
             let byte = unsafe { base.add(at) };
@@ -153,14 +138,14 @@ impl<T> Drop for Locked<T> {
     }
 }
 
-impl<T> fmt::Debug for Locked<T> {
+impl fmt::Debug for LockedPage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Locked").finish_non_exhaustive()
+        f.debug_struct("LockedPage").finish_non_exhaustive()
     }
 }
 
 /// The calling thread's last Win32 error code.
-fn last_error() -> u32 {
+pub(crate) fn last_error() -> u32 {
     io::Error::last_os_error()
         .raw_os_error()
         .and_then(|code| u32::try_from(code).ok())
@@ -169,34 +154,25 @@ fn last_error() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::*;
 
     #[test]
-    fn a_value_is_stored_page_aligned_and_read_back() {
-        let locked = Locked::new([7_u8; 300]).expect("one page locks");
-        assert_eq!(locked[0], 7);
-        assert_eq!(locked[299], 7);
-        let address = ptr::from_ref::<[u8; 300]>(&locked) as usize;
-        assert_eq!(address % PAGE_BYTES, 0, "the value is at the page start");
-        // Best effort, but available on every supported Windows version.
-        assert!(locked.is_excluded_from_dumps());
-    }
-
-    #[test]
-    fn drop_runs_the_value_drop_once() {
-        static DROPS: AtomicUsize = AtomicUsize::new(0);
-        struct Counted;
-        impl Drop for Counted {
-            fn drop(&mut self) {
-                DROPS.fetch_add(1, Ordering::SeqCst);
-            }
+    fn a_page_is_aligned_zeroed_writable_and_excluded() {
+        let page = LockedPage::new().expect("one page locks");
+        let base = page.base().as_ptr();
+        assert_eq!(base as usize % PAGE_BYTES, 0, "page-aligned");
+        for at in [0, 1, PAGE_BYTES / 2, PAGE_BYTES - 1] {
+            // SAFETY: `at` is inside the page.
+            let byte = unsafe { base.add(at) };
+            // SAFETY: `byte` is in the committed page, readable and writable.
+            assert_eq!(unsafe { byte.read() }, 0, "zero-filled at {at}");
+            // SAFETY: as above.
+            unsafe { byte.write(7) };
+            // SAFETY: as above.
+            assert_eq!(unsafe { byte.read() }, 7);
         }
-        let locked = Locked::new(Counted).expect("one page locks");
-        assert_eq!(DROPS.load(Ordering::SeqCst), 0);
-        drop(locked);
-        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+        // Best effort, but available on every supported Windows version.
+        assert!(page.is_excluded_from_dumps());
     }
 
     #[test]

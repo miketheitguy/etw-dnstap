@@ -256,7 +256,7 @@ pub(crate) fn plaintext_segment(body: &[u8]) -> Vec<u8> {
 pub(crate) fn test_key() -> Arc<SegmentKey> {
     static KEY: OnceLock<Arc<SegmentKey>> = OnceLock::new();
     Arc::clone(KEY.get_or_init(|| {
-        Arc::new(SegmentKey::new(&TEST_KEY_BYTES, TEST_KEY_ID).expect("the test key locks"))
+        Arc::new(SegmentKey::from_bytes(&TEST_KEY_BYTES, TEST_KEY_ID).expect("the test key locks"))
     }))
 }
 
@@ -264,7 +264,7 @@ pub(crate) fn test_key() -> Arc<SegmentKey> {
 pub(crate) fn other_key() -> Arc<SegmentKey> {
     static KEY: OnceLock<Arc<SegmentKey>> = OnceLock::new();
     Arc::clone(KEY.get_or_init(|| {
-        Arc::new(SegmentKey::new(&[0x5c; 16], [0xee; 8]).expect("the other key locks"))
+        Arc::new(SegmentKey::from_bytes(&[0x5c; 16], [0xee; 8]).expect("the other key locks"))
     }))
 }
 
@@ -328,7 +328,7 @@ pub(crate) fn open_segment(file: &[u8]) -> Opened {
                 plaintext.extend_from_slice(&buf[at..][record.plaintext.clone()]);
                 at += record.consumed;
             }
-            Next::Incomplete { .. } | Next::Corrupt(_) => {
+            Next::Incomplete { .. } | Next::Corrupt(_) | Next::KeyUnusable(_) => {
                 return Opened {
                     plaintext,
                     sealed: false,
