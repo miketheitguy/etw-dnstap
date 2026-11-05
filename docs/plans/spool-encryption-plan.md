@@ -223,3 +223,44 @@ up before Wave 1 starts, so the agents do not edit the same file.
 Minor: `src/spool/key.rs` now treats any `SECURITY_STATUS` other than `ERROR_SUCCESS` (0) as a
 failure, not only negative values. No documented success code other than 0 applies to the
 `NCrypt` calls used.
+
+## Option A: the AES key protected in RAM between uses (user decision, 2026-11-04)
+
+The user chose to keep the AES key encrypted in RAM with `CryptProtectMemory`
+(`CRYPTPROTECTMEMORY_SAME_PROCESS`) and to build the `ring` key only for the duration of
+each record operation. `ring` stays; its key schedule is zeroed by hand.
+
+Measured on the build host (release build): `CryptUnprotectMemory` plus `CryptProtectMemory`
+on 16 bytes 2.25 µs, `ring` AES-128-GCM key setup 0.09 µs, sealing a 64 KiB record 4.3 µs.
+At 10,000 queries per second the spool writes about 30 records a second, so the added cost
+is about 70 µs of CPU a second.
+
+### Design
+
+- **Load.** `NCryptDecrypt` writes the 16 key bytes directly into the locked page that will
+  hold them (no other buffer holds the raw key), and `CryptProtectMemory(SAME_PROCESS)`
+  encrypts them in place before anything else runs. The first-start path does the same with
+  the random key from `BCryptGenRandom`: generate into the page, wrap from the page, protect.
+  The check unwrap on first start writes into a second locked buffer that is compared and
+  zeroed.
+- **Use.** `SegmentKey::with_aead(|key: &LessSafeKey| ...)` is the only way to use the key.
+  Under a mutex (the scratch area is shared), it calls `CryptUnprotectMemory`, builds the
+  `LessSafeKey` in place in a scratch area of the same locked page, calls
+  `CryptProtectMemory` on the raw bytes at once, runs the closure (one seal or one open),
+  then drops the schedule in place and zeroes the scratch area with volatile writes. A
+  guard does the re-protect and the zeroing in `Drop`, so a panic in the closure cannot
+  leave plaintext. Plaintext exists for about 5 µs per record.
+- **Failure.** If `CryptUnprotectMemory` or `CryptProtectMemory` fails, the operation fails
+  and the raw bytes are zeroed (the key is then unusable): a seal failure is a spool append
+  error and an open failure reads as a corrupt record, both counted as today. The service
+  never stops for it.
+- **Unchanged.** One unwrap per start, one locked page excluded from WER dumps, shared by
+  `Arc<SegmentKey>`, never copied; the record format and the cursor.
+
+### Tasks
+
+| ID | Task | Agent (model) | Effort |
+| --- | --- | --- | --- |
+| P | Implement the design: `SegmentKey` internals (new module `src/spool/protected.rs`), `with_aead` at the two call sites in `crypt.rs`, key generation and unwrap into the locked page in `key.rs` and `supervisor.rs`, tests. | `voltagent-lang:rust-engineer` (Opus) | high |
+| PD | Docs: this plan's threat model and decisions, SECURITY.md, `docs/design/data-path.md`, `docs/guide/configuration.md#encryption`, CHANGELOG. | `voltagent-dev-exp:documentation-engineer` (Sonnet) | medium |
+| PR | Security review of P and PD. | `voltagent-qa-sec:code-reviewer` (Opus) | high |
