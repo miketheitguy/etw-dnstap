@@ -1,33 +1,32 @@
 # Pipeline animation
 
-These files build `docs/assets/pipeline/etw-to-tcp-pipeline.gif`. The GIF shows the [data path](../../../docs/design/data-path.md) from an ETW event to a TCP frame in six stages of six seconds. Stage 5 shows a slow receiver (full FIFO spills to the disk spool, then replays). Stage 6 shows a receiver outage (spool, then replay after reconnect).
+Builds `docs/assets/pipeline/etw-to-tcp-pipeline.gif`: the [data path](../../../docs/design/data-path.md) in six six-second stages. Stage 5: slow receiver (full FIFO spills to the disk spool, then replays). Stage 6: receiver outage (spool, replay after reconnect).
+
+### Quick Start
+
+PowerShell 7 on Windows and Python 3, no extra package. From the repository root:
+
+```powershell
+.\scripts\docs\pipeline-animation\Build-Animation.ps1
+```
+
+The last output line must contain `all verified`.
+
+### Steps / Configuration
 
 | File | Job |
 | --- | --- |
-| `render.cs` | Draws every frame with GDI+ and writes raw palette indexes. |
-| `make_animation.py` | Turns the raw frames into a GIF that stores only the changed area of each frame. It then decodes the GIF and checks every frame. |
-| `Build-Animation.ps1` | Runs both steps. |
+| `render.cs` | Draws frames with GDI+, writes raw palette indexes |
+| `make_animation.py` | Writes a GIF of changed areas, decodes it, checks every frame |
+| `Build-Animation.ps1` | Runs both |
 
-## Build the GIF
+Frames depend only on time `t`. In `render.cs`:
 
-You need PowerShell 7 on Windows and Python 3, with no extra package.
+- `StageTitle`, `StageSub`: stage captions.
+- `BuildTimeline`: event timing. `RouteFrames` sends frames to the receiver, FIFO, or spool. `DownAt`, `UpAt`: the outage. `FullAt`, `Drained`, `ReplayFrom`: the stage 5 slow receiver, read by `Spilling` and `FifoFill`.
+- `Boxes`, `ThreadStrip`, `Tokens`: the scene.
 
-1. Run the build script from the repository root:
+### Common Gotchas
 
-   ```powershell
-   .\scripts\docs\pipeline-animation\Build-Animation.ps1
-   ```
-
-2. Check that the last line contains `all verified`.
-
-Raw frames and PNG previews go to the ignored `target\pipeline-animation\`. Check the previews before you commit the GIF.
-
-## Change the animation
-
-Frames depend only on the time `t`. Edit these parts of `render.cs`:
-
-- `StageTitle` and `StageSub` hold the caption text of the six stages.
-- `BuildTimeline` holds the timing of each event. `RouteFrames` sends each frame to the receiver, the FIFO, or the spool. `DownAt` and `UpAt` set the outage. `FullAt`, `Drained`, and `ReplayFrom` set the slow receiver in stage 5, which `Spilling` and `FifoFill` read.
-- `Boxes`, `ThreadStrip`, and `Tokens` draw the scene.
-
-Keep the caption text in step with the [stage table](../../../docs/design/data-path.md#stages). Keep each counter name and number the same as in the code.
+- Raw frames and PNG previews go to the ignored `target\pipeline-animation\`. Check the previews before you commit the GIF.
+- Keep captions in step with the [stage table](../../../docs/design/data-path.md#stages), and counter names and numbers the same as in the code.

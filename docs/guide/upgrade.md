@@ -2,111 +2,70 @@
 
 > **Status:** Current · **Describes:** the code on branch `spool-encryption` · **Reviewed:** 2026-11-05
 
-Use this guide to change an installed service ([Install and provision](install.md) covers a new one).
-Take a snapshot first, change only what you need, and keep the identity, privileges, executable ACLs, and
-recovery policy.
+### Quick Start
 
-## Upgrade, repair, or change settings with the MSI
-
-Run `msiexec` from an elevated session with the same MSI file or a newer one, using
-`/qn /norestart /l*v <log>`. Restart the computer when `msiexec` exits with `3010`. The MSI keeps the
-values of the last install in `HKLM\SOFTWARE\EtwDnstap\Installer` and reads them back unless you pass a
-new value.
-
-### When the install steps run
-
-The install steps check the folders, add the Performance Log Users membership, run the ETW grant script,
-and set the recovery policy. They run only in a pass that installs the executable.
-
-| Command | Install steps | Uninstall steps |
-| --- | --- | --- |
-| First install, `msiexec /i` | Run | Skip |
-| Major upgrade: a newer MSI, or a rebuild with the same version | Run, in the new product | Skip |
-| Repair with `/fvomus` or `/fvamus`, or `REINSTALL=ALL` | Run | Skip |
-| Maintenance `msiexec /i` of the installed product, with no `REINSTALL` | Skip | Skip |
-| Uninstall, `msiexec /x` | Skip | Run |
-
-The same MSI file with the same `ProductCode` is a maintenance run. With a new `SESSION_NAME` or
-`RECEIVER` and no `REINSTALL`, it changes nothing.
-
-### Upgrade to a newer build
+Elevated, with a newer MSI. Restart when `msiexec` exits `3010`.
 
 ```powershell
 msiexec.exe /i etw-dnstap-<new-version>-x64.msi /qn /norestart /l*v upgrade.log
 ```
 
-The upgrade stops the service, which starts after the restart. It reuses the remembered `RECEIVER`,
-`SESSION_NAME`, and `SERVICE_ARGS` unless you pass new values, and keeps the spool folder, the ETW grants,
-and the Performance Log Users membership.
+New install? See [Install and provision](install.md).
 
-### Downgrade is refused
+### Steps / Configuration
 
-An MSI with a lower version is refused with `A newer version of EtwDnstap is already installed. Uninstall it first.`
-A rebuilt MSI with the same version replaces the installed build, because every build has a new
-`ProductCode` and `MajorUpgrade` sets `AllowSameVersionUpgrades="yes"`.
+#### Upgrade, repair, or change settings with the MSI
 
-To return to an older build, uninstall the current one, restart the computer, and install the older MSI.
-The uninstall deletes the spool ([Uninstall with the MSI](uninstall.md#uninstall-with-the-msi)).
+Run `msiexec` elevated with the same or a newer MSI and `/qn /norestart /l*v <log>`, and restart on `3010`.
+The MSI reads the last install's values from `HKLM\SOFTWARE\EtwDnstap\Installer` unless you pass new ones.
 
-### Repair
+##### When the install steps run
+
+The install steps (folder checks, Performance Log Users membership, ETW grant script, recovery policy) run
+only in a pass that installs the executable.
+
+| Command | Install steps | Uninstall steps |
+| --- | --- | --- |
+| First install, `msiexec /i` | Run | Skip |
+| Major upgrade: newer MSI, or a rebuild with the same version | Run, in the new product | Skip |
+| Repair `/fvomus` or `/fvamus`, or `REINSTALL=ALL` | Run | Skip |
+| Maintenance `msiexec /i`, no `REINSTALL` | Skip | Skip |
+| Uninstall, `msiexec /x` | Skip | Run |
+
+##### Upgrade to a newer build
+
+The Quick Start command stops the service (it starts after the restart), reuses the remembered
+`RECEIVER`, `SESSION_NAME`, and `SERVICE_ARGS` unless you pass new values, and keeps the spool folder, ETW
+grants, and Performance Log Users membership.
+
+##### Repair
+
+`o` replaces a file only when it's missing or older; `a` replaces every file
+([`msiexec` repair options](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/msiexec#repair-options)).
+Repair restores files, rewrites registry values, and sets the service settings again.
 
 ```powershell
 msiexec.exe /fvomus etw-dnstap-<version>-x64.msi /qn /norestart /l*v repair.log
+msiexec.exe /fvamus etw-dnstap-<version>-x64.msi /qn /norestart /l*v repair.log
 ```
 
-Repair restores missing or older files, rewrites the registry values, and sets the service settings again.
-Restart the computer when it exits with `3010`.
+##### Change the receiver or the session name
 
-- **Same `ProductCode` only.** Use the MSI file of the installed build. A rebuilt MSI fails `/f` with
-  error 1605. To replace the installed build, run the rebuild as an upgrade.
-- **Which files.** `o` replaces a file only when it is missing or older. To replace every file, use `a`
-  in place of `o` ([`msiexec` repair options](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/msiexec#repair-options)):
-
-  ```powershell
-  msiexec.exe /fvamus etw-dnstap-<version>-x64.msi /qn /norestart /l*v repair.log
-  ```
-
-### Empty values keep the remembered value
-
-`SERVICE_ARGS=`, `RECEIVER=`, and `SESSION_NAME=` count as not set and keep the remembered value. To clear
-`SERVICE_ARGS`, check the spool, uninstall, restart, and install again without it
-([Uninstall with the MSI](uninstall.md#uninstall-with-the-msi)).
-
-### Change the receiver
-
-Reinstall the installed MSI with the new value. `REINSTALL=ALL` is required, because a plain `msiexec /i`
-with a new `RECEIVER=` exits with `3010` but changes neither the binary path nor the remembered value.
+Reinstall the installed MSI with `REINSTALL=ALL`, then restart (`3010`). The
+[name rules](configuration.md#options) apply. The grant script grants the service SID on the new GUID and
+removes its grants from every other descriptor.
 
 ```powershell
 msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v receiver.log `
     REINSTALL=ALL REINSTALLMODE=vomus RECEIVER=192.0.2.20:6000
-```
-
-The reinstall stops the service and exits with `3010`. Restart the computer. A value that fails the
-[step 1](install.md#1-check-the-receiver-address) check fails the reinstall and rolls back the file and
-registry changes, but not provisioning steps that already ran. Fix the value and run the command again.
-
-### Change the session name
-
-Reinstall with the new name, as for the receiver:
-
-```powershell
 msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v session.log `
     REINSTALL=ALL REINSTALLMODE=vomus SESSION_NAME=EtwDnstap-New
 ```
 
-The name rules are in [configuration.md](configuration.md#options). `REINSTALL=ALL` is required. An
-MSI built before the skip rule moves the grant to the new GUID on a maintenance run but keeps the old
-name in the binary path, and the service fails with `StartTraceW: access denied`. Upgrade to a current MSI
-first.
+#### Snapshot before a change
 
-The grant script grants the service SID on the new GUID and removes its grants from every other
-descriptor. Restart the computer after the install.
-
-## Snapshot before a change
-
-This section applies to a hand-provisioned service. Run the functions from
-[Create a protected snapshot folder](install.md#create-a-protected-snapshot-folder) first, then:
+For a hand-provisioned service. Load the functions from
+[Create a protected snapshot folder](install.md#create-a-protected-snapshot-folder) first.
 
 ```powershell
 $installDirectory = 'C:\Program Files\EtwDnstap'
@@ -123,14 +82,13 @@ Get-FileHash "$installDirectory\etw-dnstap.exe" -Algorithm SHA256 |
 Copy-Item "$installDirectory\etw-dnstap.exe" $backup
 ```
 
-The folder holds the account, SID type, privileges, recovery policy, service descriptor, directory ACLs,
-group membership, and a copy of the executable. Use the `.reg` files for reference only. In a repair that
-runs the grant script, add `-BackupPath "$backup\etw"`.
+The `.reg` files are for reference only. In a repair that runs the grant script, add
+`-BackupPath "$backup\etw"`.
 
-## Restore from the snapshot
+#### Restore from the snapshot
 
-Run the functions from [Create a protected snapshot folder](install.md#create-a-protected-snapshot-folder),
-set `$backup` to the snapshot folder, and run this check. If it throws, use no file from the folder.
+Load the same functions, set `$backup`, and run this check first. If it throws, use no file from the
+folder.
 
 ```powershell
 $backup = '<snapshot folder>'
@@ -144,8 +102,7 @@ foreach ($file in Get-ChildItem -LiteralPath $backup -Recurse -Force) {
 }
 ```
 
-Restore the service key with `sc.exe`, not `reg import`, which can leave the SCM and the registry in
-disagreement. Replace each `<...>` with the value in the `.txt` file:
+Restore the service key with `sc.exe`, not `reg import`. Fill each `<...>` from the `.txt` file:
 
 ```powershell
 sc.exe stop EtwDnstap
@@ -159,41 +116,39 @@ cmd.exe /c ('sc.exe sdset EtwDnstap "{0}"' -f $sd)
 icacls.exe 'C:\Program Files' /restore "$backup\install.acl"
 ```
 
-Then restore the rest of the snapshot:
+Then:
 
-1. Compare `net localgroup "Performance Log Users"` with `plu.txt`. Add or remove `NT SERVICE\EtwDnstap` so that they match.
-2. If a repair ran the grant script, run it with `-Restore "$backup\etw"`. The script checks every entry before it applies any, and skips a value that changed after the run that saved it. Use `-Force` only after you review the skipped values.
+1. Match `net localgroup "Performance Log Users"` to `plu.txt` (add or remove `NT SERVICE\EtwDnstap`).
+2. If a repair ran the grant script, run it with `-Restore "$backup\etw"`. It checks every entry first and skips values changed since the saving run. Use `-Force` only after you review the skipped values.
 3. If you replaced the executable, put the saved copy back ([Replace the executable](#replace-the-executable)).
-4. Run `Restart-Computer` if the grant script restored any descriptor.
-5. Compare the checks in [step 6](install.md#6-inspect-the-registered-identity-and-access-controls) with the saved `.txt` files.
+4. `Restart-Computer` if the script restored any descriptor.
+5. Compare the [step 6](install.md#6-inspect-the-registered-identity-and-access-controls) checks with the `.txt` files.
 
-`icacls /restore` runs on the parent folder, because `/save` stores paths relative to the parent.
+#### Add the spool folder
 
-## Add the spool folder
-
-The disk spool is on by default, at `C:\ProgramData\EtwDnstap\spool`. Make these changes together:
+The spool is on by default, at `C:\ProgramData\EtwDnstap\spool`. Do all three:
 
 1. Take the snapshot ([Snapshot before a change](#snapshot-before-a-change)).
-2. Create the folder with [Create the spool folder](install.md#create-the-spool-folder), in the same PowerShell session. The service SID from step 3 must already be registered. If the folder exists, inspect it instead of taking ownership or reusing it.
-3. Replace the executable and the counter manifest ([Replace the executable](#replace-the-executable), [Replace the counter manifest](#replace-the-counter-manifest)). Without the manifest, counters 52 to 60 do not appear in `typeperf -q EtwDnstap`.
+2. Create the folder ([Create the spool folder](install.md#create-the-spool-folder)) in the same session, after the service SID exists (step 3). If the folder exists, inspect it: don't take ownership or reuse it.
+3. Replace the [executable](#replace-the-executable) and the [counter manifest](#replace-the-counter-manifest). Without the manifest, counters 52 to 60 are missing from `typeperf -q EtwDnstap`.
 
-Until the folder passes the checks, the service logs one warning, `spool folder is not usable; capture continues without a spool` (its `reason` field names the failed check; see [Spool warnings](troubleshooting.md#spool-warnings)), and runs without a spool. When the spool is in use, `spool_available` in the `output stats` line reads `true`. Keep the folder during a repair, because it can hold unsent frames. To run without a spool, add `--no-spool` to the binary path.
+Expect `spool_available` `true` in the `output stats` line. To run without a spool, add `--no-spool` to the
+binary path.
 
-## Repair cases
+#### Repair cases
 
-| Case | Command or action |
+| Symptom | Fix |
 | --- | --- |
-| LocalSystem or virtual-account upgrade (the service refuses to run) | 1. Take the snapshot. 2. Run the `sc.exe` lines from [step 4](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). 3. Run `net localgroup` to add `NT SERVICE\EtwDnstap` to Performance Log Users (an error means it is already a member). 4. Run `Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` for every session name, with `-WhatIf` first, then `Restart-Computer`. Without the grant and restart, the start fails with `StartTraceW: access denied`. 5. Keep the grant from [step 3](install.md#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute) and the recovery policy from [step 5](install.md#5-configure-scm-recovery). 6. Start the service and check `sc.exe qc EtwDnstap`. |
-| `obj=` did not clear the SID type or privilege list (build 26100) | After any `obj=` change, run `sc.exe sidtype EtwDnstap restricted` and check `sc.exe qsidtype EtwDnstap`. |
-| Changing `--session-name` | Run the grant script with the new name and any others still in use. Restart before you start the service. |
-| Changing the binary path | `sc.exe config EtwDnstap binPath= "..."`, with a space after `binPath=`. |
+| LocalSystem or virtual-account install refuses to run | Snapshot. Run the `sc.exe` lines of [step 4](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). Run `net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add` (an error means already a member). Run `Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` per session name (`-WhatIf` first), then `Restart-Computer`. Keep [step 3](install.md#3-copy-the-files-register-the-service-and-counters-and-grant-read-and-execute) and [step 5](install.md#5-configure-scm-recovery). Start, then `sc.exe qc EtwDnstap`. |
+| Start fails `StartTraceW: access denied` | Missing grant or restart: run the grant script, then restart |
+| `obj=` left the SID type or privileges (build 26100) | `sc.exe sidtype EtwDnstap restricted`, then `sc.exe qsidtype EtwDnstap` |
+| Changed `--session-name` | Grant script with the new name and any still in use, then restart before starting |
+| Changed binary path | `sc.exe config EtwDnstap binPath= "..."` (space after `binPath=`) |
 
-## Replace the executable
+#### Replace the executable
 
-For a hand-provisioned install (an MSI install uses [Upgrade to a newer build](#upgrade-to-a-newer-build)).
-Take the snapshot first, and run from the folder with the new build under
-`target\x86_64-pc-windows-msvc\release\`, or change the `Copy-Item` source. `FAILED 1062` from
-`sc.exe stop` means the service was already stopped.
+Hand-provisioned installs (an MSI install uses [Upgrade to a newer build](#upgrade-to-a-newer-build)). Take
+the snapshot first. Run from the folder with the new build, or change the `Copy-Item` source.
 
 ```powershell
 sc.exe stop EtwDnstap
@@ -208,12 +163,9 @@ sc.exe start EtwDnstap
 sc.exe query EtwDnstap
 ```
 
-- The first hash is the old executable, to compare with `exe-hash.txt`. The second is the new one, to compare with your build.
-- `icacls` must show `NT SERVICE\EtwDnstap:(I)(RX)` for the new file, or the service cannot start.
-- The service must reach `RUNNING`, and a `capture started` line must appear.
-- If the release also changes `etw-dnstap.man`, follow [Replace the counter manifest](#replace-the-counter-manifest) between the stop and the start.
-
-To roll back, stop the service, remove the new file, rename the backup back, and start the service:
+Expect: hash 1 equals `exe-hash.txt`, hash 2 your build, `icacls` showing `NT SERVICE\EtwDnstap:(I)(RX)`,
+then `RUNNING` and a `capture started` line. If the release changes `etw-dnstap.man`, do
+[Replace the counter manifest](#replace-the-counter-manifest) between stop and start. To roll back:
 
 ```powershell
 sc.exe stop EtwDnstap
@@ -222,13 +174,13 @@ Rename-Item "$exe.bak" 'etw-dnstap.exe'
 sc.exe start EtwDnstap
 ```
 
-When the new executable works, remove `etw-dnstap.exe.bak`. The snapshot copy stays until you remove the snapshot folder.
+Remove `etw-dnstap.exe.bak` once the new build works. The snapshot copy stays.
 
-## Replace the counter manifest
+#### Replace the counter manifest
 
-For a hand-provisioned install, when a release changes `etw-dnstap.man`. Take the snapshot first. Run
-these while the service is stopped, from the folder with the new manifest under `packaging\perfcounters\`,
-or change the `Copy-Item` source.
+Hand-provisioned installs, when a release changes `etw-dnstap.man`. Snapshot first, and keep a copy of the
+old `etw-dnstap.man` (the snapshot omits it). With the service stopped, run from the folder with the new
+build, or change the source:
 
 ```powershell
 $installDirectory = 'C:\Program Files\EtwDnstap'
@@ -237,10 +189,31 @@ Copy-Item '.\packaging\perfcounters\etw-dnstap.man' $installDirectory
 lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"
 ```
 
-Start the service and check the counters as in [step 7](install.md#7-start-capture-and-check-that-it-is-running).
-The snapshot omits the manifest, so keep a copy of the old `etw-dnstap.man` for a rollback.
+Start the service and check the counters ([step 7](install.md#7-start-capture-and-check-that-it-is-running)).
 
-## Next steps
+### Common Gotchas
 
-- [Troubleshooting](troubleshooting.md)
-- [Uninstall](uninstall.md)
+#### Downgrade is refused
+
+A lower-version MSI fails with `A newer version of EtwDnstap is already installed. Uninstall it first.` A
+same-version rebuild replaces the build (every build has a new `ProductCode`, and `MajorUpgrade` sets
+`AllowSameVersionUpgrades="yes"`). To go back, uninstall, restart, and install the older MSI. The uninstall
+deletes the spool ([Uninstall with the MSI](uninstall.md#uninstall-with-the-msi)).
+
+#### Other traps
+
+- Same MSI file, same `ProductCode`, new `SESSION_NAME` or `RECEIVER`, no `REINSTALL`: a maintenance run
+  that changes nothing (exit `3010`, binary path and remembered value unchanged). Add `REINSTALL=ALL`.
+- A `RECEIVER` that fails the [step 1](install.md#1-check-the-receiver-address) check fails the reinstall
+  and rolls back file and registry changes, not provisioning steps that ran. Fix it and rerun.
+- An MSI built before the skip rule moves the grant to the new GUID on a maintenance run but keeps the old
+  name in the binary path (`StartTraceW: access denied`). Upgrade to a current MSI first.
+- `SERVICE_ARGS=`, `RECEIVER=`, and `SESSION_NAME=` count as not set and keep the remembered value. To
+  clear `SERVICE_ARGS`, check the spool, uninstall, restart, and install again without it.
+- Repair needs the installed build's MSI (same `ProductCode`). A rebuild fails `/f` with error 1605: upgrade
+  with it instead.
+- Spool folder not usable: one warning, `spool folder is not usable; capture continues without a spool`,
+  with a `reason` field naming the failed check ([Spool warnings](troubleshooting.md#spool-warnings)). Keep
+  the folder during a repair, because it can hold unsent frames.
+- `FAILED 1062` from `sc.exe stop` means the service was already stopped.
+- `icacls /restore` runs on the parent folder, because `/save` stores paths relative to the parent.

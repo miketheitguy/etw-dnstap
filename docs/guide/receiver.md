@@ -2,27 +2,10 @@
 
 > **Status:** Current · **Describes:** the code at commit `66c3de4` · **Reviewed:** 2026-11-05
 
-Set up the dnstap receiver (the collector that accepts the service's data) before you start
-the service.
+### Quick Start
 
-## Receiver configuration
-
-The service keeps one outbound TCP connection to `--receiver`. The connection uses Frame
-Streams, a framing protocol for dnstap. The service negotiates the content type
-`protobuf:dnstap.Dnstap` with the control messages READY, ACCEPT, and START, and then sends
-data frames. At shutdown, the service sends STOP and waits up to 2 seconds for FINISH.
-
-After a failure, the service reconnects and negotiates again. Frames the socket did not fully
-accept go back for retry. With a spool, they are stored and sent after reconnect, and new frames
-go to the spool while the receiver is down. Without a spool, they count as dropped. See
-[Spool](configuration.md#spool).
-
-TLS is the default. The service checks the receiver certificate and presents no client
-certificate, so the receiver must not require one. With `--plaintext`, the connection has no peer
-authentication.
-
-This example is for DNS-collector 3.2.3. It listens for dnstap and writes text to the
-console. Replace the listen IP with your collector's address:
+DNS-collector 3.2.3: listen for dnstap, print text. Set `listen-ip` to the collector's address and
+`listen-port` to the `--receiver` port. This is plaintext, so start the service with `--plaintext`.
 
 ```yaml
 global:
@@ -34,8 +17,8 @@ global:
 pipelines:
   - name: tap
     dnstap:
-      listen-ip: 192.0.2.10   # the collector's listening IP
-      listen-port: 6000        # must match the --receiver port
+      listen-ip: 192.0.2.10
+      listen-port: 6000
       reset-conn: false
     routing-policy:
       forward: [console]
@@ -44,13 +27,19 @@ pipelines:
       mode: text
 ```
 
-**Transport security.** The example is plaintext, so it needs `--plaintext`. Use plaintext only on
-a trusted lab or an independently protected transport. A Hyper-V Default Switch is reachable by the
-host and other guests. Restrict the listener and its firewall to the Windows DNS guest. On any other
-network, keep TLS ([SECURITY.md](../../SECURITY.md#threat-model-summary)).
+### Steps / Configuration
 
-To enable TLS, add these keys to the `dnstap` stanza, with a certificate that meets the
-[receiver certificate step](#receiver-certificate). The `tls-min-version` default of `1.2` suffices.
+#### Receiver configuration
+
+The service keeps one outbound TCP connection to `--receiver` and negotiates `protobuf:dnstap.Dnstap` over
+Frame Streams (READY, ACCEPT, START). At shutdown it sends STOP and waits up to 2 seconds for FINISH.
+After a failure it reconnects. Frames the socket didn't fully accept go back for retry. With a spool, they
+are stored and sent after the reconnect, and new frames spool while the receiver is down. Without one,
+they count as dropped ([Spool](configuration.md#spool)).
+
+TLS is the default. The service presents no client certificate, so the receiver must not require one. Add
+these keys to the `dnstap` stanza, with a certificate that meets the
+[receiver certificate step](#receiver-certificate). The default `tls-min-version` `1.2` suffices.
 
 ```yaml
       tls-support: true
@@ -58,33 +47,29 @@ To enable TLS, add these keys to the `dnstap` stanza, with a certificate that me
       key-file: "<path to the receiver private key>"
 ```
 
-## Receiver certificate
+#### Receiver certificate
 
-Skip this step only with `--plaintext`. The connection needs both of these:
+Skip this only with `--plaintext`. Both must hold:
 
-- The receiver certificate chains to a CA in `Cert:\LocalMachine\Root`. The service runs as
-  LocalService, so `Cert:\CurrentUser\Root` does not count.
-- The certificate has an `iPAddress` SAN for the receiver IP, or the name that you pass to
-  `--tls-server-name`. The Windows platform verifier matches the name.
-
-If the revocation status cannot be obtained, the service continues. A slow revocation endpoint
-can push the handshake past its 2-second deadline ([TLS](configuration.md#tls)).
-
-To import a private CA into the machine root store, run:
+- The certificate chains to a CA in `Cert:\LocalMachine\Root`. The service runs as LocalService, so
+  `Cert:\CurrentUser\Root` doesn't count.
+- It has an `iPAddress` SAN for the receiver IP, or for the `--tls-server-name` value. The Windows platform
+  verifier matches the name.
 
 ```powershell
 Import-Certificate -FilePath '.\receiver-ca.cer' -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-If the first connection at startup fails the certificate check, or the receiver answers the
-handshake with plaintext, the service stops with Event ID 1.
+### Common Gotchas
 
-If the receiver is down at startup, or stays silent or closes the connection during the
-handshake, the service retries and logs one Event ID 4 error. For the full list of TLS failure
-cases, see [TLS](configuration.md#tls).
-
-## Next steps
-
-- [Install and provision the service](install.md)
-- [TLS options](configuration.md#tls)
-- [Troubleshooting a receiver outage](troubleshooting.md#the-receiver-is-down-or-unreachable)
+- **Plaintext has no peer authentication.** Use it only on a trusted lab or an independently protected
+  transport. A Hyper-V Default Switch is reachable by the host and other guests, so restrict the listener
+  and firewall to the Windows DNS guest. Elsewhere, keep TLS
+  ([SECURITY.md](../../SECURITY.md#threat-model-summary)).
+- A first connection that fails the certificate check, or a receiver that answers the handshake with
+  plaintext, stops the service with Event ID 1.
+- A receiver that is down at startup, or silent or closing during the handshake, makes the service retry and
+  log one Event ID 4 error ([TLS](configuration.md#tls),
+  [troubleshooting](troubleshooting.md#the-receiver-is-down-or-unreachable)).
+- If revocation status can't be obtained, the service continues. A slow revocation endpoint can push the
+  handshake past its 2-second deadline.
