@@ -282,6 +282,26 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The ETW buffer defaults are sized for 10,000 queries per second (about
+  20,000 events per second). The command-line defaults are part of the public contract under
+  the local policy, so this increases `y`. `--etw-buffer-kib` goes from 128 to 32 and
+  `--etw-max-buffers` from 128 to 64. `--etw-min-buffers` (12) and `--capacity` (131,072) do not
+  change. Ranges and validation do not change. ETW buffer memory is at most 2 MiB (64 buffers of
+  32 KiB), against 16 MiB. The lab ran 5 runs at 10,000 queries per second (3 idle, 2 with 12
+  busy CPU threads) on a 12-vCPU guest: no events were lost anywhere, at most 28 of 64 ETW
+  buffers were allocated, and the largest channel peak was 35,072 of 131,072. See
+  [Defaults](docs/guide/tuning.md#defaults).
+  - A deployment above about 10,000 queries per second must set the settings for its rate. They
+    are not defaults. Pass them on the command line or in the MSI `SERVICE_ARGS` property. The
+    new section
+    [Recommended settings for higher rates](docs/guide/tuning.md#recommended-settings-for-higher-rates)
+    lists them for 50,000, 100,000, and 200,000 queries per second, with the lab results.
+    Every tier uses `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128`, with
+    `--capacity` 131,072, 524,288, and 262,144.
+  - The rate warning (Event ID 3) fires above 22,000 events/s instead of 440,000 and names about
+    20,000 events/s (10,000 queries per second) as the validated rate. It points to the
+    recommended settings in the tuning guide.
+  - Pass `--etw-buffer-kib 128 --etw-max-buffers 128` for the previous values.
 - **Breaking.** Nine existing warnings move from Event ID 3 to the new IDs, so an
   operator who filters on Event ID 3 must also filter on these. The text does not change.
   `dnstap link is saturated` is now 23 (its "no longer saturated" event stays 2).

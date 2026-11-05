@@ -52,7 +52,7 @@ The [`guide/`](guide/) documents are the source of truth for install, configurat
 | Install with the MSI | [Install with the MSI](guide/install.md#install-with-the-msi) |
 | Prepare the receiver and its certificate | [Set up the dnstap receiver](guide/receiver.md) |
 | Look up an option, default, or range | [Configuration reference](guide/configuration.md) |
-| Choose settings for a high query rate | [Tune capture for load](guide/tuning.md) |
+| Choose settings for a high query rate (defaults suit 10,000 queries per second) | [Tune capture for load](guide/tuning.md) |
 | Read the log events and counters | [Log events and counters](guide/monitoring.md) |
 | Fix a failed start, drops, or missing records | [Troubleshooting](guide/troubleshooting.md) |
 | Diagnose receiver resets during service stop | [Service shutdown remediation](guide/service-stop-remediation.md) |

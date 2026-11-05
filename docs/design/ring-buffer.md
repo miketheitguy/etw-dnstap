@@ -17,7 +17,9 @@ The user-mode ETW callback leases preallocated storage and copies each accepted 
 It calls `crossbeam_channel::Sender::try_send` on a bounded event channel. It never
 waits or allocates. A full channel drops the newest event and increments `ring_dropped`
 and `intake_dropped`. The default capacity is 131,072 events. It was 65,536, and 24,576 before that, until the
-defaults moved to 200,000 queries per second, and 8192 until 2026-11-01.
+defaults moved to 200,000 queries per second, and 8192 until 2026-11-01. The ETW buffer defaults
+are sized for 10,000 queries per second. The channel default is unchanged. See
+[Defaults](../guide/tuning.md#defaults).
 `--capacity` accepts 1,024 to 524,288.
 
 ### Parser wake and polling

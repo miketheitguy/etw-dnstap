@@ -516,20 +516,22 @@ fn timer_resolution_guard_pairs_begin_and_end() {
 
 #[test]
 fn rate_warning_needs_defaults_and_a_rate_above_the_validated_one() {
-    assert!(default_rate_exceeded(true, 440_001.0));
-    assert!(!default_rate_exceeded(true, 440_000.0));
-    assert!(!default_rate_exceeded(true, 400_000.0));
+    assert!(default_rate_exceeded(true, 22_001.0));
+    assert!(!default_rate_exceeded(true, 22_000.0));
+    assert!(!default_rate_exceeded(true, 20_000.0));
     assert!(!default_rate_exceeded(false, 500_000.0));
 }
 
 #[test]
 fn rate_warning_text_states_the_validated_rate_and_the_threshold() {
     assert!(
-        RATE_WARNING.contains("validated at about 400,000 events/s (200,000 queries per second)")
+        RATE_WARNING.contains("validated at about 20,000 events/s (10,000 queries per second)")
     );
-    assert!(RATE_WARNING.contains("above 440,000 events/s"));
+    assert!(RATE_WARNING.contains("above 22,000 events/s"));
+    assert!(RATE_WARNING.contains("Recommended settings for higher rates"));
+    assert!(RATE_WARNING.contains("--etw-buffer-kib 128 --etw-max-buffers 128"));
     // The text states the figure the condition uses.
-    assert!((DEFAULTS_VALIDATED_EVENTS_PER_SEC - 440_000.0).abs() < f64::EPSILON);
+    assert!((DEFAULTS_VALIDATED_EVENTS_PER_SEC - 22_000.0).abs() < f64::EPSILON);
 }
 
 #[test]

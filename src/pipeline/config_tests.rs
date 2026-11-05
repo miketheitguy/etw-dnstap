@@ -107,9 +107,9 @@ fn etw_session_flags_default_and_enforce_ranges() {
     };
 
     let defaults = parse(&[]).expect("default ETW arguments");
-    assert_eq!(defaults.etw_buffer_kib, 128);
+    assert_eq!(defaults.etw_buffer_kib, 32);
     assert_eq!(defaults.etw_min_buffers, 12);
-    assert_eq!(defaults.etw_max_buffers, 128);
+    assert_eq!(defaults.etw_max_buffers, 64);
     assert_eq!(defaults.etw_flush_seconds, 1);
 
     for (flag, values) in [
@@ -324,6 +324,22 @@ fn receiver_stall_flag_reaches_the_config_as_a_duration_and_validates_its_range(
         Duration::from_secs(RECEIVER_STALL_SECONDS_RANGE.start().cast_unsigned()),
         crate::network::MIN_STALL_TIMEOUT
     );
+}
+
+#[test]
+fn defaults_are_sized_for_10000_queries_per_second() {
+    let session = config_from(&[]).session;
+    assert_eq!(session, SessionConfig::default());
+    assert_eq!(
+        (
+            session.buffer_kib,
+            session.minimum_buffers,
+            session.maximum_buffers
+        ),
+        (32, 12, 64)
+    );
+    assert_eq!(config_from(&[]).capacity, 131_072);
+    assert_eq!(DEFAULT_CAPACITY, 131_072);
 }
 
 #[test]

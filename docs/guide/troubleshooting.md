@@ -83,7 +83,7 @@ message.
 | `the DNS Server service restarted` or `the DNS Server service stopped` | 4, then 1 | |
 | `a capture worker exited before shutdown was requested` | 1 | |
 | `ETW consumer did not return within 5 s of STOP` | 3 | Trace handle closed to force the worker out. |
-| `received rate is above 440,000 events/s` | 3 | |
+| `received rate is above 22,000 events/s` | 3 | |
 | `rejected ETW event` | 3 | |
 | `DNS event schema load failed` | 3 | |
 | `DNS event schema is unsupported and its events are rejected` | 3 | The key is not retried. |
@@ -374,20 +374,23 @@ unexplained until you read the counters.
 ## Rate warning
 
 With the default buffer settings, the service logs `received rate is above
-440,000 events/s` once per run. The defaults are sized for about 400,000 events per second
-(200,000 queries per second). The warning alone does not mean that events were lost.
+22,000 events/s` once per run. The defaults are sized for about 20,000 events per second
+(10,000 queries per second). The warning alone does not mean that events were lost.
 
-If `ring_dropped` or `etw_lost` rises in the `capture stats` events, restart with:
+If `ring_dropped` or `etw_lost` rises in the `capture stats` events, restart with the
+settings for your rate from
+[Recommended settings for higher rates](tuning.md#recommended-settings-for-higher-rates).
+For example, at 50,000 queries per second:
 
 ```text
---etw-max-buffers 256 --capacity 262144
+--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128 --capacity 131072
 ```
 
-262,144 uses 558.03 MiB of counted storage at 64 jumbo slots, and the startup deadline is
- seconds. The lab ran 200,000 queries per second with it and with the default 131,072.
-The largest `--capacity` is 524,288. It uses 1,108.03 MiB of counted storage at 64 jumbo slots,
-the startup deadline is 42 seconds, and the lab measured a working set of about 1.4 GB. See [Defaults](tuning.md#defaults). Lab runs are in
-[200,000 QPS sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04)
+At 100,000 queries per second the lab needed `--capacity 524288`, and at 200,000 it needed
+`--capacity 262144`. The largest `--capacity` is 524,288. It uses 1,108.03 MiB of counted
+storage at 64 jumbo slots, the startup deadline is 42 seconds, and the lab measured a working
+set of about 1.4 GB. See [Defaults](tuning.md#defaults). Lab runs are in
+[Default and tier sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#default-and-tier-sizing-runs-on-12-vcpus-2026-11-04)
 and [Guide lab results, 2026-11](../history/guide-lab-results-2026-11.md).
 
 ## ETW consumer and session warnings

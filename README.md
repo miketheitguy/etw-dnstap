@@ -32,7 +32,7 @@ The release executable is `target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`
 | Install and register the service | [Install and provision](docs/guide/install.md) |
 | Prepare the receiver | [Set up the dnstap receiver](docs/guide/receiver.md) |
 | Look up an option, default, or range | [Configuration reference](docs/guide/configuration.md) |
-| Tune for a high query rate | [Tune capture for load](docs/guide/tuning.md) |
+| Tune for a high query rate (defaults suit 10,000 queries per second) | [Tune capture for load](docs/guide/tuning.md) |
 | Read the log events and counters | [Log events and counters](docs/guide/monitoring.md) |
 | Fix a failed start, drops, or missing records | [Troubleshooting](docs/guide/troubleshooting.md) |
 | Change or upgrade an installed service | [Repair or upgrade](docs/guide/upgrade.md) |

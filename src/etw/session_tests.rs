@@ -152,8 +152,8 @@ fn session_properties_write_configured_values() {
     assert_eq!(properties.properties.MinimumBuffers, 8);
 
     let defaults = SessionProperties::new(&SessionConfig::default(), GUID::default());
-    assert_eq!(defaults.properties.BufferSize, 128);
-    assert_eq!(defaults.properties.MaximumBuffers, 128);
+    assert_eq!(defaults.properties.BufferSize, 32);
+    assert_eq!(defaults.properties.MaximumBuffers, 64);
     assert_eq!(defaults.properties.FlushTimer, 1);
     assert_eq!(defaults.properties.MinimumBuffers, 12);
 

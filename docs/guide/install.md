@@ -58,6 +58,15 @@ msiexec.exe /i etw-dnstap-<version>-x64.msi /qn /norestart /l*v install.log `
 ```
 
 Quote a property that has spaces, for example `'SERVICE_ARGS="--plaintext --capacity 131072"'`.
+
+The ETW buffer and channel defaults are sized for 10,000 queries per second. Above that rate,
+add the settings for your rate to `SERVICE_ARGS`. For 200,000 queries per second, for example:
+
+```powershell
+'SERVICE_ARGS="--etw-buffer-kib 128 --etw-max-buffers 128 --capacity 262144"'
+```
+
+See [Recommended settings for higher rates](tuning.md#recommended-settings-for-higher-rates).
 The MSI keeps the values in `HKLM\SOFTWARE\EtwDnstap\Installer`. See
 [Upgrade, repair, or change settings with the MSI](upgrade.md#upgrade-repair-or-change-settings-with-the-msi).
 
@@ -221,7 +230,9 @@ icacls.exe $installDirectory /grant 'NT SERVICE\EtwDnstap:(OI)(CI)(RX)'
 lodctr /m:"C:\Program Files\EtwDnstap\etw-dnstap.man" "C:\Program Files\EtwDnstap"
 ```
 
-Arguments go in the binary path, not in `sc.exe start`. `--capacity 131072` is the default.
+Arguments go in the binary path, not in `sc.exe start`. `--capacity 131072` is the default. The ETW buffer defaults are sized for 10,000 queries per
+second. For higher rates, see
+[Recommended settings for higher rates](tuning.md#recommended-settings-for-higher-rates).
 Add other options from [configuration.md](configuration.md) to the same string. TLS is the
 default, so complete the [receiver certificate step](receiver.md#receiver-certificate) first.
 For plaintext, add `--plaintext`.

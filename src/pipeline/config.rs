@@ -83,7 +83,7 @@ pub(crate) struct CaptureArgs {
     identity: String,
 
     /// ETW buffer size in KiB, 4–128, must be a multiple of 4.
-    #[arg(long, default_value = "128", value_parser = clap::value_parser!(u32).range(4..=128))]
+    #[arg(long, default_value = "32", value_parser = clap::value_parser!(u32).range(4..=128))]
     etw_buffer_kib: u32,
 
     /// Requested minimum ETW buffers, reserved when the session starts, 0–4096 and
@@ -95,7 +95,7 @@ pub(crate) struct CaptureArgs {
 
     /// Requested maximum ETW buffers, 4–4096. ETW may reserve more (at least two buffers
     /// per logical processor, and raises the maximum to at least that).
-    #[arg(long, default_value = "128", value_parser = clap::value_parser!(u32).range(4..=4096))]
+    #[arg(long, default_value = "64", value_parser = clap::value_parser!(u32).range(4..=4096))]
     etw_max_buffers: u32,
 
     /// ETW real-time flush interval in seconds, 1–60. ETW delivers real-time
