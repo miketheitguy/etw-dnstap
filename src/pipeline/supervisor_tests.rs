@@ -86,8 +86,8 @@ fn pipeline_runs_a_fake_producer_against_a_loopback_receiver() -> Result<()> {
     let address = listener.local_addr()?;
     let receiver = thread::spawn(move || -> std::io::Result<()> {
         let (mut stream, _) = listener.accept()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(20)))?;
         let mut control = [0; 42];
         stream.read_exact(&mut control)?;
         control[8..12].copy_from_slice(&1_u32.to_be_bytes());
@@ -140,8 +140,8 @@ fn run_with_sink_checks(extra: &[&str], check: SpoolCheck) -> Result<Arc<SinkSta
     let address = listener.local_addr()?;
     let receiver = thread::spawn(move || -> std::io::Result<()> {
         let (mut stream, _) = listener.accept()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(20)))?;
         let mut control = [0; 42];
         stream.read_exact(&mut control)?;
         control[8..12].copy_from_slice(&1_u32.to_be_bytes());

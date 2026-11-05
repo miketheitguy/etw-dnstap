@@ -3,6 +3,8 @@
 //! field leaves the payload.
 #![no_main]
 
+mod sancov_bounds;
+
 use libfuzzer_sys::fuzz_target;
 
 const EVENT_IDS: [u16; 3] = [256, 257, 258];

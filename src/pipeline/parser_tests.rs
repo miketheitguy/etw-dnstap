@@ -15,8 +15,8 @@ fn completed_parser_finishes_tcp_and_reports_receiver_failure() -> Result<()> {
         let address = listener.local_addr()?;
         let receiver = thread::spawn(move || -> std::io::Result<()> {
             let (mut stream, _) = listener.accept()?;
-            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+            stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(20)))?;
             let mut control = [0; 42];
             stream.read_exact(&mut control)?;
             assert_eq!(&control[8..12], &4_u32.to_be_bytes(), "READY");

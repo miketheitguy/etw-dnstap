@@ -2,6 +2,8 @@
 //! payload with it. Neither step may panic or read outside the payload.
 #![no_main]
 
+mod sancov_bounds;
+
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 

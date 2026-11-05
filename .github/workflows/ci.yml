@@ -208,7 +208,10 @@ jobs:
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = & $vswhere -latest -products '*' -property installationPath
-          $dll = Get-ChildItem -Path (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll') -ErrorAction SilentlyContinue | Select-Object -First 1
+          # Use the default MSVC toolset, the one the linker picks, so the runtime DLL matches the import library.
+          $ver = (Get-Content (Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt')).Trim()
+          $dll = Get-Item -ErrorAction SilentlyContinue (Join-Path $vs "VC\Tools\MSVC\$ver\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll")
+          Write-Host "ASan runtime: $($dll.FullName)"
           if (-not $dll) { throw 'clang_rt.asan_dynamic-x86_64.dll was not found in the Visual Studio install.' }
           Add-Content -Path $env:GITHUB_PATH -Value $dll.DirectoryName
       - name: test-release
@@ -261,9 +264,8 @@ jobs:
     name: Fuzz smoke (60 s per target)
     runs-on: windows-latest
     timeout-minutes: 45
-    # Not yet proven on a hosted runner: libFuzzer on MSVC with the pinned
-    # nightly and rebuilt standard library. Remove continue-on-error once it
-    # has passed on main a few times.
+    # Builds and runs locally on MSVC, but not yet proven on a hosted runner.
+    # Remove continue-on-error once it has passed on main a few times.
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -283,10 +285,22 @@ jobs:
         # version is pinned by hand: Dependabot does not update this string.
         working-directory: ${{ runner.temp }}
         run: cargo +stable install cargo-fuzz --version 0.13.2 --locked
+      # Runs outside the checkout so that .cargo/config.toml does not apply.
+      # Its build-std setting would rebuild compiler_builtins with the sancov
+      # passes that cargo-fuzz puts in RUSTFLAGS, and LLVM rejects that on
+      # COFF ("Associative COMDAT symbol"). RUSTFLAGS already replaces the
+      # target hardening flags. The toolchain is still the pinned one. The
+      # targets define the sancov section bounds that link.exe lacks
+      # (fuzz/fuzz_targets/sancov_bounds.rs). A panic ends the run with
+      # 0xc0000409 before libFuzzer can save the input, so the job fails but
+      # fuzz/artifacts can be empty; the log shows the panic message.
       - name: Fuzz each target for 60 seconds
+        working-directory: ${{ runner.temp }}
         run: |
-          for target in decoder control_frame plan_compiler; do
-            cargo fuzz run "$target" --sanitizer none -- -max_total_time=60 -max_len=4096
+          toolchain=$(cd "$GITHUB_WORKSPACE" && rustup show active-toolchain | cut -d' ' -f1)
+          for target in decoder control_frame plan_compiler spool_segment; do
+            cargo "+$toolchain" fuzz run "$target" --fuzz-dir "$GITHUB_WORKSPACE/fuzz" \
+              --sanitizer none -- -max_total_time=60 -max_len=4096
           done
       - name: Keep crashing inputs
         if: failure()

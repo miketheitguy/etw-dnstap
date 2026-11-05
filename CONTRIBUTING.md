@@ -43,7 +43,7 @@ Advisory:
 - `sanitizers`: `cargo test-release`, `cargo asan`, until they pass on hosted runners.
 - `miri`: `cargo miri test` on `etw::decode`, `framestream`, `dnstap`, `etw::keywords`, skipping `windows-sys` callers and three slow tests.
 - `coverage`: no threshold.
-- `fuzz-smoke`: `decoder`, `control_frame`, `plan_compiler`, 60 s each.
+- `fuzz-smoke`: `decoder`, `control_frame`, `plan_compiler`, `spool_segment`, 60 s each.
 
 Miri locally: `rustup component add miri`, then `cargo miri setup` outside the repository, next to a copy of `rust-toolchain.toml`. Run the job's command with its `MIRIFLAGS`, `PROPTEST_CASES`, `PROPTEST_DISABLE_FAILURE_PERSISTENCE`.
 
@@ -130,7 +130,7 @@ Use contractions and the imperative, skip intros, outros, and filler.
 
 ### Common Gotchas
 
-- Local `cargo fuzz run` fails on MSVC with an LLVM COMDAT error, so `fuzz-smoke` stays advisory.
+- Run `cargo fuzz` from outside the repository with `+<toolchain>`, `--fuzz-dir <repo>/fuzz`, and `--sanitizer none`, as `fuzz-smoke` does. Inside it, the `build-std` setting fails the build with an LLVM COMDAT error.
 - `cargo miri setup` fails inside the repository.
 - Dependabot doesn't update the cargo-deny and cargo-llvm-cov pins.
 - Keep the nine ignored tests ignored.

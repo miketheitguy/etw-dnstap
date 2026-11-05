@@ -2,6 +2,8 @@
 //! FINISH wait do. The reader must stay bounded and never panic.
 #![no_main]
 
+mod sancov_bounds;
+
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
