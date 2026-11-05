@@ -51,7 +51,7 @@ public static class PipelineAnimation
         "While the receiver is down, frames go to the disk spool." };
     static readonly string[] StageSub = {
         "ETW keeps the events in session buffers. It delivers them about once per second.",
-        "It checks the provider, event ID, and process ID. It does not wait or allocate.",
+        "It checks the provider and event ID. It does not wait or allocate.",
         "After each delivered ETW buffer, the buffer callback wakes the parser once.",
         "It packs the frames into 64 KiB blocks and queues them for the sender thread.",
         "The link thread writes without blocking. The router never waits on the socket.",
@@ -66,7 +66,6 @@ public static class PipelineAnimation
     sealed class Ev
     {
         public int Cycle, J, Slot;
-        public bool Foreign;
         public double Born, Deliver, CopiedAt, Enqueued, Pull, Released, End;
         public double FlushDepart;   // when the frame leaves the sink buffer
         public double ReceivedAt;    // when the frame reaches the receiver
@@ -130,12 +129,11 @@ public static class PipelineAnimation
         for (int c = 0; c < Cycles; c++)
         {
             double b = c * Period;
-            bool foreignCycle = c == 1;
             var pooled = new List<Ev>();
             double lastCopied = 0;
             for (int j = 0; j < PerCycle; j++)
             {
-                var e = new Ev { Cycle = c, J = j, Foreign = foreignCycle && j == 2 };
+                var e = new Ev { Cycle = c, J = j };
                 e.Born = b + 0.2 + 0.65 * j;
                 e.Deliver = b + 3.5 + 0.35 * j;
                 double td = e.Deliver;
@@ -146,13 +144,6 @@ public static class PipelineAnimation
                 e.Key(td, cell.X, cell.Y);
                 e.Key(td + 0.4, Right(0), Spine);
                 e.Key(td + 0.75, Left(1), Spine);
-                if (e.Foreign)
-                {
-                    e.Key(td + 1.35, Left(1) + 114, Spine);
-                    e.Key(td + 1.8, Left(1) + 114, Spine + 44);
-                    e.End = td + 1.8;
-                }
-                else
                 {
                     e.Key(td + 1.45, Left(1) + 132, Spine);
                     e.Key(td + 1.55, Right(1), Spine);
@@ -205,7 +196,7 @@ public static class PipelineAnimation
     static void RouteFrames()
     {
         var sent = new List<Ev>();
-        foreach (var e in events) if (!e.Foreign) sent.Add(e);
+        foreach (var e in events) sent.Add(e);
         sent.Sort((a, b) => a.FlushDepart.CompareTo(b.FlushDepart));
         double backlogUntil = -1, nextReplay = 0;
         int cell = 0;
@@ -396,9 +387,9 @@ public static class PipelineAnimation
         x0 = Left(1);
         Text("Checks, then copies.", x0 + 14, BoxY + 68, 12, Muted);
         Text("No wait. No allocation.", x0 + 14, BoxY + 86, 12, Muted);
-        string[] checks = { "Provider", "Event ID", "PID" };
-        float[] cx = { x0 + 26, x0 + 70, x0 + 114 };
-        for (int k = 0; k < 3; k++)
+        string[] checks = { "Provider", "Event ID" };
+        float[] cx = { x0 + 44, x0 + 96 };
+        for (int k = 0; k < 2; k++)
         {
             bool ok = false, bad = false;
             foreach (var e in events)
@@ -407,11 +398,8 @@ public static class PipelineAnimation
                 {
                     PointF p = Ev.Along(e.Path, t);
                     if (p.X >= cx[k] - 2 && p.X <= Right(1))
-                    {
-                        if (e.Foreign && k == 2) bad = true; else ok = true;
-                    }
+                        ok = true;
                 }
-                if (e.Foreign && k == 2 && t >= e.Deliver + 1.35 && t < e.Deliver + 1.8) bad = true;
             }
             Color col = bad ? Red : (ok ? Green : Line);
             using (var b = new SolidBrush(bad || ok ? Mix(Panel, col, 0.4) : Bg)) g.FillEllipse(b, cx[k] - 11, Spine - 11, 22, 22);
@@ -424,9 +412,7 @@ public static class PipelineAnimation
         }
         Text("Copy into slot", x0 + 14, BoxY + 160, 14, Purple, true);
         Text("received", x0 + 14, BoxY + 196, 13, Muted);
-        Text(Count(e => !e.Foreign && t >= e.CopiedAt).ToString(), x0 + 76, BoxY + 196, 14, White, true);
-        Text("foreign_pid_rejected", x0 + 14, BoxY + 232, 11, Muted);
-        Text(Count(e => e.Foreign && t >= e.CopiedAt).ToString(), x0 + 14, BoxY + 247, 14, Red, true);
+        Text(Count(e => t >= e.CopiedAt).ToString(), x0 + 76, BoxY + 196, 14, White, true);
 
         // 3. Buffer
         x0 = Left(2);
@@ -436,7 +422,6 @@ public static class PipelineAnimation
         var state = new int[24];  // 0 free, 1 queued, 2 leased by the parser
         foreach (var e in events)
         {
-            if (e.Foreign) continue;
             if (t >= e.Enqueued && t < e.Pull) state[e.Slot] = 1;
             else if (t >= e.Pull && t < e.Released) state[e.Slot] = 2;
         }
@@ -447,7 +432,7 @@ public static class PipelineAnimation
             Color stroke = state[s] == 0 ? Line : Purple;
             Box(c.X - 8.5f, c.Y - 8.5f, 17, 17, fill, stroke, 3, 1.5f);
         }
-        int queued = Count(e => !e.Foreign && t >= e.Enqueued && t < e.Pull);
+        int queued = Count(e => t >= e.Enqueued && t < e.Pull);
         Text("queued", x0 + 14, BoxY + 255, 13, Muted);
         Text(queued.ToString(), x0 + 70, BoxY + 255, 14, White, true);
 
@@ -458,7 +443,6 @@ public static class PipelineAnimation
         bool decoding = false, encoding = false;
         foreach (var e in events)
         {
-            if (e.Foreign) continue;
             if (t >= e.Pull + 0.8 && t < e.Pull + 1.1) decoding = true;
             if (t >= e.Pull + 1.2 && t < e.Pull + 1.5) encoding = true;
         }
@@ -469,7 +453,7 @@ public static class PipelineAnimation
         Text("CLIENT_RESPONSE", x0 + 14, BoxY + 201, 13, Green, true);
         Text("into 64 KiB blocks", x0 + 14, BoxY + 224, 12, Muted);
         Text("encoded", x0 + 14, BoxY + 250, 13, Muted);
-        Text(Count(e => !e.Foreign && t >= e.Released).ToString(), x0 + 70, BoxY + 250, 14, White, true);
+        Text(Count(e => t >= e.Released).ToString(), x0 + 70, BoxY + 250, 14, White, true);
 
         // 5. Sender thread: block queue, receiver link, and disk spool
         x0 = Left(4);
@@ -478,7 +462,7 @@ public static class PipelineAnimation
         Text(Count(e => e.Spooled && t >= e.SpoolAt).ToString(), x0 + 86, BoxY + 68, 14, Amber, true);
         Text("replayed", x0 + 14, BoxY + 86, 13, Muted);
         Text(Count(e => e.Spooled && t >= e.ReplayDepart).ToString(), x0 + 86, BoxY + 86, 14, White, true);
-        bool sending = Count(e => !e.Foreign && t < e.ReceivedAt
+        bool sending = Count(e => t < e.ReceivedAt
             && t >= (e.Spooled ? e.ReplayDepart : e.FlushDepart)) > 0;
         double fifoLevel = FifoFill(t);
         bool replaying = Count(e => e.Spooled && t >= e.ReplayDepart && t < e.ReplayDepart + 0.2) > 0;
@@ -497,8 +481,8 @@ public static class PipelineAnimation
         }
         Text("Disk spool", x0 + 15, BoxY + 176, 12, Amber, true);
 
-        int got = Count(e => !e.Foreign && t >= e.ReceivedAt);
-        bool receiving = Count(e => !e.Foreign && t >= e.ReceivedAt - 0.05 && t < e.ReceivedAt + 0.3) > 0;
+        int got = Count(e => t >= e.ReceivedAt);
+        bool receiving = Count(e => t >= e.ReceivedAt - 0.05 && t < e.ReceivedAt + 0.3) > 0;
         Color edge = down ? Red : (receiving ? Green : Line);
         Box(x0 + 8, ReceiverTop, 124, 56, Bg, edge, 8, down || receiving ? 2f : 1.5f);
         Center("dnstap receiver", x0 + 70, ReceiverTop + 10, 13, White, true);
@@ -548,7 +532,7 @@ public static class PipelineAnimation
         foreach (var e in events)
         {
             if (t < e.Born) continue;
-            if (!e.Foreign && t >= e.FlushDepart && t <= e.ReceivedAt)
+            if (t >= e.FlushDepart && t <= e.ReceivedAt)
             {
                 // A frame that waits in the spool is drawn as a filled spool cell.
                 if (!(e.Spooled && t >= e.SpoolAt && t < e.ReplayDepart))
@@ -557,8 +541,7 @@ public static class PipelineAnimation
             }
             if (t > e.End) continue;
             PointF p = Ev.Along(e.Path, t);
-            if (e.Foreign && t >= e.CopiedAt) Square(p, 10, Red, Color.Transparent);
-            else if (t < e.CopiedAt) Square(p, t >= e.Born + 0.4 && t < e.Deliver ? 9 : 10, Blue, Color.Transparent);
+            if (t < e.CopiedAt) Square(p, t >= e.Born + 0.4 && t < e.Deliver ? 9 : 10, Blue, Color.Transparent);
             else if (t < e.Released) Square(p, 12, Purple, White);
             else Triangle(p, 7, Green);
         }

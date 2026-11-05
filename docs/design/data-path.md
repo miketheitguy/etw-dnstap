@@ -32,8 +32,9 @@ Decoding happens in stage 4, after the buffer. The intake callback only copies b
 ### 1. Produce
 
 The service creates a real-time ETW session and enables the DNS Server provider with
-a keyword mask, an event-ID filter, and a process-ID filter. The filters admit only
-events 256, 257, and 258 from the DNS Server process. ETW delivers them about once per
+a keyword mask and an event-ID filter. The filters admit only events 256, 257, and 258.
+There is no process filter, so the events of any process that writes them are accepted.
+ETW delivers them about once per
 `--etw-flush-seconds`. The
 [Subscription](../guide/configuration.md#subscription) section lists the filters.
 
