@@ -710,28 +710,28 @@ impl Capture {
             );
         }
         capture.consumer = Some(consumer);
-        capture.worker = Some(
-            thread::Builder::new()
-                .name("etw-consumer".into())
-                .spawn(move || {
-                    // Keep the callback's pointee alive through the entire native call.
-                    intake::install_producer(&context, sender, pool, parser);
-                    #[cfg(feature = "diag-timing")]
-                    if let Some(priority) = consumer_priority {
-                        set_current_thread_priority(priority);
-                    }
-                    // SAFETY: consumer is open. It is closed by Capture to request shutdown;
-                    // CloseTrace explicitly permits concurrent real-time ProcessTrace calls.
-                    let status = unsafe { ProcessTrace(&raw const consumer, 1, null(), null()) };
-                    // No callback can recur after ProcessTrace returns. Dropping
-                    // the final sender closes the channel. The supervisor publishes
-                    // completion and unparks the polling parser after joining us.
-                    intake::clear_producer();
-                    drop(context);
-                    status
-                })
-                .context("spawn ETW consumer")?,
-        );
+        let worker = thread::Builder::new()
+            .name("etw-consumer".into())
+            .spawn(move || {
+                // Keep the callback's pointee alive through the entire native call.
+                intake::install_producer(&context, sender, pool, parser);
+                #[cfg(feature = "diag-timing")]
+                if let Some(priority) = consumer_priority {
+                    set_current_thread_priority(priority);
+                }
+                // SAFETY: consumer is open. It is closed by Capture to request shutdown;
+                // CloseTrace explicitly permits concurrent real-time ProcessTrace calls.
+                let status = unsafe { ProcessTrace(&raw const consumer, 1, null(), null()) };
+                // No callback can recur after ProcessTrace returns. Dropping
+                // the final sender closes the channel. The supervisor publishes
+                // completion and unparks the polling parser after joining us.
+                intake::clear_producer();
+                drop(context);
+                status
+            })
+            .context("spawn ETW consumer")?;
+        capture.counters.cpu.register(&worker);
+        capture.worker = Some(worker);
         Ok(capture)
     }
 }

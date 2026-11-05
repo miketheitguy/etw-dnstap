@@ -332,6 +332,66 @@
               <counterAttribute name="reference" />
             </counterAttributes>
           </counter>
+          <counter id="69" uri="EtwDnstap.Pipeline.StageCpuEtwConsumer"
+                   nameID="376" name="Stage CPU ETW Consumer"
+                   descriptionID="378" description="CPU time (kernel and user) of the ETW consumer thread (etw-consumer: ProcessTrace, the ETW callback, and event intake) over the last second, as a percentage of one logical processor: 100 means one core fully busy, as in Process % Processor Time. The operating system accounts thread time in clock ticks, so a reading can be a point or two high or low."
+                   type="perf_large_raw_fraction" detailLevel="standard" baseID="70" />
+          <counter id="70" uri="EtwDnstap.Pipeline.StageCpuEtwConsumerBase"
+                   nameID="380" name="Stage CPU ETW Consumer Base"
+                   type="perf_large_raw_base" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="noDisplay" />
+            </counterAttributes>
+          </counter>
+          <counter id="71" uri="EtwDnstap.Pipeline.StageCpuParser"
+                   nameID="384" name="Stage CPU Parser"
+                   descriptionID="386" description="CPU time (kernel and user) of the parser thread (dnstap-parser: decode and dnstap encoding) over the last second, as a percentage of one logical processor: 100 means one core fully busy, as in Process % Processor Time. The operating system accounts thread time in clock ticks, so a reading can be a point or two high or low."
+                   type="perf_large_raw_fraction" detailLevel="standard" baseID="72" />
+          <counter id="72" uri="EtwDnstap.Pipeline.StageCpuParserBase"
+                   nameID="388" name="Stage CPU Parser Base"
+                   type="perf_large_raw_base" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="noDisplay" />
+            </counterAttributes>
+          </counter>
+          <counter id="73" uri="EtwDnstap.Pipeline.StageCpuSender"
+                   nameID="392" name="Stage CPU Sender"
+                   descriptionID="394" description="CPU time (kernel and user) of the sender thread (dnstap-sender: the router that feeds the link and the spool) over the last second, as a percentage of one logical processor: 100 means one core fully busy, as in Process % Processor Time. The operating system accounts thread time in clock ticks, so a reading can be a point or two high or low."
+                   type="perf_large_raw_fraction" detailLevel="standard" baseID="74" />
+          <counter id="74" uri="EtwDnstap.Pipeline.StageCpuSenderBase"
+                   nameID="396" name="Stage CPU Sender Base"
+                   type="perf_large_raw_base" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="noDisplay" />
+            </counterAttributes>
+          </counter>
+          <counter id="75" uri="EtwDnstap.Pipeline.StageCpuLink"
+                   nameID="400" name="Stage CPU Link"
+                   descriptionID="402" description="CPU time (kernel and user) of the link thread (dnstap-link: the socket writes and TLS) over the last second, as a percentage of one logical processor: 100 means one core fully busy, as in Process % Processor Time. The operating system accounts thread time in clock ticks, so a reading can be a point or two high or low."
+                   type="perf_large_raw_fraction" detailLevel="standard" baseID="76" />
+          <counter id="76" uri="EtwDnstap.Pipeline.StageCpuLinkBase"
+                   nameID="404" name="Stage CPU Link Base"
+                   type="perf_large_raw_base" detailLevel="standard">
+            <counterAttributes>
+              <counterAttribute name="noDisplay" />
+            </counterAttributes>
+          </counter>
+          <counter id="77" uri="EtwDnstap.Pipeline.StageCpuTimeEtwConsumer"
+                   nameID="408" name="Stage CPU Time ETW Consumer (milliseconds)"
+                   descriptionID="410" description="CPU time (kernel and user), in milliseconds, that the ETW consumer thread (etw-consumer: ProcessTrace, the ETW callback, and event intake) has used since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="advanced" />
+          <counter id="78" uri="EtwDnstap.Pipeline.StageCpuTimeParser"
+                   nameID="412" name="Stage CPU Time Parser (milliseconds)"
+                   descriptionID="414" description="CPU time (kernel and user), in milliseconds, that the parser thread (dnstap-parser: decode and dnstap encoding) has used since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="advanced" />
+          <counter id="79" uri="EtwDnstap.Pipeline.StageCpuTimeSender"
+                   nameID="416" name="Stage CPU Time Sender (milliseconds)"
+                   descriptionID="418" description="CPU time (kernel and user), in milliseconds, that the sender thread (dnstap-sender: the router that feeds the link and the spool) has used since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="advanced" />
+          <counter id="80" uri="EtwDnstap.Pipeline.StageCpuTimeLink"
+                   nameID="420" name="Stage CPU Time Link (milliseconds)"
+                   descriptionID="422" description="CPU time (kernel and user), in milliseconds, that the link thread (dnstap-link: the socket writes and TLS) has used since the service started."
+                   type="perf_counter_large_rawcount" detailLevel="advanced" />
         </counterSet>
       </provider>
     </counters>

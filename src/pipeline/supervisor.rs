@@ -27,7 +27,7 @@ use crate::{
         SessionConfig,
     },
     network::{NetworkSink, ReceiverConfig},
-    perfcounters::{CounterSink, CounterSources, PerfPublisher, snapshot},
+    perfcounters::{CounterSink, CounterSources, PerfPublisher, snapshot, stage_cpu_totals},
     sender::QueuedSink,
     sink::{FrameSink, SinkStats},
     spool::{
@@ -35,6 +35,7 @@ use crate::{
         fsinfo::{self, SpoolDirError},
         segment_bytes_for,
     },
+    threadcpu::{CpuSampler, ETW_CONSUMER, LINK, PARSER, SENDER, STAGE_COUNT, StageCpu},
 };
 
 /// Schedules a periodic task on the supervisor thread.
@@ -471,6 +472,10 @@ struct Monitor<'a> {
     spool_dir: Option<std::path::PathBuf>,
     /// The free-space probe of the spool volume.
     free_space: FreeSpace,
+    /// Pipeline thread CPU use between publication ticks.
+    publish_cpu: CpuSampler,
+    /// Pipeline thread CPU use between periodic stats logs.
+    stats_cpu: CpuSampler,
 }
 
 impl<'a> Monitor<'a> {
@@ -515,6 +520,8 @@ impl<'a> Monitor<'a> {
             rate_warned: false,
             capacity: config.capacity,
             perf: None,
+            publish_cpu: CpuSampler::new(now, stage_cpu_totals(capture, parse, sink)),
+            stats_cpu: CpuSampler::new(now, stage_cpu_totals(capture, parse, sink)),
         }
     }
 
@@ -523,6 +530,8 @@ impl<'a> Monitor<'a> {
     fn start_publishing(&mut self, perf: Box<dyn CounterSink>, now: Instant) {
         self.perf = Some(perf);
         self.publish = Schedule::new(Some(PUBLISH_INTERVAL), now);
+        self.publish_cpu =
+            CpuSampler::new(now, stage_cpu_totals(self.capture, self.parse, self.sink));
     }
 
     /// Reads the counters and writes the loss and risk events that the change
@@ -539,14 +548,13 @@ impl<'a> Monitor<'a> {
     }
 
     /// Publishes one snapshot of the counters, if a publisher is running.
-    fn publish_counters(&self) {
+    fn publish_counters(&mut self, now: Instant) {
         if let Some(perf) = &self.perf {
-            perf.publish(&snapshot(
-                self.capture,
-                self.parse,
-                self.sink,
-                self.capacity,
-            ));
+            let mut values = snapshot(self.capture, self.parse, self.sink, self.capacity);
+            values.stage_cpu = self
+                .publish_cpu
+                .sample(now, stage_cpu_totals(self.capture, self.parse, self.sink));
+            perf.publish(&values);
         }
     }
 }
@@ -602,7 +610,11 @@ fn supervise(
             queried = true;
         }
         if stats_due {
-            report_snapshot(monitor.capture, monitor.parse, monitor.sink);
+            let cpu = monitor.stats_cpu.sample(
+                now,
+                stage_cpu_totals(monitor.capture, monitor.parse, monitor.sink),
+            );
+            report_snapshot(monitor.capture, monitor.parse, monitor.sink, &cpu);
         }
         // Nothing but the two stop reports is written once shutdown begins. The
         // loop head checks `stop`; this closes the gap within one iteration.
@@ -613,7 +625,7 @@ fn supervise(
             if !queried {
                 query_session(capture);
             }
-            monitor.publish_counters();
+            monitor.publish_counters(now);
         }
         thread::park_timeout(Duration::from_millis(50));
     }
@@ -781,8 +793,30 @@ fn combine_results(capture: Result<()>, parser: Result<()>) -> Result<()> {
 /// are gauges, and `spool_available` and `link_saturated` are flags. The sender
 /// thread sets the four peaks, `spool_oldest_age_ms`, and `link_saturated` on
 /// its own one-second clock, so the interval of this log does not change them. `bytes_sent` is a total.
+///
+/// The two brace groups at the end add fields to the capture line and the output
+/// line; the stop summaries pass empty groups.
 macro_rules! emit_counts {
-    ($capture_message:literal, $output_message:literal, $capture:expr, $parser:expr, $sink:expr) => {{
+    ($capture_message:literal, $output_message:literal, $capture:expr, $parser:expr, $sink:expr) => {
+        emit_counts!(
+            $capture_message,
+            $output_message,
+            $capture,
+            $parser,
+            $sink,
+            {},
+            {}
+        )
+    };
+    (
+        $capture_message:literal,
+        $output_message:literal,
+        $capture:expr,
+        $parser:expr,
+        $sink:expr,
+        {$($capture_extra:tt)*},
+        {$($output_extra:tt)*}
+    ) => {{
         let (capture, parser, sink): (&CaptureCounters, &ParseCounters, &SinkStats) =
             ($capture, $parser, $sink);
         let pool_exhausted = capture.pool_exhausted.load(Ordering::Relaxed);
@@ -808,6 +842,7 @@ macro_rules! emit_counts {
             stale_sessions_reclaimed = capture.stale_sessions_reclaimed.load(Ordering::Relaxed),
             etw_buffers_delivered = capture.etw_buffers_delivered.load(Ordering::Relaxed),
             parser_wake_requests = capture.parser_wake_requests.load(Ordering::Relaxed),
+            $($capture_extra)*
             $capture_message
         );
         tracing::info!(
@@ -837,14 +872,37 @@ macro_rules! emit_counts {
             bytes_sent = sink.bytes_sent.load(Ordering::Relaxed),
             spool_oldest_age_ms = sink.spool_oldest_age_ms.load(Ordering::Relaxed),
             link_saturated = sink.link_saturated.load(Ordering::Relaxed),
+            $($output_extra)*
             $output_message
         );
     }};
 }
 
-/// The periodic counter snapshot.
-fn report_snapshot(capture: &CaptureCounters, parser: &ParseCounters, sink: &SinkStats) {
-    emit_counts!("capture stats", "output stats", capture, parser, sink);
+/// The periodic counter snapshot. `cpu` is the CPU use of the four pipeline
+/// threads since the previous snapshot, as a percentage of one logical processor
+/// (see [`StageCpu::percent`]). The intake and parser threads are on the capture
+/// line, and the sender and link threads on the output line.
+fn report_snapshot(
+    capture: &CaptureCounters,
+    parser: &ParseCounters,
+    sink: &SinkStats,
+    cpu: &[StageCpu; STAGE_COUNT],
+) {
+    emit_counts!(
+        "capture stats",
+        "output stats",
+        capture,
+        parser,
+        sink,
+        {
+            cpu_etw_pct = format_args!("{:.1}", cpu[ETW_CONSUMER].percent()),
+            cpu_parser_pct = format_args!("{:.1}", cpu[PARSER].percent()),
+        },
+        {
+            cpu_sender_pct = format_args!("{:.1}", cpu[SENDER].percent()),
+            cpu_link_pct = format_args!("{:.1}", cpu[LINK].percent()),
+        }
+    );
 }
 
 fn report_counts(capture: &CaptureCounters, parser: &ParseCounters, sink: &SinkStats) {

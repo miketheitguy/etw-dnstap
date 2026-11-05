@@ -21,6 +21,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use anyhow::{Result, bail};
 use windows_sys::{Win32::Foundation::ERROR_SUCCESS, core::GUID};
 
+use crate::threadcpu::ThreadCpu;
+
 #[cfg(feature = "bench")]
 pub(crate) mod bench;
 mod decode;
@@ -122,6 +124,9 @@ pub(crate) struct CaptureCounters {
     /// Buffer deliveries that enqueued at least one event. Each one sends a wake
     /// request to the parser, which costs nothing when the parser is running.
     pub(crate) parser_wake_requests: AtomicU64,
+    /// CPU time of the `etw-consumer` thread, which runs `ProcessTrace` and the
+    /// ETW callback.
+    pub(crate) cpu: ThreadCpu,
 }
 
 fn supported(id: u16) -> bool {

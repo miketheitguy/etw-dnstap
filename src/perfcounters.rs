@@ -9,7 +9,10 @@
 //!   addresses to `PerfLib` once, and `PerfLib` reads them when a consumer
 //!   collects. The ETW callback and the parser loop do no extra work.
 //! - By value: the derived values (see [`snapshot`]) are set from the
-//!   supervisor thread once per publication tick.
+//!   supervisor thread once per publication tick. The stage CPU counters are
+//!   among them: the supervisor reads each pipeline thread's CPU time with
+//!   `GetThreadTimes` (see [`crate::threadcpu`]) and publishes the share of
+//!   the last interval, so the pipeline threads do no extra work.
 //!
 //! Failure policy: when registration fails, [`PerfPublisher::start_or_warn`]
 //! logs one warning and capture continues without counters. A failed value
@@ -39,7 +42,12 @@ use windows_sys::{
     core::GUID,
 };
 
-use crate::{etw::CaptureCounters, pipeline::ParseCounters, sink::SinkStats};
+use crate::{
+    etw::CaptureCounters,
+    pipeline::ParseCounters,
+    sink::SinkStats,
+    threadcpu::{ETW_CONSUMER, LINK, PARSER, SENDER, STAGE_COUNT, StageCpu},
+};
 
 // PerfLib reads the referenced counters as 64-bit variables from its own
 // thread, so the module needs 64-bit atomics that are 8-byte aligned.
@@ -88,6 +96,25 @@ pub(crate) struct CounterValues {
     pub(crate) receiver_connected: u64,
     pub(crate) spool_available: u64,
     pub(crate) link_saturated: u64,
+    /// CPU use of the four pipeline threads over the last interval, indexed by
+    /// the stage constants of `threadcpu`. [`snapshot`] leaves it empty; the
+    /// supervisor fills it from its sampler.
+    pub(crate) stage_cpu: [StageCpu; STAGE_COUNT],
+}
+
+/// The cumulative CPU time of the four pipeline threads, in units of 100 ns,
+/// indexed by the stage constants of `threadcpu`.
+pub(crate) fn stage_cpu_totals(
+    capture: &CaptureCounters,
+    parse: &ParseCounters,
+    sink: &SinkStats,
+) -> [u64; STAGE_COUNT] {
+    let mut totals = [0; STAGE_COUNT];
+    totals[ETW_CONSUMER] = capture.cpu.cumulative_100ns();
+    totals[PARSER] = parse.cpu.cumulative_100ns();
+    totals[SENDER] = sink.cpu_sender.cumulative_100ns();
+    totals[LINK] = sink.cpu_link.cumulative_100ns();
+    totals
 }
 
 /// Reads the counters into the values to publish. Loads are relaxed and not
@@ -121,6 +148,7 @@ pub(crate) fn snapshot(
         receiver_connected: u64::from(sink.connected.load(Ordering::Relaxed)),
         spool_available: u64::from(sink.spool_available.load(Ordering::Relaxed)),
         link_saturated: u64::from(sink.link_saturated.load(Ordering::Relaxed)),
+        stage_cpu: [StageCpu::default(); STAGE_COUNT],
     }
 }
 
@@ -161,7 +189,7 @@ impl CounterDef {
     }
 }
 
-const COUNTER_COUNT: usize = 44;
+const COUNTER_COUNT: usize = 56;
 
 static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     // Throughput rates.
@@ -307,6 +335,48 @@ static COUNTERS: [CounterDef; COUNTER_COUNT] = [
     }),
     by_ref(68, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_NOVICE, |s| {
         &s.sink.router_pass_max_recent_us
+    }),
+    // CPU use of the four pipeline threads. Appended after the slow receiver
+    // counters. Each percentage is a fraction of the CPU time the thread used in
+    // the last interval over the length of that interval, both in units of
+    // 100 ns, so 100 is one core fully busy. The base is at least 1 so that a
+    // consumer never divides by zero before the first interval. The cumulative
+    // times follow the four fractions.
+    by_value(69, PERF_LARGE_RAW_FRACTION, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[ETW_CONSUMER].used_100ns
+    }),
+    by_value(70, PERF_LARGE_RAW_BASE, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[ETW_CONSUMER].elapsed_100ns.max(1)
+    }),
+    by_value(71, PERF_LARGE_RAW_FRACTION, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[PARSER].used_100ns
+    }),
+    by_value(72, PERF_LARGE_RAW_BASE, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[PARSER].elapsed_100ns.max(1)
+    }),
+    by_value(73, PERF_LARGE_RAW_FRACTION, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[SENDER].used_100ns
+    }),
+    by_value(74, PERF_LARGE_RAW_BASE, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[SENDER].elapsed_100ns.max(1)
+    }),
+    by_value(75, PERF_LARGE_RAW_FRACTION, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[LINK].used_100ns
+    }),
+    by_value(76, PERF_LARGE_RAW_BASE, PERF_DETAIL_NOVICE, |v| {
+        v.stage_cpu[LINK].elapsed_100ns.max(1)
+    }),
+    by_value(77, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_ADVANCED, |v| {
+        v.stage_cpu[ETW_CONSUMER].total_ms
+    }),
+    by_value(78, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_ADVANCED, |v| {
+        v.stage_cpu[PARSER].total_ms
+    }),
+    by_value(79, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_ADVANCED, |v| {
+        v.stage_cpu[SENDER].total_ms
+    }),
+    by_value(80, PERF_COUNTER_LARGE_RAWCOUNT, PERF_DETAIL_ADVANCED, |v| {
+        v.stage_cpu[LINK].total_ms
     }),
 ];
 
@@ -598,7 +668,10 @@ mod tests {
         58, 59, 61, 62, 63, 64, 65, 67, 68,
     ];
     /// The counters that the supervisor sets on each tick.
-    const VALUE_IDS: [u32; 12] = [30, 31, 33, 34, 40, 41, 42, 43, 44, 50, 60, 66];
+    const VALUE_IDS: [u32; 24] = [
+        30, 31, 33, 34, 40, 41, 42, 43, 44, 50, 60, 66, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+        80,
+    ];
 
     #[test]
     fn counter_types_match_their_winperf_definitions() {
@@ -739,14 +812,114 @@ mod tests {
             [52, 53, 54, 55, 56, 57, 58, 59, 60]
         );
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(COUNTER_COUNT, 44);
+        assert_eq!(COUNTER_COUNT, 56);
     }
 
     #[test]
     fn slow_receiver_counters_are_appended_after_the_spool_counters() {
         let ids: Vec<u32> = COUNTERS.iter().map(|def| def.id).collect();
         let position = ids.iter().position(|&id| id == 60).expect("counter 60");
-        assert_eq!(ids[position + 1..], [61, 62, 63, 64, 65, 66, 67, 68]);
+        assert_eq!(
+            ids[position + 1..position + 9],
+            [61, 62, 63, 64, 65, 66, 67, 68]
+        );
+    }
+
+    #[test]
+    fn stage_cpu_counters_are_appended_after_the_slow_receiver_counters() {
+        let ids: Vec<u32> = COUNTERS.iter().map(|def| def.id).collect();
+        let position = ids.iter().position(|&id| id == 68).expect("counter 68");
+        assert_eq!(
+            ids[position + 1..],
+            [69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80]
+        );
+    }
+
+    /// The stages with a distinct value in each field, so a crossed wire shows.
+    fn distinct_stage_cpu() -> [StageCpu; STAGE_COUNT] {
+        let mut stages = [StageCpu::default(); STAGE_COUNT];
+        for (index, stage) in stages.iter_mut().enumerate() {
+            let step = u64::try_from(index).expect("small") + 1;
+            *stage = StageCpu {
+                used_100ns: 1_000 * step,
+                elapsed_100ns: 10_000_000 * step,
+                total_ms: 7 * step,
+            };
+        }
+        stages
+    }
+
+    #[test]
+    fn stage_cpu_counters_publish_each_stage_in_its_own_counters() {
+        let values = CounterValues {
+            stage_cpu: distinct_stage_cpu(),
+            ..CounterValues::default()
+        };
+        let read = |id: u32| {
+            let def = COUNTERS
+                .iter()
+                .find(|def| def.id == id)
+                .expect("counter is in the table");
+            let Source::Value(value) = def.source else {
+                panic!("counter {id} is not by value");
+            };
+            value(&values)
+        };
+        // (percentage numerator, base, cumulative milliseconds) for each stage.
+        for (stage, (used, base, total)) in [(69, 70, 77), (71, 72, 78), (73, 74, 79), (75, 76, 80)]
+            .into_iter()
+            .enumerate()
+        {
+            let step = u64::try_from(stage).expect("small") + 1;
+            assert_eq!(read(used), 1_000 * step, "counter {used}");
+            assert_eq!(read(base), 10_000_000 * step, "counter {base}");
+            assert_eq!(read(total), 7 * step, "counter {total}");
+        }
+    }
+
+    #[test]
+    fn stage_cpu_bases_are_never_zero() {
+        // Before the first interval every stage is empty, and a consumer must
+        // not divide by zero.
+        let values = CounterValues::default();
+        for id in [70, 72, 74, 76] {
+            let def = COUNTERS
+                .iter()
+                .find(|def| def.id == id)
+                .expect("counter is in the table");
+            let Source::Value(value) = def.source else {
+                panic!("counter {id} is not by value");
+            };
+            assert_eq!(value(&values), 1, "counter {id}");
+        }
+    }
+
+    #[test]
+    fn stage_cpu_totals_follow_the_thread_each_stage_owns() {
+        let (capture, parse, sink) = counters();
+        assert_eq!(stage_cpu_totals(&capture, &parse, &sink), [0; STAGE_COUNT]);
+        // The totals come from different structures; each stage reads its own.
+        let spin = || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(200) {
+                std::hint::black_box(0u64);
+            }
+        };
+        let worker = std::thread::spawn(spin);
+        sink.cpu_link.register(&worker);
+        worker.join().expect("ends");
+        let totals = stage_cpu_totals(&capture, &parse, &sink);
+        assert_eq!(totals[ETW_CONSUMER], 0);
+        assert_eq!(totals[PARSER], 0);
+        assert_eq!(totals[SENDER], 0);
+        assert!(totals[LINK] > 0, "{totals:?}");
+    }
+
+    #[test]
+    fn snapshot_leaves_the_stage_cpu_for_the_sampler() {
+        let (capture, parse, sink) = counters();
+        let values = snapshot(&capture, &parse, &sink, 1024);
+        assert_eq!(values.stage_cpu, [StageCpu::default(); STAGE_COUNT]);
     }
 
     #[test]
@@ -768,6 +941,7 @@ mod tests {
             receiver_connected: 50,
             spool_available: 60,
             link_saturated: 66,
+            stage_cpu: [StageCpu::default(); STAGE_COUNT],
         };
         let read = |id: u32| {
             let def = COUNTERS
@@ -1048,6 +1222,10 @@ mod tests {
                     let expected = match def.id {
                         33 => "34",
                         43 => "44",
+                        69 => "70",
+                        71 => "72",
+                        73 => "74",
+                        75 => "76",
                         other => panic!("unexpected fraction counter {other}"),
                     };
                     assert_eq!(base_id, Some(expected), "counter {}", def.id);
@@ -1099,9 +1277,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // The set has a name and a description; 42 displayed counters have both,
-        // and the 2 base counters have a name only.
-        assert_eq!(checked, 2 + 42 * 2 + 2);
+        // The set has a name and a description; 50 displayed counters have both,
+        // and the 6 base counters have a name only.
+        assert_eq!(checked, 2 + 50 * 2 + 6);
     }
 
     #[test]

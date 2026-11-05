@@ -75,6 +75,14 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   [Loss and risk warnings](docs/guide/monitoring.md#loss-and-risk-warnings) and
   [Event IDs for data loss](docs/guide/troubleshooting.md#event-ids-for-data-loss).
 
+- CPU use of the four pipeline threads (`etw-consumer`, `dnstap-parser`, `dnstap-sender`,
+  `dnstap-link`), as a percentage of one logical processor, so an operator or the lab can
+  see which stage limits the rate. The `capture stats` line carries `cpu_etw_pct` and
+  `cpu_parser_pct`, and the `output stats` line carries `cpu_sender_pct` and `cpu_link_pct`.
+  New performance counters 69 to 76 (Stage CPU ETW Consumer, Parser, Sender, and Link, each
+  with a hidden base) and 77 to 80 (the cumulative CPU time of each thread, in
+  milliseconds) are appended, and the updated manifest must be registered again on upgrade.
+  The supervisor reads the thread times once a second; the pipeline threads do no extra work.
 - Two counters that tell a late wake of the router thread from a blocking call in its
   loop: `router_wait_max_recent_us` (the longest single wait) and
   `router_pass_max_recent_us` (the longest pass outside the wait). They are peaks over the

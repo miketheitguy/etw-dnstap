@@ -26,6 +26,7 @@ use crate::{
     dnstap::Encoder,
     etw::{self, RawEtwEvent},
     sink::FrameSink,
+    threadcpu::ThreadCpu,
 };
 
 #[derive(Default)]
@@ -48,6 +49,8 @@ pub(crate) struct ParseCounters {
     pub(super) queue_depth_interval_max: AtomicU64,
     /// Wait attribution; empty unless `diag-timing` is enabled.
     pub(super) timing: DiagTiming,
+    /// CPU time of the `dnstap-parser` thread.
+    pub(crate) cpu: ThreadCpu,
 }
 
 /// Applies the configured diagnostic priority to the calling thread.
@@ -72,10 +75,13 @@ pub(super) fn spawn_parser<S>(
 where
     S: FrameSink + Send + 'static,
 {
-    thread::Builder::new()
+    let cpu_counters = Arc::clone(&counters);
+    let parser = thread::Builder::new()
         .name("dnstap-parser".into())
         .spawn(move || parse_loop(&queue, &producer_done, &counters, &identity, writer, diag))
-        .context("start dnstap parser thread")
+        .context("start dnstap parser thread")?;
+    cpu_counters.cpu.register(&parser);
+    Ok(parser)
 }
 
 pub(super) fn join_parser(parser: thread::JoinHandle<Result<()>>) -> Result<()> {

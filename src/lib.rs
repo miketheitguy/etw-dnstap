@@ -4,7 +4,7 @@
 compile_error!("etw-dnstap requires Windows; build for x86_64-pc-windows-msvc");
 
 mod dnstap;
-// `unsafe` is allowed only in the `etw` submodules, `service`, and `perfcounters`,
+// `unsafe` is allowed only in the `etw` submodules, `service`, `perfcounters`, and `threadcpu`,
 // which call native APIs.
 mod etw;
 mod event;
@@ -19,6 +19,8 @@ mod sender;
 mod service;
 mod sink;
 mod spool;
+#[allow(unsafe_code)]
+mod threadcpu;
 
 /// Entry points for the `fuzz/` crate. Not part of the supported interface.
 #[cfg(feature = "fuzzing")]

@@ -801,7 +801,12 @@ fn the_output_report_carries_the_slow_receiver_signals() {
     sink.spool_oldest_age_ms.store(93_250, Ordering::Relaxed);
     sink.link_saturated.store(true, Ordering::Relaxed);
     let logs = capture_logs_at(tracing::Level::INFO, || {
-        report_snapshot(&capture, &parser, &sink);
+        report_snapshot(
+            &capture,
+            &parser,
+            &sink,
+            &[StageCpu::default(); STAGE_COUNT],
+        );
         report_counts(&capture, &parser, &sink);
     });
     let text = logs.text();
@@ -1097,4 +1102,114 @@ fn a_spool_that_cannot_be_used_uses_the_spool_disabled_id() {
         );
     });
     assert_eq!(lines.count("etw_dnstap::event::26"), 1, "{}", lines.text());
+}
+
+fn stage_cpu_with_percent(percent_tenths: u64) -> StageCpu {
+    // An interval of one second and the CPU time that makes the percentage.
+    StageCpu {
+        used_100ns: percent_tenths * 10_000,
+        elapsed_100ns: 10_000_000,
+        total_ms: 0,
+    }
+}
+
+#[test]
+fn the_periodic_reports_carry_the_stage_cpu_percentages() {
+    let (capture, parser, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let mut cpu = [StageCpu::default(); STAGE_COUNT];
+    cpu[ETW_CONSUMER] = stage_cpu_with_percent(1_234);
+    cpu[PARSER] = stage_cpu_with_percent(1_000);
+    cpu[SENDER] = stage_cpu_with_percent(55);
+    cpu[LINK] = stage_cpu_with_percent(0);
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        report_snapshot(&capture, &parser, &sink, &cpu);
+    });
+    let text = logs.text();
+    let capture_line = text
+        .lines()
+        .find(|line| line.contains("capture stats"))
+        .expect("a capture stats line");
+    let output_line = text
+        .lines()
+        .find(|line| line.contains("output stats"))
+        .expect("an output stats line");
+    // One decimal, always: 123.4 percent of one core is not a rounding error.
+    assert!(capture_line.contains("cpu_etw_pct=123.4"), "{capture_line}");
+    assert!(
+        capture_line.contains("cpu_parser_pct=100.0"),
+        "{capture_line}"
+    );
+    assert!(output_line.contains("cpu_sender_pct=5.5"), "{output_line}");
+    assert!(output_line.contains("cpu_link_pct=0.0"), "{output_line}");
+    // Each stage appears on one line only.
+    for field in [
+        "cpu_etw_pct",
+        "cpu_parser_pct",
+        "cpu_sender_pct",
+        "cpu_link_pct",
+    ] {
+        assert_eq!(logs.count(field), 1, "{field}: {text}");
+    }
+}
+
+#[test]
+fn the_stop_summaries_carry_no_stage_cpu() {
+    let (capture, parser, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        report_counts(&capture, &parser, &sink);
+    });
+    assert_eq!(logs.count("cpu_"), 0, "{}", logs.text());
+}
+
+#[test]
+fn publishing_counters_carries_the_cpu_of_the_registered_threads() {
+    let config = config_from(&[]);
+    let (capture, parse, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let published = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+    monitor.start_publishing(
+        Box::new(RecordingSink {
+            published: Arc::clone(&published),
+        }),
+        Instant::now(),
+    );
+    // The link stage burns CPU for 300 ms; the other stages have no thread.
+    let link = thread::spawn(|| {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(300) {
+            std::hint::black_box(0u64);
+        }
+    });
+    sink.cpu_link.register(&link);
+    link.join().expect("the link stand-in ends");
+    monitor.publish_counters(Instant::now());
+    let values = *published.lock().expect("lock").last().expect("a snapshot");
+    let link_cpu = values.stage_cpu[LINK];
+    assert!(link_cpu.used_100ns > 1_000_000, "{link_cpu:?}");
+    assert!(link_cpu.elapsed_100ns >= 3_000_000, "{link_cpu:?}");
+    assert!(link_cpu.total_ms >= 100, "{link_cpu:?}");
+    assert!(link_cpu.percent() > 30.0, "{link_cpu:?}");
+    for stage in [ETW_CONSUMER, PARSER, SENDER] {
+        assert_eq!(values.stage_cpu[stage].used_100ns, 0, "stage {stage}");
+        assert_eq!(values.stage_cpu[stage].total_ms, 0, "stage {stage}");
+    }
+
+    // The next tick measures from this one: the ended thread uses no more CPU.
+    monitor.publish_counters(Instant::now() + Duration::from_secs(1));
+    let later = *published.lock().expect("lock").last().expect("a snapshot");
+    assert_eq!(later.stage_cpu[LINK].used_100ns, 0);
+    assert_eq!(later.stage_cpu[LINK].percent(), 0.0);
+    assert_eq!(later.stage_cpu[LINK].total_ms, link_cpu.total_ms);
 }

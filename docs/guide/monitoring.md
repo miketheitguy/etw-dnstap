@@ -211,6 +211,7 @@ These fields appear on `capture stats` and `capture stopped`.
 | `stale_sessions_reclaimed` | Leaked sessions stopped at startup. |
 | `etw_buffers_delivered` | ETW buffer callbacks completed. |
 | `parser_wake_requests` | Buffers that enqueued an event. Each sends one wake request, which costs nothing while the parser runs. Not a count of parser wakeups. |
+| `cpu_etw_pct`, `cpu_parser_pct` | `capture stats` only. CPU time of the `etw-consumer` thread (the ETW callback and event intake) and of the `dnstap-parser` thread since the previous `capture stats` line, as a percentage of one logical processor, with one decimal: 100.0 is one core fully busy. A stage near 100 is the bottleneck. The operating system accounts thread time in clock ticks, so a value can read a point or two high. See [Stage CPU](#stage-cpu). |
 
 ## Output counters
 
@@ -241,6 +242,7 @@ These fields appear on `output stats` and `output stopped`.
 | `spool_errors` | Every spool I/O error. |
 | `spool_bytes`, `spool_segments` | Gauges: bytes and segment files now, including files whose removal has not yet succeeded. |
 | `spool_available` | Flag: `true` while the spool accepts data. `false` with `--no-spool`, with an unusable folder, or while an I/O error or the free-space floor pauses it. |
+| `cpu_sender_pct`, `cpu_link_pct` | `output stats` only. CPU time of the `dnstap-sender` thread (the router) and of the `dnstap-link` thread (the socket writes and TLS) since the previous `output stats` line, as a percentage of one logical processor, with one decimal. See [Stage CPU](#stage-cpu). |
 
 ### Windows of the recent peaks
 
@@ -361,7 +363,7 @@ on a host, so the name is the same after each restart. `--session-name` rules ar
 
 Windows reads the rates, totals, and gauges that are plain atomics (IDs 1 to 3, 10 to 21, 32,
 51, 52 to 59, 61 to 65, 67, and 68) by reference. Each consumer therefore gets an exact rate for its own sample interval. The service
-publishes the other gauges (IDs 30, 31, 33, 34, 40 to 44, 50, 60, and 66) once per second.
+publishes the other gauges (IDs 30, 31, 33, 34, 40 to 44, 50, 60, 66, and 69 to 80) once per second.
 It runs the ETW statistics query at the same rate. ETW gauges read 0 until the first
 successful query, then keep the last successful value.
 
@@ -442,9 +444,21 @@ How the totals relate:
 | Link Saturated | 66 | 1 while the spool backlog trends up with the receiver connected. Holds its value through an outage, so read it with Receiver Connected (50). See [The saturated state](#the-saturated-state). | `link_saturated` |
 | Router Wait Peak (microseconds) | 67 | Longest single wait of the router thread for work, in the last 60 seconds. The wait ends after at most 50 ms, so a larger value means a late wake. | `router_wait_max_recent_us` |
 | Router Pass Peak (microseconds) | 68 | Longest router pass outside its wait, in the last 60 seconds. A large value means a call in the pass blocked. | `router_pass_max_recent_us` |
+| Stage CPU ETW Consumer / Parser / Sender / Link, with their hidden bases | 69 / 71 / 73 / 75, bases 70 / 72 / 74 / 76 | CPU time of the `etw-consumer`, `dnstap-parser`, `dnstap-sender`, and `dnstap-link` threads over the last second, as a percentage of one logical processor: 100 is one core fully busy. See [Stage CPU](#stage-cpu). | `cpu_etw_pct` / `cpu_parser_pct` / `cpu_sender_pct` / `cpu_link_pct` |
+| Stage CPU Time ETW Consumer / Parser / Sender / Link (milliseconds) | 77 / 78 / 79 / 80 | CPU time (kernel and user) that each thread has used since the service started. Advanced detail. | None |
+
+#### Stage CPU
+
+The service has four threads that can each use a whole core: `etw-consumer` (the ETW
+callback and event intake), `dnstap-parser`, `dnstap-sender` (the router), and `dnstap-link`
+(the socket writes and TLS). IDs 69, 71, 73, and 75 show how busy each one is, so a graph
+shows which stage limits the rate. The supervisor reads each thread's CPU time once per second
+and publishes the share of the last second, so graph them with a sample interval of one second
+or more. A value near 100 means the stage is the bottleneck. Windows accounts thread time in
+clock ticks, so a reading can be a point or two above 100. A thread that has ended reads 0.
 
 The manifest gives these counters the Advanced detail level: IDs 14, 15, 19, 20, 51, 56,
-and 59. All other counters have the Standard detail level.
+59, and 77 to 80. All other counters have the Standard detail level.
 
 ### Reading the counters
 

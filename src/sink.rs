@@ -6,6 +6,8 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64},
 };
 
+use crate::threadcpu::ThreadCpu;
+
 /// Transport health and loss counters shared between a sink and the supervisor.
 ///
 /// The sink writes them; the supervisor reads them for periodic and final
@@ -16,6 +18,10 @@ use std::{
 /// `link_saturated`).
 #[derive(Default)]
 pub(crate) struct SinkStats {
+    /// CPU time of the `dnstap-sender` thread (the router).
+    pub(crate) cpu_sender: ThreadCpu,
+    /// CPU time of the `dnstap-link` thread (the socket writes).
+    pub(crate) cpu_link: ThreadCpu,
     /// True while a Frame Streams session is established.
     pub(crate) connected: AtomicBool,
     /// Connections lost after having been established.

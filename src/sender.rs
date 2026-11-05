@@ -429,6 +429,7 @@ impl QueuedSink {
         let link_handle = thread::Builder::new()
             .name("dnstap-link".into())
             .spawn(move || link_thread.run())?;
+        stats.cpu_link.register(&link_handle);
         // The router starts from the state the link thread published, so a block
         // that arrives at once is not sent to a link that is not in link mode. The
         // wait ends at once if the link thread has ended.
@@ -446,6 +447,7 @@ impl QueuedSink {
         let thread = thread::Builder::new()
             .name("dnstap-sender".into())
             .spawn(move || router.run(&parser_end))?;
+        stats.cpu_sender.register(&thread);
         Ok(Self {
             current: Block::new(),
             queue: Some(queue),
