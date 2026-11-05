@@ -185,14 +185,13 @@ jobs:
         run: cargo deny --locked --manifest-path tools/dns-stress/Cargo.toml --config deny.toml check
 
   sanitizers:
-    name: test-release and ASan (advisory)
+    name: test-release and ASan
     runs-on: windows-latest
     timeout-minutes: 90
-    # Advisory until it has passed on hosted runners. The AddressSanitizer
-    # runtime comes from a Visual Studio component that the runner image may
-    # not include. A pass proves only that Rust-compiled code and the rebuilt
-    # standard library are instrumented, not the prebuilt CRT or system DLLs.
-    continue-on-error: true
+    # Blocking. The AddressSanitizer runtime comes from a Visual Studio
+    # component that the runner image must include. A pass proves only that
+    # Rust-compiled code and the rebuilt standard library are instrumented,
+    # not the prebuilt CRT or system DLLs.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -264,9 +263,8 @@ jobs:
     name: Fuzz smoke (60 s per target)
     runs-on: windows-latest
     timeout-minutes: 45
-    # Builds and runs locally on MSVC, but not yet proven on a hosted runner.
-    # Remove continue-on-error once it has passed on main a few times.
-    continue-on-error: true
+    # Blocking. It runs outside the checkout so build-std does not apply, and
+    # each target defines the sanitizer-coverage section bounds that MSVC lacks.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

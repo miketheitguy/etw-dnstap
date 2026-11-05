@@ -10,3 +10,6 @@ coverage-summary.txt
 
 # Local link to .agents/skills/asd-ste100 (the tracked copy)
 /.claude/skills/asd-ste100
+
+# Local worktree metadata and build logs written by Claude Code.
+/.claude/worktrees/

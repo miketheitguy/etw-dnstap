@@ -37,13 +37,13 @@ Data exposure or privilege bugs: [security policy](SECURITY.md).
 - `cargo deny` on the root, `fuzz/`, `tools/dns-stress/` lockfiles.
 - `python -I scripts/ci/linkcheck.py .`
 - A `git grep` for host directory paths (see `CLAUDE.md`).
+- `sanitizers`: `cargo test-release` and `cargo asan`.
+- `fuzz-smoke`: `decoder`, `control_frame`, `plan_compiler`, `spool_segment`, 60 s each.
 
 Advisory:
 
-- `sanitizers`: `cargo test-release`, `cargo asan`, until they pass on hosted runners.
 - `miri`: `cargo miri test` on `etw::decode`, `framestream`, `dnstap`, `etw::keywords`, skipping `windows-sys` callers and three slow tests.
 - `coverage`: no threshold.
-- `fuzz-smoke`: `decoder`, `control_frame`, `plan_compiler`, `spool_segment`, 60 s each.
 
 Miri locally: `rustup component add miri`, then `cargo miri setup` outside the repository, next to a copy of `rust-toolchain.toml`. Run the job's command with its `MIRIFLAGS`, `PROPTEST_CASES`, `PROPTEST_DISABLE_FAILURE_PERSISTENCE`.
 
