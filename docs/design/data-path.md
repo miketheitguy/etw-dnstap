@@ -1,6 +1,6 @@
 # Data path: from an ETW event to a TCP frame
 
-> **Status:** Current · **Describes:** the code on branch `spool-encryption` as of 2026-11-05 · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the code on `main` at commit `592a040` as of 2026-11-05 · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-05
 
 ### Quick Start
 

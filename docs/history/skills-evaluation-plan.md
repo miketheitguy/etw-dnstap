@@ -4,7 +4,7 @@
 
 Every line number below was read from the file at plan time.
 
-> **Correction:** `asd-ste100` is installed. `~/.claude/skills/asd-ste100` is a symlink to `~/.agents/skills/asd-ste100`, which the planning agent's file search did not follow. It applies to documentation and error-message wording. D-3 is resolved.
+> **Correction:** `asd-ste100` is installed. `<profile>/.claude/skills/asd-ste100` is a symlink to `<profile>/.agents/skills/asd-ste100`, which the planning agent's file search did not follow. It applies to documentation and error-message wording. D-3 is resolved.
 
 ## 1. Task summary
 

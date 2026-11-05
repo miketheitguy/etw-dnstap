@@ -147,6 +147,19 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -I scripts/ci/linkcheck.py .
+      - name: No host directory paths
+        run: |
+          rc=0
+          git grep -I -i -n -E 'C:[\]+Users|/c/User[s]|C:/User[s]|[~]/|[$][{]?HOME|%USERPROFILE[%]' -- . \
+            ':(exclude)CLAUDE.md' ':(exclude)scripts/ci/verify-pe.ps1' \
+            ':(exclude)docs/guide/install.md' ':(exclude).agents/skills/' || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo 'Host directory path found (see CLAUDE.md).'
+            exit 1
+          elif [ "$rc" -gt 1 ]; then
+            echo "git grep failed with status $rc"
+            exit "$rc"
+          fi
 
   deny:
     name: cargo-deny (advisories, licenses, bans, sources)

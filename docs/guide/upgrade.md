@@ -1,6 +1,6 @@
 # Repair or upgrade the service
 
-> **Status:** Current · **Describes:** the code on branch `spool-encryption` · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the code on `main` at commit `592a040` · **Reviewed:** 2026-11-05
 
 ### Quick Start
 

@@ -1,6 +1,6 @@
 # Filtered DNS ramp plan
 
-> **Status:** Proposed · **Evidence dated:** October 30, 2026 (the planning date for `target/performance/filtered-ramp-20261030/`) · **Commit:** not recorded (predates `e59425f`, `9172f2d`, and `b46da39`) · **Reviewed:** 2026-11-01
+> **Status:** Superseded by [tuning.md](../guide/tuning.md#low-rate-defaults) and [configuration.md](../guide/configuration.md#subscription) · **Evidence dated:** October 30, 2026 (the planning date for `target/performance/filtered-ramp-20261030/`) · **Commit:** not recorded (predates `e59425f`, `9172f2d`, and `b46da39`) · **Reviewed:** 2026-11-05
 >
 > **Do not run this plan as written.** The capture contract below (level 4, `MatchAnyKeyword` `0x8000000000000000`), the
 > reviewed `src/etw.rs` and executable SHA-256 values, and the defaults named in
@@ -21,7 +21,7 @@
 > `intake.rs`, `schema.rs`, `diag.rs`) plus `src/event.rs` and `src/sink.rs`.
 >
 > For the in-progress snapshot of the October 30 campaign, see the
-> [filtered DNS ramp review](../history/filtered-ramp-review.md).
+> [filtered DNS ramp review](filtered-ramp-review.md).
 
 This plan helps the Windows deployment operator and evidence reviewer deploy
 the reviewed client-event filter and run a bounded DNS ramp. The campaign

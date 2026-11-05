@@ -66,7 +66,6 @@ Each document starts with a status block.
 
 Plans move to `history/` when they're executed.
 
-- [Filtered DNS ramp plan](plans/filtered-ramp-plan.md)
 - [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md)
 - [Parallel parser workers plan](plans/parallel-parser-workers-plan.md): partly executed
 

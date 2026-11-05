@@ -1,6 +1,6 @@
 # Provisioning scripts
 
-> **Status:** Current · **Describes:** the grant script on branch `spool-encryption` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100), and 2026-11-03 (run by the MSI) · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the grant script on `main` at commit `592a040` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100), and 2026-11-03 (run by the MSI) · **Reviewed:** 2026-11-05
 >
 > See [the validation record](../../docs/history/localservice-restricted-validation.md).
 

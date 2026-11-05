@@ -1,6 +1,6 @@
 # Slow receiver: link writer and progress liveness
 
-> **Status:** Current. · **Describes:** the sender on this branch. · **Evidence:** source review on 2026-11-05. Lab results are in the [validation record](../history/slow-receiver-validation.md). · **Reviewed:** 2026-11-05
+> **Status:** Current. · **Describes:** the sender on `main` at commit `592a040`. · **Evidence:** source review on 2026-11-05. Lab results are in the [validation record](../history/slow-receiver-validation.md). · **Reviewed:** 2026-11-05
 
 ### Quick Start
 

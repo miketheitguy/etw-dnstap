@@ -1,6 +1,6 @@
 # Spool encryption plan
 
-> **Status:** Historical (implemented). Approved 2026-11-04; Wave 1 (K, C, I), Wave 2 (G), and task R complete, Wave 3 task L open · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-05
+> **Status:** Historical (implemented). Approved 2026-11-04; Wave 1 (K, C, I), Wave 2 (G), and task R complete, task L run 2026-11-04 (see [validation record](spool-encryption-validation.md)) · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** not applicable (design from Microsoft Learn and the source; lab run recorded in the validation record) · **Reviewed:** 2026-11-05
 
 The spool writes dnstap frames to disk while the receiver is down or slow. Today they are
 plaintext Frame Streams files. This plan encrypts what the spool writes, and only that:
@@ -222,7 +222,7 @@ file sizes, which now include 32 bytes a segment and 28 bytes a record.
 | I | 1 | Installer: create the KSP key and its DACL, create `HKLM\SOFTWARE\ETW-DNSTapService\Protect` with its DACL, keep both on major upgrade (no upgrade copy), delete both on uninstall. Update `docs/guide/install.md`. | `voltagent-lang:powershell-5.1-expert` (Sonnet) | medium | Installer and provisioning changes. |
 | G | 2 | Integration: `SegmentWriter`/`SegmentReader` use C, the spool opens with K, failures take the spool-unavailable path, unreadable segments are deleted and counted at startup, cursor resume by logical offset. Update the guides, the design notes, and the CHANGELOG. | `voltagent-lang:rust-engineer` (Opus) | high | Done 2026-11-04: code, tests, docs. |
 | R | 3 | Security and correctness review of K, C, I, and G. | `voltagent-qa-sec:code-reviewer` (Opus) | high | Done 2026-11-04: findings F1 to F7, fixes in code, installer, and docs (see "Review R findings"). |
-| L | 3 | Lab: first start creates `WrappedKey`; restart and major upgrade keep it; an outage spills and replays with no loss; a changed byte in a segment is counted as corrupt; another local account cannot unwrap; spool throughput at 50,000 and 200,000 QPS. Needs explicit authorization. | `general-purpose` (Sonnet) | high | History section. |
+| L | 3 | Lab: first start creates `WrappedKey`; restart and major upgrade keep it; an outage spills and replays with no loss; a changed byte in a segment is counted as corrupt; another local account cannot unwrap; spool throughput at 50,000 and 200,000 QPS. Needs explicit authorization. | `general-purpose` (Sonnet) | high | Run 2026-11-04 at 10,000 QPS only; see the [validation record](spool-encryption-validation.md). The 50,000 and 200,000 QPS runs and the other-account test were not run. |
 
 Wave 1 tasks touch separate files. `Cargo.toml` (the `ring` dependency and the
 `Win32_System_Registry` feature) and the module declarations in `src/spool.rs` are set

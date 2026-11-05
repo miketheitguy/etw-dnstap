@@ -36,6 +36,7 @@ Data exposure or privilege bugs: [security policy](SECURITY.md).
 - `tools/dns-stress` checks; `scripts/performance` tests `test_metrics_ledger.py`, `test_pooled_intake_run.py`, `archive/test_archived_analyzers.py`.
 - `cargo deny` on the root, `fuzz/`, `tools/dns-stress/` lockfiles.
 - `python -I scripts/ci/linkcheck.py .`
+- A `git grep` for host directory paths (see `CLAUDE.md`).
 
 Advisory:
 

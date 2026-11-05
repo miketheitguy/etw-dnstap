@@ -2,7 +2,7 @@
 
 `etw-dnstap` is a Windows service. It reads DNS Server query and response events from Event Tracing for Windows (ETW) and sends them over TCP to a [dnstap](https://dnstap.info/) receiver as Frame Streams records.
 
-> **Status:** Current · **Describes:** the `spool-encryption` branch · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the code on `main` at commit `592a040` · **Reviewed:** 2026-11-05
 
 ### Quick Start
 
