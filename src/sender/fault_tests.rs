@@ -27,7 +27,7 @@ use crate::{
         script::{Mode, Script, ScriptUplink, trailing_partial},
         sender_tests::{MIB, get, numbers_of, open_spool, queued, sized_frame, wait_until},
     },
-    spool::test_support::{TestDir, parse_fstrm},
+    spool::test_support::{TestDir, segment_payloads},
 };
 
 /// The payload of the small frames: a frame with its length is 104 bytes.
@@ -231,7 +231,7 @@ fn frames_on_disk(dir: &TestDir) -> Vec<u32> {
         .into_iter()
         .flat_map(|name| {
             let file = fs::read(dir.path().join(name)).expect("segment is readable");
-            numbers_of(&parse_fstrm(&file))
+            numbers_of(&segment_payloads(&file))
         })
         .collect()
 }

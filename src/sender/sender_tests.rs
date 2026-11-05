@@ -15,8 +15,8 @@ use crate::{
     framestream::{CONTENT_TYPE, CONTROL_START, CONTROL_STOP},
     network::BackoffPolicy,
     spool::{
-        SpoolConfig,
-        test_support::{TestDir, parse_fstrm},
+        KeyOrigin, SpoolConfig,
+        test_support::{TestDir, parse_segment, test_key},
     },
 };
 
@@ -311,6 +311,8 @@ pub(super) fn open_spool(dir: &TestDir, max_bytes: u64, stats: &Arc<SinkStats>) 
             max_bytes,
             min_free_bytes: 0,
         },
+        test_key(),
+        KeyOrigin::Loaded,
         Arc::clone(stats),
         plenty,
     )
@@ -697,7 +699,7 @@ fn shutdown_with_a_stalled_link_and_queued_blocks_is_bounded_and_accounted() {
     let mut on_disk = Vec::new();
     for name in segment_files(&dir) {
         let file = fs::read(dir.path().join(name)).expect("segment is readable");
-        on_disk.extend(numbers_of(&parse_fstrm(&file)));
+        on_disk.extend(numbers_of(&parse_segment(&file)));
     }
     assert_eq!(on_disk.len() as u64, get(&stats.spooled));
     assert!(on_disk.windows(2).all(|pair| pair[0] < pair[1]));
@@ -749,8 +751,12 @@ fn shutdown_with_a_backlog_seals_the_segment_and_the_next_run_replays_it() {
     let files = segment_files(&dir);
     assert_eq!(files.len(), 1, "{files:?}");
     let file = fs::read(dir.path().join(&files[0])).expect("segment is readable");
-    // `parse_fstrm` requires START first and STOP last: the segment is sealed.
-    assert_eq!(numbers_of(&parse_fstrm(&file)), (0..30).collect::<Vec<_>>());
+    // `parse_segment` requires every record to decrypt and the end record last:
+    // the segment is sealed.
+    assert_eq!(
+        numbers_of(&parse_segment(&file)),
+        (0..30).collect::<Vec<_>>()
+    );
 
     // The next run finds the leftover and sends it before newer frames.
     server.serve_now();

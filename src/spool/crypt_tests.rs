@@ -11,12 +11,17 @@ const KEY_ID: [u8; KEY_ID_LEN] = [0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8
 const PREFIX: [u8; NONCE_PREFIX_LEN] = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
 const SEQUENCE: u64 = 0x0102_0304_0506_0708;
 
-fn key() -> SegmentKey {
-    SegmentKey::new(&KEY_BYTES, KEY_ID).expect("a 16-byte key is accepted")
+/// The test key, built once: each key takes a locked page, and the process can
+/// lock only a few dozen.
+fn key() -> Arc<SegmentKey> {
+    static KEY: std::sync::OnceLock<Arc<SegmentKey>> = std::sync::OnceLock::new();
+    Arc::clone(KEY.get_or_init(|| {
+        Arc::new(SegmentKey::new(&KEY_BYTES, KEY_ID).expect("a 16-byte key is accepted"))
+    }))
 }
 
-fn key_with(bytes: [u8; KEY_LEN], id: [u8; KEY_ID_LEN]) -> SegmentKey {
-    SegmentKey::new(&bytes, id).expect("a 16-byte key is accepted")
+fn key_with(bytes: [u8; KEY_LEN], id: [u8; KEY_ID_LEN]) -> Arc<SegmentKey> {
+    Arc::new(SegmentKey::new(&bytes, id).expect("a 16-byte key is accepted"))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -35,7 +40,7 @@ fn unhex(text: &str) -> Vec<u8> {
 
 /// A whole segment: file header, one data record per chunk, and optionally the end record.
 fn build_with(
-    key: &SegmentKey,
+    key: &Arc<SegmentKey>,
     sequence: u64,
     prefix: [u8; NONCE_PREFIX_LEN],
     chunks: &[Vec<u8>],
@@ -76,7 +81,7 @@ struct Read {
 
 /// Reads a segment from its bytes, as the spool reader will: header, then records one at a
 /// time, decrypting in place in a copy of the bytes.
-fn read_all(key: &SegmentKey, bytes: &[u8]) -> Read {
+fn read_all(key: &Arc<SegmentKey>, bytes: &[u8]) -> Read {
     let mut opener = match RecordOpener::new(key.clone(), bytes) {
         Ok(opener) => opener,
         Err(error) => {
@@ -798,7 +803,7 @@ fn frame(payload: &[u8]) -> Vec<u8> {
 }
 
 /// Resumes at `target` in `bytes` and returns the plaintext from `target` to the end.
-fn resume(key: &SegmentKey, bytes: &[u8], target: u64) -> Vec<u8> {
+fn resume(key: &Arc<SegmentKey>, bytes: &[u8], target: u64) -> Vec<u8> {
     let mut opener = RecordOpener::new(key.clone(), bytes).expect("header");
     let body = &bytes[FILE_HEADER_LEN..];
     let Skip::Found { consumed } = opener.skip_to(body, target) else {

@@ -4,8 +4,13 @@ use std::{
 };
 
 use super::*;
-use crate::spool::test_support::{
-    STOP, TestDir, capture_logs, numbered, numbers, parse_fstrm, start_bytes,
+use crate::spool::{
+    crypt::{FILE_HEADER_LEN, RECORD_HEADER_LEN, RECORD_OVERHEAD},
+    segment::RECORD_EXTRA,
+    test_support::{
+        TestDir, capture_logs, contains, numbered, numbers, other_key, parse_segment, payloads,
+        plaintext_segment, sealed_segment, segment_payloads, test_key,
+    },
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -76,7 +81,12 @@ fn read_cursor(dir: &TestDir) -> CursorRead {
     cursor::read(dir.path()).expect("cursor file is readable")
 }
 
-fn open_with(dir: &TestDir, max_bytes: u64, min_free_bytes: u64) -> (Spool, Arc<SinkStats>) {
+fn open_keyed(
+    dir: &TestDir,
+    max_bytes: u64,
+    min_free_bytes: u64,
+    origin: KeyOrigin,
+) -> (Spool, Arc<SinkStats>) {
     set_free(u64::MAX, 0);
     let stats = Arc::new(SinkStats::default());
     let spool = Spool::open(
@@ -85,11 +95,17 @@ fn open_with(dir: &TestDir, max_bytes: u64, min_free_bytes: u64) -> (Spool, Arc<
             max_bytes,
             min_free_bytes,
         },
+        test_key(),
+        origin,
         Arc::clone(&stats),
         fake_free,
     )
     .expect("spool opens");
     (spool, stats)
+}
+
+fn open_with(dir: &TestDir, max_bytes: u64, min_free_bytes: u64) -> (Spool, Arc<SinkStats>) {
+    open_keyed(dir, max_bytes, min_free_bytes, KeyOrigin::Loaded)
 }
 
 fn open(dir: &TestDir, max_bytes: u64) -> (Spool, Arc<SinkStats>) {
@@ -119,16 +135,34 @@ fn append_numbers(spool: &mut Spool, range: Range<u64>, pad: usize) -> Appended 
     spool.append(&bytes, frames)
 }
 
-/// Writes a leftover segment file and returns its length.
+/// Writes a leftover segment file sealed with the test key, `body` as one
+/// record, and returns its length.
 fn leftover_segment(dir: &TestDir, sequence: u64, body: &[u8], stop: bool) -> u64 {
-    let mut bytes = start_bytes();
-    bytes.extend_from_slice(body);
-    if stop {
-        bytes.extend_from_slice(&STOP);
-    }
-    let name = format!("seg-{sequence:020}.fstrm");
-    fs::write(dir.path().join(name), &bytes).expect("leftover is written");
+    let records: &[&[u8]] = if body.is_empty() { &[] } else { &[body] };
+    let bytes = sealed_segment(&test_key(), sequence, records, stop);
+    fs::write(dir.path().join(segment_name(sequence)), &bytes).expect("leftover is written");
     bytes.len() as u64
+}
+
+/// Writes a leftover segment with `kept` as its first record and a second
+/// record holding `lost`, cut `cut_by` bytes short, as a crash during a write
+/// leaves it. Returns the file bytes of the cut-off record.
+fn cut_leftover(dir: &TestDir, sequence: u64, kept: &[u8], lost: &[u8], cut_by: usize) -> u64 {
+    let mut bytes = sealed_segment(&test_key(), sequence, &[kept, lost], false);
+    bytes.truncate(bytes.len() - cut_by);
+    fs::write(dir.path().join(segment_name(sequence)), &bytes).expect("leftover is written");
+    (lost.len() + RECORD_OVERHEAD - cut_by) as u64
+}
+
+/// Writes a leftover segment with `kept` as its first record and a second
+/// record holding `lost` with one changed ciphertext byte. Returns the file
+/// bytes of the changed record.
+fn tampered_leftover(dir: &TestDir, sequence: u64, kept: &[u8], lost: &[u8]) -> u64 {
+    let mut bytes = sealed_segment(&test_key(), sequence, &[kept, lost], false);
+    let at = FILE_HEADER_LEN + kept.len() + RECORD_OVERHEAD + RECORD_HEADER_LEN;
+    bytes[at] ^= 0x01;
+    fs::write(dir.path().join(segment_name(sequence)), &bytes).expect("leftover is written");
+    (lost.len() + RECORD_OVERHEAD) as u64
 }
 
 fn segment_name(sequence: u64) -> String {
@@ -168,7 +202,7 @@ fn append_then_read_returns_the_same_bytes_in_order_across_a_rollover() {
 }
 
 #[test]
-fn every_sealed_segment_parses_as_a_frame_streams_file() {
+fn every_sealed_segment_decrypts_to_the_frames_in_order() {
     let dir = TestDir::new("spool-parse");
     let (mut spool, stats) = open(&dir, MIB);
     for block in 0..40 {
@@ -186,7 +220,7 @@ fn every_sealed_segment_parses_as_a_frame_streams_file() {
     for name in &names {
         let file = fs::read(dir.path().join(name)).expect("segment is readable");
         total_bytes += file.len() as u64;
-        for payload in parse_fstrm(&file) {
+        for payload in parse_segment(&file) {
             seen.push(u64::from_be_bytes(payload[..8].try_into().expect("number")));
         }
     }
@@ -199,7 +233,8 @@ fn every_sealed_segment_parses_as_a_frame_streams_file() {
 #[test]
 fn the_size_cap_deletes_the_oldest_segment_and_counts_frames_and_bytes() {
     let dir = TestDir::new("spool-cap");
-    let max_bytes = 100_000; // segments of 12,500 bytes: one block of 9,960 each
+    // Segments of 12,500 bytes: one block of 9,960 bytes (9,988 sealed) each.
+    let max_bytes = 100_000;
     let (mut spool, stats) = open(&dir, max_bytes);
     for block in 0..30 {
         assert_eq!(
@@ -210,10 +245,11 @@ fn the_size_cap_deletes_the_oldest_segment_and_counts_frames_and_bytes() {
     }
     let dropped = get(&stats.spool_dropped);
     assert!(dropped > 0 && dropped.is_multiple_of(5));
-    // Each evicted segment was sealed and never read: the whole file counts.
+    // Each evicted segment was sealed and never read: the whole file counts,
+    // with its header, the overhead of its record, and its end record.
     assert_eq!(
         get(&stats.spool_dropped_bytes),
-        dropped / 5 * (42 + 9_960 + 12)
+        dropped / 5 * (32 + 9_960 + 28 + 28)
     );
 
     let read = numbers(&drain(&mut spool, 1 << 20));
@@ -260,7 +296,7 @@ fn the_free_space_floor_deletes_the_oldest_segments_only_as_needed() {
     spool.config.min_free_bytes = 550_000;
     assert_eq!(append_numbers(&mut spool, 400..500, 1000), Appended::Stored);
     assert_eq!(get(&stats.spool_dropped), 100);
-    assert_eq!(get(&stats.spool_dropped_bytes), 42 + 100 * 1012 + 12);
+    assert_eq!(get(&stats.spool_dropped_bytes), 32 + 100 * 1012 + 28 + 28);
     assert_eq!(segment_files(dir.path()).len(), 4);
     let read = numbers(&drain(&mut spool, 1 << 20));
     assert_eq!(read, (100..500).collect::<Vec<_>>());
@@ -285,7 +321,7 @@ fn the_free_space_floor_keeps_the_newest_segment_and_pauses() {
     );
     // One segment evicted (100 frames) plus the refused block (100 frames).
     assert_eq!(get(&stats.spool_dropped), 200);
-    assert_eq!(get(&stats.spool_dropped_bytes), 42 + 100 * 1012 + 12);
+    assert_eq!(get(&stats.spool_dropped_bytes), 32 + 100 * 1012 + 28 + 28);
     assert_eq!(get(&stats.spool_segments), 2);
     assert!(spool.has_backlog());
     // The pause clears `spool_available`, as an I/O error pause does.
@@ -341,6 +377,8 @@ fn a_spool_error_after_a_stop_begins_is_counted_and_not_logged() {
             max_bytes: MIB,
             min_free_bytes: 0,
         },
+        test_key(),
+        KeyOrigin::Loaded,
         Arc::clone(&stats),
         failing,
     )
@@ -366,6 +404,8 @@ fn a_probe_error_counts_an_error_and_pauses_the_spool() {
             max_bytes: MIB,
             min_free_bytes: 0,
         },
+        test_key(),
+        KeyOrigin::Loaded,
         Arc::clone(&stats),
         failing,
     )
@@ -428,58 +468,57 @@ fn a_reopened_spool_replays_leftovers_from_the_cursor_and_writes_a_new_segment()
 }
 
 #[test]
-fn a_cut_off_final_frame_is_counted_and_skipped() {
+fn a_cut_off_final_record_is_counted_and_skipped() {
     let dir = TestDir::new("spool-cutoff");
-    let mut body = numbered(0..2, 0).0;
-    body.extend_from_slice(&[0, 0, 0, 100, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    leftover_segment(&dir, 1, &body, false);
+    let tail = cut_leftover(&dir, 1, &numbered(0..2, 0).0, &numbered(9..10, 0).0, 5);
     leftover_segment(&dir, 2, &numbered(2..4, 0).0, true);
     let (mut spool, stats) = open(&dir, MIB);
     assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2, 3]);
     assert_eq!(get(&stats.spool_dropped), 1);
-    assert_eq!(get(&stats.spool_dropped_bytes), 14);
+    assert_eq!(get(&stats.spool_dropped_bytes), tail);
+    assert_eq!(tail, 12 + 28 - 5);
     assert_eq!(get(&stats.replayed), 4);
     assert_eq!(all_files(dir.path()), Vec::<String>::new());
 }
 
 #[test]
-fn a_corrupt_length_counts_the_remaining_bytes_and_skips_the_segment() {
+fn a_tampered_record_counts_the_remaining_bytes_and_is_not_replayed() {
     let dir = TestDir::new("spool-corrupt");
-    let mut body = numbered(0..2, 0).0;
-    body.extend_from_slice(&[0x7f, 0xff, 0xff, 0xff]);
-    body.extend_from_slice(&[1; 20]);
-    leftover_segment(&dir, 1, &body, false);
+    let lost = tampered_leftover(&dir, 1, &numbered(0..2, 0).0, &numbered(7..9, 0).0);
     leftover_segment(&dir, 2, &numbered(2..3, 0).0, true);
     let (mut spool, stats) = open(&dir, MIB);
     assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2]);
     // A leftover's frame count is unknown, so a corrupt tail adds only bytes.
     assert_eq!(get(&stats.spool_dropped), 0);
-    assert_eq!(get(&stats.spool_dropped_bytes), 24);
+    assert_eq!(get(&stats.spool_dropped_bytes), lost);
+    assert_eq!(lost, 24 + 28);
+    assert_eq!(all_files(dir.path()), Vec::<String>::new());
 }
 
 #[test]
 fn lost_frames_are_not_counted_again_when_the_segment_is_evicted_later() {
     let dir = TestDir::new("spool-no-double-count");
-    // Segment 1 holds 2 frames and a 14-byte cut-off tail (80 bytes); segment 2
-    // holds 2 frames and STOP (78 bytes).
-    let mut body = numbered(0..2, 0).0;
-    body.extend_from_slice(&[0, 0, 0, 100, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    leftover_segment(&dir, 1, &body, false);
+    // Segment 1 holds 2 frames and a 35-byte cut-off record (119 bytes);
+    // segment 2 holds 2 frames and the end record (112 bytes). A new segment
+    // with one frame needs 100 bytes, so with both segments it would not fit
+    // the 300-byte cap.
+    let tail = cut_leftover(&dir, 1, &numbered(0..2, 0).0, &numbered(8..9, 0).0, 5);
     leftover_segment(&dir, 2, &numbered(2..4, 0).0, true);
-    let (mut spool, stats) = open(&dir, 200);
+    let (mut spool, stats) = open(&dir, 300);
+    assert_eq!(get(&stats.spool_bytes), 119 + 112);
     let mut out = Vec::new();
     assert_eq!(spool.read_and_deliver(&mut out, 1000).expect("read"), 2);
-    assert_eq!(get(&stats.spool_dropped_bytes), 14);
+    assert_eq!(get(&stats.spool_dropped_bytes), tail);
     assert_eq!(get(&stats.spool_dropped), 1);
-    // The next block needs room, so segment 1 (already ended) is deleted.
+    // Segment 1 (already ended) is deleted, so the next block fits.
     assert_eq!(append_numbers(&mut spool, 9..10, 0), Appended::Stored);
-    assert_eq!(get(&stats.spool_dropped_bytes), 14, "no second count");
+    assert_eq!(get(&stats.spool_dropped_bytes), tail, "no second count");
     assert_eq!(get(&stats.spool_dropped), 1, "no second count");
     assert_eq!(numbers(&drain(&mut spool, 1000)), [2, 3, 9]);
 }
 
 #[test]
-fn a_missing_start_deletes_the_segment_and_counts_its_bytes() {
+fn a_segment_without_a_header_is_deleted_at_startup_and_its_bytes_counted() {
     let dir = TestDir::new("spool-no-start");
     fs::write(dir.path().join(segment_name(1)), [0xee_u8; 100]).expect("junk segment");
     leftover_segment(&dir, 2, &numbered(7..9, 0).0, true);
@@ -515,7 +554,7 @@ fn an_invalid_cursor_with_no_segments_is_rewritten() {
         read_cursor(&dir),
         CursorRead::Valid(Cursor {
             sequence: 1,
-            offset: START_LEN
+            offset: 0
         })
     );
     let length = fs::metadata(dir.path().join("cursor.bin"))
@@ -529,7 +568,7 @@ fn a_cursor_that_names_a_missing_segment_starts_at_the_next_one() {
     let dir = TestDir::new("spool-missing-cursor");
     leftover_segment(&dir, 3, &numbered(0..4, 0).0, true);
     leftover_segment(&dir, 5, &numbered(4..6, 0).0, true);
-    write_cursor(&dir, 4, START_LEN);
+    write_cursor(&dir, 4, 0);
     let (mut spool, stats) = open(&dir, MIB);
     // Segment 3 is below the cursor, so it was read; segment 5 is unread.
     assert_eq!(segment_files(dir.path()), [segment_name(5)]);
@@ -544,8 +583,9 @@ fn a_valid_cursor_resumes_inside_a_segment_and_discards_older_ones_silently() {
     leftover_segment(&dir, 1, &numbered(0..4, 0).0, true);
     leftover_segment(&dir, 2, &numbered(4..8, 0).0, true);
     leftover_segment(&dir, 3, &numbered(8..10, 0).0, true);
-    // Segment 2 is read up to its second frame (12 bytes per frame).
-    write_cursor(&dir, 2, START_LEN + 24);
+    // Segment 2 is read up to its second frame (12 bytes per frame), inside its
+    // one record.
+    write_cursor(&dir, 2, 24);
     let (mut spool, stats) = open(&dir, MIB);
     assert_eq!(segment_files(dir.path()).len(), 2);
     assert_eq!(numbers(&drain(&mut spool, 1000)), [6, 7, 8, 9]);
@@ -554,21 +594,26 @@ fn a_valid_cursor_resumes_inside_a_segment_and_discards_older_ones_silently() {
 }
 
 #[test]
-fn a_cursor_offset_inside_start_drops_its_segment_and_not_the_older_ones() {
-    let dir = TestDir::new("spool-cursor-in-start");
+fn a_cursor_offset_inside_a_frame_drops_the_rest_of_its_segment_and_not_the_older_ones() {
+    let dir = TestDir::new("spool-cursor-in-frame");
     leftover_segment(&dir, 1, &numbered(0..2, 0).0, true);
     let second = leftover_segment(&dir, 2, &numbered(2..4, 0).0, true);
     leftover_segment(&dir, 3, &numbered(4..6, 0).0, true);
+    // Inside the first frame of segment 2.
     write_cursor(&dir, 2, 10);
     let (mut spool, stats) = open(&dir, MIB);
-    assert_eq!(get(&stats.spool_dropped_bytes), second, "only segment 2");
     assert_eq!(numbers(&drain(&mut spool, 1000)), [4, 5]);
+    assert_eq!(
+        get(&stats.spool_dropped_bytes),
+        second - HEADER_LEN,
+        "only segment 2, after its header"
+    );
 }
 
 #[test]
 fn a_cursor_with_no_segments_is_kept_and_sequences_stay_above_it() {
     let dir = TestDir::new("spool-stale-cursor");
-    write_cursor(&dir, 7, START_LEN);
+    write_cursor(&dir, 7, 0);
     let (mut spool, _stats) = open(&dir, MIB);
     assert!(!spool.has_backlog());
     assert!(matches!(read_cursor(&dir), CursorRead::Valid(_)));
@@ -591,12 +636,12 @@ fn reading_to_the_writer_position_empties_the_spool_and_moves_the_cursor() {
     assert_eq!(spool.read_and_deliver(&mut out, 1 << 20).expect("read"), 0);
     assert!(!spool.has_backlog());
     assert_eq!(all_files(dir.path()), Vec::<String>::new());
-    // The cursor stays, set to the next sequence.
+    // The cursor stays, set to the start of the next sequence.
     assert_eq!(
         read_cursor(&dir),
         CursorRead::Valid(Cursor {
             sequence: 2,
-            offset: START_LEN
+            offset: 0
         })
     );
     assert_eq!(get(&stats.spool_bytes), 0);
@@ -661,7 +706,7 @@ fn a_leftover_segment_evicted_for_the_cap_adds_bytes_but_no_frames() {
     let dir = TestDir::new("spool-leftover-evict");
     let size = leftover_segment(&dir, 1, &numbered(0..3, 300).0, true);
     leftover_segment(&dir, 2, &numbered(3..6, 300).0, true);
-    // Two leftovers fill 1,980 of 2,200 bytes: a new block needs one gone.
+    // Two leftovers fill 2,048 of 2,200 bytes: a new block needs one gone.
     let (mut spool, stats) = open(&dir, 2_200);
     assert_eq!(append_numbers(&mut spool, 6..7, 300), Appended::Stored);
     assert_eq!(get(&stats.spool_dropped), 0);
@@ -724,9 +769,7 @@ fn files_that_are_not_segments_are_ignored_and_new_names_go_past_them() {
     leftover_segment(&dir, 3, &numbered(0..2, 0).0, true);
     // A segment whose name is in upper case is still a segment.
     let upper = segment_name(7).to_ascii_uppercase();
-    let mut bytes = start_bytes();
-    bytes.extend_from_slice(&numbered(10..12, 0).0);
-    bytes.extend_from_slice(&STOP);
+    let bytes = sealed_segment(&test_key(), 7, &[&numbered(10..12, 0).0], true);
     fs::write(dir.path().join(&upper), bytes).expect("upper-case segment");
 
     let (mut spool, stats) = open(&dir, MIB);
@@ -800,6 +843,8 @@ fn opening_a_missing_folder_is_an_error() {
             max_bytes: MIB,
             min_free_bytes: 0,
         },
+        test_key(),
+        KeyOrigin::Loaded,
         Arc::new(SinkStats::default()),
         fake_free,
     );
@@ -881,7 +926,7 @@ fn a_folder_named_like_the_cursor_file_is_a_foreign_object() {
     let error = CursorFile::new(dir.path())
         .write(Cursor {
             sequence: 1,
-            offset: START_LEN,
+            offset: 0,
         })
         .expect_err("a folder cannot be written");
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
@@ -1237,7 +1282,7 @@ fn the_cursor_holds_the_delivered_position_and_a_crash_sends_the_held_data_again
     spool.checkpoint();
     assert!(matches!(
         read_cursor(&dir),
-        CursorRead::Valid(cursor) if cursor.sequence == 1 && cursor.offset == START_LEN + first.len() as u64
+        CursorRead::Valid(cursor) if cursor.sequence == 1 && cursor.offset == first.len() as u64
     ));
     // A crash: the second batch was read and not delivered, so it comes again.
     drop(spool);
@@ -1298,27 +1343,32 @@ fn a_cursor_older_than_every_segment_starts_at_the_first_segment() {
 }
 
 #[test]
-fn a_loss_counted_at_a_cut_tail_or_a_bad_start_is_not_counted_again_after_a_rewind() {
+fn a_loss_counted_at_a_cut_tail_or_a_bad_header_is_not_counted_again_after_a_rewind() {
     let dir = TestDir::new("spool-loss-once");
-    // Segment 1 holds 2 frames and a 14-byte cut-off tail. Segment 2 has no START.
-    let mut body = numbered(0..2, 0).0;
-    body.extend_from_slice(&[0, 0, 0, 100, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    leftover_segment(&dir, 1, &body, false);
-    fs::write(dir.path().join(segment_name(2)), [0xee_u8; 100]).expect("junk segment");
+    // Segment 1 holds 2 frames and a cut-off record. Segment 2 has only the
+    // first 20 bytes of a header, which the startup check leaves to the reader.
+    let tail = cut_leftover(&dir, 1, &numbered(0..2, 0).0, &numbered(8..9, 0).0, 5);
+    let header = sealed_segment(&test_key(), 2, &[], false);
+    fs::write(dir.path().join(segment_name(2)), &header[..20]).expect("short segment");
     leftover_segment(&dir, 3, &numbered(2..4, 0).0, true);
     let (mut spool, stats) = open(&dir, MIB);
+    assert_eq!(
+        get(&stats.spool_dropped_bytes),
+        0,
+        "nothing is counted at startup"
+    );
     // Everything is read and held; the losses are counted when first met.
     let (first, _) = read_held(&mut spool, 1000);
     let (third, _) = read_held(&mut spool, 1000);
     assert_eq!(numbers(&first), [0, 1]);
     assert_eq!(numbers(&third), [2, 3]);
-    assert_eq!(get(&stats.spool_dropped_bytes), 14 + 100);
+    assert_eq!(get(&stats.spool_dropped_bytes), tail + 20);
     assert_eq!(get(&stats.spool_dropped), 1);
     // Nothing is delivered and the link gives it all back: the same frames come
     // out, and the losses are not counted again.
     spool.rewind();
     assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2, 3]);
-    assert_eq!(get(&stats.spool_dropped_bytes), 14 + 100);
+    assert_eq!(get(&stats.spool_dropped_bytes), tail + 20);
     assert_eq!(get(&stats.spool_dropped), 1);
     assert_eq!(get(&stats.replayed), 4);
     assert_eq!(all_files(dir.path()), Vec::<String>::new());
@@ -1751,31 +1801,30 @@ fn a_paused_spool_does_not_log_the_free_space_block_again() {
 fn discarded_unreadable_data_is_logged_four_times_and_then_rarely() {
     let dir = TestDir::new("spool-discard-log");
     for sequence in 1..=6 {
-        let mut body = numbered(0..1, 0).0;
-        body.extend_from_slice(&[0x7f, 0xff, 0xff, 0xff, 1, 2, 3]);
-        leftover_segment(&dir, sequence, &body, false);
+        tampered_leftover(&dir, sequence, &numbered(0..1, 0).0, &numbered(1..2, 0).0);
     }
     let lines = capture_logs(|| {
         let (mut spool, stats) = open(&dir, MIB);
         assert_eq!(drain(&mut spool, 1000).len(), 6 * 12);
-        assert_eq!(get(&stats.spool_dropped_bytes), 6 * 7);
+        assert_eq!(get(&stats.spool_dropped_bytes), 6 * 40);
     });
     assert_eq!(lines.count(DISCARD_MESSAGE), 4, "{}", lines.text());
     assert_eq!(lines.count("etw_dnstap::event::14"), 4, "{}", lines.text());
-    assert!(lines.text().contains("bytes=7"), "{}", lines.text());
+    assert!(lines.text().contains("bytes=40"), "{}", lines.text());
     assert_eq!(lines.count(EVICTION_MESSAGE), 0);
 }
 
 #[test]
-fn a_bad_start_and_an_invalid_cursor_are_logged_as_discards() {
+fn a_bad_header_and_an_invalid_cursor_are_logged_as_discards() {
     let dir = TestDir::new("spool-discard-start");
-    fs::write(dir.path().join(segment_name(1)), [0xee_u8; 100]).expect("junk segment");
+    let header = sealed_segment(&test_key(), 1, &[], false);
+    fs::write(dir.path().join(segment_name(1)), &header[..20]).expect("short segment");
     let lines = capture_logs(|| {
         let (mut spool, _stats) = open(&dir, MIB);
         assert_eq!(drain(&mut spool, 1000), Vec::<u8>::new());
     });
     assert_eq!(lines.count(DISCARD_MESSAGE), 1, "{}", lines.text());
-    assert!(lines.text().contains("bytes=100"), "{}", lines.text());
+    assert!(lines.text().contains("bytes=20"), "{}", lines.text());
 
     let other = TestDir::new("spool-discard-cursor");
     leftover_segment(&other, 1, &numbered(0..2, 0).0, true);
@@ -1881,8 +1930,8 @@ fn unread_bytes_fall_as_the_replay_reads_while_the_gauge_waits_for_the_segment()
     assert!(after_one < written, "the read frame is no longer unread");
     assert_eq!(
         written - after_one,
-        START_LEN + out.len() as u64,
-        "by the bytes of the batch and the START that the first read passes"
+        HEADER_LEN + RECORD_HEADER_LEN as u64 + out.len() as u64,
+        "by the bytes of the batch and the headers that the first read passes"
     );
     spool.read_and_deliver(&mut out, 1).expect("read succeeds");
     assert!(spool.unread_bytes() < after_one);
@@ -1905,7 +1954,7 @@ fn unread_bytes_count_every_segment_and_only_the_first_is_part_read() {
     spool.read_and_deliver(&mut out, 1).expect("read succeeds");
     assert_eq!(
         spool.unread_bytes(),
-        first + second - START_LEN - out.len() as u64
+        first + second - HEADER_LEN - RECORD_HEADER_LEN as u64 - out.len() as u64
     );
 }
 
@@ -1978,4 +2027,293 @@ fn a_leftover_segment_is_as_old_as_its_file() {
         second_age >= Duration::from_secs(60) && second_age < Duration::from_secs(70),
         "{second_age:?}"
     );
+}
+
+// ---- encryption: what reaches the disk, the startup check, and the key ----
+
+const STARTUP_MESSAGE: &str = "deleted segments it cannot read at startup";
+
+/// Frames with a recognizable payload: a marker, the number, and filler.
+fn marked(range: Range<u64>) -> (Vec<u8>, u32) {
+    let payloads: Vec<Vec<u8>> = range
+        .map(|number| {
+            let mut payload = b"PLAINTEXT-MARKER-".to_vec();
+            payload.extend_from_slice(&number.to_be_bytes());
+            payload.extend_from_slice(&[0x5a; 40]);
+            payload
+        })
+        .collect();
+    let count = u32::try_from(payloads.len()).expect("small");
+    (crate::spool::test_support::framed(&payloads), count)
+}
+
+#[test]
+fn no_frame_reaches_the_disk_in_plaintext() {
+    let dir = TestDir::new("spool-no-plaintext");
+    let (mut spool, _stats) = open(&dir, MIB);
+    let mut appended = Vec::new();
+    for block in 0..80 {
+        let (bytes, frames) = marked(block * 30..block * 30 + 30);
+        assert_eq!(spool.append(&bytes, frames), Appended::Stored);
+        appended.extend(payloads(&bytes));
+    }
+    // Sealed segments, and the active one while it is still being written.
+    let names = segment_files(dir.path());
+    assert!(names.len() >= 2, "{names:?}");
+    let mut on_disk = Vec::new();
+    for name in &names {
+        let file = fs::read(dir.path().join(name)).expect("segment is readable");
+        assert!(
+            !contains(&file, b"PLAINTEXT-MARKER-"),
+            "{name} holds plaintext"
+        );
+        assert!(
+            !contains(&file, &[0x5a; 16]),
+            "{name} holds plaintext filler"
+        );
+        on_disk.extend(segment_payloads(&file));
+    }
+    // The files decrypt to exactly the frames appended.
+    assert_eq!(on_disk, appended);
+    let cursor = fs::read(dir.path().join(cursor::FILE_NAME)).unwrap_or_default();
+    assert!(!contains(&cursor, b"PLAINTEXT-MARKER-"));
+}
+
+#[test]
+fn spilled_frames_replay_after_a_stop_and_a_start_from_the_middle_of_a_record() {
+    let dir = TestDir::new("spool-round-trip");
+    let (mut first, _stats) = open(&dir, MIB);
+    // One block of 10 frames of 32 bytes: one record.
+    let (block, frames) = numbered(0..10, 20);
+    assert_eq!(first.append(&block, frames), Appended::Stored);
+    let (batch, taken) = read_held(&mut first, 100);
+    assert_eq!(numbers(&batch), [0, 1, 2]);
+    first.delivered(batch.len(), taken);
+    // Frames 3 and 4 are read and held when the service stops.
+    let (_held, _) = read_held(&mut first, 64);
+    first.seal().expect("seal");
+    drop(first);
+    assert_eq!(
+        read_cursor(&dir),
+        CursorRead::Valid(Cursor {
+            sequence: 1,
+            offset: 96
+        }),
+        "the logical position inside the record"
+    );
+
+    let (mut second, stats) = open(&dir, MIB);
+    assert_eq!(
+        numbers(&drain(&mut second, 1000)),
+        (3..10).collect::<Vec<_>>()
+    );
+    assert_eq!(get(&stats.spool_dropped), 0);
+    assert_eq!(get(&stats.spool_dropped_bytes), 0);
+    assert_eq!(all_files(dir.path()), Vec::<String>::new());
+}
+
+#[test]
+fn a_tampered_spool_segment_is_counted_as_corrupt_and_its_rest_is_not_replayed() {
+    let dir = TestDir::new("spool-tamper");
+    let (mut first, _stats) = open(&dir, MIB);
+    for block in 0..3 {
+        assert_eq!(
+            append_numbers(&mut first, block * 4..block * 4 + 4, 20),
+            Appended::Stored
+        );
+    }
+    first.seal().expect("seal");
+    drop(first);
+    // Change one byte in the ciphertext of the second record.
+    let path = dir.path().join(segment_name(1));
+    let mut bytes = fs::read(&path).expect("segment is readable");
+    let size = bytes.len() as u64;
+    let record = 4 * 32 + RECORD_OVERHEAD;
+    bytes[FILE_HEADER_LEN + record + RECORD_HEADER_LEN + 3] ^= 0x80;
+    fs::write(&path, &bytes).expect("segment is written");
+
+    let lines = capture_logs(|| {
+        let (mut second, stats) = open(&dir, MIB);
+        assert_eq!(numbers(&drain(&mut second, 1000)), [0, 1, 2, 3]);
+        // The changed record, the one after it, and the end record.
+        let lost = size - HEADER_LEN - record as u64;
+        assert_eq!(get(&stats.spool_dropped_bytes), lost);
+        assert_eq!(
+            get(&stats.spool_dropped),
+            0,
+            "a leftover's frame count is unknown"
+        );
+        assert_eq!(get(&stats.replayed), 4);
+        assert_eq!(all_files(dir.path()), Vec::<String>::new());
+    });
+    assert_eq!(lines.count(DISCARD_MESSAGE), 1, "{}", lines.text());
+}
+
+#[test]
+fn old_plaintext_and_other_key_segments_are_deleted_and_counted_at_startup() {
+    let dir = TestDir::new("spool-startup-check");
+    let old = plaintext_segment(&numbered(0..3, 0).0);
+    fs::write(dir.path().join(segment_name(1)), &old).expect("old segment");
+    fs::write(dir.path().join(segment_name(2)), &old).expect("old segment");
+    let foreign = sealed_segment(&other_key(), 3, &[&numbered(3..5, 0).0], true);
+    fs::write(dir.path().join(segment_name(3)), &foreign).expect("other-key segment");
+    let good = leftover_segment(&dir, 4, &numbered(5..7, 0).0, true);
+    // The cursor of an earlier version points into a plaintext segment.
+    write_cursor(&dir, 2, 42 + 12);
+    let lost = 2 * old.len() as u64 + foreign.len() as u64;
+
+    let mut opened = None;
+    let lines = capture_logs(|| opened = Some(open(&dir, MIB)));
+    let (mut spool, stats) = opened.expect("spool opens");
+    assert_eq!(segment_files(dir.path()), [segment_name(4)]);
+    assert_eq!(get(&stats.spool_dropped_bytes), lost);
+    assert_eq!(get(&stats.spool_dropped), 0, "their frame count is unknown");
+    assert_eq!(get(&stats.spool_bytes), good);
+    assert_eq!(get(&stats.spool_segments), 1);
+    let text = lines.text();
+    assert_eq!(lines.count(STARTUP_MESSAGE), 1, "{text}");
+    assert_eq!(lines.count("etw_dnstap::event::14"), 1, "{text}");
+    assert!(text.contains("segments=3"), "{text}");
+    assert!(text.contains(&format!("bytes={lost}")), "{text}");
+    assert!(text.contains("earlier_format=2"), "{text}");
+    assert!(text.contains("other_key=1"), "{text}");
+    assert!(text.contains("new_key=false"), "{text}");
+    // A cursor into a deleted segment works as for any missing segment.
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [5, 6]);
+    assert_eq!(get(&stats.spool_dropped_bytes), lost, "nothing more");
+}
+
+#[test]
+fn a_startup_with_only_readable_segments_logs_nothing() {
+    let dir = TestDir::new("spool-startup-quiet");
+    leftover_segment(&dir, 1, &numbered(0..2, 0).0, true);
+    let lines = capture_logs(|| {
+        let (_spool, stats) = open(&dir, MIB);
+        assert_eq!(get(&stats.spool_dropped_bytes), 0);
+    });
+    assert_eq!(lines.text(), "");
+}
+
+#[test]
+fn a_new_key_deletes_every_segment_and_resets_the_cursor() {
+    let dir = TestDir::new("spool-new-key");
+    let first = leftover_segment(&dir, 3, &numbered(0..4, 0).0, true);
+    let second = leftover_segment(&dir, 4, &numbered(4..6, 0).0, false);
+    write_cursor(&dir, 3, 24);
+    let mut opened = None;
+    let lines = capture_logs(|| opened = Some(open_keyed(&dir, MIB, 0, KeyOrigin::Created)));
+    let (mut spool, stats) = opened.expect("spool opens");
+    assert_eq!(segment_files(dir.path()), Vec::<String>::new());
+    assert_eq!(get(&stats.spool_dropped_bytes), first + second);
+    assert_eq!(get(&stats.spool_bytes), 0);
+    assert!(!spool.has_backlog());
+    assert_eq!(
+        read_cursor(&dir),
+        CursorRead::Valid(Cursor {
+            sequence: 5,
+            offset: 0
+        })
+    );
+    assert_eq!(lines.count(STARTUP_MESSAGE), 1, "{}", lines.text());
+    assert!(lines.text().contains("new_key=true"), "{}", lines.text());
+    // New writes go past the deleted names and work as before.
+    assert_eq!(append_numbers(&mut spool, 10..12, 0), Appended::Stored);
+    assert_eq!(segment_files(dir.path()), [segment_name(5)]);
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [10, 11]);
+}
+
+#[test]
+fn a_new_key_with_no_cursor_file_writes_none() {
+    let dir = TestDir::new("spool-new-key-empty");
+    let lines = capture_logs(|| {
+        let (_spool, stats) = open_keyed(&dir, MIB, 0, KeyOrigin::Created);
+        assert_eq!(get(&stats.spool_dropped_bytes), 0);
+    });
+    assert_eq!(lines.text(), "");
+    assert_eq!(read_cursor(&dir), CursorRead::Missing);
+}
+
+#[test]
+fn the_startup_warning_is_not_logged_once_a_stop_has_begun() {
+    let dir = TestDir::new("spool-startup-stopping");
+    fs::write(dir.path().join(segment_name(1)), [0xee_u8; 64]).expect("junk segment");
+    let stats = Arc::new(SinkStats::default());
+    stats.begin_stop();
+    let lines = capture_logs(|| {
+        let _spool = Spool::open(
+            SpoolConfig {
+                dir: dir.path().to_path_buf(),
+                max_bytes: MIB,
+                min_free_bytes: 0,
+            },
+            test_key(),
+            KeyOrigin::Loaded,
+            Arc::clone(&stats),
+            fake_free,
+        )
+        .expect("spool opens");
+    });
+    assert_eq!(lines.text(), "");
+    assert_eq!(get(&stats.spool_dropped_bytes), 64);
+}
+
+#[test]
+fn spool_size_accounting_counts_the_header_and_the_record_overhead() {
+    let dir = TestDir::new("spool-overhead");
+    let (mut spool, stats) = open(&dir, MIB);
+    let (block, frames) = numbered(0..5, 10);
+    for _ in 0..3 {
+        assert_eq!(spool.append(&block, frames), Appended::Stored);
+    }
+    let expected = HEADER_LEN + 3 * (block.len() as u64 + RECORD_EXTRA);
+    assert_eq!(get(&stats.spool_bytes), expected);
+    let on_disk = fs::metadata(dir.path().join(segment_name(1)))
+        .expect("segment")
+        .len();
+    assert_eq!(on_disk, expected);
+    spool.seal().expect("seal");
+    assert_eq!(get(&stats.spool_bytes), expected + END_LEN);
+}
+
+#[test]
+fn every_writer_and_reader_shares_the_spool_key_schedule() {
+    let dir = TestDir::new("spool-one-key");
+    let key = test_key();
+    let (mut spool, _stats) = open(&dir, MIB);
+    let address = key.schedule_address();
+    for round in 0..4 {
+        assert_eq!(
+            append_numbers(&mut spool, round * 10..round * 10 + 10, 5000),
+            Appended::Stored
+        );
+        let writer = spool.writer.as_ref().expect("a writer is active");
+        assert!(Arc::ptr_eq(writer.key(), &spool.key));
+        assert_eq!(writer.key().schedule_address(), address);
+        let mut out = Vec::new();
+        spool.read_and_deliver(&mut out, 20_000).expect("read");
+        let (_, reader) = spool.reader.as_ref().expect("a reader is open");
+        assert!(Arc::ptr_eq(reader.key(), &spool.key));
+        assert_eq!(reader.key().schedule_address(), address);
+    }
+    assert!(Arc::ptr_eq(&spool.key, &key));
+}
+
+#[test]
+fn a_bad_frame_inside_a_record_is_counted_once_across_a_rewind() {
+    let dir = TestDir::new("spool-bad-frame-once");
+    let mut record = numbered(0..2, 0).0;
+    record.extend_from_slice(&[0, 0, 0, 0, 9, 9]);
+    let size = leftover_segment(&dir, 1, &record, true);
+    leftover_segment(&dir, 2, &numbered(2..3, 0).0, true);
+    let (mut spool, stats) = open(&dir, MIB);
+    let (first, _) = read_held(&mut spool, 1000);
+    assert_eq!(numbers(&first), [0, 1]);
+    // From the bad frame, inside the record, to the end of the file.
+    let lost = size - (HEADER_LEN + RECORD_HEADER_LEN as u64 + 24);
+    assert_eq!(get(&stats.spool_dropped_bytes), lost);
+    spool.rewind();
+    assert_eq!(numbers(&drain(&mut spool, 1000)), [0, 1, 2]);
+    assert_eq!(get(&stats.spool_dropped_bytes), lost, "counted once");
+    assert_eq!(get(&stats.replayed), 3);
+    assert_eq!(all_files(dir.path()), Vec::<String>::new());
 }

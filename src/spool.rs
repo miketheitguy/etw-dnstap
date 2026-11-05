@@ -1,8 +1,20 @@
 //! A disk spool for dnstap frames that cannot be sent yet.
 //!
-//! The spool is a folder of append-only segment files, `seg-<20 digits>.fstrm`,
-//! each a valid unidirectional dnstap Frame Streams file. New writes always go to
-//! a new segment.
+//! The spool is a folder of append-only segment files, `seg-<20 digits>.fstrm`.
+//! Each segment is encrypted (see [`crypt`] and [`segment`]): a file header,
+//! then one AES-128-GCM record per append, each holding complete dnstap Frame
+//! Streams data frames, and an end record when the segment is sealed. Nothing
+//! is written to disk in plaintext. New writes always go to a new segment.
+//!
+//! Positions are logical: byte offsets in a segment's plaintext frame stream.
+//! Size accounting (the cap, the segment size, the free-space floor, and the
+//! byte counters) is in file bytes, which include the 32-byte header and 28
+//! bytes for each record.
+//!
+//! At open, every segment that the key cannot read is deleted and counted in
+//! `spool_dropped_bytes`: a plaintext segment of an earlier version, other
+//! bytes, or a segment sealed with another key. With a key that was just
+//! created, every segment goes, and the cursor is reset.
 //!
 //! The spool keeps two positions. The **read position** is the end of the last
 //! batch [`Spool::read_batch`] returned. The **delivered position** is the end
@@ -34,14 +46,12 @@ use std::{
 };
 
 use self::{
+    crypt::SegmentKey,
     cursor::{Cursor, CursorFile, CursorRead},
-    segment::{EndReason, START_LEN, STOP_LEN, SegmentReader, SegmentWriter},
+    segment::{Bounds, END_LEN, EndReason, HEADER_LEN, HeaderCheck, SegmentReader, SegmentWriter},
 };
 use crate::sink::SinkStats;
 
-// Wave 1 of docs/plans/spool-encryption-plan.md; wired in by task G, which removes the
-// dead_code allowances.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod crypt;
 mod cursor;
 #[allow(unsafe_code)]
@@ -49,8 +59,9 @@ pub(crate) mod fsinfo;
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) mod fuzzing;
 #[allow(unsafe_code)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod key;
+#[allow(unsafe_code)]
+mod locked;
 mod segment;
 
 /// The largest segment: a segment is sealed at `min(this, max_bytes / 8)`.
@@ -93,6 +104,17 @@ pub(crate) struct SpoolConfig {
     pub(crate) max_bytes: u64,
     /// Free space to keep on the volume.
     pub(crate) min_free_bytes: u64,
+}
+
+/// Where the spool key came from, which decides what happens to the segments
+/// already in the folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyOrigin {
+    /// The key was stored before: segments sealed with it are read.
+    Loaded,
+    /// The key was just made: no segment can be read with it, so all are
+    /// deleted and counted, and the cursor is reset.
+    Created,
 }
 
 /// What [`Spool::append`] did with a block.
@@ -141,14 +163,20 @@ struct SegmentInfo {
     /// Frames of this run's segment already handed out and not given back by a
     /// rewind.
     frames_read: u64,
-    /// Offset of the next unread byte; 0 while nothing has been read.
+    /// Logical position of the next unread byte; 0 while nothing has been read.
     read_offset: u64,
+    /// File bytes before the read position, as the reader last reported it (an
+    /// estimate after a resume, until the reader opens the segment).
+    read_disk: u64,
     /// Frames of this segment reported delivered.
     frames_done: u64,
-    /// Offset after the last delivered frame; 0 while none is delivered. Only
-    /// the first segment has delivered data.
+    /// Logical position after the last delivered frame; 0 while none is
+    /// delivered. Only the first segment has delivered data.
     done_offset: u64,
-    /// The reader has finished the segment (STOP, the end of the file, a cut-off
+    /// File bytes before the delivered position (an estimate after a partial
+    /// delivery).
+    done_disk: u64,
+    /// The reader has finished the segment (the end record, the end of the file, a cut-off
     /// or corrupt rest, or a read error). It is deleted once everything read from
     /// it is delivered. A rewind clears this, because the reader must read the
     /// segment again from the delivered position.
@@ -156,12 +184,13 @@ struct SegmentInfo {
     /// The reader is at the writer position of the active segment: nothing more
     /// to read until the next append.
     at_end: bool,
-    /// Where the readable data of the segment ends, when the rest was counted as
-    /// dropped (a cut-off or corrupt tail, a read error, or a bad START). A
-    /// rewind keeps it, so the reader stops there and counts nothing again.
+    /// The logical position where the readable data of the segment ends, when
+    /// the rest was counted as dropped (a cut-off or corrupt tail, a read error,
+    /// or a bad header). A rewind keeps it, so the reader stops there and counts
+    /// nothing again.
     cut: Option<u64>,
-    /// Frames and bytes counted in `spool_dropped` when `cut` was set, so a later
-    /// eviction does not count them again.
+    /// Frames and file bytes counted in `spool_dropped` when `cut` was set, so a
+    /// later eviction does not count them again.
     lost_frames: u64,
     lost_bytes: u64,
     /// When the segment was created. Used only for the age of the backlog.
@@ -187,8 +216,10 @@ impl SegmentInfo {
             frames,
             frames_read: 0,
             read_offset: 0,
+            read_disk: 0,
             frames_done: 0,
             done_offset: 0,
+            done_disk: 0,
             ended: false,
             at_end: false,
             cut: None,
@@ -213,16 +244,24 @@ struct PendingDelete {
 #[derive(Clone, Copy, Debug)]
 struct Span {
     sequence: u64,
-    /// Offset of the first byte of the batch's range in the segment.
+    /// Logical position of the first byte of the batch.
     start: u64,
-    /// Offset after the batch, including any control frame the call consumed.
+    /// Logical position after the batch.
     end: u64,
+    /// File positions of `start` and `end`.
+    disk_start: u64,
+    disk_end: u64,
     frames: u32,
 }
 
 /// The spool: segments on disk, one writer, one reader.
 pub(crate) struct Spool {
     config: SpoolConfig,
+    /// The one key schedule, in its locked page, shared with every writer and
+    /// reader.
+    key: Arc<SegmentKey>,
+    /// The writer's record buffer, reused for every append and segment.
+    record_buf: Vec<u8>,
     stats: Arc<SinkStats>,
     free_space: fn(&Path) -> io::Result<u64>,
     /// Oldest first. When `writer` is set, the last entry is its segment. The
@@ -263,8 +302,10 @@ pub(crate) struct Spool {
 }
 
 impl Spool {
-    /// Opens the spool folder: finds the segments an earlier run left, applies
-    /// the cursor, and starts without an active segment (new writes make a new
+    /// Opens the spool folder: finds the segments an earlier run left, deletes
+    /// and counts those `key` cannot read (all of them when the key's `origin`
+    /// is [`KeyOrigin::Created`], which also resets the cursor), applies the
+    /// cursor, and starts without an active segment (new writes make a new
     /// one). It does not call [`fsinfo::check_spool_dir`]; the caller does.
     ///
     /// `free_space` returns the free bytes on the volume of a folder;
@@ -275,10 +316,12 @@ impl Spool {
     /// be read.
     pub(crate) fn open(
         config: SpoolConfig,
+        key: Arc<SegmentKey>,
+        origin: KeyOrigin,
         stats: Arc<SinkStats>,
         free_space: fn(&Path) -> io::Result<u64>,
     ) -> io::Result<Self> {
-        let cursor_state = cursor::read(&config.dir)?;
+        let mut cursor_state = cursor::read(&config.dir)?;
         let scanned = scan(&config.dir)?;
         // Sequence numbers never repeat: stay above every name seen, whatever its
         // type, and above the cursor's sequence (that segment may be deleted).
@@ -292,6 +335,8 @@ impl Spool {
         let mut spool = Self {
             cursor: CursorFile::new(&config.dir),
             config,
+            key,
+            record_buf: Vec::new(),
             stats,
             free_space,
             segments,
@@ -313,6 +358,15 @@ impl Spool {
             low_space_blocks: 0,
             pause: PAUSE,
         };
+        let created = origin == KeyOrigin::Created;
+        spool.drop_unreadable(created);
+        if created {
+            // The positions in the old key's segments mean nothing now.
+            if cursor_state != CursorRead::Missing {
+                spool.save_cursor(spool.next_sequence);
+            }
+            cursor_state = CursorRead::Missing;
+        }
         spool.apply_cursor(cursor_state);
         spool.stats.spool_available.store(true, Ordering::Relaxed);
         spool.update_gauges();
@@ -346,7 +400,7 @@ impl Spool {
             return 0;
         };
         let rest: u64 = open.map(|segment| segment.bytes).sum();
-        first.bytes - first.read_offset.min(first.bytes) + rest
+        first.bytes - first.read_disk.min(first.bytes) + rest
     }
 
     /// How long ago the first segment was created, or zero with no backlog. The
@@ -390,10 +444,14 @@ impl Spool {
     /// segment, starting a new one when needed. Deletes the oldest segments to
     /// stay under the size cap and the free-space floor.
     ///
+    /// The block is sealed as one encrypted record. A block over 1 MiB, which
+    /// the router never sends, is split at frame boundaries into one record per
+    /// 1 MiB.
+    ///
     /// A refused block is counted in `spool_dropped`: the spool is paused, the
     /// floor leaves nothing to delete, the block can never fit, it is empty but
-    /// claims frames, or an I/O error occurred. An I/O error also pauses the
-    /// spool for 10 s.
+    /// claims frames, it is over 1 MiB and does not split into whole frames, or
+    /// an I/O error occurred. An I/O error also pauses the spool for 10 s.
     pub(crate) fn append(&mut self, bytes: &[u8], frames: u32) -> Appended {
         if bytes.is_empty() {
             return if frames == 0 {
@@ -407,13 +465,15 @@ impl Spool {
             .into_iter()
             .flatten()
             .any(|until| now < until);
-        // A block must fit with its segment's START and STOP.
-        let fits =
-            (bytes.len() as u64).saturating_add(START_LEN + STOP_LEN) <= self.config.max_bytes;
+        let Some(sealed) = segment::sealed_len(bytes) else {
+            return self.refuse(frames);
+        };
+        // A block must fit with its segment's header and end record.
+        let fits = sealed.saturating_add(HEADER_LEN + END_LEN) <= self.config.max_bytes;
         if paused || !fits {
             return self.refuse(frames);
         }
-        match self.try_append(bytes, frames) {
+        match self.try_append(bytes, sealed, frames) {
             Ok(FreeSpace::Met) => {
                 // A suspension that has ended is over once a block is stored.
                 self.stats.spool_available.store(true, Ordering::Relaxed);
@@ -427,7 +487,8 @@ impl Spool {
             }
             Err(error) => {
                 self.note_error(&error);
-                // Close the active segment without STOP and pause the spool.
+                // Close the active segment without its end record and pause the
+                // spool.
                 self.writer = None;
                 self.suspended_until = Some(Instant::now() + self.pause);
                 self.stats.spool_available.store(false, Ordering::Relaxed);
@@ -443,7 +504,7 @@ impl Spool {
     /// back with [`Self::rewind`]. The cursor file is not written here.
     ///
     /// Returns 0 when the spool has nothing to read now: it is empty, everything
-    /// is held, reads are paused, or the call only skipped control frames (call
+    /// is held, reads are paused, or the call only finished a segment (call
     /// again). A segment that is finished, cut off, or corrupt is marked ended
     /// and counted; it is deleted once everything read from it is delivered.
     ///
@@ -467,7 +528,7 @@ impl Spool {
             if let Err(error) = self.ensure_reader(first) {
                 return Err(self.read_failed(error, sequence));
             }
-            // `ensure_reader` ends, and may delete, a segment with a bad START.
+            // `ensure_reader` ends, and may delete, a segment with a bad header.
             let Some(index) = self
                 .segments
                 .iter()
@@ -479,36 +540,36 @@ impl Spool {
             if current.ended {
                 continue;
             }
-            // A segment still being written is read up to the writer; a segment
-            // whose rest was counted as dropped is read up to where that starts.
-            let bound = match (current.bounded.then_some(current.bytes), current.cut) {
-                (Some(good), Some(cut)) => Some(good.min(cut)),
-                (good, cut) => good.or(cut),
-            };
+            let bounds = self.bounds(index);
             let Some((_, active_reader)) = self.reader.as_mut() else {
                 return Ok(0);
             };
             let before = active_reader.position();
-            let batch = match active_reader.read_batch(out, limit, bound) {
+            let disk_before = active_reader.file_position();
+            let batch = match active_reader.read_batch(out, limit, bounds) {
                 Ok(batch) => batch,
                 Err(error) => return Err(self.read_failed(error, sequence)),
             };
             let position = active_reader.position();
+            let disk = active_reader.file_position();
             if batch.frames > 0 {
                 self.transient = None;
                 let read_from = &mut self.segments[index];
                 read_from.frames_read += u64::from(batch.frames);
                 read_from.read_offset = position;
+                read_from.read_disk = disk;
                 self.outstanding.push_back(Span {
                     sequence,
                     start: before,
                     end: position,
+                    disk_start: disk_before,
+                    disk_end: disk,
                     frames: batch.frames,
                 });
-                self.note_end(index, &batch, position);
+                self.note_end(index, &batch);
                 return Ok(batch.frames);
             }
-            self.note_end(index, &batch, position);
+            self.note_end(index, &batch);
             let after = &self.segments[index];
             let (ended, caught_up) = (after.ended, after.at_end);
             if ended || caught_up {
@@ -555,11 +616,14 @@ impl Spool {
             .iter_mut()
             .find(|segment| segment.sequence == span.sequence)
         {
-            segment.done_offset = if frames == span.frames {
-                span.end
+            if frames == span.frames {
+                segment.done_offset = span.end;
+                segment.done_disk = span.disk_end;
             } else {
-                span.start + (bytes as u64).min(span.end - span.start)
-            };
+                let taken = (bytes as u64).min(span.end - span.start);
+                segment.done_offset = span.start + taken;
+                segment.done_disk = (span.disk_start + taken).min(span.disk_end);
+            }
             segment.frames_done += u64::from(frames);
         }
         if frames > 0 {
@@ -591,6 +655,7 @@ impl Spool {
         self.outstanding.clear();
         for segment in &mut self.segments {
             segment.read_offset = segment.done_offset;
+            segment.read_disk = segment.done_disk;
             segment.frames_read = segment.frames_done;
             segment.ended = false;
             segment.at_end = false;
@@ -600,15 +665,22 @@ impl Spool {
         let first = self
             .segments
             .front()
-            .map(|segment| (segment.sequence, segment.done_offset.max(START_LEN)));
-        let kept = match (self.reader.as_mut(), first) {
-            (Some((owner, reader)), Some((sequence, offset))) if *owner == sequence => {
-                reader.rewind(offset).is_ok()
-            }
-            _ => false,
+            .map(|segment| (segment.sequence, segment.done_offset));
+        let bounds = if self.segments.is_empty() {
+            Bounds::default()
+        } else {
+            self.bounds(0)
         };
-        if !kept {
-            self.reader = None;
+        let kept = match (self.reader.as_mut(), first) {
+            (Some((owner, reader)), Some((sequence, offset))) if *owner == sequence => reader
+                .rewind(offset, bounds)
+                .ok()
+                .map(|()| reader.file_position()),
+            _ => None,
+        };
+        match (kept, self.segments.front_mut()) {
+            (Some(disk), Some(front)) => front.read_disk = disk,
+            _ => self.reader = None,
         }
     }
 
@@ -632,7 +704,7 @@ impl Spool {
         };
         let cursor = Cursor {
             sequence: head.sequence,
-            offset: head.done_offset.max(START_LEN),
+            offset: head.done_offset,
         };
         match self.cursor.write(cursor) {
             Ok(()) => {
@@ -646,15 +718,15 @@ impl Spool {
         }
     }
 
-    /// Seals the active segment with STOP. Call it at shutdown. Writes the
+    /// Seals the active segment with its end record. Call it at shutdown. Writes the
     /// delivered position to the cursor file first, so the next run repeats
     /// nothing, whether or not batches are still held (no rewind is needed: the
     /// file never holds the read position). Segments stay on disk for the next
     /// run.
     ///
     /// # Errors
-    /// Returns the I/O error; the segment is then closed without STOP, which a
-    /// later run reads as an unsealed leftover.
+    /// Returns the I/O error; the segment is then closed without its end
+    /// record, which a later run reads as an unsealed leftover.
     pub(crate) fn seal(&mut self) -> io::Result<()> {
         self.cursor_blocked_until = None;
         self.checkpoint();
@@ -666,19 +738,18 @@ impl Spool {
 
     /// Returns [`FreeSpace::Met`] when the block is stored, and
     /// [`FreeSpace::Short`] when the free-space floor leaves nothing to delete.
-    fn try_append(&mut self, bytes: &[u8], frames: u32) -> io::Result<FreeSpace> {
-        let length = bytes.len() as u64;
+    /// `sealed` is the file bytes of the block's records.
+    fn try_append(&mut self, bytes: &[u8], sealed: u64, frames: u32) -> io::Result<FreeSpace> {
         // Start a new segment when this block would overfill the active one.
         if self.writer.as_ref().is_some_and(|writer| {
-            writer.len() > START_LEN && writer.len() + length + STOP_LEN > self.segment_bytes
+            writer.len() > HEADER_LEN && writer.len() + sealed + END_LEN > self.segment_bytes
         }) {
             self.seal_active()?;
         }
         // Make room under the size cap, oldest first, skipping the segments that
-        // hold read data. A new segment also needs START, and STOP is reserved so
-        // a sealed segment still fits.
-        while self.total_bytes + self.new_segment_bytes() + length + STOP_LEN
-            > self.config.max_bytes
+        // hold read data. A new segment also needs its header, and the end record
+        // is reserved so a sealed segment still fits.
+        while self.total_bytes + self.new_segment_bytes() + sealed + END_LEN > self.config.max_bytes
         {
             if !self.evict_oldest(false) {
                 // Files that could not be deleted still count, and read data is
@@ -697,7 +768,7 @@ impl Spool {
         let Some(writer) = self.writer.as_mut() else {
             return Err(io::Error::other("no active spool segment"));
         };
-        writer.append(bytes)?;
+        writer.append(bytes, &mut self.record_buf)?;
         let written = writer.len();
         if let Some(active) = self.segments.back_mut() {
             self.total_bytes += written - active.bytes;
@@ -764,17 +835,17 @@ impl Spool {
         for _ in 0..CREATE_ATTEMPTS {
             let sequence = self.take_sequence()?;
             let path = self.segment_path(sequence);
-            match SegmentWriter::create(&path) {
+            match SegmentWriter::create(&path, Arc::clone(&self.key), sequence) {
                 Ok(writer) => {
                     self.writer = Some(writer);
                     self.segments.push_back(SegmentInfo::new(
                         sequence,
-                        START_LEN,
+                        HEADER_LEN,
                         Some(0),
                         Created::Run(Instant::now()),
                         true,
                     ));
-                    self.total_bytes += START_LEN;
+                    self.total_bytes += HEADER_LEN;
                     self.update_gauges();
                     return Ok(());
                 }
@@ -789,18 +860,19 @@ impl Spool {
         Err(io::Error::other("no free spool segment name"))
     }
 
-    /// Writes STOP to the active segment and closes it. The writer is dropped
-    /// even if STOP fails.
+    /// Writes the end record to the active segment and closes it. The writer is
+    /// dropped even if the write fails.
     fn seal_active(&mut self) -> io::Result<()> {
         let Some(writer) = self.writer.take() else {
             return Ok(());
         };
-        let sealed = writer.seal()?;
+        let sealed = writer.seal(&mut self.record_buf)?;
         if let Some(active) = self.segments.back_mut() {
             self.total_bytes += sealed - active.bytes;
             active.bytes = sealed;
             active.bounded = false;
-            // The file now ends with STOP, which the reader still has to read.
+            // The file now ends with the end record, which the reader still has
+            // to read.
             active.at_end = false;
         }
         self.update_gauges();
@@ -809,7 +881,7 @@ impl Spool {
 
     /// Bytes a new segment adds before any data: zero while one is active.
     const fn new_segment_bytes(&self) -> u64 {
-        if self.writer.is_some() { 0 } else { START_LEN }
+        if self.writer.is_some() { 0 } else { HEADER_LEN }
     }
 
     fn refuse(&self, frames: u32) -> Appended {
@@ -879,8 +951,18 @@ impl Spool {
 
     // ---- reading and removing ----
 
+    /// How far the reader may read the segment at `index`: up to the writer for
+    /// a segment still being written, and up to where a dropped rest starts.
+    fn bounds(&self, index: usize) -> Bounds {
+        let segment = &self.segments[index];
+        Bounds {
+            limit: segment.bounded.then_some(segment.bytes),
+            stop_at: segment.cut,
+        }
+    }
+
     /// Opens the reader for the segment at `index` if it is not open. A segment
-    /// whose START is missing or wrong is ended and all its bytes are counted.
+    /// whose header is missing or wrong is ended and all its bytes are counted.
     fn ensure_reader(&mut self, index: usize) -> io::Result<()> {
         let segment = &self.segments[index];
         let (sequence, offset) = (segment.sequence, segment.read_offset);
@@ -892,21 +974,32 @@ impl Spool {
             return Ok(());
         }
         self.reader = None;
-        if let Some(reader) = SegmentReader::open(&self.segment_path(sequence), offset)? {
+        let path = self.segment_path(sequence);
+        let bounds = self.bounds(index);
+        if let Some(reader) =
+            SegmentReader::open(&path, Arc::clone(&self.key), sequence, offset, bounds)?
+        {
+            if offset > 0 {
+                // The reader walked to the logical offset, so the file position
+                // is known now.
+                self.segments[index].read_disk = reader.file_position();
+            }
             self.reader = Some((sequence, reader));
         } else {
-            self.segments[index].read_offset = 0;
+            let unreadable = &mut self.segments[index];
+            unreadable.read_offset = 0;
+            unreadable.read_disk = 0;
             self.abandon(sequence);
         }
         Ok(())
     }
 
-    /// Applies why a read stopped to the segment at `index`. `position` is the
-    /// reader's position after the call. A cut-off or corrupt rest is counted
-    /// and the segment ends there; a finished segment ends; the reader at the
-    /// writer position of the active segment waits for the next append.
-    fn note_end(&mut self, index: usize, batch: &segment::Batch, position: u64) {
-        self.count_lost(index, batch, position);
+    /// Applies why a read stopped to the segment at `index`. A cut-off or
+    /// corrupt rest is counted and the segment ends there; a finished segment
+    /// ends; the reader at the writer position of the active segment waits for
+    /// the next append.
+    fn note_end(&mut self, index: usize, batch: &segment::Batch) {
+        self.count_lost(index, batch);
         let active = self.writer.is_some() && index + 1 == self.segments.len();
         let cut = self.segments[index].cut.is_some();
         match batch.end {
@@ -929,13 +1022,13 @@ impl Spool {
         self.segments[index].ended = true;
     }
 
-    /// Counts the bytes and frames a read skipped in a cut-off or corrupt tail,
-    /// and ends the segment where the tail starts. The segment keeps that
-    /// offset, so a later eviction does not count them again and a read after a
-    /// rewind stops there without counting. A segment from this run knows its
-    /// frame total, so the frames lost are those not yet read; a leftover
-    /// reports one for a cut-off final frame.
-    fn count_lost(&mut self, index: usize, batch: &segment::Batch, position: u64) {
+    /// Counts the file bytes and frames a read skipped in a cut-off or corrupt
+    /// tail, and ends the segment where the tail starts. The segment keeps that
+    /// logical position, so a later eviction does not count them again and a
+    /// read after a rewind stops there without counting. A segment from this run
+    /// knows its frame total, so the frames lost are those not yet read; a
+    /// leftover reports one for a cut-off final record.
+    fn count_lost(&mut self, index: usize, batch: &segment::Batch) {
         if batch.dropped_bytes == 0 {
             return;
         }
@@ -946,7 +1039,7 @@ impl Spool {
             Some(total) => total.saturating_sub(segment.frames_read),
             None => u64::from(batch.dropped_frames),
         };
-        segment.cut = Some(position.saturating_sub(batch.dropped_bytes));
+        segment.cut = Some(batch.lost_at);
         segment.lost_frames = frames;
         segment.lost_bytes = batch.dropped_bytes;
         self.end_segment(index);
@@ -959,7 +1052,7 @@ impl Spool {
             .fetch_add(batch.dropped_bytes, Ordering::Relaxed);
     }
 
-    /// Ends a segment that cannot be read (bad START, read error, or an invalid
+    /// Ends a segment that cannot be read (bad header, read error, or an invalid
     /// cursor) at its read offset, and counts its unread data as dropped. It
     /// logs as a discard of unreadable data, not as an eviction for space. The
     /// data already read stays until it is delivered; the segment is deleted
@@ -978,7 +1071,7 @@ impl Spool {
             let frames = segment
                 .frames
                 .map_or(0, |total| total.saturating_sub(segment.frames_read));
-            let bytes = segment.bytes.saturating_sub(segment.read_offset);
+            let bytes = segment.bytes.saturating_sub(segment.read_disk);
             segment.cut = Some(segment.read_offset);
             segment.lost_frames = frames;
             segment.lost_bytes = bytes;
@@ -1016,7 +1109,7 @@ impl Spool {
         });
         let bytes = segment
             .bytes
-            .saturating_sub(segment.read_offset)
+            .saturating_sub(segment.read_disk)
             .saturating_sub(segment.lost_bytes);
         self.stats
             .spool_dropped
@@ -1135,13 +1228,13 @@ impl Spool {
         self.update_gauges();
     }
 
-    /// Records `(sequence, START_LEN)` in the cursor file. A failed write is
-    /// counted; the older position stays in the file and the next write tries
-    /// again.
+    /// Records `(sequence, 0)`, the start of that segment, in the cursor file.
+    /// A failed write is counted; the older position stays in the file and the
+    /// next write tries again.
     fn save_cursor(&mut self, sequence: u64) {
         let cursor = Cursor {
             sequence,
-            offset: START_LEN,
+            offset: 0,
         };
         match self.cursor.write(cursor) {
             Ok(()) => self.cursor_dirty = false,
@@ -1155,12 +1248,13 @@ impl Spool {
     /// to the leftover segments. Segments below the cursor's sequence were
     /// delivered before the last run ended and are deleted uncounted (a delete
     /// that fails is retried). The cursor's own segment, if present, resumes at
-    /// the cursor's offset. If it is missing (deleted, or older than the oldest
-    /// segment), reading starts at the next segment's START: the segments
-    /// between were delivered. A cursor that is invalid, or has an offset inside
-    /// START, is a damaged file, not a crash: the position is lost, so the
-    /// segment that was being read is deleted and counted as dropped, instead of
-    /// being sent again in full.
+    /// the cursor's logical offset. If it is missing (deleted, unreadable, or
+    /// older than the oldest segment), reading starts at the start of the next
+    /// segment: the segments between were delivered. A cursor that is invalid
+    /// is a damaged file, not a crash: the position is lost, so the segment that
+    /// was being read is deleted and counted as dropped, instead of being sent
+    /// again in full. An offset that is not a frame boundary of its segment is
+    /// found by the reader, which counts the rest of the segment as corrupt.
     fn apply_cursor(&mut self, state: CursorRead) {
         match state {
             CursorRead::Missing => {}
@@ -1182,15 +1276,17 @@ impl Spool {
                     .segments
                     .front()
                     .is_some_and(|segment| segment.sequence == cursor.sequence);
-                if is_cursor_segment {
-                    if cursor.offset >= START_LEN {
-                        if let Some(head) = self.segments.front_mut() {
-                            head.read_offset = cursor.offset;
-                            head.done_offset = cursor.offset;
-                        }
-                    } else {
-                        self.drop_unreadable_oldest();
-                    }
+                if is_cursor_segment
+                    && cursor.offset > 0
+                    && let Some(head) = self.segments.front_mut()
+                {
+                    head.read_offset = cursor.offset;
+                    head.done_offset = cursor.offset;
+                    // An estimate: the reader knows the file position once it
+                    // opens the segment.
+                    let disk = HEADER_LEN.saturating_add(cursor.offset).min(head.bytes);
+                    head.read_disk = disk;
+                    head.done_disk = disk;
                 }
             }
         }
@@ -1203,10 +1299,64 @@ impl Spool {
             return false;
         };
         head.read_offset = 0;
+        head.read_disk = 0;
         head.done_offset = 0;
+        head.done_disk = 0;
         let sequence = head.sequence;
         self.abandon(sequence);
         true
+    }
+
+    /// Deletes the leftover segments the key cannot read, or every segment with
+    /// `all`, and counts their file bytes in `spool_dropped_bytes` (their frame
+    /// count is unknown). Logs one warning with the counts when any went. A
+    /// segment whose header cannot be read now stays; the reader handles it.
+    fn drop_unreadable(&mut self, all: bool) {
+        let (mut earlier_format, mut other_key, mut segments, mut bytes) = (0_u64, 0_u64, 0_u64, 0);
+        let mut kept = VecDeque::with_capacity(self.segments.len());
+        for segment in std::mem::take(&mut self.segments) {
+            let path = self.segment_path(segment.sequence);
+            match segment::check_header(&path, &self.key) {
+                Ok(HeaderCheck::NotThisFormat) => earlier_format += 1,
+                Ok(HeaderCheck::OtherKey) => other_key += 1,
+                Ok(HeaderCheck::Readable | HeaderCheck::TooShort) | Err(_) if !all => {
+                    kept.push_back(segment);
+                    continue;
+                }
+                Ok(HeaderCheck::Readable | HeaderCheck::TooShort) | Err(_) => {}
+            }
+            segments += 1;
+            bytes += segment.bytes;
+            if let Err(error) = remove_file(&path) {
+                self.note_error(&error);
+                self.pending.push(PendingDelete {
+                    path,
+                    bytes: segment.bytes,
+                });
+            } else {
+                self.total_bytes = self.total_bytes.saturating_sub(segment.bytes);
+            }
+        }
+        self.segments = kept;
+        self.update_gauges();
+        if segments == 0 {
+            return;
+        }
+        self.stats
+            .spool_dropped_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+        if !self.stats.is_stopping() {
+            tracing::warn!(
+                target: crate::event_ids::LOSS_SPOOL,
+                segments,
+                bytes,
+                earlier_format,
+                other_key,
+                new_key = all,
+                "dnstap spool deleted segments it cannot read at startup: segments of an \
+                earlier version or of another spool key"
+            );
+        }
     }
 
     fn segment_path(&self, sequence: u64) -> PathBuf {

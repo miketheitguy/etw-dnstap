@@ -60,19 +60,6 @@ impl<W: Write> FrameStreamWriter<W> {
         Ok(())
     }
 
-    /// Write bytes that already hold complete data frames (each a 4-byte
-    /// big-endian length and its payload), as the spool and the queued sink hold
-    /// them. The caller guarantees the framing; this method does not parse it.
-    /// An I/O failure poisons the stream: later calls cannot append a misleading
-    /// STOP after a partial data frame.
-    pub(crate) fn write_framed(&mut self, framed: &[u8]) -> io::Result<()> {
-        self.check_healthy()?;
-        self.failed = true;
-        self.writer.write_all(framed)?;
-        self.failed = false;
-        Ok(())
-    }
-
     /// Access the transport to set an operation deadline before writing.
     pub(crate) const fn get_mut(&mut self) -> &mut W {
         &mut self.writer
@@ -187,31 +174,6 @@ mod tests {
         let writer = FrameStreamWriter::new(FailingWriter { remaining: 1_000 })
             .expect("START succeeds using short writes");
         assert!(writer.finish().is_err());
-    }
-
-    #[test]
-    fn write_framed_writes_the_bytes_unchanged_and_poisons_on_failure() {
-        let mut writer = FrameStreamWriter::new(Vec::new()).expect("START encodes");
-        let start_length = writer.writer.len();
-        writer
-            .write_framed(&[0, 0, 0, 2, 0x78, 1, 0, 0, 0, 1, 9])
-            .expect("framed bytes write");
-        assert_eq!(
-            &writer.writer[start_length..],
-            &[0, 0, 0, 2, 0x78, 1, 0, 0, 0, 1, 9]
-        );
-        let bytes = writer.finish().expect("STOP and flush succeed");
-        assert_eq!(
-            &bytes[bytes.len() - 12..],
-            &[0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 3]
-        );
-
-        let mut failing = FrameStreamWriter::new(FailingWriter { remaining: 43 })
-            .expect("START succeeds using short writes");
-        assert!(failing.write_framed(&[0, 0, 0, 1, 7]).is_err());
-        assert!(failing.failed);
-        assert!(failing.write_framed(&[0, 0, 0, 1, 7]).is_err());
-        assert!(failing.finish().is_err());
     }
 
     #[test]

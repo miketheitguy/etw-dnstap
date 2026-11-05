@@ -31,8 +31,10 @@ use crate::{
     sender::QueuedSink,
     sink::{FrameSink, SinkStats},
     spool::{
-        Spool, SpoolConfig,
+        KeyOrigin, Spool, SpoolConfig,
+        crypt::{CryptError, SegmentKey},
         fsinfo::{self, SpoolDirError},
+        key::{self, KeyError, KeyLocation, LoadedKey},
         segment_bytes_for,
     },
     threadcpu::{CpuSampler, ETW_CONSUMER, LINK, PARSER, SENDER, STAGE_COUNT, StageCpu},
@@ -163,8 +165,11 @@ fn build_sink(
         config,
         address,
         stats,
-        fsinfo::check_spool_dir,
-        fsinfo::available_bytes,
+        SpoolDeps {
+            check: fsinfo::check_spool_dir,
+            free_space: fsinfo::available_bytes,
+            key_source: production_key,
+        },
     )
 }
 
@@ -172,20 +177,59 @@ fn build_sink(
 type SpoolCheck = fn(&Path) -> Result<(), SpoolDirError>;
 /// The free-space probe the spool uses for its floor.
 type FreeSpace = fn(&Path) -> io::Result<u64>;
+/// Where the spool key comes from. [`open_spool`] calls it once per start.
+type KeySource = fn() -> Result<LoadedKey, KeyError>;
 
-/// [`build_sink`] with the folder check and the free-space probe as parameters,
-/// so tests can run the whole wiring on a temp folder. Production passes
-/// [`fsinfo::check_spool_dir`] and [`fsinfo::available_bytes`].
+/// What [`open_spool`] needs from the system, as parameters so tests can run the
+/// whole wiring on a temp folder with a test key, without the registry or CNG.
+#[derive(Clone, Copy)]
+struct SpoolDeps {
+    check: SpoolCheck,
+    free_space: FreeSpace,
+    key_source: KeySource,
+}
+
+/// The service's spool key: the `WrappedKey` value, unwrapped with the
+/// installer's CNG key, or a new key when there is no value yet.
+fn production_key() -> Result<LoadedKey, KeyError> {
+    key::load_or_create(&KeyLocation::PRODUCTION)
+}
+
+/// Why the spool has no usable key.
+#[derive(Debug, thiserror::Error)]
+enum SpoolKeyError {
+    #[error(transparent)]
+    Load(#[from] KeyError),
+    #[error(transparent)]
+    Memory(#[from] CryptError),
+}
+
+/// Unwraps the spool key with `source`, once, and builds the AES key schedule
+/// in its locked page. The raw key bytes are zeroed when `loaded` drops at the
+/// end of this function; only the locked schedule is kept.
+fn spool_key(source: KeySource) -> Result<(Arc<SegmentKey>, KeyOrigin), SpoolKeyError> {
+    let loaded = source()?;
+    let key = SegmentKey::new(loaded.key.key_bytes(), loaded.key.key_id())?;
+    let origin = if loaded.created {
+        KeyOrigin::Created
+    } else {
+        KeyOrigin::Loaded
+    };
+    Ok((Arc::new(key), origin))
+}
+
+/// [`build_sink`] with the folder check, the free-space probe, and the key
+/// source as parameters. Production passes [`fsinfo::check_spool_dir`],
+/// [`fsinfo::available_bytes`], and [`production_key`].
 fn build_sink_with(
     config: &PipelineConfig,
     address: SocketAddr,
     stats: Arc<SinkStats>,
-    check: SpoolCheck,
-    free_space: FreeSpace,
+    deps: SpoolDeps,
 ) -> io::Result<QueuedSink> {
     let link = NetworkSink::start(receiver_config(config, address)?, Arc::clone(&stats))?;
     let spool = if let Some(settings) = &config.spool {
-        open_spool(settings, &stats, check, free_space)
+        open_spool(settings, &stats, deps)
     } else {
         warn_spool_disabled();
         None
@@ -202,17 +246,12 @@ fn warn_spool_disabled() {
     );
 }
 
-/// Checks the spool folder with `check` and opens the spool. Returns `None` after
-/// logging one warning that names the reason, so the caller runs without a
-/// spool. Never logs frame data.
-fn open_spool(
-    settings: &SpoolSettings,
-    stats: &Arc<SinkStats>,
-    check: SpoolCheck,
-    free_space: FreeSpace,
-) -> Option<Spool> {
+/// Checks the spool folder, loads the spool key once, and opens the spool.
+/// Returns `None` after logging one warning that names the reason, so the
+/// caller runs without a spool. Never logs frame data or key bytes.
+fn open_spool(settings: &SpoolSettings, stats: &Arc<SinkStats>, deps: SpoolDeps) -> Option<Spool> {
     let dir = settings.dir.as_path();
-    if let Err(reason) = check(dir) {
+    if let Err(reason) = (deps.check)(dir) {
         tracing::warn!(
             target: crate::event_ids::RISK_SPOOL_DISABLED,
             spool_dir = %dir.display(),
@@ -222,17 +261,31 @@ fn open_spool(
         );
         return None;
     }
+    let (key, origin) = match spool_key(deps.key_source) {
+        Ok(found) => found,
+        Err(error) => {
+            tracing::warn!(
+                target: crate::event_ids::RISK_SPOOL_DISABLED,
+                spool_dir = %dir.display(),
+                reason = %error,
+                "spool key is not usable; capture continues without a spool, so frames are \
+                 dropped and counted while the receiver is down"
+            );
+            return None;
+        }
+    };
     let config = SpoolConfig {
         dir: settings.dir.clone(),
         max_bytes: settings.max_bytes(),
         min_free_bytes: settings.min_free_bytes(),
     };
-    match Spool::open(config, Arc::clone(stats), free_space) {
+    match Spool::open(config, key, origin, Arc::clone(stats), deps.free_space) {
         Ok(spool) => {
             tracing::info!(
                 spool_dir = %dir.display(),
                 spool_max_mib = settings.max_mib,
                 spool_min_free_mib = settings.min_free_mib,
+                new_spool_key = origin == KeyOrigin::Created,
                 leftover_segments = stats.spool_segments.load(Ordering::Relaxed),
                 leftover_bytes = stats.spool_bytes.load(Ordering::Relaxed),
                 "spool in use"

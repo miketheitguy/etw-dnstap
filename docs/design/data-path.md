@@ -138,6 +138,39 @@ each batch until the link thread reports how much of it the socket accepted. A s
 deleted only after the link has taken all of its frames. See
 [Spool](../guide/configuration.md#spool).
 
+**Spool encryption.** The spool encrypts what it writes, and only that: blocks in memory, in
+the send queue, in the FIFO, and on the wire are not changed. `SegmentWriter`
+(`src/spool/segment.rs`) writes a 32-byte file header with a random nonce prefix for each
+segment, then seals each appended block as one AES-128-GCM record (`src/spool/crypt.rs`). It
+builds the record header, the plaintext copy, and the tag in one reused buffer, encrypts in
+place, and writes the record with one call, so a warm writer allocates nothing per append. A
+sealed segment ends with an end record. `SegmentReader` reads records while the writer may
+still append, decrypts each one in place in a reused buffer, and hands out its frames. Batch
+sizes, frame counts, and `replayed` count plaintext frames. The cap, the segment size, the
+free-space floor, `spool_bytes`, and `spool_dropped_bytes` count file bytes, which include the
+header and 28 bytes for each record. Read and delivered positions, and `cursor.bin`, are
+logical: byte offsets in the segment's plaintext frame stream. To resume, the reader walks the
+record headers without decrypting, decrypts the record that holds the position, and starts at
+the frame boundary inside it. A record that does not authenticate ends the segment: its rest
+is counted in `spool_dropped_bytes` and never replayed.
+
+The key is unwrapped once for each start (`src/spool/key.rs`, one `NCryptDecrypt`), when the
+spool opens. The service builds the AES key schedule from the 16 key bytes once, moves it
+into one page of its own (`src/spool/locked.rs`), and drops the raw key bytes, which zeroes
+them. The page is locked with `VirtualLock`, so it is never written to the pagefile, and
+registered with `WerRegisterExcludedMemoryBlock`, so Windows Error Reporting leaves it out of
+crash dumps. Every writer and reader shares that one schedule through an `Arc`; nothing copies
+it. When the spool closes, the page is zeroed, unlocked, and freed. Limits: `ring` expands the
+schedule on the stack before it is moved into the page, so stack residue can remain; the key
+is in the clear in the locked page while the service runs; SYSTEM and Administrators can read
+the memory of the process. If the key cannot be loaded or locked, the run continues without a
+spool, with one warning; the spool never writes plaintext.
+
+At open, the spool reads the header of each leftover segment. It deletes the plaintext
+segments of earlier versions, other files, and segments sealed with another key, counts their
+bytes in `spool_dropped_bytes`, and logs one warning with the counts. When the key was made at
+this start, it deletes every segment and resets `cursor.bin`.
+
 At a link failure, the link thread ends the session and gives back what it did not send.
 The router takes the FIFO back and sorts the frames by how far the socket got:
 
@@ -174,8 +207,8 @@ queue, and event channel exist before the first event arrives:
 
 1. Connect the link. A refused connection does not stop the service. A TLS or protocol
    failure does.
-2. Check the spool folder and open the spool. A failed check logs one warning, and the
-   run continues without a spool.
+2. Check the spool folder, load and unwrap the spool key once, and open the spool. A
+   failed check or key load logs one warning, and the run continues without a spool.
 3. Allocate the block pool and the send channel. Start the `dnstap-link` thread, then
    the `dnstap-sender` router thread. The router starts after the link thread has
    published its first state.
@@ -214,7 +247,7 @@ Each stage has its own loss counters. Use the counter to find the stage.
 | 4 | The record does not decode or encode. | `rejected`, `schema_rejected` |
 | 5 | The channel to the router is full. | `queue_dropped` |
 | 5 | No spool is in use, and the receiver is down or the connection fails with live frames the socket did not accept. | `disconnected_dropped` |
-| 5 | The spool refuses a block, evicts a segment, or cannot read a frame. | `spool_dropped`, `spool_dropped_bytes` |
+| 5 | The spool refuses a block, evicts a segment, cannot read or authenticate a record, or deletes at startup a segment it cannot decrypt. | `spool_dropped`, `spool_dropped_bytes` |
 | 5 | A spool I/O error. The block is also counted in `spool_dropped`. | `spool_errors` |
 
 Each frame lost in stage 5 is in at most one of `queue_dropped`,

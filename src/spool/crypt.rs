@@ -66,9 +66,11 @@
 //! present, which reads as [`Next::Incomplete`] and never as a decrypted record. It
 //! becomes [`Next::Corrupt`] once enough bytes follow.
 
-use std::{fmt, ops::Range};
+use std::{fmt, ops::Range, sync::Arc};
 
 use ring::aead::{AES_128_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+
+use super::locked::{LockError, Locked};
 
 /// File header length in bytes.
 pub(crate) const FILE_HEADER_LEN: usize = 32;
@@ -99,31 +101,42 @@ const FIXED_PREFIX_LEN: usize = 8;
 
 /// The AES-128 key and the id that names it in segment headers.
 ///
-/// Cheap to clone (an expanded key schedule). The raw key bytes are not kept; the owner of
-/// the 16-byte key (task K) zeroes its copy.
-#[derive(Clone)]
+/// The expanded key schedule lives in one locked page of its own (see
+/// [`super::locked`]): never paged out, left out of crash dumps, and zeroed on
+/// drop. The type is not `Clone`: writers and readers share one key through an
+/// `Arc<SegmentKey>`, so the schedule is never copied. The raw key bytes are not
+/// kept; the owner of the 16-byte key (task K) zeroes its copy.
 pub(crate) struct SegmentKey {
-    key: LessSafeKey,
+    key: Locked<LessSafeKey>,
     id: [u8; KEY_ID_LEN],
 }
 
 impl SegmentKey {
-    /// Builds the key from 16 bytes and its 8-byte id.
+    /// Builds the key from 16 bytes and its 8-byte id, in a new locked page.
+    ///
+    /// `ring` expands the schedule on the stack before it is moved into the
+    /// page, so stack residue of it can remain.
     ///
     /// # Errors
     ///
-    /// [`CryptError::BadKey`] if the cipher rejects the key. It cannot for 16 bytes.
+    /// [`CryptError::BadKey`] if the cipher rejects the key (it cannot for 16
+    /// bytes), [`CryptError::Memory`] if the locked page cannot be made.
     pub(crate) fn new(key: &[u8; KEY_LEN], id: [u8; KEY_ID_LEN]) -> Result<Self, CryptError> {
         let unbound = UnboundKey::new(&AES_128_GCM, key).map_err(|_| CryptError::BadKey)?;
-        Ok(Self {
-            key: LessSafeKey::new(unbound),
-            id,
-        })
+        let schedule = Locked::new(LessSafeKey::new(unbound)).map_err(CryptError::Memory)?;
+        Ok(Self { key: schedule, id })
     }
 
     /// The key id written to and checked in segment headers.
     pub(crate) const fn id(&self) -> [u8; KEY_ID_LEN] {
         self.id
+    }
+
+    /// The address of the key schedule, so tests can show that every user
+    /// shares the one copy.
+    #[cfg(test)]
+    pub(crate) fn schedule_address(&self) -> usize {
+        std::ptr::from_ref::<LessSafeKey>(&self.key) as usize
     }
 }
 
@@ -141,6 +154,9 @@ pub(crate) enum CryptError {
     /// The cipher rejected the key.
     #[error("the cipher rejected the spool key")]
     BadKey,
+    /// The key schedule could not be put in a locked page.
+    #[error(transparent)]
+    Memory(LockError),
     /// A data record carries 1 byte to [`MAX_PLAINTEXT_LEN`] bytes.
     #[error("a data record must hold between 1 byte and 1 MiB")]
     BadPlaintextLength,
@@ -316,7 +332,7 @@ fn array_at<const N: usize, const M: usize>(bytes: &[u8; M], at: usize) -> [u8; 
 /// has been appended to `out` and the state is unchanged.
 #[derive(Debug)]
 pub(crate) struct RecordSealer {
-    key: SegmentKey,
+    key: Arc<SegmentKey>,
     file_header: [u8; FILE_HEADER_LEN],
     nonce_prefix: [u8; NONCE_PREFIX_LEN],
     /// Index of the next record; `u32::MAX + 1` when the indexes are used up.
@@ -329,7 +345,7 @@ impl RecordSealer {
     /// Starts a segment with sequence number `sequence`. `nonce_prefix` must be random
     /// and never reused with the same key.
     pub(crate) fn new(
-        key: SegmentKey,
+        key: Arc<SegmentKey>,
         sequence: u64,
         nonce_prefix: [u8; NONCE_PREFIX_LEN],
     ) -> Self {
@@ -354,12 +370,20 @@ impl RecordSealer {
         self.file_header
     }
 
+    /// The shared key this sealer uses.
+    #[cfg(test)]
+    pub(crate) const fn key(&self) -> &Arc<SegmentKey> {
+        &self.key
+    }
+
     /// Logical offset of the next data record: the plaintext bytes sealed so far.
+    #[cfg(test)]
     pub(crate) const fn logical_offset(&self) -> u64 {
         self.logical_offset
     }
 
     /// Index the next record gets (`u32::MAX` also when none is left).
+    #[cfg(test)]
     pub(crate) fn next_index(&self) -> u32 {
         u32::try_from(self.next_index).unwrap_or(u32::MAX)
     }
@@ -480,7 +504,7 @@ pub(crate) enum Skip {
 /// Reads and decrypts the records of one segment, in order.
 #[derive(Debug)]
 pub(crate) struct RecordOpener {
-    key: SegmentKey,
+    key: Arc<SegmentKey>,
     file_header: [u8; FILE_HEADER_LEN],
     header: FileHeader,
     /// Index of the next record; above `u32::MAX` when none can follow.
@@ -497,7 +521,7 @@ impl RecordOpener {
     /// [`HeaderError::NotThisFormat`] for a wrong magic, version, or flags;
     /// [`HeaderError::OtherKey`] when the key id differs; [`HeaderError::TooShort`] when
     /// fewer than 32 bytes are there.
-    pub(crate) fn new(key: SegmentKey, bytes: &[u8]) -> Result<Self, HeaderError> {
+    pub(crate) fn new(key: Arc<SegmentKey>, bytes: &[u8]) -> Result<Self, HeaderError> {
         let header = FileHeader::decode(bytes)?;
         if header.key_id != key.id() {
             return Err(HeaderError::OtherKey {
@@ -512,6 +536,12 @@ impl RecordOpener {
             logical_offset: 0,
             ended: false,
         })
+    }
+
+    /// The shared key this opener uses.
+    #[cfg(test)]
+    pub(crate) const fn key(&self) -> &Arc<SegmentKey> {
+        &self.key
     }
 
     /// The segment sequence number in the header.

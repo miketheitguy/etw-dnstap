@@ -165,7 +165,9 @@ Run it after step 1 and before step 8. Step 8 removes the manifest that the comm
 ## 7. Delete the spool folder
 
 The spool holds frames that never reached the collector. They include client addresses and
-query names, and they are not encrypted. Step 1 stopped the service, so nothing writes to the folder.
+query names. They are encrypted, and once the MSI uninstall deletes the spool key, nobody can
+read them. Delete them anyway so that no copy is left. Step 1 stopped the service, so nothing
+writes to the folder.
 
 If the service ran with `--spool-dir`, set `$spoolDirectory` to that path. The binary path in
 the `sc.exe qc EtwDnstap` output from before step 3 shows it. The command stops if it finds a

@@ -4,7 +4,10 @@ use super::*;
 use crate::{
     etw::{TargetChange, Win32Status},
     pipeline::{config::parse_args_from, test_support::config_from},
-    spool::test_support::capture_logs_at,
+    spool::{
+        key::SpoolKey,
+        test_support::{TEST_KEY_BYTES, TEST_KEY_ID, capture_logs_at},
+    },
 };
 use std::{
     io::{Read, Write},
@@ -12,6 +15,27 @@ use std::{
     path::PathBuf,
     sync::atomic::AtomicU64,
 };
+
+/// The spool key of the tests: the test key, stored before.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the key source's function pointer type"
+)]
+fn test_key_source() -> Result<LoadedKey, KeyError> {
+    Ok(LoadedKey {
+        key: SpoolKey::from_parts(TEST_KEY_BYTES, TEST_KEY_ID),
+        created: false,
+    })
+}
+
+/// The spool dependencies of the tests: `check`, `free_space`, and the test key.
+fn deps(check: SpoolCheck, free_space: FreeSpace) -> SpoolDeps {
+    SpoolDeps {
+        check,
+        free_space,
+        key_source: test_key_source,
+    }
+}
 
 #[test]
 fn schedule_disabled_is_never_due() {
@@ -148,8 +172,7 @@ fn run_with_sink_checks(extra: &[&str], check: SpoolCheck) -> Result<Arc<SinkSta
                 &config,
                 target,
                 factory_stats,
-                check,
-                fsinfo::available_bytes,
+                deps(check, fsinfo::available_bytes),
             )
         },
         |_start| {
@@ -202,8 +225,7 @@ fn an_unusable_spool_folder_logs_one_warning_and_returns_no_spool() {
         spool = open_spool(
             &settings,
             &stats,
-            fsinfo::check_spool_dir,
-            fsinfo::available_bytes,
+            deps(fsinfo::check_spool_dir, fsinfo::available_bytes),
         );
     });
     assert!(spool.is_none());
@@ -227,8 +249,7 @@ fn a_relative_spool_folder_is_refused() {
         open_spool(
             &settings,
             &stats,
-            fsinfo::check_spool_dir,
-            fsinfo::available_bytes
+            deps(fsinfo::check_spool_dir, fsinfo::available_bytes),
         )
         .is_none()
     );
@@ -251,8 +272,7 @@ fn network_and_device_spool_folders_are_refused_by_the_real_check() {
         let spool = open_spool(
             &settings,
             &stats,
-            fsinfo::check_spool_dir,
-            fsinfo::available_bytes,
+            deps(fsinfo::check_spool_dir, fsinfo::available_bytes),
         );
         assert!(spool.is_none(), "{dir}");
     }
@@ -276,11 +296,9 @@ fn plenty_of_space(_dir: &Path) -> io::Result<u64> {
 
 #[test]
 fn a_trusted_folder_opens_the_spool_and_reports_leftovers() {
-    use crate::spool::test_support::{TestDir, numbered, start_bytes};
+    use crate::spool::test_support::{TestDir, numbered, sealed_segment, test_key};
     let dir = TestDir::new("leftover-spool");
-    let mut segment = start_bytes();
-    segment.extend_from_slice(&numbered(0..3, 10).0);
-    segment.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 3]);
+    let segment = sealed_segment(&test_key(), 1, &[&numbered(0..3, 10).0], true);
     std::fs::write(dir.path().join(format!("seg-{:020}.fstrm", 1)), &segment)
         .expect("leftover is written");
     let settings = SpoolSettings {
@@ -291,7 +309,7 @@ fn a_trusted_folder_opens_the_spool_and_reports_leftovers() {
     let stats = Arc::new(SinkStats::default());
     let mut spool = None;
     let lines = capture_logs_at(tracing::Level::INFO, || {
-        spool = open_spool(&settings, &stats, accept_any_folder, plenty_of_space);
+        spool = open_spool(&settings, &stats, deps(accept_any_folder, plenty_of_space));
     });
     assert!(spool.is_some_and(|spool| spool.has_backlog()));
     assert!(stats.spool_available.load(Ordering::Relaxed));
@@ -304,6 +322,163 @@ fn a_trusted_folder_opens_the_spool_and_reports_leftovers() {
     assert_eq!(text.lines().count(), 1, "{text}");
     assert!(text.contains("spool in use"), "{text}");
     assert!(text.contains("leftover_segments=1"), "{text}");
+    assert!(text.contains("new_spool_key=false"), "{text}");
+}
+
+#[test]
+fn a_spool_key_error_runs_without_a_spool_and_logs_one_warning() {
+    use crate::spool::test_support::TestDir;
+    fn missing_key() -> Result<LoadedKey, KeyError> {
+        Err(KeyError::KeyOpen {
+            name: crate::spool::key::WRAPPING_KEY_NAME.to_owned(),
+            status: windows_sys::Win32::Foundation::NTE_BAD_KEYSET,
+        })
+    }
+    let dir = TestDir::new("key-error-spool");
+    let settings = SpoolSettings {
+        dir: dir.path().to_path_buf(),
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let mut spool = None;
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        spool = open_spool(
+            &settings,
+            &stats,
+            SpoolDeps {
+                key_source: missing_key,
+                ..deps(accept_any_folder, plenty_of_space)
+            },
+        );
+    });
+    assert!(spool.is_none());
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    let text = lines.text();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("WARN"), "{text}");
+    assert_eq!(text.matches("etw_dnstap::event::26").count(), 1, "{text}");
+    assert!(text.contains("spool key is not usable"), "{text}");
+    assert!(text.contains("without a spool"), "{text}");
+    // The cause, as the key error names it.
+    assert!(text.contains("EtwDnstap Spool Key"), "{text}");
+    assert!(
+        text.contains("missing or this account has no access"),
+        "{text}"
+    );
+    assert!(text.contains("0x80090016"), "{text}");
+    // No segment or cursor file is made without a key.
+    assert_eq!(std::fs::read_dir(dir.path()).expect("folder").count(), 0);
+}
+
+#[test]
+fn a_new_spool_key_deletes_the_old_segments_before_use() {
+    use crate::spool::test_support::{TestDir, numbered, sealed_segment, test_key};
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the signature is the key source's function pointer type"
+    )]
+    fn created_key() -> Result<LoadedKey, KeyError> {
+        Ok(LoadedKey {
+            key: SpoolKey::from_parts(TEST_KEY_BYTES, TEST_KEY_ID),
+            created: true,
+        })
+    }
+    let dir = TestDir::new("new-key-spool");
+    // Even a segment this key could read goes: a new key means a new spool.
+    let segment = sealed_segment(&test_key(), 1, &[&numbered(0..3, 10).0], true);
+    std::fs::write(dir.path().join(format!("seg-{:020}.fstrm", 1)), &segment)
+        .expect("leftover is written");
+    let settings = SpoolSettings {
+        dir: dir.path().to_path_buf(),
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let mut spool = None;
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        spool = open_spool(
+            &settings,
+            &stats,
+            SpoolDeps {
+                key_source: created_key,
+                ..deps(accept_any_folder, plenty_of_space)
+            },
+        );
+    });
+    assert!(spool.is_some_and(|spool| !spool.has_backlog()));
+    assert_eq!(stats.spool_segments.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        stats.spool_dropped_bytes.load(Ordering::Relaxed),
+        segment.len() as u64
+    );
+    let text = lines.text();
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(text.contains("new_key=true"), "{text}");
+    assert!(text.contains("new_spool_key=true"), "{text}");
+    assert!(text.contains("leftover_segments=0"), "{text}");
+}
+
+/// Calls of [`counting_key_source`]. Only one test uses it.
+static KEY_LOADS: AtomicU64 = AtomicU64::new(0);
+
+/// The test key, counting each unwrap.
+fn counting_key_source() -> Result<LoadedKey, KeyError> {
+    KEY_LOADS.fetch_add(1, Ordering::SeqCst);
+    test_key_source()
+}
+
+#[test]
+fn the_spool_key_is_unwrapped_once_for_any_number_of_appends_rolls_and_replays() {
+    use crate::spool::test_support::{TestDir, numbered};
+    let dir = TestDir::new("key-once-spool");
+    // A 1 MiB cap gives 128 KiB segments, so the appends roll many times.
+    let settings = SpoolSettings {
+        dir: dir.path().to_path_buf(),
+        max_mib: 1,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let mut spool = open_spool(
+        &settings,
+        &stats,
+        SpoolDeps {
+            key_source: counting_key_source,
+            ..deps(accept_any_folder, plenty_of_space)
+        },
+    )
+    .expect("the spool opens");
+    assert_eq!(KEY_LOADS.load(Ordering::SeqCst), 1);
+    let mut next = 0;
+    let mut replayed = 0;
+    for round in 0..20 {
+        for _ in 0..8 {
+            let (block, frames) = numbered(next..next + 20, 1000);
+            let _stored = spool.append(&block, frames);
+            next += 20;
+        }
+        let mut out = Vec::new();
+        let frames = spool.read_batch(&mut out, 64 * 1024).expect("read");
+        if round % 3 == 0 {
+            // A failed link gives the batch back.
+            spool.rewind();
+        } else {
+            spool.delivered(out.len(), frames);
+            replayed += u64::from(frames);
+        }
+        spool.checkpoint();
+    }
+    assert!(
+        stats.spool_dropped.load(Ordering::Relaxed) > 0,
+        "the cap rolled and evicted"
+    );
+    assert_eq!(stats.replayed.load(Ordering::Relaxed), replayed);
+    spool.seal().expect("seal");
+    assert_eq!(
+        KEY_LOADS.load(Ordering::SeqCst),
+        1,
+        "one unwrap for the whole run"
+    );
 }
 
 #[test]
@@ -370,8 +545,7 @@ fn frames_are_spooled_while_the_receiver_is_down_and_delivered_after() -> Result
         &config,
         address,
         Arc::clone(&stats),
-        accept_any_folder,
-        plenty_of_space,
+        deps(accept_any_folder, plenty_of_space),
     )?;
     assert!(stats.spool_available.load(Ordering::Relaxed));
     let payloads: Vec<Vec<u8>> = (0..3_u8).map(|n| vec![n; 20]).collect();
@@ -1219,8 +1393,7 @@ fn a_spool_that_cannot_be_used_uses_the_spool_disabled_id() {
         let _none = open_spool(
             &settings,
             &stats,
-            fsinfo::check_spool_dir,
-            fsinfo::available_bytes,
+            deps(fsinfo::check_spool_dir, fsinfo::available_bytes),
         );
     });
     assert_eq!(lines.count("etw_dnstap::event::26"), 1, "{}", lines.text());

@@ -1,6 +1,6 @@
 # Spool encryption plan
 
-> **Status:** Approved 2026-11-04; Wave 1 (K, C, I) complete, Wave 2 in progress · **Describes:** `main` at commit `64b5e91` · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-04
+> **Status:** Approved 2026-11-04; Wave 1 (K, C, I) and Wave 2 (G) complete, Wave 3 (R, L) open · **Describes:** `main` at commit `64b5e91` · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-04
 
 The spool writes dnstap frames to disk while the receiver is down or slow. Today they are
 plaintext Frame Streams files. This plan encrypts what the spool writes, and only that:
@@ -15,6 +15,7 @@ segment before its frames go back to the router.
 | Key protection | A persisted, non-exportable RSA-3072 machine key in the Microsoft Software Key Storage Provider, created by the installer. Its DACL grants use to `NT SERVICE\EtwDnstap`. The AES key is wrapped with RSA-OAEP (SHA-256) and stored as `REG_BINARY` in the subkey `Parameters\SpoolKey`, which has its own DACL. The ACL of `Parameters` is not changed. |
 | Disk I/O | Keep cached file I/O. No `FILE_FLAG_NO_BUFFERING`. |
 | Old segments | At startup, delete every segment the service cannot read (plaintext segments from earlier versions, and segments made with another key) and count them as dropped. |
+| Key in memory | Unwrapped once per start; the expanded key is held in one VirtualLock'ed page, excluded from WER dumps, zeroed on drop; never copied (user, 2026-11-04). |
 
 ## Research summary
 
@@ -49,6 +50,17 @@ Administrators. Does not protect against SYSTEM or Administrators (they can alwa
 re-ACL the key), a process running as the service, or memory inspection of the running
 service. The AES key is zeroed when the spool closes; `ring`'s expanded key schedule is not
 zeroed by `ring`.
+
+Key in memory (task G): the service unwraps the key once for each start and builds the
+`ring` key schedule once. The raw key bytes are zeroed as soon as the schedule is built. The
+schedule lives in one page of its own (`src/spool/locked.rs`), locked with `VirtualLock` so it
+is never written to the pagefile, registered with `WerRegisterExcludedMemoryBlock` so WER
+leaves it out of crash dumps, shared by every writer and reader through an `Arc`, and zeroed
+before the page is freed. Limits: `ring` builds the schedule on the stack during
+construction, and it is moved into the page, so stack residue of it may remain; SYSTEM and
+Administrators can read the memory of the process; and the key is in the clear in that
+locked page while the service runs. A failed `VirtualLock` is a key error: the spool is
+unavailable, and the key is never kept in pageable memory.
 
 ## Design
 
@@ -134,6 +146,32 @@ ciphertext without decrypting), decrypts the record that holds the offset, and s
 the frame boundary inside it. Rewind (B2) keeps its meaning. Spool size accounting stays on
 file sizes, which now include 32 bytes a segment and 28 bytes a record.
 
+**Task G notes (2026-11-04).**
+
+- `open_spool` checks the folder, then calls the key source once (production:
+  `key::load_or_create(&KeyLocation::PRODUCTION)`), builds the locked `SegmentKey`, and drops
+  the `LoadedKey`. A key or lock error takes the spool-unavailable path: one warning,
+  `spool key is not usable`, Event ID 26 (`RISK_SPOOL_DISABLED`), with `reason` set to the
+  error text. Tests inject the key source and never touch HKLM or CNG.
+- The startup check reads each leftover's header. `NotThisFormat` and `OtherKey` segments
+  (all segments when the key was just created) are deleted, their file bytes are added to
+  `spool_dropped_bytes`, and one warning per start, `dnstap spool deleted segments it cannot
+  read at startup`, carries the counts with Event ID 14 (`LOSS_SPOOL`, the ID of the other
+  spool loss lines). A header that is only short (`TooShort`) is left to the reader, which
+  counts it as unreadable data, as a bad START was before.
+- The reader also refuses a header whose sequence differs from the file name.
+- A cursor offset that is not a frame boundary is corrupt from the frame that holds it. A
+  cut-off final record of a leftover counts one frame in `spool_dropped`, as a cut-off
+  final frame did.
+- A rewind inside the record the reader holds costs nothing. Any other rewind walks the
+  segment again from its first record: it reads the skipped records but does not decrypt
+  them.
+- `unread_bytes` and the byte counts of an eviction use the reader's file position. After a
+  resume from `cursor.bin`, that position is an estimate (header plus offset) until the
+  reader opens the segment.
+- A block over 1 MiB, which the router never sends, is split at frame boundaries into
+  several records in one write.
+
 ## Tasks
 
 | ID | Wave | Task | Agent (model) | Effort | Output |
@@ -141,7 +179,7 @@ file sizes, which now include 32 bytes a segment and 28 bytes a record.
 | K | 1 | Key module `src/spool/key.rs`: random key and key id, wrap and unwrap with a named CNG key (`NCryptOpenStorageProvider`, `NCryptOpenKey`, `NCryptEncrypt`/`NCryptDecrypt` with OAEP SHA-256), `WrappedKey` encode and decode, registry read and write in the `Parameters\SpoolKey` subkey, zero on drop. Tests use a per-user test key that the test creates with a DACL for the current user, and delete it. | `voltagent-lang:rust-engineer` (Opus) | high | Code and tests. |
 | C | 1 | Record layer `src/spool/crypt.rs`: the segment format above with `ring` AES-128-GCM, writer and incremental reader over byte slices, no I/O. Known-answer tests, tamper tests for every field, and property tests (round trip, any truncation is `WriterPosition`/`CutOff`, any bit flip is `Corrupt`). | `voltagent-lang:rust-engineer` (Sonnet) | high | Code and tests. |
 | I | 1 | Installer: create the KSP key and its DACL, create the `Parameters\SpoolKey` subkey with its DACL (never change the ACL of `Parameters`), keep both on major upgrade, delete both on uninstall. Update `docs/guide/install.md`. | `voltagent-lang:powershell-5.1-expert` (Sonnet) | medium | Installer and provisioning changes. |
-| G | 2 | Integration: `SegmentWriter`/`SegmentReader` use C, the spool opens with K, failures take the spool-unavailable path, unreadable segments are deleted and counted at startup, cursor resume by logical offset. Update the guides, the design notes, and the CHANGELOG. | `voltagent-lang:rust-engineer` (Opus) | high | Code, tests, docs. |
+| G | 2 | Integration: `SegmentWriter`/`SegmentReader` use C, the spool opens with K, failures take the spool-unavailable path, unreadable segments are deleted and counted at startup, cursor resume by logical offset. Update the guides, the design notes, and the CHANGELOG. | `voltagent-lang:rust-engineer` (Opus) | high | Done 2026-11-04: code, tests, docs. |
 | R | 3 | Security and correctness review of K, C, I, and G. | `voltagent-qa-sec:code-reviewer` (Opus) | high | Findings, then fixes. |
 | L | 3 | Lab: first start creates `WrappedKey`; restart and major upgrade keep it; an outage spills and replays with no loss; a changed byte in a segment is counted as corrupt; another local account cannot unwrap; spool throughput at 50,000 and 200,000 QPS. Needs explicit authorization. | `general-purpose` (Sonnet) | high | History section. |
 

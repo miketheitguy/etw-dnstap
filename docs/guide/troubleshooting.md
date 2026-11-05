@@ -70,9 +70,11 @@ message.
 | `dnstap link is saturated` | 23 | The spool backlog trended up over 10 samples with the receiver connected. See [The receiver is slow](#the-receiver-is-slow). |
 | `dnstap link is no longer saturated` | 2 | The backlog is empty or stopped growing. |
 | `spool folder is not usable` | 26 | The `reason` field names the failed check. |
+| `spool key is not usable` | 26 | The `reason` field names the cause. See [Spool key errors](#spool-key-errors). |
 | `spool could not be opened` | 26 | The folder passed the checks. |
 | `spool is disabled (--no-spool)` | 26 | Once, at start. Any receiver outage loses frames. |
 | `dnstap spool deleted its oldest segment unsent` | 14 | Cap or free-space floor removed unsent frames. |
+| `dnstap spool deleted segments it cannot read at startup` | 14 | Segments of an earlier version or of another spool key. Once per start. |
 | `dnstap spool discarded unreadable segment data` | 14 | |
 | `dnstap spool I/O error` | 27 | |
 | `dnstap spool is refusing blocks` | 14 | No free space, and no older segment to remove. |
@@ -241,14 +243,27 @@ Event fields, and the repeat rule for messages that log more than once, are in
 - **`spool is disabled (--no-spool)`** (Event ID 26, at startup). You set `--no-spool`.
   Every receiver outage loses frames, and the service counts them in
   `disconnected_dropped`. Remove the option to keep frames on disk.
+- **`spool key is not usable`** (Event ID 26, at startup). The service could not load the
+  key that encrypts the spool, so it runs without a spool. It never writes the spool in
+  plaintext. The `reason` field names the step that failed. See
+  [Spool key errors](#spool-key-errors).
 - **`spool could not be opened`** (Event ID 26, at startup). Check that the disk
   responds, and that no other program holds `cursor.bin` open.
+- **`dnstap spool deleted segments it cannot read at startup`** (Event ID 14, once at
+  startup). The service deleted segments it cannot decrypt and counted their bytes in
+  `spool_dropped_bytes`. The fields give the counts: `segments`, `bytes`, `earlier_format`
+  (plaintext segments of a version before encryption, or files that are not segments), and
+  `other_key` (segments sealed with another spool key). `new_key=true` means the service made
+  a new spool key at this start, so it deleted every segment. Expected once after an upgrade
+  from a version before encryption, and after you force a new key. At any other time, check
+  whether something replaced `WrappedKey` or copied segment files from another server.
 - **`dnstap spool deleted its oldest segment unsent`** (Event ID 14). The cap or the
   free-space floor removed unsent frames. Check `spool_dropped`, `spool_dropped_bytes`,
   `--spool-max-mib`, and free space.
 - **`dnstap spool discarded unreadable segment data`** (Event ID 14). The segment held a
-  corrupt or cut-off tail, a missing START, unreadable data, or an invalid cursor. Check
-  `spool_errors`, `spool_dropped`, and the disk.
+  record that does not authenticate (a changed byte), a cut-off record, a short or wrong
+  header, a frame that is not valid, unreadable data, or an invalid cursor. The service
+  never replays such data. Check `spool_errors`, `spool_dropped`, and the disk.
 - **`dnstap spool I/O error`** (Event ID 27). A create, write, read, or delete failed.
   The `error` field gives the cause. The spool pauses for 10 seconds. Check
   `spool_errors`, the disk, programs that lock files in the folder, and the folder's ACL.
@@ -261,14 +276,47 @@ Event fields, and the repeat rule for messages that log more than once, are in
   lost yet. At the limit the spool deletes its oldest data (Event ID 14). Free space, or
   raise `--spool-max-mib`. See [Spool sizing](tuning.md#spool-sizing).
 - **`spool_seal_error` in `output stopped`** (Event ID 2, at shutdown). The last
-  segment closed without its STOP. The next start replays its frames. If the field
+  segment closed without its end record. The next start replays its frames. If the field
   appears at every stop, check the disk. The field is absent when the seal worked.
 - **`spool_backlog_kept=true` in `output stopped`** (Event ID 2, at shutdown). Not an
   error. Unsent frames stay in the spool for the next start, also when `spool_seal_error`
   is present. `leftover_segments` in
   `spool in use` gives the count at that start.
 - **`spool in use`** (Event ID 2, at startup). Not an error. `leftover_segments` and
-  `leftover_bytes` show what an earlier run left.
+  `leftover_bytes` show what an earlier run left, after the startup check.
+  `new_spool_key=true` means the service made and stored a new spool key at this start.
+
+### Spool key errors
+
+The spool key is an AES key, stored wrapped in the registry value
+`HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey\WrappedKey`. The
+installer's CNG key `EtwDnstap Spool Key` wraps it. See
+[Spool encryption key](install.md#spool-encryption-key). The `reason` field of
+`spool key is not usable` names the failed step and its status code:
+
+| `reason` starts with | Cause | Fix |
+| --- | --- | --- |
+| ``cannot open the CNG key `EtwDnstap Spool Key` `` with `0x80090016` | `NTE_BAD_KEYSET`: the key is missing, or the service account has no access to it. The Key Storage Provider gives the same code for both. | Repair the MSI, which creates the key if it is missing and sets its DACL again. Then restart the service. |
+| ``cannot open the CNG key`` with another code, or ``cannot unwrap the spool key`` | The key exists, but the service cannot use it, or `WrappedKey` was made with another CNG key. | Repair the MSI. If the error stays, force a new key (below). |
+| ``cannot open the registry key`` with `Win32 error 2` | The `SpoolKey` subkey is missing. The service never creates it. | Repair the MSI. |
+| ``cannot open the registry key``, ``cannot read``, or ``cannot write the `WrappedKey` registry value`` with `Win32 error 5` | Access denied: the subkey DACL does not give the service SID query value and set value. | Repair the MSI, which sets the DACL again. |
+| ``the `WrappedKey` registry value is not valid`` | The value is damaged or was written by hand. | Force a new key (below). |
+| ``cannot make random spool key bytes`` | The system random number generator failed. | Restart the service. If it fails again, report it. |
+| ``cannot allocate a page for the spool key`` or ``cannot lock the spool key page in memory`` | `VirtualAlloc` or `VirtualLock` failed. `VirtualLock` usually fails because the process working set quota is used up (`Win32 error 1453`). The service does not keep the key in pageable memory. | Restart the service. If it fails again, report it. |
+
+The service never replaces an existing `WrappedKey` value on its own. To force a new key,
+an administrator deletes the value and restarts the service:
+
+```powershell
+Stop-Service EtwDnstap
+Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey' -Name WrappedKey
+Start-Service EtwDnstap
+```
+
+At the next start the service makes a new key, stores it, deletes every segment in the
+spool (they cannot be read with the new key), resets `cursor.bin`, and logs
+`dnstap spool deleted segments it cannot read at startup` with `new_key=true`. Frames that
+were in the spool are lost. Their bytes count in `spool_dropped_bytes`.
 
 ## The service keeps restarting
 
@@ -487,6 +535,11 @@ process. The abort skips cleanup. Check for a leftover ETW session with
 - After an upgrade, the service logs `spool folder is not usable` until the spool
   folder exists. Create it as in [upgrade.md](upgrade.md#add-the-spool-folder). Also
   register the new counter manifest, or the spool counters do not appear.
+- The first start after an upgrade from a version before spool encryption deletes the
+  plaintext segments of that version and logs
+  `dnstap spool deleted segments it cannot read at startup` with their count. Their
+  frames are lost. To keep them, let the old version drain the spool to the receiver
+  before you upgrade.
 - A service still running as LocalSystem or the virtual account refuses to start.
   Follow the ordered steps in [upgrade.md](upgrade.md#repair-cases).
 - Record identity, privilege, and ACL changes against the binary's commit.

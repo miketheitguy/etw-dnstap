@@ -29,7 +29,7 @@ unsent frames in segment files. See [Spool](configuration.md#spool). The
 | 23 | Warning | Risk: `dnstap link is saturated`. |
 | 24 | Warning | Risk: the receiver is down or unavailable. |
 | 25 | Warning | Risk: the spool is near its size cap, or the volume is near the free-space floor. |
-| 26 | Warning | Risk: no spool is in use (`--no-spool`, an unusable folder, or a spool that did not open). |
+| 26 | Warning | Risk: no spool is in use (`--no-spool`, an unusable folder, a spool key that could not be loaded, or a spool that did not open). |
 | 27 | Warning | Risk: a spool I/O error. |
 | 28 | Warning | Risk: the ETW statistics query fails, so ETW loss is not visible. |
 
@@ -76,12 +76,14 @@ actions are in [Spool warnings](troubleshooting.md#spool-warnings).
 
 | Message | Event ID | Fields | When |
 | --- | --- | --- | --- |
-| `spool in use` | 2 | `spool_dir`, `spool_max_mib`, `spool_min_free_mib`, `leftover_segments`, `leftover_bytes` | Startup. Leftover fields show what an earlier run left. |
+| `spool in use` | 2 | `spool_dir`, `spool_max_mib`, `spool_min_free_mib`, `new_spool_key`, `leftover_segments`, `leftover_bytes` | Startup. Leftover fields show what an earlier run left, after the startup check. `new_spool_key` is `true` when the service made and stored a new spool key at this start. |
 | `spool folder is not usable; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 26 | `spool_dir`, `reason` | Startup, when the folder check fails. |
-| `spool could not be opened; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 26 | `spool_dir`, `error` | Startup, when the folder passes the check but the spool does not open. |
+| `spool key is not usable; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 26 | `spool_dir`, `reason` | Startup, when the folder passes the check but the spool key cannot be loaded, unwrapped, or locked in memory. `reason` names the failed step and its status code, never key bytes. See [Spool key errors](troubleshooting.md#spool-key-errors). |
+| `spool could not be opened; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 26 | `spool_dir`, `error` | Startup, when the folder passes the check and the key loads, but the spool does not open. |
 | `spool is disabled (--no-spool); frames are dropped and counted while the receiver is down, and when the send queue is full` | 26 | none | Startup, once, when `--no-spool` is set. |
 | `dnstap spool deleted its oldest segment unsent` | 14 | `frames`, `bytes` | The size cap or free-space floor removed a segment that held unsent data. |
-| `dnstap spool discarded unreadable segment data` | 14 | `frames`, `bytes` | Segment data could not be read. |
+| `dnstap spool deleted segments it cannot read at startup: segments of an earlier version or of another spool key` | 14 | `segments`, `bytes`, `earlier_format`, `other_key`, `new_key` | Startup, at most once. The spool deleted segments it cannot decrypt and added their file bytes to `spool_dropped_bytes`: plaintext segments of a version before encryption or other files (`earlier_format`), segments sealed with another key (`other_key`), or every segment when `new_key` is `true`. |
+| `dnstap spool discarded unreadable segment data` | 14 | `frames`, `bytes` | Segment data could not be read, or a record did not authenticate. It is never replayed. |
 | `dnstap spool I/O error` | 27 | `error` | A spool file operation failed. The spool pauses for 10 seconds. |
 | `dnstap spool is refusing blocks: the volume is below the free-space floor and no older segment is left to delete` | 14 | `free_mib`, `needed_mib`, `pause_s` | The volume is below `--spool-min-free-mib` plus one segment, and only the newest segment is left. Refused blocks count in `spool_dropped`. `free_mib` rounds down, and `needed_mib` rounds up. |
 
@@ -160,8 +162,9 @@ Each counter feeds one ID. An ID 11 or ID 12 increase is part of `intake_dropped
 add it to that counter ([Counter relationships](#counter-relationships)).
 
 The spool lines that report removed, skipped, or refused data
-(`dnstap spool deleted its oldest segment unsent`, `dnstap spool discarded unreadable
-segment data`, and `dnstap spool is refusing blocks`) also carry ID 14, because they report
+(`dnstap spool deleted its oldest segment unsent`, `dnstap spool deleted segments it cannot
+read at startup`, `dnstap spool discarded unreadable segment data`, and
+`dnstap spool is refusing blocks`) also carry ID 14, because they report
 loss. They keep their own fields and repeat rule.
 
 ### Risk warnings
@@ -178,7 +181,7 @@ message in the last column says so, unless the row says otherwise.
 | `dnstap receiver unavailable at startup` and `dnstap receiver connection lost` | 24 | See [Receiver, schema, and rate messages](#receiver-schema-and-rate-messages) | The receiver is not connected. With a spool the frames wait on disk. These two lines are written when the outage starts, not on the tick. | `dnstap receiver reconnected` | See [The receiver is down](troubleshooting.md#the-receiver-is-down-or-unreachable). |
 | `the dnstap receiver is down and no spool takes frames` | 24 | `receiver_connected` (`false`), `spool_available` (`false`) | At a check, `receiver_connected` is `false` and `spool_available` is `false`: with `--no-spool`, an unusable spool, or a paused spool. **Frames are being lost** and counted in `disconnected_dropped` (ID 13). Written once for each outage. | `frames are no longer dropped for a receiver outage` | Restore the receiver. Run with a spool. See [Spool warnings](troubleshooting.md#spool-warnings). |
 | `the spool is near its limit` | 25 | `spool_mib`, `spool_max_mib`, `free_mib`, `needed_mib` | The spool holds at least 80 percent of `--spool-max-mib`, or the free space of the spool volume is less than `--spool-min-free-mib` plus 2 segments (`needed_mib` is the floor: the minimum plus 1 segment). It clears below 70 percent, and at 3 segments above the minimum. Checked only while a spool is in use. `free_mib` is missing when the probe fails. | `the spool is no longer near its limit` | Free disk space, or raise `--spool-max-mib`. At the limit the spool deletes its oldest data (ID 14). See [Spool sizing](tuning.md#spool-sizing). |
-| `spool is disabled`, `spool folder is not usable`, and `spool could not be opened` | 26 | `spool_dir`, `reason` or `error` (not for `spool is disabled`) | Startup, once for each run. No spool is in use, so any receiver outage loses frames. | none | Remove `--no-spool`, or fix the folder. See [Spool warnings](troubleshooting.md#spool-warnings). |
+| `spool is disabled`, `spool folder is not usable`, `spool key is not usable`, and `spool could not be opened` | 26 | `spool_dir`, `reason` or `error` (not for `spool is disabled`) | Startup, once for each run. No spool is in use, so any receiver outage loses frames. | none | Remove `--no-spool`, fix the folder, or fix the key. See [Spool warnings](troubleshooting.md#spool-warnings). |
 | `dnstap spool I/O error` | 27 | `error` | A spool file operation failed. The spool pauses for 10 seconds, and blocks in that time may be refused (ID 14). Written when it happens, with the repeat rule of [Spool messages](#spool-messages). | none | Check the disk, programs that lock the folder, and its ACL. |
 | `the ETW statistics query is failing` | 28 | `etw_stats_errors_increase`, `etw_stats_errors` | A query failed in the interval and the last query did not succeed. Until it works, `etw_lost` and the buffer counts are stale, so ID 10 and ID 21 cannot fire. | `the ETW statistics query works again` | Check that the session is running. See [ETW consumer and session warnings](troubleshooting.md#etw-consumer-and-session-warnings). |
 
@@ -241,9 +244,9 @@ These fields appear on `output stats` and `output stopped`. The three fields in
 | `queue_dropped` | Frames discarded because the send queue was full. Also in `encoded`. |
 | `spooled` | Frames stored for later sending. |
 | `replayed` | Frames from the spool that the receiver connection fully accepted, including earlier-run leftovers. A frame counts once, when the connection takes it, not when the service reads it from disk. A frame that a failed connection did not take is read again and counts when it is sent. The count is of bytes handed to the socket, not of frames the receiver read: a connection that fails before the kernel sends accepted bytes loses them without a count. |
-| `spool_dropped`, `spool_dropped_bytes` | Frames (`spool_dropped`) or bytes (`spool_dropped_bytes`, control frames included) removed, skipped, or refused unsent. Causes: eviction, corrupt or cut-off data, a pause, or an I/O error. Leftover segments count only bytes, because their frame count is unknown. |
+| `spool_dropped`, `spool_dropped_bytes` | Frames (`spool_dropped`) or file bytes (`spool_dropped_bytes`, segment headers and the 28-byte overhead of each record included) removed, skipped, or refused unsent. Causes: eviction, corrupt or cut-off data, segments deleted at startup because they cannot be decrypted, a pause, or an I/O error. Leftover segments count only bytes, because their frame count is unknown. |
 | `spool_errors` | Every spool I/O error. |
-| `spool_bytes`, `spool_segments` | Gauges: bytes and segment files now, including files whose removal has not yet succeeded. |
+| `spool_bytes`, `spool_segments` | Gauges: file bytes and segment files now, including files whose removal has not yet succeeded. File bytes include a 32-byte header for each segment and 28 bytes for each record (one record for each block the router appends). |
 | `spool_available` | Flag: `true` while the spool accepts data. `false` with `--no-spool`, with an unusable folder, or while an I/O error or the free-space floor pauses it. |
 | `cpu_sender_pct`, `cpu_link_pct` | `output stats` only. CPU time of the `dnstap-sender` thread (the router) and of the `dnstap-link` thread (the socket writes and TLS) since the previous `output stats` line, as a percentage of one logical processor, with one decimal. See [Stage CPU](#stage-cpu). |
 
@@ -351,11 +354,12 @@ dequeued       = encoded + ignored + rejected + output_failed_events
 - Frames in the send queue when the sender stops abnormally count in none of these. The
   parser counts only the failed write, in `output_failed_events`.
 - Leftover frames count in `replayed` when the connection takes them, never in `encoded`. A leftover segment
-  removed unsent adds only to `spool_dropped_bytes`. A cut-off final frame adds one to
-  `spool_dropped`.
+  removed unsent adds only to `spool_dropped_bytes`. A cut-off final record adds one to
+  `spool_dropped`, although it held at least one frame.
 - `bytes_sent` counts what the socket accepted (with TLS, the record bytes), not what the receiver read. No counter reports
   the capture rate in bytes. Over a few minutes it is the `bytes_sent` rate, plus the growth
-  of `spool_bytes`, plus the `spool_dropped_bytes` rate (bytes removed at the cap). In a steady
+  of `spool_bytes`, plus the `spool_dropped_bytes` rate (bytes removed at the cap). The two spool
+  figures include the encryption overhead, about 28 bytes for each 64 KiB block. In a steady
   state with no backlog it equals the `bytes_sent` rate. A rising backlog means a saturated
   link, which `link_saturated` reports after at least 10 seconds. The data that the link
   takes now is at most `spool_oldest_age_ms` old, and that age grows while the link stays

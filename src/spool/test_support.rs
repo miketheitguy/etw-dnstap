@@ -8,7 +8,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, Once,
+        Arc, Mutex, Once, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -21,6 +21,9 @@ use tracing_subscriber::{
     layer::{Layer as _, SubscriberExt as _},
 };
 
+use super::crypt::{
+    FILE_HEADER_LEN, NONCE_PREFIX_LEN, Next, RecordKind, RecordOpener, RecordSealer, SegmentKey,
+};
 use crate::framestream::FrameStreamWriter;
 
 /// Collects log output so a test can count messages.
@@ -239,17 +242,123 @@ pub(crate) fn start_bytes() -> Vec<u8> {
 /// The STOP control frame.
 pub(crate) const STOP: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 3];
 
-/// Parses a sealed dnstap Frame Streams file strictly: exact START, nonzero data
-/// frames, then STOP as the last bytes. Returns the payloads. Panics otherwise.
-pub(crate) fn parse_fstrm(file: &[u8]) -> Vec<Vec<u8>> {
-    let start = start_bytes();
-    assert_eq!(&file[..start.len()], start.as_slice(), "START frame");
-    assert_eq!(
-        &file[file.len() - STOP.len()..],
-        STOP.as_slice(),
-        "STOP frame"
-    );
-    payloads(&file[start.len()..file.len() - STOP.len()])
+/// A plaintext dnstap Frame Streams file, as spool segments were before they
+/// were encrypted: START, `body`, and STOP.
+pub(crate) fn plaintext_segment(body: &[u8]) -> Vec<u8> {
+    let mut bytes = start_bytes();
+    bytes.extend_from_slice(body);
+    bytes.extend_from_slice(&STOP);
+    bytes
+}
+
+/// The key the spool tests use. It is built once, because each key takes a
+/// locked page and a process can lock only a few dozen.
+pub(crate) fn test_key() -> Arc<SegmentKey> {
+    static KEY: OnceLock<Arc<SegmentKey>> = OnceLock::new();
+    Arc::clone(KEY.get_or_init(|| {
+        Arc::new(SegmentKey::new(&TEST_KEY_BYTES, TEST_KEY_ID).expect("the test key locks"))
+    }))
+}
+
+/// A key with other bytes and another key id, built once.
+pub(crate) fn other_key() -> Arc<SegmentKey> {
+    static KEY: OnceLock<Arc<SegmentKey>> = OnceLock::new();
+    Arc::clone(KEY.get_or_init(|| {
+        Arc::new(SegmentKey::new(&[0x5c; 16], [0xee; 8]).expect("the other key locks"))
+    }))
+}
+
+/// The raw bytes of [`test_key`], for a test key source.
+pub(crate) const TEST_KEY_BYTES: [u8; 16] = [
+    0x3a, 0x51, 0x0c, 0x9e, 0x27, 0x84, 0xf0, 0x6b, 0x12, 0xd5, 0x48, 0xae, 0x73, 0x09, 0xc6, 0x2f,
+];
+/// The key id of [`test_key`].
+pub(crate) const TEST_KEY_ID: [u8; 8] = [0x7e, 0x57, 0x4b, 0x45, 0x59, 0x00, 0x00, 0x01];
+
+/// An encrypted segment file for `sequence`: the file header, one data record
+/// per entry of `records`, and the end record when `end` is set.
+pub(crate) fn sealed_segment(
+    key: &Arc<SegmentKey>,
+    sequence: u64,
+    records: &[&[u8]],
+    end: bool,
+) -> Vec<u8> {
+    let mut sealer = RecordSealer::new(Arc::clone(key), sequence, [0x42; NONCE_PREFIX_LEN]);
+    let mut bytes = sealer.file_header().to_vec();
+    for record in records {
+        sealer.seal_data(record, &mut bytes).expect("record seals");
+    }
+    if end {
+        sealer.seal_end(&mut bytes).expect("end record seals");
+    }
+    bytes
+}
+
+/// What [`open_segment`] found in a segment file.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Opened {
+    /// The plaintext of the data records that authenticate, in order.
+    pub(crate) plaintext: Vec<u8>,
+    /// The end record was found, and it ends the file.
+    pub(crate) sealed: bool,
+}
+
+/// Decrypts a segment file with [`test_key`] up to its end record, the end of
+/// the file, or the first record that is cut off or does not authenticate. A
+/// file whose header is short or not the test key's holds nothing.
+pub(crate) fn open_segment(file: &[u8]) -> Opened {
+    let Ok(mut opener) = RecordOpener::new(test_key(), file) else {
+        return Opened {
+            plaintext: Vec::new(),
+            sealed: false,
+        };
+    };
+    let mut buf = file[FILE_HEADER_LEN..].to_vec();
+    let mut at = 0;
+    let mut plaintext = Vec::new();
+    loop {
+        match opener.open_next(&mut buf[at..]) {
+            Next::Complete(record) if record.kind == RecordKind::End => {
+                return Opened {
+                    plaintext,
+                    sealed: at + record.consumed == buf.len(),
+                };
+            }
+            Next::Complete(record) => {
+                plaintext.extend_from_slice(&buf[at..][record.plaintext.clone()]);
+                at += record.consumed;
+            }
+            Next::Incomplete { .. } | Next::Corrupt(_) => {
+                return Opened {
+                    plaintext,
+                    sealed: false,
+                };
+            }
+        }
+    }
+}
+
+/// Parses a sealed segment strictly: every record authenticates, the end
+/// record is last, and the plaintext is whole data frames. Returns the
+/// payloads. Panics otherwise.
+pub(crate) fn parse_segment(file: &[u8]) -> Vec<Vec<u8>> {
+    let opened = open_segment(file);
+    assert!(opened.sealed, "the segment ends with its end record");
+    payloads(&opened.plaintext)
+}
+
+/// The payloads of the whole frames a segment file holds, read leniently: up
+/// to the end record, the end of the file, or a cut-off or corrupt record.
+pub(crate) fn segment_payloads(file: &[u8]) -> Vec<Vec<u8>> {
+    payloads(&open_segment(file).plaintext)
+}
+
+/// True when `needle` occurs in `haystack`.
+pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 /// A capture must see an event whose callsite another thread, with no capture

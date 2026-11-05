@@ -284,8 +284,9 @@ reconnect, the service sends stored frames first, oldest first. The spool needs 
 that the service does not create. See [Create the spool folder](install.md#create-the-spool-folder).
 
 **The spool stores DNS data.** Each frame is a complete dnstap message with client addresses and
-query names. The files are not encrypted, so the folder ACL is the only protection. See
-[SECURITY.md](../../SECURITY.md).
+query names. The service encrypts every segment file with a key that only the service, SYSTEM,
+and Administrators can use. The folder ACL still keeps other accounts out. See
+[Encryption](#encryption) and [SECURITY.md](../../SECURITY.md).
 
 ### Requirements
 
@@ -301,10 +302,44 @@ from the `ProgramData` environment value. If that is not a plain local path, the
 - Grant read and write only to SYSTEM, Administrators, or a service SID. An inherit-only
   `CREATOR OWNER` allow entry is also allowed. Deny entries do not count.
 
-If a check fails, or the spool cannot open, the service logs one warning and runs without a spool.
-See [troubleshooting.md](troubleshooting.md#spool-warnings) for the warning text. Files survive
-restarts and reboots. The check runs only at startup, so the install ACL must keep other accounts
-out afterward.
+If a check fails, the spool key cannot be loaded, or the spool cannot open, the service logs one
+warning and runs without a spool. See [troubleshooting.md](troubleshooting.md#spool-warnings) for
+the warning text. Files survive restarts and reboots. The check runs only at startup, so the
+install ACL must keep other accounts out afterward.
+
+### Encryption
+
+The spool writes no plaintext to disk. Each segment file starts with a 32-byte header. Each block
+of frames that the router appends becomes one record, encrypted and authenticated with AES-128-GCM.
+A record adds 28 bytes. A sealed segment ends with a 28-byte end record. Frames in memory, in the
+send queue, and on the wire are not encrypted; the receiver gets the same dnstap frames as before.
+
+The key:
+
+- The installer creates a non-exportable RSA-3072 machine key, `EtwDnstap Spool Key`, in the
+  Microsoft Software Key Storage Provider. Only the service, SYSTEM, and Administrators can use it.
+  See [Install](install.md).
+- At its first start, the service makes a random AES key, wraps it with the RSA key, and stores the
+  wrapped key in the registry value
+  `HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey\WrappedKey`.
+- At every start, the service unwraps the key once. It keeps the AES key schedule in one locked
+  memory page that is never written to the pagefile and is left out of crash dumps, and it zeroes
+  the page at stop.
+- If the key cannot be loaded, the service runs without a spool and logs one warning that names
+  the cause. It never writes the spool in plaintext. See
+  [Spool key errors](troubleshooting.md#spool-key-errors).
+
+Startup deletes every segment the service cannot read, and counts its bytes in
+`spool_dropped_bytes`:
+
+- A plaintext segment from a version before encryption.
+- A segment sealed with another key, or a file that is not a segment.
+- Every segment, when the service made a new key at this start. The service also resets
+  `cursor.bin` then.
+
+One warning, `dnstap spool deleted segments it cannot read at startup` (Event ID 14), gives the
+counts. A record that does not authenticate, because a byte changed or the file was cut short, is
+counted as unreadable data and is never replayed.
 
 ### Routing
 
@@ -334,12 +369,13 @@ is larger only when its first frame is. Each router pass first routes the blocks
 the parser, then reads replay, and it reads at most 1 MiB from the spool in one pass. A segment
 stays on disk until the connection has taken all of it. Frames from an earlier run replay
 first. The file `cursor.bin` records the position after the last frame the connection took,
-saved once per router pass. Each run writes new segment files and never appends to an earlier
-run's.
+saved once per router pass. The position is a byte offset in the segment's decrypted frames,
+not in the file. Each run writes new segment files and never appends to an earlier run's.
 
 ### Size limits and eviction
 
-- `--spool-max-mib` (default 4096) caps segment bytes. When a new block would exceed the cap, the
+- `--spool-max-mib` (default 4096) caps segment bytes. The bytes are file bytes, so they include
+  the segment header and 28 bytes for each record. When a new block would exceed the cap, the
   oldest segments are removed until it fits.
 - `--spool-min-free-mib` (default 2048) keeps free space on the volume. When a new segment starts
   below the floor plus one segment, the spool removes its oldest segments. It stops when a removal

@@ -282,6 +282,25 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** Spool segments are encrypted. Each block the spool stores is one
+  AES-128-GCM record, and a segment starts with a 32-byte header instead of a Frame
+  Streams START. Frames in memory and on the wire do not change. The installer must have
+  created the CNG key `EtwDnstap Spool Key` and the `Parameters\SpoolKey` registry subkey.
+  At its first start the service makes the AES key and stores it wrapped in the
+  `WrappedKey` value. It unwraps the key once at each start and keeps the key schedule in
+  one locked memory page, left out of crash dumps and zeroed at stop. Without a usable key
+  the service runs without a spool and logs `spool key is not usable` (Event ID 26) with
+  the cause; it never writes the spool in plaintext. The first start deletes the plaintext
+  segments of earlier versions, and every segment it cannot decrypt, counts their bytes in
+  `spool_dropped_bytes`, and logs `dnstap spool deleted segments it cannot read at startup`
+  (Event ID 14) once with the counts. Drain the spool before you upgrade to keep those
+  frames. A record that does not authenticate is counted as unreadable data and never
+  replayed. `spool_bytes`, `spool_dropped_bytes`, the cap, and the segment size count the
+  file bytes, which include 28 bytes for each record. `cursor.bin` keeps its format, but its
+  offset is now a position in the decrypted frames, so a cursor of an earlier version
+  points into a deleted segment and is ignored. `spool in use` has a new field,
+  `new_spool_key`. See [Encryption](docs/guide/configuration.md#encryption) and
+  [Spool key errors](docs/guide/troubleshooting.md#spool-key-errors).
 - **Breaking.** The service writes nothing at stop except `capture stopped` and
   `output stopped`. Three messages that operators may filter on are removed:
   `shutting down while the dnstap receiver is disconnected; no STOP sent` (Event ID 3),

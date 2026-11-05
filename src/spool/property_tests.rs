@@ -13,7 +13,7 @@ use std::{cell::Cell, collections::BTreeSet, fs, io, path::PathBuf, sync::atomic
 use proptest::{prelude::*, test_runner::TestCaseError};
 
 use super::*;
-use crate::spool::test_support::{TestDir, framed};
+use crate::spool::test_support::{TestDir, framed, segment_payloads, test_key};
 
 /// Reads at least this large drain a spool in a few calls.
 const DRAIN_LIMIT: usize = 4096;
@@ -182,28 +182,20 @@ fn segment_paths(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// The frame numbers in a segment file, read leniently: stop at STOP, at the end
-/// of the file, or at a cut-off frame.
+/// The frame numbers in a segment file, decrypted leniently: stop at the end
+/// record, at the end of the file, or at a cut-off or corrupt record.
 fn file_numbers(path: &Path) -> Vec<u64> {
     let Ok(bytes) = fs::read(path) else {
         return Vec::new();
     };
-    let mut numbers = Vec::new();
-    let mut at = usize::try_from(START_LEN).unwrap_or(0);
-    while let Some(header) = bytes.get(at..at + 4) {
-        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        if length < 8 {
-            break;
-        }
-        let Some(body) = bytes.get(at + 4..at + 4 + length) else {
-            break;
-        };
-        numbers.push(u64::from_be_bytes([
-            body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7],
-        ]));
-        at += 4 + length;
-    }
-    numbers
+    segment_payloads(&bytes)
+        .iter()
+        .map_while(|payload| {
+            payload
+                .first_chunk::<8>()
+                .map(|head| u64::from_be_bytes(*head))
+        })
+        .collect()
 }
 
 type Check = Result<(), TestCaseError>;
@@ -223,6 +215,8 @@ fn open_spool(
             max_bytes: limits.max_bytes,
             min_free_bytes: limits.min_free,
         },
+        test_key(),
+        KeyOrigin::Loaded,
         Arc::clone(stats),
         fake_free,
     )

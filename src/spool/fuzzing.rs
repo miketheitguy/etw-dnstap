@@ -3,21 +3,27 @@
 //!
 //! It writes arbitrary bytes into a throwaway folder as a segment file (and
 //! optionally a cursor file), opens a [`Spool`] on the folder, and reads to the
-//! end. The reader must never panic, must stop, and must hand out only whole
-//! data frames of a legal length.
+//! end. The segment bytes are either sealed into valid encrypted records with a
+//! fixed fuzzing key (so the frame parser inside a record is reached), or
+//! written raw behind a valid file header (so the record parser and the
+//! authentication are reached), or written raw with no header (so the startup
+//! check that deletes unreadable segments is reached). The reader must never
+//! panic, must stop, and must hand out only whole data frames of a legal
+//! length.
 
 use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use super::{
-    NAME_DIGITS, NAME_PREFIX, NAME_SUFFIX, Spool, SpoolConfig,
+    KeyOrigin, NAME_DIGITS, NAME_PREFIX, NAME_SUFFIX, Spool, SpoolConfig,
+    crypt::{RecordSealer, SegmentKey},
     cursor::{Cursor, CursorFile},
 };
 use crate::{dnstap::MAX_ENCODED_LENGTH, sink::SinkStats};
@@ -66,17 +72,66 @@ fn segment_name(sequence: u64) -> String {
     format!("{NAME_PREFIX}{sequence:0NAME_DIGITS$}{NAME_SUFFIX}")
 }
 
+/// The fixed fuzzing key, built once: each key takes a locked page.
+fn fuzz_key() -> Option<Arc<SegmentKey>> {
+    static KEY: OnceLock<Option<Arc<SegmentKey>>> = OnceLock::new();
+    KEY.get_or_init(|| {
+        SegmentKey::new(&[0x46; 16], *b"fuzzkey!")
+            .ok()
+            .map(Arc::new)
+    })
+    .clone()
+}
+
+/// The contents of segment `sequence` made from `body`, as the mode byte says:
+/// - bit 3 set: `body` is cut into records (a length byte `n`, then `n + 1`
+///   plaintext bytes, repeated), each sealed with the fuzzing key; bit 4 adds the
+///   end record; bit 5 flips the byte that `flip` selects after the header.
+/// - bit 3 clear: `body` behind a valid file header, or with bit 4 set, alone.
+fn segment_bytes(key: &Arc<SegmentKey>, sequence: u64, mode: u8, flip: u8, body: &[u8]) -> Vec<u8> {
+    let mut sealer = RecordSealer::new(Arc::clone(key), sequence, [0x5a; 8]);
+    if mode & 8 == 0 {
+        if mode & 16 != 0 {
+            return body.to_vec();
+        }
+        let mut bytes = sealer.file_header().to_vec();
+        bytes.extend_from_slice(body);
+        return bytes;
+    }
+    let mut bytes = sealer.file_header().to_vec();
+    let mut rest = body;
+    while let Some((length, tail)) = rest.split_first() {
+        let (record, after) = tail.split_at(tail.len().min(usize::from(*length) + 1));
+        if record.is_empty() || sealer.seal_data(record, &mut bytes).is_err() {
+            break;
+        }
+        rest = after;
+    }
+    if mode & 16 != 0 {
+        let _ = sealer.seal_end(&mut bytes);
+    }
+    let header = sealer.file_header().len();
+    if mode & 32 != 0 && bytes.len() > header {
+        let at = header + usize::from(flip) % (bytes.len() - header);
+        bytes[at] ^= 0x10;
+    }
+    bytes
+}
+
 /// Writes the segment file(s) and the cursor file that `data` describes.
 ///
 /// Layout of `data`: a mode byte, a limit byte, then the rest.
 /// - Mode bits 0 and 1: 0 no cursor file; 1 the next 32 bytes (or fewer) are the
 ///   raw cursor file; 2 and 3 a valid cursor built from the next three bytes
-///   (a sequence selector and a 16-bit offset), with sequence `u64::MAX` for 3.
+///   (a sequence selector and a 16-bit logical offset), with sequence
+///   `u64::MAX` for 3.
 /// - Mode bit 2: split the segment bytes over two segment files.
-/// - Limit byte: its low 7 bits choose the batch limit.
+/// - Mode bits 3 to 5: how the segment bytes are written (see `segment_bytes`).
+/// - Limit byte: its low 7 bits choose the batch limit; it also picks the
+///   flipped byte.
 ///
 /// Returns the batch limit and the number of segment bytes written.
-fn write_inputs(dir: &Path, data: &[u8]) -> io::Result<(usize, usize)> {
+fn write_inputs(dir: &Path, key: &Arc<SegmentKey>, data: &[u8]) -> io::Result<(usize, usize)> {
     let (mode, limit_byte, rest) = match data {
         [mode, limit, rest @ ..] => (*mode, *limit, rest),
         [mode] => (*mode, 0, &[][..]),
@@ -110,13 +165,17 @@ fn write_inputs(dir: &Path, data: &[u8]) -> io::Result<(usize, usize)> {
             body = tail;
         }
     }
-    let written = body.len();
-    if mode & 4 == 0 {
-        fs::write(dir.join(segment_name(1)), body)?;
+    let parts: Vec<&[u8]> = if mode & 4 == 0 {
+        vec![body]
     } else {
         let (first, second) = body.split_at(body.len() / 2);
-        fs::write(dir.join(segment_name(1)), first)?;
-        fs::write(dir.join(segment_name(2)), second)?;
+        vec![first, second]
+    };
+    let mut written = 0;
+    for (sequence, part) in (1..).zip(parts) {
+        let bytes = segment_bytes(key, sequence, mode, limit_byte, part);
+        written += bytes.len();
+        fs::write(dir.join(segment_name(sequence)), bytes)?;
     }
     Ok((limit, written))
 }
@@ -165,10 +224,13 @@ fn prefix_bytes(out: &[u8], count: u32) -> usize {
 /// reach the end of the files in a bounded number of reads, or leaves bytes in
 /// its gauges after the end. A fuzzer reports each as a crash.
 pub fn spool_segment(data: &[u8]) {
+    let Some(key) = fuzz_key() else {
+        return;
+    };
     let Ok(scratch) = Scratch::new() else {
         return;
     };
-    let Ok((limit, written)) = write_inputs(&scratch.path, data) else {
+    let Ok((limit, written)) = write_inputs(&scratch.path, &key, data) else {
         return;
     };
     let stats = Arc::new(SinkStats::default());
@@ -177,14 +239,16 @@ pub fn spool_segment(data: &[u8]) {
         max_bytes: MAX_BYTES,
         min_free_bytes: 0,
     };
-    let Ok(mut spool) = Spool::open(config, Arc::clone(&stats), plenty) else {
+    let Ok(mut spool) = Spool::open(config, key, KeyOrigin::Loaded, Arc::clone(&stats), plenty)
+    else {
         return;
     };
     // A read error pauses reads; a fuzz run must not wait for the pause.
     spool.pause = Duration::ZERO;
-    // Every call that returns nothing still skips at least one control frame or
-    // deletes a segment, so this many calls reach the end. Each of the (at most
-    // eight) failures of the link makes the spool read one batch again.
+    // Every call that returns nothing ends a segment, and every other call hands
+    // out at least one frame of at least five file bytes, so this many calls
+    // reach the end. Each of the (at most eight) failures of the link makes the
+    // spool read one batch again.
     let mut out = Vec::new();
     let mut total = 0_u64;
     let mut failures = 0;
