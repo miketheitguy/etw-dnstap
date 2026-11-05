@@ -39,11 +39,18 @@ use self::{
 };
 use crate::sink::SinkStats;
 
+// Wave 1 of docs/plans/spool-encryption-plan.md; wired in by task G, which removes the
+// dead_code allowances.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod crypt;
 mod cursor;
 #[allow(unsafe_code)]
 pub(crate) mod fsinfo;
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) mod fuzzing;
+#[allow(unsafe_code)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod key;
 mod segment;
 
 /// The largest segment: a segment is sealed at `min(this, max_bytes / 8)`.

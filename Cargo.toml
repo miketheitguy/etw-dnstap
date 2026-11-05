@@ -18,6 +18,8 @@ crossbeam-channel = "0.5.15"
 prost = "0.14"
 # ring, not aws-lc-rs: aws-lc-rs needs CMake and NASM on Windows MSVC.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# AES-128-GCM for the spool records (src/spool/crypt.rs). Already in the tree through rustls.
+ring = "0.17"
 # Verifies receiver certificates with the Windows system store; end-entity revocation, soft-fail.
 rustls-platform-verifier = "0.7"
 thiserror = "2"
@@ -28,9 +30,10 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # attribute constant; also the version-resource readers in tests/version_resource.rs
 # (GetFileVersionInfoW, VerQueryValueW). Win32_Security_Authorization: GetNamedSecurityInfoW (spool folder owner).
 # Both are used by src/spool/fsinfo.rs.
+# Win32_System_Registry: the wrapped spool key under the service Parameters key (src/spool/key.rs).
 # Win32_System_Time looks unused to grep, but windows-sys gates OpenTraceW and
 # EVENT_TRACE_LOGFILEW (src/etw/session.rs) behind it.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Cryptography", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Performance"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Diagnostics_Etw", "Win32_System_EventLog", "Win32_System_Time", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_Security", "Win32_Security_Cryptography", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry"] }
 
 [features]
 # Diagnostic only: times the parser thread idle parks and socket writes.

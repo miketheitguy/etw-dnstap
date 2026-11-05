@@ -434,6 +434,7 @@ dependencies = [
  "proptest",
  "prost",
  "rcgen",
+ "ring",
  "rustls",
  "rustls-platform-verifier",
  "thiserror",
