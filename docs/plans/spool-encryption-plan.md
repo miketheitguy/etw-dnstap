@@ -12,7 +12,7 @@ segment before its frames go back to the router.
 | Topic | Decision |
 | --- | --- |
 | Cipher | AES-128-GCM, one record per spool append. GCM is CTR mode with an authentication tag, so a changed or torn record is detected and counted, not replayed. |
-| Key protection | A persisted, non-exportable RSA-3072 machine key in the Microsoft Software Key Storage Provider, created by the installer. Its DACL grants use to `NT SERVICE\EtwDnstap`. The AES key is wrapped with RSA-OAEP (SHA-256) and stored as `REG_BINARY` under the service's `Parameters` key. |
+| Key protection | A persisted, non-exportable RSA-3072 machine key in the Microsoft Software Key Storage Provider, created by the installer. Its DACL grants use to `NT SERVICE\EtwDnstap`. The AES key is wrapped with RSA-OAEP (SHA-256) and stored as `REG_BINARY` in the subkey `Parameters\SpoolKey`, which has its own DACL. The ACL of `Parameters` is not changed. |
 | Disk I/O | Keep cached file I/O. No `FILE_FLAG_NO_BUFFERING`. |
 | Old segments | At startup, delete every segment the service cannot read (plaintext segments from earlier versions, and segments made with another key) and count them as dropped. |
 
@@ -60,26 +60,31 @@ zeroed by `ring`.
    (read is what `NCryptDecrypt` needs; the agent confirms the minimum right in a test).
    If the key already exists, keep it and reapply the DACL. A major upgrade keeps it
    (`UPGRADINGPRODUCTCODE`, as for the spool). Uninstall deletes the key and the
-   `Parameters` key.
-2. **First start** (no `SpoolKey` value): `BCryptGenRandom` makes 16 key bytes and an 8-byte
+   `Parameters\SpoolKey` subkey.
+2. **First start** (no `WrappedKey` value): `BCryptGenRandom` makes 16 key bytes and an 8-byte
    key id. `NCryptOpenKey` + `NCryptEncrypt` (OAEP, SHA-256) wrap the key. The service writes
-   `SpoolKey` and deletes any segments it finds (they cannot be read with a new key).
-3. **Every start:** read `SpoolKey`, `NCryptDecrypt` unwraps it inside key isolation, the
+   `WrappedKey` and deletes any segments it finds (they cannot be read with a new key).
+3. **Every start:** read `WrappedKey`, `NCryptDecrypt` unwraps it inside key isolation, the
    KSP checks the service token against the key DACL. The key lives in a type that zeroes
    it on drop.
 4. **Failure:** if the KSP key is missing or unusable, the registry cannot be read or
-   written, or an existing `SpoolKey` does not unwrap, the spool is disabled with one
+   written, or an existing `WrappedKey` does not unwrap, the spool is disabled with one
    warning that names the cause (the existing spool-unavailable path). The service keeps
-   running, and the spool never writes plaintext. An existing `SpoolKey` is never replaced
+   running, and the spool never writes plaintext. An existing `WrappedKey` is never replaced
    automatically; an administrator deletes the value to force a new key.
 
-`SpoolKey` layout (`REG_BINARY`, little-endian): version `u8` = 1, key id `[u8; 8]`,
+`WrappedKey` layout (`REG_BINARY`, little-endian): version `u8` = 1, key id `[u8; 8]`,
 wrapping algorithm `u8` = 1 (RSA-OAEP-SHA256), wrapped length `u16`, wrapped key bytes.
 
-Registry: `HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters`. The installer
-creates it with the DACL `D:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;<service SID>)(A;;0x2;;;<service SID>)`
-so the service can read the key and set values but not change the DACL. The service runs
-with a restricted service SID, so a write needs an allow entry for the service SID.
+Registry (user decision, 2026-11-04: do not change the ACL of `Parameters`): the value
+`WrappedKey` lives in its own subkey,
+`HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey`. The installer
+creates `Parameters` only if it is missing, with its default inherited ACL, and never
+changes the ACL of `Parameters`. It creates the `SpoolKey` subkey with a protected DACL,
+`D:P(A;;KA;;;SY)(A;;KA;;;BA)(A;;0x20003;;;<service SID>)`: SYSTEM and Administrators full
+control, and the service SID query value, set value, and read control on that subkey only.
+The service runs with a restricted service SID, so its write needs this allow entry for the
+service SID. The service never creates the subkey.
 
 ### Segment format, version 1
 
@@ -116,12 +121,12 @@ file sizes, which now include 32 bytes a segment and 28 bytes a record.
 
 | ID | Wave | Task | Agent (model) | Effort | Output |
 | --- | --- | --- | --- | --- | --- |
-| K | 1 | Key module `src/spool/key.rs`: random key and key id, wrap and unwrap with a named CNG key (`NCryptOpenStorageProvider`, `NCryptOpenKey`, `NCryptEncrypt`/`NCryptDecrypt` with OAEP SHA-256), `SpoolKey` encode and decode, registry read and write, zero on drop. Tests use a per-user test key that the test creates with a DACL for the current user, and delete it. | `voltagent-lang:rust-engineer` (Opus) | high | Code and tests. |
+| K | 1 | Key module `src/spool/key.rs`: random key and key id, wrap and unwrap with a named CNG key (`NCryptOpenStorageProvider`, `NCryptOpenKey`, `NCryptEncrypt`/`NCryptDecrypt` with OAEP SHA-256), `WrappedKey` encode and decode, registry read and write in the `Parameters\SpoolKey` subkey, zero on drop. Tests use a per-user test key that the test creates with a DACL for the current user, and delete it. | `voltagent-lang:rust-engineer` (Opus) | high | Code and tests. |
 | C | 1 | Record layer `src/spool/crypt.rs`: the segment format above with `ring` AES-128-GCM, writer and incremental reader over byte slices, no I/O. Known-answer tests, tamper tests for every field, and property tests (round trip, any truncation is `WriterPosition`/`CutOff`, any bit flip is `Corrupt`). | `voltagent-lang:rust-engineer` (Sonnet) | high | Code and tests. |
-| I | 1 | Installer: create the KSP key and its DACL, create `Parameters` with its DACL, keep both on major upgrade, delete both on uninstall. Update `docs/guide/install.md`. | `voltagent-lang:powershell-7-expert` (Sonnet) | medium | Installer and provisioning changes. |
+| I | 1 | Installer: create the KSP key and its DACL, create the `Parameters\SpoolKey` subkey with its DACL (never change the ACL of `Parameters`), keep both on major upgrade, delete both on uninstall. Update `docs/guide/install.md`. | `voltagent-lang:powershell-5.1-expert` (Sonnet) | medium | Installer and provisioning changes. |
 | G | 2 | Integration: `SegmentWriter`/`SegmentReader` use C, the spool opens with K, failures take the spool-unavailable path, unreadable segments are deleted and counted at startup, cursor resume by logical offset. Update the guides, the design notes, and the CHANGELOG. | `voltagent-lang:rust-engineer` (Opus) | high | Code, tests, docs. |
 | R | 3 | Security and correctness review of K, C, I, and G. | `voltagent-qa-sec:code-reviewer` (Opus) | high | Findings, then fixes. |
-| L | 3 | Lab: first start creates `SpoolKey`; restart and major upgrade keep it; an outage spills and replays with no loss; a changed byte in a segment is counted as corrupt; another local account cannot unwrap; spool throughput at 50,000 and 200,000 QPS. Needs explicit authorization. | `general-purpose` (Sonnet) | high | History section. |
+| L | 3 | Lab: first start creates `WrappedKey`; restart and major upgrade keep it; an outage spills and replays with no loss; a changed byte in a segment is counted as corrupt; another local account cannot unwrap; spool throughput at 50,000 and 200,000 QPS. Needs explicit authorization. | `general-purpose` (Sonnet) | high | History section. |
 
 Wave 1 tasks touch separate files. `Cargo.toml` (the `ring` dependency and the
 `Win32_System_Registry` feature) and the module declarations in `src/spool.rs` are set
