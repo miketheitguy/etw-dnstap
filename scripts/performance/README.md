@@ -182,6 +182,12 @@ Host-side analysis (each has argparse `--help` and a module docstring with its p
 - Pooled-run summaries: `summarize-pooled-broad.py`, `summarize-pooled-native.py`, `summarize-pooled-stacks.py`,
   `summarize-pooled-stage.py`, `summarize-pooled-trace-gates.py`, `check-pooled-summary-gates.py`,
   `audit-pooled-management.py`, `build-pooled-report.py`, `export-pooled-graph-data.py`, `plot-pooled-wpr.py`.
+- Run graphs: `plot-tier-runs.py` draws one PNG per lab run (CPU, loss per second, queue fill) and one summary PNG per
+  QPS tier. Input is one folder per run with `run.json` and `timeseries.csv`. It needs matplotlib:
+  `python -m venv target/plot-venv`, `target/plot-venv/Scripts/pip install -r scripts/performance/requirements.txt`, then
+  `target/plot-venv/Scripts/python scripts/performance/plot-tier-runs.py --runs <runs-root> --out docs/assets/performance [--tier 10000]`.
+  Loss percent is lost events over events offered (events received plus `etw_lost`); `etw_buffers_lost` (buffers) and `spooled` (diverted) are drawn but not counted.
+  Test: `python -I scripts/performance/test_plot_tier_runs.py` with the same venv (fixture in `testdata/plot-tier-runs/`).
 - Parser-ramp campaign: `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `verify-parser-ramp-archive.py`.
 - Receiver archive: `count-receiver-archive.py`, `verify-receiver-archive.py`.
 - Pooled intake benchmark: `pooled_intake_run.py` runs the private Rust callback benchmark. It, `plot-pooled-wpr.py` and

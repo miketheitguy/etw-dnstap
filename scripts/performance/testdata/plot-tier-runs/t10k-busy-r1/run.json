@@ -1,0 +1,15 @@
+{
+  "id": "t10k-busy-r1",
+  "tier_qps": 10000,
+  "busy_threads": 4,
+  "vcpus": 12,
+  "settings": {
+    "etw_buffer_kib": 32,
+    "etw_min_buffers": 12,
+    "etw_max_buffers": 64,
+    "capacity": 32768
+  },
+  "load_start_s": 5,
+  "load_end_s": 24,
+  "notes": "synthetic test fixture"
+}

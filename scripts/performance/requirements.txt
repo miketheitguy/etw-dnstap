@@ -4,4 +4,4 @@
 # The archived archive/ubuntu-service-stop-config.py also needs PyYAML on the guest
 # (`apt install python3-yaml`, not pip).
 # Everything else on the host uses only the standard library, except:
-matplotlib>=3.8    # plot-pooled-wpr.py
+matplotlib>=3.8    # plot-pooled-wpr.py, plot-tier-runs.py (tested with 3.11.2)
