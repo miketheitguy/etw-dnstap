@@ -347,6 +347,7 @@ impl LinkMonitor {
         let bytes_per_second = self.send_rate();
         match change {
             Change::Saturated => tracing::warn!(
+                target: crate::event_ids::RISK_LINK_SATURATED,
                 backlog_bytes,
                 oldest_age_ms,
                 bytes_sent_per_second = bytes_per_second,

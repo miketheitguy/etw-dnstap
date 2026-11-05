@@ -257,6 +257,8 @@ fn a_link_just_below_the_capture_rate_sets_the_state_despite_flat_samples() {
     });
     assert_eq!(logs.count("dnstap link is saturated"), 1);
     assert_eq!(logs.count("no longer saturated"), 0);
+    // The warning carries the link-saturated ID, event 23.
+    assert_eq!(logs.count("etw_dnstap::event::23"), 1, "{}", logs.text());
 }
 
 #[test]
@@ -401,6 +403,8 @@ fn a_falling_backlog_clears_the_state() {
     });
     assert!(!flag(&stats));
     assert_eq!(logs.count("no longer saturated"), 1);
+    // The clearing event is information (ID 2), so it has no warning target.
+    assert_eq!(logs.count("etw_dnstap::event::23"), 0, "{}", logs.text());
 }
 
 #[test]

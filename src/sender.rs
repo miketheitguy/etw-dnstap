@@ -70,7 +70,7 @@ const BLOCK_SEND_BYTES: usize = 64 * 1024;
 /// Blocks the parser channel holds (16 MiB, 0.41 s at 41.2 MB/s). A router that
 /// loses a Windows Server quantum (187.5 ms) leaves 118 blocks in it. A burst of
 /// late ETW events can arrive at once, and the channel holds it.
-const SEND_QUEUE_BLOCKS: usize = 256;
+pub(crate) const SEND_QUEUE_BLOCKS: usize = 256;
 /// Blocks the link FIFO holds (16 MiB of frames). It is the only in-memory slack
 /// between the router and the socket, and the router spills to the spool only
 /// when it is full. A thread that waits for work can lose a scheduler quantum on a

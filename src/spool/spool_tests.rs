@@ -1687,6 +1687,8 @@ fn the_free_space_block_is_logged_four_times_and_then_every_60th() {
     });
     // Blocks 1 to 4, 61, and 121 are logged.
     assert_eq!(lines.count(LOW_SPACE_MESSAGE), 6, "{}", lines.text());
+    // Refused blocks are loss: Event ID 14.
+    assert_eq!(lines.count("etw_dnstap::event::14"), 6, "{}", lines.text());
     let text = lines.text();
     // 5 MiB and 7 bytes free rounds down; 10 MiB plus a 128 KiB segment
     // needed rounds up.
@@ -1734,6 +1736,7 @@ fn discarded_unreadable_data_is_logged_four_times_and_then_rarely() {
         assert_eq!(get(&stats.spool_dropped_bytes), 6 * 7);
     });
     assert_eq!(lines.count(DISCARD_MESSAGE), 4, "{}", lines.text());
+    assert_eq!(lines.count("etw_dnstap::event::14"), 4, "{}", lines.text());
     assert!(lines.text().contains("bytes=7"), "{}", lines.text());
     assert_eq!(lines.count(EVICTION_MESSAGE), 0);
 }
@@ -1799,6 +1802,29 @@ fn an_eviction_for_space_is_not_logged_as_a_discard() {
     });
     assert!(lines.count(EVICTION_MESSAGE) >= 1, "{}", lines.text());
     assert_eq!(lines.count(DISCARD_MESSAGE), 0);
+    // Each eviction line is loss: Event ID 14.
+    assert_eq!(
+        lines.count("etw_dnstap::event::14"),
+        lines.count(EVICTION_MESSAGE),
+        "{}",
+        lines.text()
+    );
+}
+
+#[test]
+fn a_spool_io_error_is_logged_with_its_own_id_and_bounded() {
+    let dir = TestDir::new("spool-io-error-id");
+    let (spool, stats) = open(&dir, MIB);
+    let error = io::Error::other("disk gone");
+    let lines = capture_logs(|| {
+        // The first four and then every 60th are logged: 130 errors, 6 lines.
+        for _ in 0..130 {
+            spool.note_error(&error);
+        }
+    });
+    assert_eq!(lines.count("dnstap spool I/O error"), 6, "{}", lines.text());
+    assert_eq!(lines.count("etw_dnstap::event::27"), 6, "{}", lines.text());
+    assert_eq!(get(&stats.spool_errors), 130);
 }
 
 // ---- the observation helpers: unread bytes and the age of the oldest segment ----

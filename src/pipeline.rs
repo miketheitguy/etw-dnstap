@@ -7,9 +7,12 @@
 //! - `watchdog`: the startup and shutdown watchdogs and their time budgets.
 //! - `supervisor`: [`run_capture`], which starts the sink, the parser thread, and
 //!   the capture, supervises them until shutdown, then stops and reports.
+//! - `alerts`: the loss and risk checks that the supervisor runs on its stats tick and
+//!   that write the Event Log warnings with IDs 10 to 28.
 //! - `parser`: the parser thread, which drains the event channel, encodes each
 //!   record, and writes and flushes the sink.
 
+mod alerts;
 mod config;
 mod parser;
 mod supervisor;

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-04
 
 Use this guide to find the cause of a failed start, restarts, drops, or missing
 records. Start with the Application event log and the SCM state.
@@ -15,7 +15,9 @@ Find the heading that matches the symptom. For a log message, use
 The service writes diagnostics only to the Application log, source `EtwDnstap`.
 It writes nothing to stdout or stderr. A failed log write never stops capture.
 The event IDs are listed in [Log event IDs](monitoring.md#log-event-ids). Event ID 1
-is a fatal failure, 5 is a watchdog abort, and 6 is a panic.
+is a fatal failure, 5 is a watchdog abort, and 6 is a panic. IDs 10 to 16 report data
+loss, and IDs 20 to 28 report a risk of it. See
+[Event IDs for data loss](#event-ids-for-data-loss).
 
 Read the stored failure text:
 
@@ -58,22 +60,23 @@ message.
 | `already exists and does not match this program's session shape` | 1 | Session cannot be reclaimed. |
 | `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | 5 | Deadline expired. Process aborted. |
 | `EtwDnstap panicked:` | 6 | |
-| `dnstap receiver unavailable at startup` | 3 | Not fatal. |
-| `dnstap receiver connection lost` | 3 | Not fatal. |
+| `dnstap receiver unavailable at startup` | 24 | Not fatal. |
+| `dnstap receiver connection lost` | 24 | Not fatal. |
 | `dnstap reconnect failed` | 3 | `cause` is `connect`, `timeout`, `tls`, or `protocol`. |
 | `dnstap receiver failed the TLS handshake before the first session` | 4 | Logged once. |
 | `dnstap receiver refused the Frame Streams handshake before the first session` | 4 | Logged once. |
 | `could not start the dnstap reconnect thread` or `dnstap reconnect thread ended without a result` | 3, 4 | Retries with backoff. |
 | `dnstap receiver reconnected` | 2 | |
-| `dnstap link is saturated` | 3 | The spool backlog trended up over 10 samples with the receiver connected. See [The receiver is slow](#the-receiver-is-slow). |
+| `dnstap link is saturated` | 23 | The spool backlog trended up over 10 samples with the receiver connected. See [The receiver is slow](#the-receiver-is-slow). |
 | `dnstap link is no longer saturated` | 2 | The backlog is empty or stopped growing. |
 | `shutting down while the dnstap receiver is disconnected` | 3 | No STOP sent. |
-| `spool folder is not usable` | 3 | The `reason` field names the failed check. |
-| `spool could not be opened` | 3 | The folder passed the checks. |
-| `dnstap spool deleted its oldest segment unsent` | 3 | Cap or free-space floor removed unsent frames. |
-| `dnstap spool discarded unreadable segment data` | 3 | |
-| `dnstap spool I/O error` | 3 | |
-| `dnstap spool is refusing blocks` | 3 | No free space, and no older segment to remove. |
+| `spool folder is not usable` | 26 | The `reason` field names the failed check. |
+| `spool could not be opened` | 26 | The folder passed the checks. |
+| `spool is disabled (--no-spool)` | 26 | Once, at start. Any receiver outage loses frames. |
+| `dnstap spool deleted its oldest segment unsent` | 14 | Cap or free-space floor removed unsent frames. |
+| `dnstap spool discarded unreadable segment data` | 14 | |
+| `dnstap spool I/O error` | 27 | |
+| `dnstap spool is refusing blocks` | 14 | No free space, and no older segment to remove. |
 | `could not seal the dnstap spool segment` | 3 | At shutdown. |
 | `dnstap spool backlog kept on disk for the next run` | 2 | Not an error. |
 | `spool in use` | 2 | |
@@ -87,6 +90,8 @@ message.
 | `stale ETW session used a different buffer size` | 3 | Reclaimed anyway. |
 | `ETW keyword narrowing unavailable` | 3 | The subscription uses the fallback keyword mask. See [configuration.md](configuration.md#subscription). |
 | `RESPONSE_FAILURE keyword is not available` | 3 | Failed responses are not captured. See [configuration.md](configuration.md#subscription). |
+| `data loss in ...` (ETW, at capacity, on the network path, in the spool, in decoding, inside the service) | 10 to 16 | A loss counter rose. See [Event IDs for data loss](#event-ids-for-data-loss). |
+| `... is near full`, `... near the maximum`, `... near its limit`, `the dnstap receiver is down and no spool takes frames`, `the ETW statistics query is failing` | 20 to 22, 24, 25, 28 | A risk of loss. See [Event IDs for data loss](#event-ids-for-data-loss). |
 | `performance counters are unavailable` | 3 | Capture continues. See [If the counters do not register](monitoring.md#if-the-counters-do-not-register). |
 
 ## The service does not reach RUNNING
@@ -127,16 +132,18 @@ A down receiver does not stop the service. With a spool, frames wait on disk. Wi
 one, the sink counts undeliverable frames and retries with backoff. Timing is in
 [Receiver connection](configuration.md#receiver-connection).
 
-1. **At startup:** Event ID 3, `dnstap receiver unavailable at startup`. The service
+1. **At startup:** Event ID 24, `dnstap receiver unavailable at startup`. The service
    reaches `RUNNING`.
-2. **During a run:** Event ID 3, `dnstap receiver connection lost`, then Event ID 3,
+2. **During a run:** Event ID 24, `dnstap receiver connection lost`, then Event ID 3,
    `dnstap reconnect failed`. Event ID 2 logs `dnstap receiver reconnected` when the
    session returns.
 3. **Check the counters.** `receiver_connected` is `false` while down.
    `receiver_disconnects` and `receiver_reconnect_failures` count the failures. With
    a spool, `spool_bytes` rises while down, and `replayed` rises after the return.
    Use `spool_bytes` for the spool size, because a folder listing shows the open
-   segment as 0 bytes. Without a spool, `disconnected_dropped` shows the loss.
+   segment as 0 bytes. Without a spool, `disconnected_dropped` shows the loss, and the
+   service writes Event ID 24, `the dnstap receiver is down and no spool takes frames`, at
+   its next check, then Event ID 13 for the frames lost.
 
 **Wrong content type after startup.** Each reconnect attempt fails, and the service
 keeps running. Check that `receiver_connected` stays `false`, then fix the
@@ -185,7 +192,7 @@ peaks cover the last 60 seconds ([definitions](monitoring.md#output-counters)).
 | `router_pass_max_recent_us` | Large | A call in a router pass blocked or ran long, such as a spool disk write. |
 
 When `link_saturated` becomes `true`, the service writes the warning `dnstap link is
-saturated` (Event ID 3). It gives `backlog_bytes`, `oldest_age_ms`, and
+saturated` (Event ID 23). It gives `backlog_bytes`, `oldest_age_ms`, and
 `bytes_sent_per_second`. The event `dnstap link is no longer saturated` (Event ID 2)
 ends it. A receiver that is down does not set the state. See
 [the receiver section](#the-receiver-is-down-or-unreachable).
@@ -218,7 +225,7 @@ Check these in order:
 Event fields, and the repeat rule for messages that log more than once, are in
 [Spool messages](monitoring.md#spool-messages). No spool event contains frame data.
 
-- **`spool folder is not usable`** (Event ID 3, at startup). Find the `reason` field
+- **`spool folder is not usable`** (Event ID 26, at startup). Find the `reason` field
   below and follow its action.
 
   | `reason` | Fix |
@@ -234,21 +241,28 @@ Event fields, and the repeat rule for messages that log more than once, are in
   | ``the spool folder permissions let an account other than SYSTEM, Administrators, or a service read or write it`` | Run `icacls` on the folder. Remove each entry that is not SYSTEM, Administrators, or `NT SERVICE\EtwDnstap`. Then run `Test-SpoolFolder` as in [install.md](install.md). |
   | ``cannot check the {which}: {source}`` | A Windows call failed. `{source}` gives the Windows error. Check the disk and the path. |
 
-- **`spool could not be opened`** (Event ID 3, at startup). Check that the disk
+- **`spool is disabled (--no-spool)`** (Event ID 26, at startup). You set `--no-spool`.
+  Every receiver outage loses frames, and the service counts them in
+  `disconnected_dropped`. Remove the option to keep frames on disk.
+- **`spool could not be opened`** (Event ID 26, at startup). Check that the disk
   responds, and that no other program holds `cursor.bin` open.
-- **`dnstap spool deleted its oldest segment unsent`** (Event ID 3). The cap or the
+- **`dnstap spool deleted its oldest segment unsent`** (Event ID 14). The cap or the
   free-space floor removed unsent frames. Check `spool_dropped`, `spool_dropped_bytes`,
   `--spool-max-mib`, and free space.
-- **`dnstap spool discarded unreadable segment data`** (Event ID 3). The segment held a
+- **`dnstap spool discarded unreadable segment data`** (Event ID 14). The segment held a
   corrupt or cut-off tail, a missing START, unreadable data, or an invalid cursor. Check
   `spool_errors`, `spool_dropped`, and the disk.
-- **`dnstap spool I/O error`** (Event ID 3). A create, write, read, or delete failed.
+- **`dnstap spool I/O error`** (Event ID 27). A create, write, read, or delete failed.
   The `error` field gives the cause. The spool pauses for 10 seconds. Check
   `spool_errors`, the disk, programs that lock files in the folder, and the folder's ACL.
-- **`dnstap spool is refusing blocks`** (Event ID 3). Free space is below
+- **`dnstap spool is refusing blocks`** (Event ID 14). Free space is below
   `--spool-min-free-mib` plus one segment, and no older segment can be deleted. Check
   the `free_mib` and `needed_mib` fields. Free space on the volume, or lower
   `--spool-min-free-mib`.
+- **`the spool is near its limit`** (Event ID 25). The spool holds 80 percent of
+  `--spool-max-mib`, or the volume is within 2 segments of the free-space floor. Nothing is
+  lost yet. At the limit the spool deletes its oldest data (Event ID 14). Free space, or
+  raise `--spool-max-mib`. See [Spool sizing](tuning.md#spool-sizing).
 - **`could not seal the dnstap spool segment`** (Event ID 3, at shutdown). The last
   segment closed without its STOP. The next start replays its frames. If the message
   repeats, check the disk.
@@ -293,6 +307,43 @@ exchange fails. A lost receiver connection does not stop it.
 1. Find the failure text in the Application log (Event ID 1).
 2. For a DNS restart, check that `foreign_pid_rejected` rose during the gap.
 3. Check the recovery policy. Without it, the service stays down until someone starts it.
+
+## Event IDs for data loss
+
+The service checks its loss counters on the stats tick and writes one warning for each
+cause that rose. Each event has its own ID, so an alert can act on the ID alone. The
+fields and the rules are in [Loss and risk warnings](monitoring.md#loss-and-risk-warnings).
+A restart resets every counter.
+
+Loss, written after the data is gone:
+
+| Event ID | Cause | Action |
+| --- | --- | --- |
+| 10 | ETW dropped events or lost buffers (`etw_lost`, `etw_buffers_lost`). | Raise `--etw-max-buffers` and `--etw-buffer-kib`. Check the host for CPU starvation. See [Defaults](tuning.md#defaults) and [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
+| 11 | The event channel was full (`ring_dropped`). | Raise `--capacity`. See [Defaults](tuning.md#defaults). |
+| 12 | No pool slot was free (`pool_exhausted_regular`, `pool_exhausted_jumbo`). | Raise `--capacity`, or `--jumbo-capacity` when `pool_exhausted_jumbo` rose. |
+| 13 | Frames lost on the network path (`disconnected_dropped`, `queue_dropped`). | `disconnected_dropped`: see [the receiver is down](#the-receiver-is-down-or-unreachable) and run with a spool. `queue_dropped`: see [the receiver is slow](#the-receiver-is-slow). |
+| 14 | The spool removed, skipped, or refused data (`spool_dropped`, `spool_dropped_bytes`). | Free disk space, or raise `--spool-max-mib`. See [Spool warnings](#spool-warnings) and [Spool sizing](tuning.md#spool-sizing). |
+| 15 | Events were rejected (`rejected`, `schema_rejected`). | See [Rejected events](#rejected-events). |
+| 16 | Loss inside the service (`callback_errors`, `receiver_disconnected`, `output_failed_events`). | Report it with the steps that led to it. See [restarts](#the-service-keeps-restarting). |
+
+Risk, written before data is lost (or while the cause is still there). Each has an
+Information event (ID 2) when it ends, except 26 and 27:
+
+| Event ID | Risk | Action |
+| --- | --- | --- |
+| 20 | The event channel peak reached 80 percent of `--capacity`. | Raise `--capacity`. |
+| 21 | The allocated ETW buffers reached 90 percent of the maximum. | Raise `--etw-max-buffers`. See [Defaults](tuning.md#defaults). |
+| 22 | The send queue peak reached 80 percent of its 256 blocks. | Look at the spool disk and the router thread. See [the receiver is slow](#the-receiver-is-slow). |
+| 23 | The link is saturated: the receiver or the path takes fewer bytes than arrive. | See [the receiver is slow](#the-receiver-is-slow). |
+| 24 | The receiver is down. With no spool taking frames, frames are being lost. | See [the receiver is down](#the-receiver-is-down-or-unreachable). |
+| 25 | The spool holds 80 percent of its cap, or the volume is near the free-space floor. | Free disk space, or raise `--spool-max-mib`. See [Spool sizing](tuning.md#spool-sizing). |
+| 26 | No spool is in use at start (`--no-spool` or an unusable folder). | Remove `--no-spool`, or fix the folder. See [Spool warnings](#spool-warnings). |
+| 27 | A spool I/O error. The spool pauses for 10 seconds. | Check the disk and the folder. See [Spool warnings](#spool-warnings). |
+| 28 | The ETW statistics query fails, so ETW loss is not visible. | Check that the session runs. See [ETW consumer and session warnings](#etw-consumer-and-session-warnings). |
+
+A loss event is as late as the stats interval. For the exact count of frames lost, use the
+counters in [Counters show drops](#counters-show-drops).
 
 ## Counters show drops
 

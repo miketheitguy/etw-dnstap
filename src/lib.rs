@@ -8,6 +8,7 @@ mod dnstap;
 // which call native APIs.
 mod etw;
 mod event;
+mod event_ids;
 mod framestream;
 mod network;
 #[allow(unsafe_code)]

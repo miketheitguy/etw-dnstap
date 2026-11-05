@@ -339,11 +339,18 @@ fn event_text(message: &str) -> Vec<u16> {
 }
 
 /// Maps tracing severity to Event Log type and ID; ID 1 stays reserved.
-fn event_kind(level: Level) -> (u16, u32) {
+///
+/// A warning whose tracing target names a loss or risk ID (see `event_ids`)
+/// carries that ID instead of 3. No other level reads the target, so a cleared
+/// event (information) always keeps ID 2.
+fn event_kind(level: Level, target: &str) -> (u16, u32) {
     if level == Level::ERROR {
         (EVENTLOG_ERROR_TYPE, 4)
     } else if level == Level::WARN {
-        (EVENTLOG_WARNING_TYPE, 3)
+        (
+            EVENTLOG_WARNING_TYPE,
+            crate::event_ids::warning_id(target).unwrap_or(3),
+        )
     } else {
         (EVENTLOG_INFORMATION_TYPE, 2)
     }
@@ -481,8 +488,8 @@ pub(crate) struct EventLogLine {
 }
 
 impl EventLogLine {
-    fn for_level(level: Level) -> Self {
-        let (kind, event_id) = event_kind(level);
+    fn for_event(level: Level, target: &str) -> Self {
+        let (kind, event_id) = event_kind(level, target);
         Self {
             kind,
             event_id,
@@ -529,11 +536,11 @@ impl<'a> MakeWriter<'a> for EventLogWriter {
     type Writer = EventLogLine;
 
     fn make_writer(&'a self) -> Self::Writer {
-        EventLogLine::for_level(Level::INFO)
+        EventLogLine::for_event(Level::INFO, "")
     }
 
     fn make_writer_for(&'a self, meta: &Metadata<'_>) -> Self::Writer {
-        EventLogLine::for_level(*meta.level())
+        EventLogLine::for_event(*meta.level(), meta.target())
     }
 }
 
@@ -1213,10 +1220,50 @@ mod tests {
 
     #[test]
     fn levels_map_to_event_types_and_ids() {
-        assert_eq!(event_kind(Level::ERROR), (EVENTLOG_ERROR_TYPE, 4));
-        assert_eq!(event_kind(Level::WARN), (EVENTLOG_WARNING_TYPE, 3));
-        assert_eq!(event_kind(Level::INFO), (EVENTLOG_INFORMATION_TYPE, 2));
-        assert_eq!(event_kind(Level::DEBUG), (EVENTLOG_INFORMATION_TYPE, 2));
+        for target in ["", "etw_dnstap::network", "etw_dnstap::event::99"] {
+            assert_eq!(event_kind(Level::ERROR, target), (EVENTLOG_ERROR_TYPE, 4));
+            assert_eq!(event_kind(Level::WARN, target), (EVENTLOG_WARNING_TYPE, 3));
+            assert_eq!(
+                event_kind(Level::INFO, target),
+                (EVENTLOG_INFORMATION_TYPE, 2)
+            );
+            assert_eq!(
+                event_kind(Level::DEBUG, target),
+                (EVENTLOG_INFORMATION_TYPE, 2)
+            );
+        }
+    }
+
+    #[test]
+    fn a_warning_with_a_loss_or_risk_target_carries_that_id() {
+        use crate::event_ids::{LOSS_ETW, LOSS_NETWORK, RISK_ETW_STATS, RISK_LINK_SATURATED};
+        for (target, id) in [
+            (LOSS_ETW, 10),
+            (LOSS_NETWORK, 13),
+            (RISK_LINK_SATURATED, 23),
+            (RISK_ETW_STATS, 28),
+        ] {
+            assert_eq!(event_kind(Level::WARN, target), (EVENTLOG_WARNING_TYPE, id));
+        }
+    }
+
+    #[test]
+    fn only_a_warning_reads_the_target() {
+        use crate::event_ids::LOSS_ETW;
+        assert_eq!(
+            event_kind(Level::INFO, LOSS_ETW),
+            (EVENTLOG_INFORMATION_TYPE, 2)
+        );
+        assert_eq!(event_kind(Level::ERROR, LOSS_ETW), (EVENTLOG_ERROR_TYPE, 4));
+    }
+
+    #[test]
+    fn the_writer_picks_the_id_from_the_event_metadata() {
+        use crate::event_ids::LOSS_SPOOL;
+        let spool = EventLogLine::for_event(Level::WARN, LOSS_SPOOL);
+        assert_eq!((spool.kind, spool.event_id), (EVENTLOG_WARNING_TYPE, 14));
+        let plain = EventLogLine::for_event(Level::WARN, "etw_dnstap::sender");
+        assert_eq!((plain.kind, plain.event_id), (EVENTLOG_WARNING_TYPE, 3));
     }
 
     #[test]

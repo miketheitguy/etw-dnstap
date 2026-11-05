@@ -640,6 +640,7 @@ impl NetworkSink {
             Err(error) => {
                 seen_failures.insert(FailureClass::of(&error));
                 tracing::warn!(
+                    target: crate::event_ids::RISK_RECEIVER_DOWN,
                     receiver = %address,
                     %error,
                     "dnstap receiver unavailable at startup; capture is running, and frames go \
@@ -690,6 +691,7 @@ impl NetworkSink {
         self.stats.disconnects.fetch_add(1, Ordering::Relaxed);
         let delay = self.backoff.next_delay();
         tracing::warn!(
+            target: crate::event_ids::RISK_RECEIVER_DOWN,
             receiver = %self.config.address,
             %error,
             retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),

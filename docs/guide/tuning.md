@@ -107,7 +107,7 @@ the first measurement window in which the received rate exceeds 440,000 events p
 above 200,000 queries per second. The window is `--stats-interval-seconds`, or 60 seconds when
 that is `0`. The message reads `received rate is above 440,000 events/s; the default buffer
 settings were validated at about 400,000 events/s (200,000 queries per second)`. The warning does
-not mean events were lost. Watch `ring_dropped` and `etw_lost`. If they rise, raise `--capacity`
+not mean events were lost. Watch `ring_dropped` and `etw_lost`. The service writes Event ID 11 and Event ID 10 when they rise ([Loss and risk warnings](monitoring.md#loss-and-risk-warnings)). If they rise, raise `--capacity`
 and `--etw-max-buffers`, for example to `--etw-max-buffers 256 --capacity 262144`. An earlier lab load of 200,000 queries per second ran without loss at that
 value, but it uses 558.03 MiB of counted storage and about 812 MB of working set. The largest
 `--capacity` is 524,288. It uses 1,108.03 MiB of counted storage at 64 jumbo slots, and its

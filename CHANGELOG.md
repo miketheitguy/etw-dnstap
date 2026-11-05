@@ -53,6 +53,28 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Added
 
+- Event Log warnings with their own Event IDs when data is lost, and when loss is
+  likely or possible. The supervisor checks on its stats tick (every
+  `--stats-interval-seconds`, or every 60 seconds when that is `0`) and writes at most one
+  event for each ID. Loss events compare the counters with the previous check, so a quiet
+  interval writes nothing, and give the increase, the run total, and the seconds covered:
+  10 (ETW: `etw_lost`, `etw_buffers_lost`), 11 (event channel full: `ring_dropped`),
+  12 (no pool slot: `pool_exhausted_regular`, `pool_exhausted_jumbo`), 13 (network:
+  `disconnected_dropped`, `queue_dropped`), 14 (spool: `spool_dropped`,
+  `spool_dropped_bytes`), 15 (decoding: `rejected`, `schema_rejected`), and 16 (inside the
+  service: `callback_errors`, `receiver_disconnected`, `output_failed_events`). Risk events
+  are raised when the condition starts and cleared by an Information event (ID 2) when it
+  ends: 20 (event channel peak at 80 percent of `--capacity`), 21 (ETW buffers at 90 percent
+  of the applied maximum), 22 (send queue at 80 percent of 256 blocks), 24 (receiver down
+  with no spool taking frames), 25 (spool at 80 percent of its cap, or the volume within 2
+  segments of the free-space floor), and 28 (the ETW statistics query fails, so ETW loss is
+  not visible). IDs 23 and 27 are existing warnings that moved (see Changed); ID 24 also
+  covers the two existing receiver warnings, and ID 26 the spool start warnings.
+  Nothing is written once shutdown has begun, and the checks never change data flow. A new
+  `--no-spool` start warning (ID 26) says that any receiver outage loses frames. See
+  [Loss and risk warnings](docs/guide/monitoring.md#loss-and-risk-warnings) and
+  [Event IDs for data loss](docs/guide/troubleshooting.md#event-ids-for-data-loss).
+
 - Two counters that tell a late wake of the router thread from a blocking call in its
   loop: `router_wait_max_recent_us` (the longest single wait) and
   `router_pass_max_recent_us` (the longest pass outside the wait). They are peaks over the
@@ -101,7 +123,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   the sender thread sets them once a second, so no reader resets them. The existing
   `write_max_us` and `slow_writes` keep their meaning. The sender thread sets
   `link_saturated` when the spool backlog trends up over 10 samples (at least 10 seconds,
-  with at least 7 of the 10 steps rising) with the receiver connected. It logs `dnstap link is saturated` (Event ID 3) and, at the end,
+  with at least 7 of the 10 steps rising) with the receiver connected. It logs `dnstap link is saturated` (Event ID 23, first written as 3) and, at the end,
   `dnstap link is no longer saturated` (Event ID 2). Nothing about routing changes. New
   performance counters 61 to 66 are appended, and the updated manifest must be
   registered again on upgrade. See
@@ -252,6 +274,17 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** Nine existing warnings move from Event ID 3 to the new IDs, so an
+  operator who filters on Event ID 3 must also filter on these. The text does not change.
+  `dnstap link is saturated` is now 23 (its "no longer saturated" event stays 2).
+  `dnstap receiver unavailable at startup` and `dnstap receiver connection lost` are now 24.
+  `spool folder is not usable` and `spool could not be opened` are now 26.
+  `dnstap spool I/O error` is now 27. `dnstap spool deleted its oldest segment unsent`,
+  `dnstap spool discarded unreadable segment data`, and `dnstap spool is refusing blocks`
+  are now 14, because they report data already lost. Event ID 3 keeps every other warning
+  (`dnstap reconnect failed`, `rejected ETW event`, the schema warnings, the rate warning,
+  and so on). The IDs are in
+  [Log event IDs](docs/guide/monitoring.md#log-event-ids).
 - **Breaking.** The capacity defaults are sized for 200,000 queries per second (about
   400,000 events per second and 41.2 MB/s of dnstap frames). The command-line defaults
   are part of the public contract under the local policy, so this increases `y`. Ranges,

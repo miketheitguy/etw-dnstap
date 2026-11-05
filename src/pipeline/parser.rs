@@ -42,6 +42,10 @@ pub(crate) struct ParseCounters {
     /// Deepest the event channel was seen: sampled by the parser on the first
     /// event after each idle wake and every 256 events, so a lower bound.
     pub(crate) queue_depth_max: AtomicU64,
+    /// The deepest sample since the supervisor last took it (a swap to 0). Only
+    /// the supervisor's loss and risk check reads and resets it, so
+    /// `queue_depth_max` keeps its meaning. Not reported.
+    pub(super) queue_depth_interval_max: AtomicU64,
     /// Wait attribution; empty unless `diag-timing` is enabled.
     pub(super) timing: DiagTiming,
 }
@@ -107,9 +111,13 @@ fn parse_loop<S: FrameSink>(
             if sample_depth || dequeued.is_multiple_of(256) {
                 sample_depth = false;
                 let depth = u64::try_from(queue.len()).unwrap_or(u64::MAX);
+                let sampled = depth.saturating_add(1);
                 counters
                     .queue_depth_max
-                    .fetch_max(depth.saturating_add(1), Ordering::Relaxed);
+                    .fetch_max(sampled, Ordering::Relaxed);
+                counters
+                    .queue_depth_interval_max
+                    .fetch_max(sampled, Ordering::Relaxed);
             }
             // The decoded view borrows the pooled record. Encoding copies the packet
             // into encoder storage, so the record is released before network I/O and

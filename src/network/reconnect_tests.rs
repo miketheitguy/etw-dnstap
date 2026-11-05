@@ -306,6 +306,34 @@ fn started_while_down(address: SocketAddr, stats: &Arc<SinkStats>) -> NetworkSin
 const RECONNECT_FAILED: &str = "dnstap reconnect failed";
 
 #[test]
+fn the_receiver_down_warnings_carry_the_receiver_down_id() {
+    let refused = RefusedPort::new();
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = None;
+    let at_start = capture_logs(|| {
+        sink = Some(
+            NetworkSink::start_with(refused.address(), Arc::clone(&stats), fast_policy())
+                .expect("a refused connection starts the sink disconnected"),
+        );
+    });
+    assert_eq!(
+        at_start.count("etw_dnstap::event::24"),
+        1,
+        "{}",
+        at_start.text()
+    );
+    assert!(at_start.text().contains("unavailable at startup"));
+    let mut sink = sink.expect("started");
+    let lost = capture_logs(|| {
+        sink.connection_lost(&io::Error::from(io::ErrorKind::ConnectionReset));
+    });
+    assert_eq!(lost.count("etw_dnstap::event::24"), 1, "{}", lost.text());
+    assert!(lost.text().contains("connection lost"));
+    // A failed attempt is a plain warning (ID 3), not the risk.
+    assert_eq!(lost.count("dnstap reconnect failed"), 0);
+}
+
+#[test]
 fn a_new_failure_cause_is_logged_late_in_an_outage() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
     let address = listener.local_addr().expect("listener address");

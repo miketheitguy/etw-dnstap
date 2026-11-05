@@ -48,6 +48,17 @@ mod segment;
 
 /// The largest segment: a segment is sealed at `min(this, max_bytes / 8)`.
 const MAX_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The size at which a spool with the cap `max_bytes` seals a segment. The
+/// free-space floor is `--spool-min-free-mib` plus one segment of this size.
+pub(crate) const fn segment_bytes_for(max_bytes: u64) -> u64 {
+    let eighth = max_bytes / 8;
+    if eighth < MAX_SEGMENT_BYTES {
+        eighth
+    } else {
+        MAX_SEGMENT_BYTES
+    }
+}
 /// How long the spool refuses blocks after an I/O error or when the free-space
 /// floor leaves nothing to delete, and how long it pauses reads after a
 /// transient read error or a failed cursor write.
@@ -270,7 +281,7 @@ impl Spool {
         }
         let segments = scanned.segments;
         let total_bytes = segments.iter().map(|segment| segment.bytes).sum();
-        let segment_bytes = MAX_SEGMENT_BYTES.min(config.max_bytes / 8);
+        let segment_bytes = segment_bytes_for(config.max_bytes);
         let mut spool = Self {
             cursor: CursorFile::new(&config.dir),
             config,
@@ -809,6 +820,7 @@ impl Spool {
         self.low_space_blocks += 1;
         if blocks < 4 || blocks.is_multiple_of(60) {
             tracing::warn!(
+                target: crate::event_ids::LOSS_SPOOL,
                 free_mib = free / MIB,
                 needed_mib = needed.div_ceil(MIB),
                 pause_s = self.pause.as_secs(),
@@ -822,7 +834,11 @@ impl Spool {
     fn note_error(&self, error: &io::Error) {
         let errors = self.stats.spool_errors.fetch_add(1, Ordering::Relaxed);
         if errors < 4 || errors.is_multiple_of(60) {
-            tracing::warn!(%error, "dnstap spool I/O error");
+            tracing::warn!(
+                target: crate::event_ids::RISK_SPOOL_IO_ERROR,
+                %error,
+                "dnstap spool I/O error"
+            );
         }
     }
 
@@ -1007,6 +1023,7 @@ impl Spool {
             self.evictions += 1;
             if evictions < 4 || evictions.is_multiple_of(60) {
                 tracing::warn!(
+                    target: crate::event_ids::LOSS_SPOOL,
                     frames,
                     bytes,
                     "dnstap spool deleted its oldest segment unsent"
@@ -1044,6 +1061,7 @@ impl Spool {
         self.discards += 1;
         if discards < 4 || discards.is_multiple_of(60) {
             tracing::warn!(
+                target: crate::event_ids::LOSS_SPOOL,
                 frames,
                 bytes,
                 "dnstap spool discarded unreadable segment data"

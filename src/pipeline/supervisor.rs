@@ -16,6 +16,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{
+    alerts::{Alerts, Limits, Readings, SpoolLimits},
     config::{CaptureArgs, DEFAULT_CAPACITY, DiagContext, PipelineConfig, SpoolSettings},
     parser::{ParseCounters, join_parser, spawn_parser},
     watchdog::{CAPTURE_START_TIMEOUT, ShutdownWatchdog},
@@ -32,6 +33,7 @@ use crate::{
     spool::{
         Spool, SpoolConfig,
         fsinfo::{self, SpoolDirError},
+        segment_bytes_for,
     },
 };
 
@@ -181,11 +183,22 @@ fn build_sink_with(
     free_space: FreeSpace,
 ) -> io::Result<QueuedSink> {
     let link = NetworkSink::start(receiver_config(config, address)?, Arc::clone(&stats))?;
-    let spool = config
-        .spool
-        .as_ref()
-        .and_then(|settings| open_spool(settings, &stats, check, free_space));
+    let spool = if let Some(settings) = &config.spool {
+        open_spool(settings, &stats, check, free_space)
+    } else {
+        warn_spool_disabled();
+        None
+    };
     QueuedSink::start(link, spool, stats, config.receiver_stall())
+}
+
+/// Logs once, at start, that `--no-spool` is set: any receiver outage loses
+/// frames. Event ID 26.
+fn warn_spool_disabled() {
+    tracing::warn!(
+        target: crate::event_ids::RISK_SPOOL_DISABLED,
+        "spool is disabled (--no-spool); frames are dropped and counted while the receiver is          down, and when the send queue is full"
+    );
 }
 
 /// Checks the spool folder with `check` and opens the spool. Returns `None` after
@@ -200,6 +213,7 @@ fn open_spool(
     let dir = settings.dir.as_path();
     if let Err(reason) = check(dir) {
         tracing::warn!(
+            target: crate::event_ids::RISK_SPOOL_DISABLED,
             spool_dir = %dir.display(),
             %reason,
             "spool folder is not usable; capture continues without a spool, so frames are \
@@ -226,6 +240,7 @@ fn open_spool(
         }
         Err(error) => {
             tracing::warn!(
+                target: crate::event_ids::RISK_SPOOL_DISABLED,
                 spool_dir = %dir.display(),
                 %error,
                 "spool could not be opened; capture continues without a spool, so frames \
@@ -435,6 +450,9 @@ struct Monitor<'a> {
     parse: &'a ParseCounters,
     sink: &'a SinkStats,
     stats: Schedule,
+    /// When the loss and risk check runs: the stats interval, or the rate
+    /// window when snapshots are disabled.
+    alerts_tick: Schedule,
     target: Schedule,
     /// Disabled until a counter publisher starts.
     publish: Schedule,
@@ -446,6 +464,13 @@ struct Monitor<'a> {
     /// Channel capacity, the base of the channel fill counter.
     capacity: usize,
     perf: Option<Box<dyn CounterSink>>,
+    /// The loss and risk checks.
+    alerts: Alerts,
+    /// The spool folder, whose volume the spool risk measures; `None` with
+    /// `--no-spool`.
+    spool_dir: Option<std::path::PathBuf>,
+    /// The free-space probe of the spool volume.
+    free_space: FreeSpace,
 }
 
 impl<'a> Monitor<'a> {
@@ -456,11 +481,28 @@ impl<'a> Monitor<'a> {
         sink: &'a SinkStats,
         now: Instant,
     ) -> Self {
+        let limits = Limits {
+            capacity: config.capacity,
+            jumbo_capacity: config.jumbo_capacity,
+            spool: config.spool.as_ref().map(|spool| SpoolLimits {
+                max: spool.max_bytes(),
+                min_free: spool.min_free_bytes(),
+                segment: segment_bytes_for(spool.max_bytes()),
+            }),
+        };
+        let baseline = Readings::read(capture, parse, sink, None);
         Self {
             capture,
             parse,
             sink,
             stats: Schedule::new(config.stats_interval(), now),
+            alerts_tick: Schedule::new(
+                Some(config.stats_interval().unwrap_or(DEFAULT_RATE_WINDOW)),
+                now,
+            ),
+            alerts: Alerts::new(limits, now, baseline),
+            spool_dir: config.spool.as_ref().map(|spool| spool.dir.clone()),
+            free_space: fsinfo::available_bytes,
             target: Schedule::new(Some(TARGET_CHECK_INTERVAL), now),
             publish: Schedule::new(None, now),
             rate: RateMonitor::new(
@@ -481,6 +523,19 @@ impl<'a> Monitor<'a> {
     fn start_publishing(&mut self, perf: Box<dyn CounterSink>, now: Instant) {
         self.perf = Some(perf);
         self.publish = Schedule::new(Some(PUBLISH_INTERVAL), now);
+    }
+
+    /// Reads the counters and writes the loss and risk events that the change
+    /// since the previous check calls for. At most one event per ID.
+    fn check_alerts(&mut self, now: Instant) {
+        let volume_free = self
+            .spool_dir
+            .as_deref()
+            .and_then(|dir| (self.free_space)(dir).ok());
+        let readings = Readings::read(self.capture, self.parse, self.sink, volume_free);
+        for notice in self.alerts.check(now, &readings) {
+            notice.emit();
+        }
     }
 
     /// Publishes one snapshot of the counters, if a publisher is running.
@@ -538,12 +593,21 @@ fn supervise(
             monitor.rate_warned = true;
             tracing::warn!(events_per_second = rate.round(), "{RATE_WARNING}");
         }
-        // One ETW query per iteration at most, shared by both ticks.
+        // One ETW query per iteration at most, shared by all three ticks.
         let mut queried = false;
-        if monitor.stats.poll(now) {
+        let stats_due = monitor.stats.poll(now);
+        let alerts_due = monitor.alerts_tick.poll(now);
+        if stats_due || alerts_due {
             query_session(capture);
             queried = true;
+        }
+        if stats_due {
             report_snapshot(monitor.capture, monitor.parse, monitor.sink);
+        }
+        // Nothing but the two stop reports is written once shutdown begins. The
+        // loop head checks `stop`; this closes the gap within one iteration.
+        if alerts_due && !stop.load(Ordering::Relaxed) {
+            monitor.check_alerts(now);
         }
         if monitor.publish.poll(now) {
             if !queried {

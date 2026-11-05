@@ -819,3 +819,282 @@ fn the_output_report_carries_the_slow_receiver_signals() {
         assert_eq!(logs.count(field), 2, "{field}: {text}");
     }
 }
+
+/// Supervises for `run_for` with the loss and risk check due every 10 ms, a
+/// healthy sink, and `prepare` applied to the counters after the baseline is
+/// taken. Returns the log text of the supervisor thread and the ETW queries
+/// that ran. With `stopping`, shutdown is requested before supervision starts.
+fn supervise_with_alerts(
+    extra_arguments: &[&str],
+    stopping: bool,
+    prepare: impl FnOnce(&CaptureCounters, &ParseCounters, &SinkStats),
+    free_space: FreeSpace,
+    run_for: Duration,
+) -> (String, u64) {
+    let config = config_from(extra_arguments);
+    let (capture, parse, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+    monitor.alerts_tick = Schedule::new(Some(Duration::from_millis(10)), Instant::now());
+    monitor.free_space = free_space;
+    sink.connected.store(true, Ordering::Relaxed);
+    sink.spool_available.store(true, Ordering::Relaxed);
+    prepare(&capture, &parse, &sink);
+    let done = Arc::new(AtomicBool::new(false));
+    let parser_done = Arc::clone(&done);
+    let parser = thread::spawn(move || {
+        while !parser_done.load(Ordering::Relaxed) {
+            thread::park_timeout(Duration::from_millis(10));
+        }
+        Ok(())
+    });
+    let queries = Arc::new(AtomicU64::new(0));
+    let producer = QueryCountingProducer {
+        queries: Arc::clone(&queries),
+    };
+    let stop = AtomicBool::new(stopping);
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        let reason = supervise(
+            &stop,
+            Some(Instant::now() + run_for),
+            false,
+            &parser,
+            &producer,
+            &mut monitor,
+        );
+        assert_eq!(reason, None);
+    });
+    done.store(true, Ordering::Relaxed);
+    parser.join().expect("parser stub exits").expect("ok");
+    (lines.text(), queries.load(Ordering::SeqCst))
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the free-space probe's function pointer type"
+)]
+fn plenty_of_room(_dir: &Path) -> io::Result<u64> {
+    Ok(u64::MAX)
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the free-space probe's function pointer type"
+)]
+fn almost_no_room(_dir: &Path) -> io::Result<u64> {
+    Ok(1024 * 1024)
+}
+
+const QUIET_FOR: Duration = Duration::from_millis(300);
+
+#[test]
+fn a_loss_is_written_once_when_its_counter_rises_and_not_on_later_ticks() {
+    // About thirty ticks run; only the first sees a change.
+    let (text, queries) = supervise_with_alerts(
+        &[],
+        false,
+        |capture, _parse, _sink| capture.dropped.store(9, Ordering::Relaxed),
+        plenty_of_room,
+        QUIET_FOR,
+    );
+    assert_eq!(text.matches("etw_dnstap::event::11").count(), 1, "{text}");
+    assert!(text.contains("ring_dropped_increase=9"), "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
+    // The default stats interval is not due, so these queries are the loss
+    // check's: it reads fresh ETW counters.
+    assert!(queries >= 2, "{queries} queries");
+}
+
+#[test]
+fn flat_counters_write_nothing_on_any_tick() {
+    let (text, queries) = supervise_with_alerts(
+        &[],
+        false,
+        |_capture, _parse, _sink| {},
+        plenty_of_room,
+        QUIET_FOR,
+    );
+    assert_eq!(text, "");
+    assert!(queries >= 2, "the check ran: {queries} queries");
+}
+
+#[test]
+fn each_cause_is_written_at_most_once_in_a_tick() {
+    let (text, _queries) = supervise_with_alerts(
+        &[],
+        false,
+        |capture, parse, sink| {
+            capture.etw_lost.store(1, Ordering::Relaxed);
+            capture.etw_buffers_lost.store(1, Ordering::Relaxed);
+            capture.dropped.store(1, Ordering::Relaxed);
+            capture.pool_exhausted.store(2, Ordering::Relaxed);
+            capture.pool_exhausted_jumbo.store(1, Ordering::Relaxed);
+            sink.disconnected_dropped.store(1, Ordering::Relaxed);
+            sink.queue_dropped.store(1, Ordering::Relaxed);
+            sink.spool_dropped.store(1, Ordering::Relaxed);
+            sink.spool_dropped_bytes.store(1, Ordering::Relaxed);
+            parse.rejected.store(1, Ordering::Relaxed);
+            parse.schema_rejected.store(1, Ordering::Relaxed);
+            capture.callback_errors.store(1, Ordering::Relaxed);
+        },
+        plenty_of_room,
+        QUIET_FOR,
+    );
+    for id in [10, 11, 12, 13, 14, 15, 16] {
+        let target = format!("etw_dnstap::event::{id}");
+        assert_eq!(text.matches(&target).count(), 1, "{target}: {text}");
+    }
+    assert_eq!(text.lines().count(), 7, "{text}");
+}
+
+#[test]
+fn nothing_is_written_once_shutdown_has_begun() {
+    let (text, queries) = supervise_with_alerts(
+        &[],
+        true,
+        |capture, parse, sink| {
+            capture.dropped.store(9, Ordering::Relaxed);
+            capture.etw_lost.store(9, Ordering::Relaxed);
+            parse
+                .queue_depth_interval_max
+                .store(u64::MAX, Ordering::Relaxed);
+            sink.connected.store(false, Ordering::Relaxed);
+            sink.spool_available.store(false, Ordering::Relaxed);
+        },
+        almost_no_room,
+        QUIET_FOR,
+    );
+    assert_eq!(text, "");
+    assert_eq!(queries, 0, "no check ran");
+}
+
+#[test]
+fn the_check_runs_at_the_stats_interval_or_the_rate_window_when_snapshots_are_off() {
+    let tick_of = |arguments: &[&str]| {
+        let config = config_from(arguments);
+        let (capture, parse, sink) = (
+            CaptureCounters::default(),
+            ParseCounters::default(),
+            SinkStats::default(),
+        );
+        Monitor::new(&config, &capture, &parse, &sink, Instant::now())
+            .alerts_tick
+            .interval
+    };
+    assert_eq!(tick_of(&[]), Some(Duration::from_secs(60)));
+    assert_eq!(
+        tick_of(&["--stats-interval-seconds", "15"]),
+        Some(Duration::from_secs(15))
+    );
+    assert_eq!(
+        tick_of(&["--stats-interval-seconds", "0"]),
+        Some(DEFAULT_RATE_WINDOW)
+    );
+}
+
+#[test]
+fn the_check_still_runs_with_snapshots_off() {
+    let (text, queries) = supervise_with_alerts(
+        &["--stats-interval-seconds", "0"],
+        false,
+        |capture, _parse, _sink| capture.etw_lost.store(3, Ordering::Relaxed),
+        plenty_of_room,
+        QUIET_FOR,
+    );
+    assert_eq!(text.matches("etw_dnstap::event::10").count(), 1, "{text}");
+    assert!(!text.contains("capture stats"), "{text}");
+    assert!(queries >= 1, "{queries}");
+}
+
+#[test]
+fn the_channel_risk_uses_the_deepest_sample_of_the_interval() {
+    let (text, _queries) = supervise_with_alerts(
+        &[],
+        false,
+        |_capture, parse, _sink| {
+            // 80 percent of the default capacity of 131,072 events.
+            parse
+                .queue_depth_interval_max
+                .store(104_858, Ordering::Relaxed);
+        },
+        plenty_of_room,
+        QUIET_FOR,
+    );
+    // Raised on the first tick. The tick takes the peak, so the next one reads
+    // 0 and clears the risk.
+    assert_eq!(text.matches("etw_dnstap::event::20").count(), 1, "{text}");
+    assert_eq!(
+        text.matches("the event channel is no longer near full")
+            .count(),
+        1,
+        "{text}"
+    );
+}
+
+#[test]
+fn the_spool_risk_reads_the_free_space_of_the_spool_volume() {
+    let (text, _queries) = supervise_with_alerts(
+        &[],
+        false,
+        |_capture, _parse, _sink| {},
+        almost_no_room,
+        QUIET_FOR,
+    );
+    assert_eq!(text.matches("etw_dnstap::event::25").count(), 1, "{text}");
+    assert!(text.contains("free_mib=1"), "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
+}
+
+#[test]
+fn the_receiver_down_risk_is_written_once_when_nothing_takes_the_frames() {
+    let (text, _queries) = supervise_with_alerts(
+        &["--no-spool"],
+        false,
+        |_capture, _parse, sink| {
+            sink.connected.store(false, Ordering::Relaxed);
+            sink.spool_available.store(false, Ordering::Relaxed);
+        },
+        plenty_of_room,
+        QUIET_FOR,
+    );
+    assert_eq!(text.matches("etw_dnstap::event::24").count(), 1, "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
+}
+
+#[test]
+fn no_spool_logs_the_disabled_warning_once_at_start() -> Result<()> {
+    let mut run = None;
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        run = Some(run_with_production_sink(&["--no-spool"]));
+    });
+    run.expect("ran")?;
+    let text = lines.text();
+    assert_eq!(text.matches("etw_dnstap::event::26").count(), 1, "{text}");
+    assert!(text.contains("--no-spool"), "{text}");
+    // Nothing else of the loss and risk kinds is written, at start or at stop.
+    assert_eq!(text.matches("etw_dnstap::event::").count(), 1, "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_spool_that_cannot_be_used_uses_the_spool_disabled_id() {
+    let base = crate::spool::test_support::TestDir::new("disabled-id");
+    let settings = SpoolSettings {
+        dir: base.path().join("absent"),
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        let _none = open_spool(
+            &settings,
+            &stats,
+            fsinfo::check_spool_dir,
+            fsinfo::available_bytes,
+        );
+    });
+    assert_eq!(lines.count("etw_dnstap::event::26"), 1, "{}", lines.text());
+}

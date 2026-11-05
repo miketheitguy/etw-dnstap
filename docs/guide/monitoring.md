@@ -12,10 +12,34 @@ unsent frames in segment files. See [Spool](configuration.md#spool). The
 | Event ID | Type | Written for |
 | --- | --- | --- |
 | 1 | Error | A fatal failure at startup or during the run. Text starts with `EtwDnstap failed:`. |
-| 2 | Information | `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, `dnstap link is no longer saturated`, `ETW buffers applied`, `spool in use`, `dnstap spool backlog kept on disk for the next run`, and, in diagnostic builds, `diagnostic settings applied` and `parser timing`. |
-| 3 | Warning | Warnings, such as a lost connection, a rejected event, or `dnstap link is saturated`. Spool messages are in [Spool messages](#spool-messages). |
+| 2 | Information | `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, `dnstap link is no longer saturated`, the "cleared" event of each risk below, `ETW buffers applied`, `spool in use`, `dnstap spool backlog kept on disk for the next run`, and, in diagnostic builds, `diagnostic settings applied` and `parser timing`. |
+| 3 | Warning | Warnings that are not data loss and not a risk of it, such as a rejected event, a failed reconnect, or `performance counters are unavailable`. |
 | 4 | Error | Errors, such as `ETW cleanup failed`. A fatal failure uses Event ID 1. |
 | 5 and 6 | Error | Watchdog expiry (5) or a panic (6), written just before the process aborts. A panic text starts with `EtwDnstap panicked:` and gives the message and location. |
+| 10 | Warning | Data loss in ETW: `etw_lost` or `etw_buffers_lost` rose. |
+| 11 | Warning | Data loss at capacity, event channel: `ring_dropped` rose. |
+| 12 | Warning | Data loss at capacity, pool slots: `pool_exhausted_regular` or `pool_exhausted_jumbo` rose. |
+| 13 | Warning | Data loss on the network path: `disconnected_dropped` or `queue_dropped` rose. |
+| 14 | Warning | Data loss in the spool: `spool_dropped` or `spool_dropped_bytes` rose, and the spool lines that report frames removed, skipped, or refused. |
+| 15 | Warning | Data loss in decoding: `rejected` or `schema_rejected` rose. |
+| 16 | Warning | Data loss inside the service: `callback_errors`, `receiver_disconnected`, or `output_failed_events` rose. |
+| 20 | Warning | Risk: the event channel is near full. |
+| 21 | Warning | Risk: the ETW buffers are near the maximum. |
+| 22 | Warning | Risk: the send queue is near full. |
+| 23 | Warning | Risk: `dnstap link is saturated`. |
+| 24 | Warning | Risk: the receiver is down or unavailable. |
+| 25 | Warning | Risk: the spool is near its size cap, or the volume is near the free-space floor. |
+| 26 | Warning | Risk: no spool is in use (`--no-spool`, an unusable folder, or a spool that did not open). |
+| 27 | Warning | Risk: a spool I/O error. |
+| 28 | Warning | Risk: the ETW statistics query fails, so ETW loss is not visible. |
+
+IDs 10 to 16 say that data was lost. IDs 20 to 28 say that loss is likely or possible.
+Each is a Warning, so a filter on the type still finds them; a filter on Event ID 3 does
+not. See [Loss and risk warnings](#loss-and-risk-warnings).
+
+The messages of every ID are in [Spool messages](#spool-messages),
+[Receiver, schema, and rate messages](#receiver-schema-and-rate-messages), and
+[Loss and risk warnings](#loss-and-risk-warnings).
 
 The service logs information level and above, with no debug events. Event text is cut
 at 8,192 UTF-16 code units. Capture never stops because an event cannot be written.
@@ -53,12 +77,13 @@ actions are in [Spool warnings](troubleshooting.md#spool-warnings).
 | Message | Event ID | Fields | When |
 | --- | --- | --- | --- |
 | `spool in use` | 2 | `spool_dir`, `spool_max_mib`, `spool_min_free_mib`, `leftover_segments`, `leftover_bytes` | Startup. Leftover fields show what an earlier run left. |
-| `spool folder is not usable; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 3 | `spool_dir`, `reason` | Startup, when the folder check fails. |
-| `spool could not be opened; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 3 | `spool_dir`, `error` | Startup, when the folder passes the check but the spool does not open. |
-| `dnstap spool deleted its oldest segment unsent` | 3 | `frames`, `bytes` | The size cap or free-space floor removed a segment that held unsent data. |
-| `dnstap spool discarded unreadable segment data` | 3 | `frames`, `bytes` | Segment data could not be read. |
-| `dnstap spool I/O error` | 3 | `error` | A spool file operation failed. The spool pauses for 10 seconds. |
-| `dnstap spool is refusing blocks: the volume is below the free-space floor and no older segment is left to delete` | 3 | `free_mib`, `needed_mib`, `pause_s` | The volume is below `--spool-min-free-mib` plus one segment, and only the newest segment is left. Refused blocks count in `spool_dropped`. `free_mib` rounds down, and `needed_mib` rounds up. |
+| `spool folder is not usable; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 26 | `spool_dir`, `reason` | Startup, when the folder check fails. |
+| `spool could not be opened; capture continues without a spool, so frames are dropped and counted while the receiver is down` | 26 | `spool_dir`, `error` | Startup, when the folder passes the check but the spool does not open. |
+| `spool is disabled (--no-spool); frames are dropped and counted while the receiver is down, and when the send queue is full` | 26 | none | Startup, once, when `--no-spool` is set. |
+| `dnstap spool deleted its oldest segment unsent` | 14 | `frames`, `bytes` | The size cap or free-space floor removed a segment that held unsent data. |
+| `dnstap spool discarded unreadable segment data` | 14 | `frames`, `bytes` | Segment data could not be read. |
+| `dnstap spool I/O error` | 27 | `error` | A spool file operation failed. The spool pauses for 10 seconds. |
+| `dnstap spool is refusing blocks: the volume is below the free-space floor and no older segment is left to delete` | 14 | `free_mib`, `needed_mib`, `pause_s` | The volume is below `--spool-min-free-mib` plus one segment, and only the newest segment is left. Refused blocks count in `spool_dropped`. `free_mib` rounds down, and `needed_mib` rounds up. |
 | `could not seal the dnstap spool segment` | 3 | `error` | Shutdown, when the active segment cannot take its STOP. |
 | `dnstap spool backlog kept on disk for the next run` | 2 | none | Shutdown, when unsent frames remain in the spool. |
 
@@ -70,17 +95,97 @@ None of these lines logs frame data. Unless a row says otherwise, the repeat rul
 
 | Message | Event ID | Fields | When |
 | --- | --- | --- | --- |
+| `dnstap receiver unavailable at startup; capture is running, and frames go to the spool, or are dropped and counted when no spool is in use, until it connects (retrying with backoff)` | 24 | `receiver`, `error` | Startup, when the first connection fails at the network level. |
+| `dnstap receiver connection lost; frames go to the spool, or are dropped and counted when no spool is in use, until it reconnects (frames already sent are never resent)` | 24 | `receiver`, `error`, `retry_in_ms` | An established session ended. `dnstap receiver reconnected` (ID 2) ends the outage. |
 | `dnstap reconnect failed` | 3 | `receiver`, `error`, `cause`, `failures` | A reconnect attempt failed. `cause` is `connect`, `timeout`, `tls`, or `protocol` (Frame Streams handshake). `failures` counts the run's failed attempts. |
 | `dnstap receiver failed the TLS handshake before the first session; check that the Windows trust store trusts the receiver certificate, that --tls-server-name (or the receiver IP address when it is not set) matches the certificate, and that the receiver does not require a client certificate (this client sends none); retrying with backoff` | 4 | `receiver`, `error`, `cause`, `failures` | Once per run, after a startup outage ended in a TLS rejection. Replaces `dnstap reconnect failed` for that attempt. |
 | `dnstap receiver refused the Frame Streams handshake before the first session; check that the receiver accepts the dnstap content type; retrying with backoff` | 4 | `receiver`, `error`, `cause`, `failures` | Once per run. The same situation as the previous line, for a Frame Streams rejection. |
 | `could not start the dnstap reconnect thread; retrying with backoff` | 3 | `receiver`, `error`, `failures` | The thread for a reconnect attempt did not start. |
 | `dnstap reconnect thread ended without a result; retrying with backoff` | 4 | `receiver`, `failures` | The reconnect thread ended without a result. |
-| `dnstap link is saturated: the spool backlog has grown steadily over the last 10 seconds while the receiver is connected, ...` | 3 | `backlog_bytes`, `oldest_age_ms`, `bytes_sent_per_second` | The spool backlog trended up over 10 samples while the receiver was connected ([rule](#the-saturated-state)): the receiver or the network path takes fewer bytes than the service captures. `bytes_sent_per_second` is the average over those samples. Logged once for each change of state, and not repeated while it holds. See [The receiver is slow](troubleshooting.md#the-receiver-is-slow). |
+| `dnstap link is saturated: the spool backlog has grown steadily over the last 10 seconds while the receiver is connected, ...` | 23 | `backlog_bytes`, `oldest_age_ms`, `bytes_sent_per_second` | The spool backlog trended up over 10 samples while the receiver was connected ([rule](#the-saturated-state)): the receiver or the network path takes fewer bytes than the service captures. `bytes_sent_per_second` is the average over those samples. Logged once for each change of state, and not repeated while it holds. See [The receiver is slow](troubleshooting.md#the-receiver-is-slow). |
 | `dnstap link is no longer saturated` | 2 | `backlog_bytes`, `oldest_age_ms`, `bytes_sent_per_second`, `reason` | The state ended. `reason` is `the backlog is empty` or `the backlog stopped growing` (not larger than 10 samples ago). |
 | `DNS event schema load failed; its events are rejected until the load is retried` | 3 | `event_id`, `version`, `failures`, `retry_after_events` (65,536) | Windows could not return the event schema (a Win32 error from `TdhGetEventInformation` follows the message). Logged per (event ID, version) key. |
 | `DNS event schema is unsupported and its events are rejected` | 3 | `event_id`, `version` | The metadata loaded, but this program cannot decode it. Logged once per key and not retried. It can repeat after the rejected-key list (8 entries) is cleared, or when a retry fails as unsupported. |
 | `rejected ETW event; the first four and then every 60th are logged, all are counted` | 3 | `error`, `rejected` | The parser rejected an event. `rejected` is the running count. |
 | `received rate is above 440,000 events/s; the default buffer settings were validated at about 400,000 events/s (200,000 queries per second); if ring_dropped or etw_lost increase, raise --capacity and --etw-max-buffers, for example --etw-max-buffers 256 --capacity 262144` | 3 | `events_per_second` | Once per run, with the default buffer settings, at the end of the first measurement window above 440,000 events per second. See [Rate warning](troubleshooting.md#rate-warning). |
+
+## Loss and risk warnings
+
+The service writes a warning with its own Event ID when data was lost, and another when
+loss is likely or possible. An alert rule can then act on the ID alone. The messages
+contain no frame data and no host path.
+
+**How the checks run.**
+
+- The supervisor checks on its stats tick: every `--stats-interval-seconds`, or every 60
+  seconds when that is `0`. Each check first asks ETW for its loss counters, so the checks
+  work with snapshots off. With a long interval a check is late by up to that interval,
+  and the 60-second peaks (`send_queue_depth_max`) can miss a peak older than a minute.
+- A loss event compares the counters with the previous check, not with zero. A quiet
+  interval writes nothing. The first check covers the time since capture started.
+- Every check writes at most one event for each ID.
+- A loss event gives the increase since the previous check (`<counter>_increase`), the run
+  total (`<counter>`), and `seconds`, the time that the check covers. It lists only the
+  counters that rose.
+- A risk is edge-triggered. The warning is written when the condition starts and is not
+  repeated while it holds. When it ends, an Information event (ID 2) says so. A
+  percentage risk clears 10 points below the level that raised it, so a value that sits
+  on the threshold does not flip.
+- Nothing is written once shutdown has begun. The only entries at stop are
+  `capture stopped` and `output stopped`. The checks only read counters: they never change
+  capture, parsing, or sending, and a receiver problem never stops the service.
+- A line that reports a loss as it happens (a spool eviction, for example) is written when
+  it happens, not on the tick, and it keeps its repeat rule from
+  [Spool messages](#spool-messages).
+
+### Loss warnings
+
+Each row is a Warning. `Fields` lists the counters of the row that can appear; only the
+ones that rose do. Every row also has `seconds`. For causes and actions, see
+[Event IDs for data loss](troubleshooting.md#event-ids-for-data-loss).
+
+| Message starts with | Event ID | Fields | Written when | What to do |
+| --- | --- | --- | --- | --- |
+| `data loss in ETW` | 10 | `etw_lost_increase`, `etw_lost`, `etw_buffers_lost_increase`, `etw_buffers_lost` | `etw_lost` or `etw_buffers_lost` rose. ETW dropped events or buffers before the service read them. | Raise `--etw-max-buffers` and `--etw-buffer-kib`. Check for CPU starvation. See [tuning.md](tuning.md#defaults). |
+| `data loss at capacity: the event channel was full` | 11 | `ring_dropped_increase`, `ring_dropped`, `capacity` | `ring_dropped` rose. | Raise `--capacity`. |
+| `data loss at capacity: no pool slot was free` | 12 | `pool_exhausted_regular_increase`, `pool_exhausted_regular`, `pool_exhausted_jumbo_increase`, `pool_exhausted_jumbo`, `jumbo_capacity` | `pool_exhausted_regular` or `pool_exhausted_jumbo` rose. | Raise `--capacity` for regular slots. Raise `--jumbo-capacity` for jumbo slots. |
+| `data loss on the network path` | 13 | `disconnected_dropped_increase`, `disconnected_dropped`, `queue_dropped_increase`, `queue_dropped` | `disconnected_dropped` rose (frames lost when a connection failed or the receiver was down, and no spool took them) or `queue_dropped` rose (send queue full). | Check the receiver, the network, and `spool_available`. See [The receiver is down](troubleshooting.md#the-receiver-is-down-or-unreachable) and [The receiver is slow](troubleshooting.md#the-receiver-is-slow). |
+| `data loss in the spool` | 14 | `spool_dropped_increase`, `spool_dropped`, `spool_dropped_bytes_increase`, `spool_dropped_bytes` | `spool_dropped` or `spool_dropped_bytes` rose: the spool removed, skipped, or refused data unsent (size cap, free-space floor, unreadable data, or an I/O error). | Free disk space, or raise `--spool-max-mib`. See [Spool warnings](troubleshooting.md#spool-warnings) and [Spool sizing](tuning.md#spool-sizing). |
+| `data loss in decoding` | 15 | `rejected_increase`, `rejected`, `schema_rejected_increase`, `schema_rejected` | `rejected` or `schema_rejected` rose: events arrived and no frame was encoded. | Read the `rejected ETW event` and schema warnings (ID 3). See [Rejected events](troubleshooting.md#rejected-events). |
+| `data loss inside the service` | 16 | `callback_errors_increase`, `callback_errors`, `receiver_disconnected_increase`, `receiver_disconnected`, `output_failed_events_increase`, `output_failed_events` | `callback_errors`, `receiver_disconnected` (the parser end of the event channel, not TCP), or `output_failed_events` rose. | Report it with the steps that led to it. See [restarts](troubleshooting.md#the-service-keeps-restarting). |
+
+Each counter feeds one ID. An ID 11 or ID 12 increase is part of `intake_dropped`: do not
+add it to that counter ([Counter relationships](#counter-relationships)).
+
+The spool lines that report removed, skipped, or refused data
+(`dnstap spool deleted its oldest segment unsent`, `dnstap spool discarded unreadable
+segment data`, and `dnstap spool is refusing blocks`) also carry ID 14, because they report
+loss. They keep their own fields and repeat rule.
+
+### Risk warnings
+
+Each row is a Warning when raised. When it ends, an Information event (ID 2) with the
+message in the last column says so, unless the row says otherwise.
+
+| Message starts with | Event ID | Fields | Raised when | Cleared by (ID 2) | What to do |
+| --- | --- | --- | --- | --- | --- |
+| `the event channel is near full` | 20 | `channel_peak`, `capacity`, `percent` | The deepest channel depth that the parser sampled since the previous check is at least 80 percent of `--capacity`. It clears below 70 percent. | `the event channel is no longer near full` | Raise `--capacity`. The next step is `ring_dropped` (ID 11). |
+| `the ETW buffers are near the maximum` | 21 | `etw_buffers_allocated`, `etw_buffers_maximum`, `percent` | Allocated buffers are at least 90 percent of the maximum that ETW applied. It clears below 80 percent. It needs a known maximum (a successful ETW query). | `the ETW buffers are no longer near the maximum` | Raise `--etw-max-buffers`. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
+| `the send queue is near full` | 22 | `send_queue_depth_max`, `send_queue_blocks` (256), `percent` | `send_queue_depth_max` (the peak of the last 60 seconds) is at least 80 percent of the queue, which is 205 of 256 blocks. It clears below 70 percent. | `the send queue is no longer near full` | The spool disk is slow or the router thread did not run. See [The receiver is slow](troubleshooting.md#the-receiver-is-slow). |
+| `dnstap link is saturated` | 23 | `backlog_bytes`, `oldest_age_ms`, `bytes_sent_per_second` | See [The saturated state](#the-saturated-state). This is the message that earlier versions wrote as Event ID 3. | `dnstap link is no longer saturated` | See [The receiver is slow](troubleshooting.md#the-receiver-is-slow). |
+| `dnstap receiver unavailable at startup` and `dnstap receiver connection lost` | 24 | See [Receiver, schema, and rate messages](#receiver-schema-and-rate-messages) | The receiver is not connected. With a spool the frames wait on disk. These two lines are written when the outage starts, not on the tick. | `dnstap receiver reconnected` | See [The receiver is down](troubleshooting.md#the-receiver-is-down-or-unreachable). |
+| `the dnstap receiver is down and no spool takes frames` | 24 | `receiver_connected` (`false`), `spool_available` (`false`) | At a check, `receiver_connected` is `false` and `spool_available` is `false`: with `--no-spool`, an unusable spool, or a paused spool. **Frames are being lost** and counted in `disconnected_dropped` (ID 13). Written once for each outage. | `frames are no longer dropped for a receiver outage` | Restore the receiver. Run with a spool. See [Spool warnings](troubleshooting.md#spool-warnings). |
+| `the spool is near its limit` | 25 | `spool_mib`, `spool_max_mib`, `free_mib`, `needed_mib` | The spool holds at least 80 percent of `--spool-max-mib`, or the free space of the spool volume is less than `--spool-min-free-mib` plus 2 segments (`needed_mib` is the floor: the minimum plus 1 segment). It clears below 70 percent, and at 3 segments above the minimum. Checked only while a spool is in use. `free_mib` is missing when the probe fails. | `the spool is no longer near its limit` | Free disk space, or raise `--spool-max-mib`. At the limit the spool deletes its oldest data (ID 14). See [Spool sizing](tuning.md#spool-sizing). |
+| `spool is disabled`, `spool folder is not usable`, and `spool could not be opened` | 26 | `spool_dir`, `reason` or `error` (not for `spool is disabled`) | Startup, once for each run. No spool is in use, so any receiver outage loses frames. | none | Remove `--no-spool`, or fix the folder. See [Spool warnings](troubleshooting.md#spool-warnings). |
+| `dnstap spool I/O error` | 27 | `error` | A spool file operation failed. The spool pauses for 10 seconds, and blocks in that time may be refused (ID 14). Written when it happens, with the repeat rule of [Spool messages](#spool-messages). | none | Check the disk, programs that lock the folder, and its ACL. |
+| `the ETW statistics query is failing` | 28 | `etw_stats_errors_increase`, `etw_stats_errors` | A query failed in the interval and the last query did not succeed. Until it works, `etw_lost` and the buffer counts are stale, so ID 10 and ID 21 cannot fire. | `the ETW statistics query works again` | Check that the session is running. See [ETW consumer and session warnings](troubleshooting.md#etw-consumer-and-session-warnings). |
+
+What a risk does not cover:
+
+- Bytes that the kernel accepted before a connection failed are lost without a count.
+  The `dnstap receiver connection lost` line (ID 24) marks every such failure.
+- `intake_dropped`, `queue_dropped`, and the other counters stay the source of truth for
+  how much was lost. The events say that, and why.
 
 ## Capture counters
 
@@ -166,7 +271,7 @@ whole segment is deleted. The trend spans 10 samples, so it is at least 10 secon
 
 - **Set.** The backlog is larger than 10 samples ago, and at least 7 of the 10 steps
   between samples rose, with the receiver connected. The service logs
-  `dnstap link is saturated` (Event ID 3).
+  `dnstap link is saturated` (Event ID 23).
 - **Clear.** The backlog is empty (at once), or it is no longer larger than 10 samples ago.
   The service logs `dnstap link is no longer saturated` (Event ID 2).
 - **Held.** While the receiver is down, while an I/O error pauses spool reads, and after
@@ -378,6 +483,8 @@ These thresholds are not tested on a host.
 | `% Channel Used` above 75 | In the 200,000 queries-per-second runs, ring drops followed the channel reaching `--capacity`. |
 | `% ETW Buffers Used` above 75 | In those runs, `etw_lost` followed buffers in use reaching the maximum. |
 | Any increase in `Events Dropped`, `ETW Events Lost`, `Receiver Down Drops`, `Send Queue Drops`, or `Spool Dropped Frames` | Loss totals. Each stays at 0 under normal load. |
+| An Application log event with Event ID 10 to 16 | The service itself saw a loss total rise. See [Loss warnings](#loss-warnings). |
+| An Application log event with Event ID 20 to 28 | Loss is likely or possible. See [Risk warnings](#risk-warnings). |
 | `Receiver Connected` at 0 | Session down. With a spool, `Spool Bytes` rises. Without one, frames count in `Receiver Down Drops`. |
 | `Spool Available` at 0 | No spool in use, or paused. Frames the receiver does not take count in `Receiver Down Drops` or `Spool Dropped Frames`. |
 | `Spool Bytes` near `--spool-max-mib` during an outage | Oldest data is near deletion. Compare with [Spool sizing](tuning.md#spool-sizing). |
