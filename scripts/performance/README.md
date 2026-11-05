@@ -187,6 +187,7 @@ Host-side analysis (each has argparse `--help` and a module docstring with its p
   `python -m venv target/plot-venv`, `target/plot-venv/Scripts/pip install -r scripts/performance/requirements.txt`, then
   `target/plot-venv/Scripts/python scripts/performance/plot-tier-runs.py --runs <runs-root> --out docs/assets/performance [--tier 10000]`.
   Loss percent is lost events over events offered (events received plus `etw_lost`); `etw_buffers_lost` (buffers) and `spooled` (diverted) are drawn but not counted.
+  A run whose `run.json` has `"tier_summary": false` (for example a warning check with deliberately small settings) gets its run PNG but stays out of the tier PNG.
   Test: `python -I scripts/performance/test_plot_tier_runs.py` with the same venv (fixture in `testdata/plot-tier-runs/`).
 - Parser-ramp campaign: `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `verify-parser-ramp-archive.py`.
 - Receiver archive: `count-receiver-archive.py`, `verify-receiver-archive.py`.

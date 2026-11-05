@@ -101,6 +101,27 @@ class RenderTests(unittest.TestCase):
                 self.assertTrue(data.startswith(PNG_MAGIC), path.name)
                 self.assertGreater(len(data), 10_000, path.name)
 
+    def test_run_marked_out_of_tier_summary_gets_only_its_own_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            for name in ("t10k-busy-r1", "t10k-idle-r1"):
+                (runs / name).mkdir(parents=True)
+                for f in ("run.json", "timeseries.csv"):
+                    (runs / name / f).write_bytes((FIXTURE / name / f).read_bytes())
+            meta_path = runs / "t10k-busy-r1" / "run.json"
+            meta = ptr.json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["tier_summary"] = False
+            meta_path.write_text(ptr.json.dumps(meta), encoding="utf-8")
+            seen = []
+            real = ptr.render_tier
+            ptr.render_tier = lambda qps, entries, out: seen.extend(i["id"] for i, _ in entries)
+            try:
+                written = ptr.render_all(runs, Path(tmp) / "png")
+            finally:
+                ptr.render_tier = real
+            self.assertIn("t10k-busy-r1.png", [p.name for p in written])
+            self.assertEqual(seen, ["t10k-idle-r1"])
+
     def test_tier_filter(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit):

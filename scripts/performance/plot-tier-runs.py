@@ -3,6 +3,8 @@
 Input is a folder per run, ``<runs-root>/<run-id>/``, with ``run.json`` and a
 one-row-per-second ``timeseries.csv`` (see the README for the columns).  Output
 is ``<run-id>.png`` for every run and ``tier-<qps>.png`` for every tier.
+A run whose ``run.json`` has ``"tier_summary": false`` (a warning check run with
+deliberately small settings) gets its own graph but is left out of the tier graph.
 
 Loss percent is lost events divided by events offered: the events the service received
 (the sum of ``events_received_per_s``, which includes events dropped later) plus the events
@@ -286,7 +288,12 @@ def render_run(run: Run, out: Path) -> dict:
 def render_tier(qps: int, entries: list[tuple[dict, dict]], out: Path) -> None:
     """Write the summary PNG for one tier.  ``entries`` is [(summary, run meta)]."""
     entries = sorted(entries, key=lambda e: e[0]["id"])
-    labels = [f"{i['id']}\n{m.get('busy_threads', '?')} busy" for i, m in entries]
+    def label(info: dict, meta: dict) -> str:
+        cap = meta.get("settings", {}).get("capacity")
+        cap_text = f"cap {cap:,}" if isinstance(cap, int) else "cap ?"
+        return f"{info['id']}\n{cap_text}, {meta.get('busy_threads', '?')} busy"
+
+    labels = [label(i, m) for i, m in entries]
     x = np.arange(len(entries))
 
     def nz(v: float) -> float:
@@ -333,7 +340,7 @@ def render_tier(qps: int, entries: list[tuple[dict, dict]], out: Path) -> None:
         d.set_title("Loss by failure point", loc="left", fontsize=12)
         d.legend(loc="upper left", ncol=6)
         for ax in (a, b, d):
-            ax.set_xticks(x, labels)
+            ax.set_xticks(x, labels, fontsize=9)
             ax.grid(axis="x", visible=False)
         out.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out, dpi=DPI, metadata=PNG_META)
@@ -353,8 +360,10 @@ def render_all(runs_root: Path, out_dir: Path, tier: int | None = None) -> list[
         if tier is not None and qps != tier:
             continue
         path = out_dir / f"{run.id}.png"
-        tiers[qps].append((render_run(run, path), run.meta))
+        info = render_run(run, path)
         written.append(path)
+        if run.meta.get("tier_summary", True):
+            tiers[qps].append((info, run.meta))
     for qps, entries in sorted(tiers.items()):
         path = out_dir / f"tier-{qps}.png"
         render_tier(qps, entries, path)

@@ -1359,3 +1359,455 @@ channel will do.
   checkpoints. Restoring `capacity512k-pre-2026-11-04` or `etw64k-pre-2026-11-04` on
   `DNSTap-WS2025` returns the 12 vCPU, 8 GiB guest. Any older checkpoint, including
   `sizing-200k-pre-2026-11-04`, returns it to 6 vCPUs and 4 GiB.
+
+## Default and tier sizing runs on 12 vCPUs (2026-11-04)
+
+A sixth lab run on the same day, on repository HEAD `f070a41` ("Report the CPU use of each pipeline
+stage"). The earlier runs sized the limits for 200,000 QPS and 100,000 QPS. The question now: **what
+should the defaults be for 10,000 QPS, and what settings do we recommend (not set as defaults) for
+50,000, 100,000, and 200,000 QPS?** Each answer comes with per-second data, so graphs can show the
+dns.exe CPU, the service CPU for each pipeline stage, and the loss at each failure point. The run also
+checks that the new loss warnings (Event IDs 10 to 16) and risk warnings (Event IDs 20 to 28) fire
+with the right ID.
+
+**Result in one line:**
+
+| Load | ETW buffers (`--etw-buffer-kib` / `--etw-min-buffers` / `--etw-max-buffers`) | `--capacity` | Evidence |
+| --- | --- | --- | --- |
+| 10,000 QPS (default) | 32 / 12 / 64 | 131,072 | 5 runs (3 idle, 2 with 12 busy threads): `etw_lost` 0, `ring_dropped` 0. At most 28 of 64 buffers allocated (44 %). Peak channel depth 35,072 (27 %). |
+| 50,000 QPS (recommended) | 128 / 12 / 128 | 131,072 | 4 of 4 runs with no drop. Peak channel depth 70,323 (54 %). |
+| 100,000 QPS (recommended) | 128 / 12 / 128 | 524,288 | 4 of 4 runs with no drop. Peak channel depth 251,438 (48 %). |
+| 200,000 QPS (recommended) | 128 / 12 / 128 | 262,144 | 4 of 4 runs with no drop. Peak channel depth 136,236 (52 %). At 131,072 the busy run dropped 63,443 events. |
+
+Warnings: 12 of the 16 loss and risk IDs fired with the right ID and level (10, 11, 13, 14, 20, 21,
+22, 23, 24, 25, 26, 27). IDs 12, 15, 16, and 28 were not triggered (no safe way). No loss or risk
+warning was written after the service began to stop, in 4 runs that stopped the service during an
+outage or an active loss.
+
+The raw data is lab evidence under `target/performance/tiers-20261104/`. It is not in the repository.
+Every run has its own folder `runs/<run-id>/` with `run.json`, `timeseries.csv` (1 s rows, from 10 s
+before the load to the end of the 20 s tail), `events.csv` (the Event Log entries of the run), and
+`summary.json`. A plotting script can read the first three. The driver, converter, and table scripts
+are in `scripts/` of the same folder.
+
+### Graphs
+
+`scripts/performance/plot-tier-runs.py` drew one graph per run and one per tier from the
+`runs/<run-id>/` folders. They are in
+[`docs/assets/performance/tiers-2026-11-04/`](../assets/performance/tiers-2026-11-04/). A run graph
+shows dns.exe CPU, the service CPU for each pipeline stage (ETW consumer, parser, sender, link), the
+loss per second at each failure point, and the fill of the event channel, the send queue, and the ETW
+buffers. A tier graph compares the runs of one tier: dns.exe CPU (mean and maximum), the mean CPU of
+each stage, and the loss by failure point. The warning checks (`w01` to `w11`) have run graphs only;
+their `run.json` has `"tier_summary": false`, so they are not in the tier graphs.
+
+| Tier | Tier graph | Run graphs |
+| --- | --- | --- |
+| 10,000 QPS (default) | [tier-10000.png](../assets/performance/tiers-2026-11-04/tier-10000.png) | [p01](../assets/performance/tiers-2026-11-04/p01-b32x64-cap131k-idle-10k.png), [p02](../assets/performance/tiers-2026-11-04/p02-b32x64-cap131k-idle-10k-r2.png), [p03](../assets/performance/tiers-2026-11-04/p03-b32x64-cap131k-busy12-10k.png), [p04](../assets/performance/tiers-2026-11-04/p04-b32x64-cap131k-idle-10k-r3.png), [p05](../assets/performance/tiers-2026-11-04/p05-b32x64-cap131k-busy12-10k-r2.png) |
+| 50,000 QPS | [tier-50000.png](../assets/performance/tiers-2026-11-04/tier-50000.png) | [busy12](../assets/performance/tiers-2026-11-04/t50-c131k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t50-c131k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t50-c131k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t50-c131k-idle-r3.png) |
+| 100,000 QPS | [tier-100000.png](../assets/performance/tiers-2026-11-04/tier-100000.png) | [busy12](../assets/performance/tiers-2026-11-04/t100-c524k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t100-c524k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t100-c524k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t100-c524k-idle-r3.png) |
+| 200,000 QPS | [tier-200000.png](../assets/performance/tiers-2026-11-04/tier-200000.png) | 131,072: [busy12](../assets/performance/tiers-2026-11-04/t200-c131k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t200-c131k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t200-c131k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t200-c131k-idle-r3.png); 262,144: [busy12](../assets/performance/tiers-2026-11-04/t200-c262k-busy12.png), [idle r1](../assets/performance/tiers-2026-11-04/t200-c262k-idle-r1.png), [r2](../assets/performance/tiers-2026-11-04/t200-c262k-idle-r2.png), [r3](../assets/performance/tiers-2026-11-04/t200-c262k-idle-r3.png) |
+| Warning checks | none | [w01](../assets/performance/tiers-2026-11-04/w01-cap1024-50k.png), [w02](../assets/performance/tiers-2026-11-04/w02-etw4k-max24-200k.png), [w03](../assets/performance/tiers-2026-11-04/w03-spool64-outage-50k.png), [w04](../assets/performance/tiers-2026-11-04/w04-spool64-tbf40-50k.png), [w05](../assets/performance/tiers-2026-11-04/w05-nospool-outage-50k.png), [w06](../assets/performance/tiers-2026-11-04/w06-nospool-tbf40-50k.png), [w07](../assets/performance/tiers-2026-11-04/w07-spooldeny-outage-50k.png), [w08](../assets/performance/tiers-2026-11-04/w08-spool64-stop-in-outage-50k.png), [w09](../assets/performance/tiers-2026-11-04/w09-nospool-stop-in-outage-50k.png), [w10](../assets/performance/tiers-2026-11-04/w10-etw4k-max24-stop-in-loss-200k.png), [w11](../assets/performance/tiers-2026-11-04/w11-cap1024-stop-in-loss-50k.png) |
+
+![200,000 QPS tier: dns.exe CPU, service CPU by stage, and loss by failure point for the 8 runs at 131,072 and 262,144](../assets/performance/tiers-2026-11-04/tier-200000.png)
+
+### Method
+
+| Item | This run |
+| --- | --- |
+| Guest | `DNSTap-WS2025`, 12 vCPUs, 8 GiB static. Not resized. |
+| Checkpoints | New `tiers-pre-2026-11-04` on both guests, taken before any change. It holds the 12 vCPU, 8 GiB guest. All earlier checkpoints kept. No older checkpoint was restored. |
+| Build | HEAD `f070a41`, built with `scripts/build/Build-Msi.ps1` (the log shows the executable was compiled in this run; no build ran during a measured run). MSI SHA-256 `E773C2196DD9576202290605C94794A70E8F5726922535165274103ECF5DAB5E`, executable SHA-256 `3487CE7876B12AA258525C23F8AA375507A66E2088C4C89DF07CF186F137C12A`. The first install used the three MSI properties (exit 3010, guest restarted). Every later change of `SERVICE_ARGS` used `REINSTALL=ALL REINSTALLMODE=vomus` with all three properties, then a restart. 14 restarts in all. |
+| Options | Explicit in `SERVICE_ARGS` for every configuration: `--plaintext --stats-interval-seconds 5 --etw-buffer-kib K --etw-min-buffers N --etw-max-buffers M --etw-flush-seconds 1 --capacity C`, plus `--spool-max-mib 64`, `--no-spool`, or none for the warning checks. |
+| Settings applied | `capture started` showed `capacity`, `etw_buffer_kib`, `etw_min_buffers`, `etw_max_buffers` as set. `ETW buffers applied` showed `etw_min_buffers_applied=24` for a request of 12 (and for 0): ETW applies 2 buffers for each of the 12 CPUs as the minimum. So the idle allocation is 24 buffers. |
+| New counters | `typeperf -q EtwDnstap` lists "Stage CPU ETW Consumer", "Parser", "Sender", "Link" (IDs 69, 71, 73, 75) and the four "Stage CPU Time" counters (77 to 80). The counter set has 50 counters. All were sampled each second. |
+| Sampling | One `typeperf` reads `\EtwDnstap(*)\*` every second. A second reads `\Process(dns)\% Processor Time`, `\Process(etw-dnstap)\% Processor Time`, and the system CPU and queue. A third reads memory and the working set of the service. The receiver is sampled each second with `ss -tin` (bytes received). The client writes its own per-second `metrics.jsonl`. The samplers start about 10 s before the load. The rows of `timeseries.csv` take, for each second, the nearest sample (within 1.1 s). Time 0 is the client start. |
+| Load | `dns-stress`, authoritative mode, 60 s load and 20 s tail (30 s load for the warning checks). Threads: 1 for 10,000 QPS (the client kept the rate: 0 low seconds in 5 runs, 9,993 to 10,006 queries a second), 4 for 50,000, 8 for 100,000, 16 for 200,000. Each query makes 2 events. |
+| Busy load | 12 `powershell.exe` processes running `while($true){}` at normal priority, from 3 s before the load to the load end. |
+| Link | Unshaped, except in the warning checks that say so. The receiver record before the first run showed no qdisc and no filter. |
+| Stall seconds | Same rule as the earlier sections: a 1 s sample from 3 s into the load to its end with `Events Received/sec` below half of the nominal rate. |
+| Peak channel depth | The maximum of the `Channel Peak Depth` counter. It is a lower bound (the parser samples it). |
+| Send queue | The only send queue depth counter is `Send Queue Peak Depth`, the peak of the last 60 s. The `send_queue_depth` column holds it. |
+
+Receiver checks: the collector config has only the `devnull` logger, and the unit has
+`StandardOutput=null` and `StandardError=null`. The record taken at the start matched the one of the
+previous section line for line. Delivery was counted from `ss -tin` `bytes_received` (103.015 bytes a
+frame). The collector wrote nothing.
+
+Run IDs: `p01` to `p05` are the 10,000 QPS probe runs. `t50-`, `t100-`, and `t200-` are the tier
+runs (`c131k`, `c262k`, `c524k` give the capacity). `w01` to `w11` are the warning checks.
+
+### 10,000 QPS: the default search
+
+The brief set the steps. Step 1, the probe: `--etw-buffer-kib 32 --etw-min-buffers 12
+--etw-max-buffers 64 --capacity 131072`, idle and with 12 busy threads. Step 2, ETW: if allocated
+buffers reached 75 % of 64 (48), or `etw_lost` was above 0, raise to 128 buffers. Step 3, capacity:
+start at the smallest power of two at or above 2 times the largest peak channel depth (at least
+16,384), run 3 idle and 1 busy run, and double on any drop up to 131,072.
+
+The probe needed two idle runs and one busy run. The capacity step starts at 131,072 (see below), which
+is the probe's own capacity with the same ETW settings. So the probe runs counted toward step 3, and I
+added `p04` (idle) and `p05` (busy) to make 3 idle and 2 busy runs. There was no reinstall between the
+two steps.
+
+| Run | Busy | Encoded | `etw_lost` | `etw_buffers_lost` | `ring_dropped` | Peak channel depth | ETW allocated / in use (peak) | Stall s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| p01-b32x64-cap131k-idle-10k | 0 | 1,200,000 | 0 | 0 | 0 | 11,461 | 24 / 5 | 4 |
+| p02-b32x64-cap131k-idle-10k-r2 | 0 | 1,200,000 | 0 | 0 | 0 | 5,324 | 24 / 4 | 0 |
+| p03-b32x64-cap131k-busy12-10k | 12 | 1,199,998 | 0 | 0 | 0 | 35,072 | 28 / 12 | 10 |
+| p04-b32x64-cap131k-idle-10k-r3 | 0 | 1,199,996 | 0 | 0 | 0 | 8,337 | 24 / 4 | 2 |
+| p05-b32x64-cap131k-busy12-10k-r2 | 12 | 1,199,998 | 0 | 0 | 0 | 34,038 | 28 / 13 | 5 |
+
+Step 2 (ETW). The most buffers allocated was 28 of 64 (44 %), in the busy runs. That is below the 48
+that would trigger a change. `etw_lost` and `etw_buffers_lost` were 0 in all five runs. The idle runs
+sat at 24, the ETW minimum on 12 vCPUs. At most 13 buffers were in use. So the smallest setting with
+`etw_lost` 0 and allocated at most 50 % of the maximum is the probe setting: **32 KiB, 12, 64**.
+
+Step 3 (capacity). The largest peak depth was 35,072 events (`p03`). Twice that is 70,144. The smallest
+power of two at or above it is 131,072, which is also the stopping size. No run had `ring_dropped` or
+`intake_dropped` above 0, so the first size with no drop in all runs is **131,072**. The peak depth in
+the busy runs was 27 % and 26 % of the channel, a factor of 3.7 below the limit. I did not test 65,536
+or less, because the rule starts at 131,072.
+
+Per-run detail of the 10,000 QPS runs. Link unshaped, 60 s load. The CPU columns are percent of one CPU
+(100 is one core). The service reads thread time in 15.6 ms clock ticks, so a single stage reading is
+a multiple of about 1.5 at this load. Only the means mean much here.
+
+| Run | Busy | Encoded | Delivered (gap) | Dropped by stage | Loss % | Stall s | Events/s mean (min) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| p01-b32x64-cap131k-idle-10k | 0 | 1,200,000 | 1,200,003 (+3) | 0 | 0.000 | 4 | 20,232 (1,239) |
+| p02-b32x64-cap131k-idle-10k-r2 | 0 | 1,200,000 | 1,200,003 (+3) | 0 | 0.000 | 0 | 20,097 (14,548) |
+| p03-b32x64-cap131k-busy12-10k | 12 | 1,199,998 | 1,200,001 (+3) | 0 | 0.000 | 10 | 19,931 (0) |
+| p04-b32x64-cap131k-idle-10k-r3 | 0 | 1,199,996 | 1,199,999 (+3) | 0 | 0.000 | 2 | 20,043 (0) |
+| p05-b32x64-cap131k-busy12-10k-r2 | 12 | 1,199,998 | 1,200,001 (+3) | 0 | 0.000 | 5 | 20,361 (0) |
+
+| Run | Peak channel depth (% of capacity) | Peak send queue (of 256) | ETW buffers allocated / in use, peak (max) | dns.exe CPU % mean (max) | Service CPU % mean (max) | ETW consumer | Parser | Sender | Link | Working set peak MB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| p01-b32x64-cap131k-idle-10k | 11,461 (9 %) | 70 | 24 / 5 (64) | 21.9 (42) | 1.3 (6) | 0.5 (2) | 0.6 (3) | 0.0 (0) | 0.1 (2) | 371 |
+| p02-b32x64-cap131k-idle-10k-r2 | 5,324 (4 %) | 34 | 24 / 4 (64) | 19.3 (34) | 1.2 (3) | 0.6 (2) | 0.5 (2) | 0.0 (0) | 0.1 (2) | 365 |
+| p03-b32x64-cap131k-busy12-10k | 35,072 (27 %) | 56 | 28 / 12 (64) | 33.5 (58) | 1.4 (6) | 0.6 (3) | 0.7 (2) | 0.0 (2) | 0.1 (2) | 369 |
+| p04-b32x64-cap131k-idle-10k-r3 | 8,337 (6 %) | 64 | 24 / 4 (64) | 20.3 (45) | 1.0 (5) | 0.4 (2) | 0.4 (3) | 0.1 (2) | 0.0 (2) | 373 |
+| p05-b32x64-cap131k-busy12-10k-r2 | 34,038 (26 %) | 54 | 28 / 13 (64) | 31.2 (52) | 1.3 (5) | 0.5 (2) | 0.7 (2) | 0.1 (2) | 0.0 (1) | 366 |
+
+| Run | Stall seconds (events/s) |
+| --- | --- |
+| p01-b32x64-cap131k-idle-10k | 4: 6 s (1,260), 33 s (1,239), 38 s (3,131), 48 s (6,285) |
+| p02-b32x64-cap131k-idle-10k-r2 | 0 |
+| p03-b32x64-cap131k-busy12-10k | 10: 9 s (8), 18 s (748), 28 s (0), 32 s (1,441), 38 s (0), 40 s (7,237), 43 s (9,283), 47 s (0), 54 s (8,929), 57 s (0) |
+| p04-b32x64-cap131k-idle-10k-r3 | 2: 37 s (0), 44 s (2,220) |
+| p05-b32x64-cap131k-busy12-10k-r2 | 5: 11 s (0), 12 s (5,403), 22 s (7,982), 38 s (7,738), 46 s (8,032) |
+
+At 10,000 QPS the service uses about 1.0 to 1.4 % of one CPU (about 0.6 for the parser and 0.5 for
+the ETW consumer). dns.exe uses 19 to 22 % idle and 31 to 34 % with the busy threads. The stall
+seconds under the busy load are partly a sampling effect. The `typeperf` reader runs on the same busy
+guest, so some of its 1 s intervals are late. A low value sits next to a high one (in `p03`, 8 s reads
+32,755 events, 9 s reads 8, and 10 s reads 14,841). The receiver rate (`rx_mbps`) stays near 16.5 Mbit/s
+through the same seconds.
+
+### Tier runs
+
+All tier runs use `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128`. Each tier got 3
+idle runs and 1 run with 12 busy threads. The rule for the recommended capacity: the first size with no
+drop in all 4 runs. Link unshaped, 60 s load, `spool_dropped` 0, `disconnects` 0, `link_saturated` 0,
+`etw_lost` 0, `queue_dropped` 0 and `spooled` 0 in every tier run. Stop and FINISH were confirmed in
+every tier run. "Delivered (gap)" is the frames counted at the receiver less the frames the service
+encoded.
+
+The "Loss %" column is `intake_dropped` as a share of the events the service received. Dropped events
+are shown by the stage that lost them: `etw_lost` (ETW), `ring_dropped` (the event channel),
+`pool_exhausted`, `rejected`, `queue_dropped` (the send queue), `disconnected_dropped` (receiver down),
+and `spool_dropped`. The CPU columns are the mean over the load (from 3 s in) and the maximum, in
+percent of one CPU. "Working set peak" is the `Working Set Peak` counter of the service.
+
+#### 50,000 QPS at `--capacity 131072`
+
+| Run | Busy | Encoded | Delivered (gap) | Dropped by stage | Loss % | Stall s | Events/s mean (min) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| t50-c131k-busy12 | 12 | 5,999,998 | 6,000,010 (+12) | 0 | 0.000 | 0 | 100,071 (94,349) |
+| t50-c131k-idle-r1 | 0 | 5,999,958 | 5,999,970 (+12) | 0 | 0.000 | 4 | 99,501 (0) |
+| t50-c131k-idle-r2 | 0 | 5,999,966 | 5,999,978 (+12) | 0 | 0.000 | 4 | 99,739 (0) |
+| t50-c131k-idle-r3 | 0 | 5,999,964 | 5,999,976 (+12) | 0 | 0.000 | 4 | 99,683 (0) |
+
+| Run | Peak channel depth (% of capacity) | Peak send queue (of 256) | ETW buffers allocated / in use, peak (max) | dns.exe CPU % mean (max) | Service CPU % mean (max) | ETW consumer | Parser | Sender | Link | Working set peak MB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| t50-c131k-busy12 | 9,076 (7 %) | 17 | 34 / 12 (128) | 189.9 (323) | 8.3 (21) | 2.9 (7) | 4.9 (14) | 0.2 (2) | 0.3 (2) | 354 |
+| t50-c131k-idle-r1 | 57,888 (44 %) | 98 | 28 / 10 (128) | 158.9 (210) | 8.2 (16) | 2.7 (6) | 4.5 (9) | 0.4 (3) | 0.5 (4) | 432 |
+| t50-c131k-idle-r2 | 53,600 (41 %) | 115 | 28 / 10 (128) | 158.0 (214) | 9.1 (18) | 3.2 (6) | 4.8 (8) | 0.5 (3) | 0.6 (3) | 434 |
+| t50-c131k-idle-r3 | 70,323 (54 %) | 113 | 30 / 13 (128) | 149.8 (216) | 8.8 (19) | 3.1 (8) | 4.6 (10) | 0.4 (3) | 0.6 (3) | 435 |
+
+| Run | Stall seconds (events/s) |
+| --- | --- |
+| t50-c131k-busy12 | 0 |
+| t50-c131k-idle-r1 | 4: 4 s (27,724), 7 s (1,373), 23 s (0), 44 s (0) |
+| t50-c131k-idle-r2 | 4: 20 s (0), 36 s (24,394), 38 s (0), 58 s (0) |
+| t50-c131k-idle-r3 | 4: 7 s (769), 13 s (2,211), 34 s (0), 53 s (0) |
+
+4 of 4 runs had no drop at 131,072. The channel peaked at 54 % in the worst idle run and 7 % with the
+busy threads. The send queue peaked at 115 of 256 blocks. The stall seconds are the late delivery
+seen before (events 0 for a second, then a burst). The client held 50,000 queries a second in all 4
+runs. **Recommended capacity for 50,000 QPS: 131,072.** The 524,288 and 262,144 steps were not needed.
+
+#### 100,000 QPS at `--capacity 524288`
+
+| Run | Busy | Encoded | Delivered (gap) | Dropped by stage | Loss % | Stall s | Events/s mean (min) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| t100-c524k-busy12 | 12 | 11,999,928 | 11,999,952 (+24) | 0 | 0.000 | 0 | 198,941 (126,272) |
+| t100-c524k-idle-r1 | 0 | 11,999,986 | 12,000,010 (+24) | 0 | 0.000 | 1 | 199,942 (60,449) |
+| t100-c524k-idle-r2 | 0 | 11,999,934 | 11,999,958 (+24) | 0 | 0.000 | 9 | 196,225 (830) |
+| t100-c524k-idle-r3 | 0 | 11,759,458 | 11,759,384 (-74) | 0 | 0.000 | 4 | 194,701 (1,603) |
+
+| Run | Peak channel depth (% of capacity) | Peak send queue (of 256) | ETW buffers allocated / in use, peak (max) | dns.exe CPU % mean (max) | Service CPU % mean (max) | ETW consumer | Parser | Sender | Link | Working set peak MB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| t100-c524k-busy12 | 16,242 (3 %) | 32 | 34 / 12 (128) | 314.5 (438) | 13.2 (22) | 5.2 (11) | 7.3 (16) | 0.1 (2) | 0.5 (3) | 1,238 |
+| t100-c524k-idle-r1 | 150,860 (29 %) | 32 | 35 / 16 (128) | 351.5 (532) | 17.2 (29) | 5.8 (12) | 9.4 (16) | 0.8 (5) | 1.1 (6) | 1,329 |
+| t100-c524k-idle-r2 | 251,438 (48 %) | 230 | 33 / 13 (128) | 326.5 (459) | 16.3 (44) | 5.4 (20) | 8.5 (21) | 0.6 (3) | 1.0 (4) | 1,366 |
+| t100-c524k-idle-r3 | 184,063 (35 %) | 43 | 36 / 17 (128) | 317.8 (463) | 14.0 (28) | 4.6 (11) | 7.8 (15) | 0.6 (5) | 0.8 (6) | 1,382 |
+
+| Run | Stall seconds (events/s) |
+| --- | --- |
+| t100-c524k-busy12 | 0 |
+| t100-c524k-idle-r1 | 1: 52 s (60,449) |
+| t100-c524k-idle-r2 | 9: 3 s (98,628), 4 s (2,334), 20 s (1,979), 38 s (41,127), 44 s (80,627), 45 s (829), 47 s (84,182), 48 s (1,747), 60 s (1,554) |
+| t100-c524k-idle-r3 | 4: 6 s (91,020), 7 s (1,603), 46 s (2,454), 48 s (79,273) |
+
+4 of 4 runs had no drop at 524,288. This confirms the earlier result (3 of 3 idle runs with no drop)
+and adds the busy run, which also dropped nothing. The channel peaked at 48 % in `t100-c524k-idle-r2`
+(251,438 events), which is the burst that also filled the send queue to 230 of 256 blocks. That run
+wrote the risk warning Event ID 22 at 66.5 s (see the warning checks). `t100-c524k-idle-r3` had two
+client low seconds (6 s and 7 s), so its encoded count is 11,759,458 and not 12,000,000. The service
+CPU is 13 to 17 % of one CPU and dns.exe uses 3.1 to 3.5 cores. **Recommended capacity for 100,000
+QPS: 524,288.** The working set peak is 1.2 to 1.4 GB.
+
+#### 200,000 QPS at `--capacity 131072`
+
+| Run | Busy | Encoded | Delivered (gap) | Dropped by stage | Loss % | Stall s | Events/s mean (min) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| t200-c131k-busy12 | 12 | 23,702,707 | 23,702,820 (+113) | channel 63,443 | 0.267 | 0 | 393,082 (267,310) |
+| t200-c131k-idle-r1 | 0 | 22,618,783 | 22,618,683 (-100) | 0 | 0.000 | 2 | 373,412 (3,407) |
+| t200-c131k-idle-r2 | 0 | 23,996,684 | 23,996,729 (+45) | 0 | 0.000 | 0 | 399,964 (393,068) |
+| t200-c131k-idle-r3 | 0 | 23,756,399 | 23,756,284 (-115) | 0 | 0.000 | 0 | 392,674 (215,797) |
+
+| Run | Peak channel depth (% of capacity) | Peak send queue (of 256) | ETW buffers allocated / in use, peak (max) | dns.exe CPU % mean (max) | Service CPU % mean (max) | ETW consumer | Parser | Sender | Link | Working set peak MB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| t200-c131k-busy12 | 131,073 (100 %) | 94 | 72 / 13 (128) | 694.0 (895) | 38.3 (50) | 14.3 (23) | 22.0 (35) | 0.1 (3) | 1.4 (6) | 420 |
+| t200-c131k-idle-r1 | 58,495 (45 %) | 21 | 40 / 13 (128) | 703.8 (936) | 34.6 (48) | 10.5 (19) | 20.8 (34) | 1.4 (5) | 2.1 (6) | 383 |
+| t200-c131k-idle-r2 | 21,721 (17 %) | 20 | 43 / 12 (128) | 733.5 (858) | 38.6 (57) | 12.3 (22) | 22.4 (36) | 1.7 (7) | 2.0 (7) | 357 |
+| t200-c131k-idle-r3 | 22,544 (17 %) | 18 | 37 / 13 (128) | 760.2 (868) | 36.8 (50) | 12.2 (20) | 22.0 (33) | 1.2 (6) | 1.5 (8) | 386 |
+
+| Run | Stall seconds (events/s) |
+| --- | --- |
+| t200-c131k-busy12 | 0 |
+| t200-c131k-idle-r1 | 2: 44 s (140,840), 50 s (3,406) |
+| t200-c131k-idle-r2 | 0 |
+| t200-c131k-idle-r3 | 0 |
+
+The three idle runs dropped nothing (peak depth 17 to 45 %). **The run with 12 busy threads dropped
+63,443 events (0.27 %) at the event channel.** The channel reached 131,073 events, which is full. The
+service wrote Event ID 20 at 41.2 s (peak 106,156, 80 %), then Event ID 11 at 46.2 s (63,443 events),
+then the Information event "no longer near full" at 51.3 s. ETW lost nothing: the ETW buffers
+allocated peaked at 72 of 128. So 131,072 is not enough at 200,000 QPS when the CPUs are busy. The
+rule moves to 262,144.
+
+#### 200,000 QPS at `--capacity 262144`
+
+| Run | Busy | Encoded | Delivered (gap) | Dropped by stage | Loss % | Stall s | Events/s mean (min) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| t200-c262k-busy12 | 12 | 23,939,172 | 23,939,113 (-59) | 0 | 0.000 | 0 | 395,374 (252,460) |
+| t200-c262k-idle-r1 | 0 | 23,995,984 | 23,996,040 (+56) | 0 | 0.000 | 0 | 399,813 (394,035) |
+| t200-c262k-idle-r2 | 0 | 23,058,766 | 23,058,684 (-82) | 0 | 0.000 | 1 | 386,819 (4,305) |
+| t200-c262k-idle-r3 | 0 | 21,849,956 | 21,849,525 (-431) | 0 | 0.000 | 5 | 356,713 (3,807) |
+
+| Run | Peak channel depth (% of capacity) | Peak send queue (of 256) | ETW buffers allocated / in use, peak (max) | dns.exe CPU % mean (max) | Service CPU % mean (max) | ETW consumer | Parser | Sender | Link | Working set peak MB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| t200-c262k-busy12 | 136,236 (52 %) | 99 | 62 / 14 (128) | 670.4 (778) | 36.8 (52) | 14.1 (23) | 21.6 (38) | 0.1 (2) | 1.2 (6) | 713 |
+| t200-c262k-idle-r1 | 16,060 (6 %) | 19 | 42 / 13 (128) | 727.2 (874) | 34.2 (54) | 11.0 (19) | 20.2 (30) | 1.3 (5) | 1.7 (8) | 652 |
+| t200-c262k-idle-r2 | 17,980 (7 %) | 20 | 40 / 27 (128) | 688.3 (822) | 36.2 (62) | 11.4 (20) | 20.7 (32) | 1.7 (6) | 2.1 (8) | 666 |
+| t200-c262k-idle-r3 | 24,177 (9 %) | 24 | 42 / 13 (128) | 664.0 (890) | 32.7 (51) | 10.8 (22) | 19.2 (31) | 0.9 (6) | 1.7 (5) | 668 |
+
+| Run | Stall seconds (events/s) |
+| --- | --- |
+| t200-c262k-busy12 | 0 |
+| t200-c262k-idle-r1 | 0 |
+| t200-c262k-idle-r2 | 1: 22 s (4,304) |
+| t200-c262k-idle-r3 | 5: 12 s (174,039), 23 s (3,806), 35 s (145,614), 52 s (12,500), 53 s (12,500) |
+
+4 of 4 runs had no drop at 262,144, including the busy run that dropped at 131,072. The busy run's
+peak depth was 136,236 (52 % of 262,144), which is a factor of 1.9 below the limit. No run is
+CPU-bound in one stage: the largest single stage mean is the parser at 19 to 22 % of one CPU, and
+the largest maximum is 38 %. The service uses 33 to 39 % of one CPU in total. dns.exe uses 6.6 to 7.3
+cores of the 12. The client fell short in some runs: `t200-c262k-idle-r3` had 11 low seconds (mean
+181,619 queries a second), `t200-c131k-idle-r1` 6, `t200-c262k-idle-r2` 4. Those means and the
+`encoded` totals are below nominal because of the client. The drop counts come from the service.
+**Recommended capacity for 200,000 QPS: 262,144.** The working set peak is 0.65 to 0.71 GB.
+
+#### Recommended settings and what they cost
+
+| QPS | `--etw-buffer-kib` / `--etw-min-buffers` / `--etw-max-buffers` | `--capacity` | Runs with no drop | Largest peak channel depth | Largest ETW buffers allocated | Service CPU mean (max) | Working set peak |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10,000 (default) | 32 / 12 / 64 | 131,072 | 5 of 5 | 35,072 (27 %) | 28 of 64 | 1.0 to 1.4 % (6) | 365 to 373 MB |
+| 50,000 | 128 / 12 / 128 | 131,072 | 4 of 4 | 70,323 (54 %) | 34 of 128 | 8.2 to 9.1 % (21) | 354 to 435 MB |
+| 100,000 | 128 / 12 / 128 | 524,288 | 4 of 4 | 251,438 (48 %) | 36 of 128 | 13.2 to 17.2 % (44) | 1,238 to 1,382 MB |
+| 200,000 | 128 / 12 / 128 | 262,144 | 4 of 4 | 136,236 (52 %) | 62 of 128 | 32.7 to 36.8 % (62) | 652 to 713 MB |
+
+### Loss and risk warning checks
+
+Short runs (30 s load, 20 s tail unless noted), with the same per-second capture. They are not part of
+the tier tables. For the iptables runs the receiver got `iptables -I INPUT 1 -s <guest> -p tcp --dport
+6000 -j DROP` 3 s into the load, and the rule was deleted 24 s later (or after the stop for `w08` and
+`w09`). For the `tbf` runs the receiver ingress was shaped to 40 Mbit/s with `ifb` and `tbf`, as in
+the slow-receiver runs. The load needs about 82 Mbit/s at 50,000 QPS. After the runs I removed the rule
+and the shaping, and compared the receiver with its record (see Lab state after).
+
+What each run lost (counters from `capture stopped` and `output stopped`):
+
+| Run | Settings that differ from the tier settings | Load | Lost, by stage |
+| --- | --- | --- | --- |
+| `w01-cap1024-50k` | `--capacity 1024` | 50,000 QPS | channel 1,080,137 |
+| `w02-etw4k-max24-200k` | `--etw-buffer-kib 4 --etw-min-buffers 0 --etw-max-buffers 24` | 200,000 QPS | ETW 6,075,389 events |
+| `w03-spool64-outage-50k` | `--spool-max-mib 64`, receiver blocked 3 to 27 s | 50,000 QPS | spool 1,864,671 (2,503,777 spooled, 639,106 replayed) |
+| `w04-spool64-tbf40-50k` | `--spool-max-mib 64`, 40 Mbit/s | 50,000 QPS | spool 971,437 (2,886,440 spooled, 1,915,003 replayed) |
+| `w05-nospool-outage-50k` | `--no-spool`, receiver blocked 3 to 27 s | 50,000 QPS | send queue 1,235,530, receiver down 1,258,409 |
+| `w06-nospool-tbf40-50k` | `--no-spool`, 40 Mbit/s | 50,000 QPS | send queue 1,224,839 |
+| `w07-spooldeny-outage-50k` | spool folder write denied to LocalService 3 to 27 s, receiver blocked | 50,000 QPS | spool 2,574,008 (0 spooled) |
+| `w08-spool64-stop-in-outage-50k` | `--spool-max-mib 64`, receiver blocked, service stopped at the load end (no tail) | 50,000 QPS | spool 2,270,376, receiver down 638 |
+| `w09-nospool-stop-in-outage-50k` | `--no-spool`, receiver blocked, stopped at the load end | 50,000 QPS | send queue 1,248,820, receiver down 1,643,738 |
+| `w10-etw4k-max24-stop-in-loss-200k` | as `w02`, stopped at the load end | 200,000 QPS | ETW 6,118,065 events |
+| `w11-cap1024-stop-in-loss-50k` | as `w01`, stopped at the load end | 50,000 QPS | channel 1,058,332 |
+
+The results by Event ID. "Seen" is the first time in seconds from the load start. "Cleared" is the
+matching Information event with ID 2.
+
+| ID | Trigger and run | Seen? | Level | Cleared (ID 2)? | Problems |
+| --- | --- | --- | --- | --- | --- |
+| 10 | ETW with 4 KiB buffers, at most 24, 200,000 QPS (`w02`, `w10`) | Yes, 1.0 s and then at each 5 s check (7 lines) | Warning | No clear event is defined | none |
+| 11 | Channel of 1,024 at 50,000 QPS (`w01`, `w11`). Also `t200-c131k-busy12` at 46.2 s | Yes, 5.9 s and then each check | Warning | No clear event is defined | none |
+| 12 | Pool slots | **Not triggered.** A jumbo slot needs a response of about 4,096 bytes, which the workload does not make. The channel of 1,024 did not exhaust the regular slots. | - | - | - |
+| 13 | `--no-spool`, receiver blocked (`w05`, `w09`) and 40 Mbit/s (`w06`) | Yes: `queue_dropped` at 10.9 s, `disconnected_dropped` from 21.0 s | Warning | No clear event is defined | none |
+| 14 | 64 MiB spool, receiver blocked (`w03`, `w08`) and 40 Mbit/s (`w04`); folder write denied (`w07`) | Yes: the "spool deleted its oldest segment unsent" line at 9.3 s (`w03`), 12.3 s (`w04`), and the 5 s check line after it | Warning | No clear event is defined | The segment line logged 4 times in 2 s and then stopped, as the repeat rule says |
+| 15 | Decoding | **Not triggered.** No safe way to make the parser reject an event. | - | - | - |
+| 16 | Inside the service | **Not triggered.** No safe way. | - | - | - |
+| 20 | Channel 1,024 (`w01`, 100 % at 5.9 s, same check as the first ID 11). `t200-c131k-busy12` (80 % at 41.2 s, 5 s before its ID 11) | Yes | Warning | Yes: "the event channel is no longer near full" at 41.0 s (`w01`) and 51.3 s (`t200-c131k-busy12`) | none |
+| 21 | ETW maximum of 24 (`w02`, `w10`) | Yes, at the first check of the service (100 %). It is written once for each service start. | Warning | No (the allocation stayed at 100 %) | none |
+| 22 | `--no-spool` with the receiver blocked (`w05`, 21.0 s) and at 40 Mbit/s (`w06`, 10.9 s). Also `t100-c524k-idle-r2` at 66.5 s (100,000 QPS, 230 of 256 blocks, nothing dropped) | Yes | Warning | Not within the run: it clears when the 60 s peak is below 70 %, and the runs ended less than 60 s after the peak | none |
+| 23 | 64 MiB spool, receiver blocked (`w03`, 14.5 s, `w08`) and 40 Mbit/s (`w04`, 14.3 s) | Yes | Warning | Yes: "dnstap link is no longer saturated" at 28.9 s (`w03`, backlog empty) and 24.4 s (`w04`, backlog stopped growing) | none |
+| 24 | Receiver blocked. With a spool (`w03`): "dnstap receiver connection lost" at 18.1 s, after 15.0 s with no bytes accepted. With `--no-spool` (`w05`): the same line at 18.1 s and "the dnstap receiver is down and no spool takes frames" at 21.0 s. `w07` (spool unusable): both lines, 18.1 s and 21.1 s | Yes | Warning | Yes: "dnstap receiver reconnected" at 27.8 s to 28.0 s, and "frames are no longer dropped for a receiver outage" at 31.0 s to 31.2 s | none |
+| 25 | 64 MiB spool (`w03` at 11.0 s, `w04` at 21.1 s) | Yes | Warning | Yes: "the spool is no longer near its limit" at 31.1 s (`w03`) and 36.2 s (`w04`) | Late against ID 14 in `w04` (see below) |
+| 26 | `--no-spool` (`w05`, `w06`, `w09`) | Yes, at the service start | Warning | No clear event is defined | none |
+| 27 | Spool folder write denied (`w07`) | Yes: "dnstap spool I/O error error=Access is denied. (os error 5)" at 4.2 s, 14.4 s, and 24.7 s | Warning | No clear event is defined | none |
+| 28 | ETW query failure | **Not triggered.** Stopping the ETW session under a live service would end capture, not only the query. I judged it unsafe. | - | - | - |
+
+`w07` denied create-file and create-folder rights on the spool folder to LocalService (SID
+`S-1-5-19`) with an inheritable ACE, 0.0 s after the iptables rule, and removed the ACE 24 s later. The
+driver log shows the folder ACL before and after: identical.
+
+**Problems found**
+
+1. **No wrong ID and no wrong level.** Every loss and risk line in all 32 runs carries the ID that
+   the monitoring guide gives for its message, and the level Warning. A script checked each line's
+   message start against the guide (`scripts/chk.py` in the lab data folder, not in the repository). The "reconnect failed" lines carry ID 3, as the
+   guide says.
+2. **Nothing at stop that is a loss or risk warning.** In the 4 runs that stopped the service while
+   the condition was active (`w08` and `w09` during a receiver outage, `w10` during ETW loss, `w11`
+   during channel loss), no ID 10 to 16 or 20 to 28 entry was written after the stop call. In `w10`
+   and `w11` the only entries were `capture stopped` and `output stopped`. In `w08` and `w09` there
+   was one more Warning, ID 3 "shutting down while the dnstap receiver is disconnected; no STOP sent"
+   (documented in the troubleshooting guide), and in `w08` one Information entry with ID 2, "dnstap
+   spool backlog kept on disk for the next run" (documented in the monitoring guide). They are not
+   loss or risk IDs. Read strictly, the rule "nothing at stop except `capture stopped` and `output
+   stopped`" has these two exceptions. The `events.csv` column `after_stop_call` marks them. It
+   records the final stop only. The restart at the start of each run is not marked.
+3. **ID 25 can come late for a small spool.** In `w04` the first spool loss line (ID 14) was at 12.3
+   s and ID 25 at 21.1 s. The spool size moves in 8 MiB steps as segments are sealed, replayed, and
+   deleted, and the 5 s checks at 11.0 s and 16.0 s saw 47.9 and 50.1 MiB, below the 80 % mark of
+   51.2 MiB. The check at 21.1 s saw 55.2 MiB and raised ID 25. In `w03`, ID 25 came 1.7 s after the first ID
+   14 line. With the default 4,096 MiB cap an 8 MiB segment is 0.2 % of it, so I expect no effect
+   there. I did not test it.
+4. **ID 22 does not clear within a short run.** The 60 s peak window keeps it raised for up to a
+   minute after the burst. That is the documented rule, not a defect.
+5. **ID 21 appears once for each service start.** `w02` shows two ID 21 lines before the load: the
+   first from the service instance that the case restarted (just before its `capture stopped`),
+   the second from the new instance. Neither repeated while the condition held.
+6. **ID 23 came before ID 24.** While the receiver was blocked but the connection was still up, the
+   spool backlog trended up and `link_saturated` raised ID 23 (14.5 s), then the stall timer ended
+   the session (18.1 s, ID 24). That matches the documented rule.
+7. **A real tier run raised two warnings.** `t200-c131k-busy12` wrote ID 20 five seconds before it
+   wrote ID 11, so the risk warning was ahead of the loss by one check. `t100-c524k-idle-r2` wrote
+   ID 22 with nothing dropped.
+
+### Findings
+
+1. **At 10,000 QPS the ETW session is far from its limits.** Allocated buffers 24 to 28 of 64, at most
+   13 in use. The service uses about 1 % of one CPU. The channel peaks at 27 % with 12 busy threads.
+2. **The parser and the ETW consumer are the two busiest stages, and neither is near 100 %.** At
+   200,000 QPS the parser averages 19 to 22 % of one CPU and the ETW consumer 10 to 14 %. The sender
+   and link threads stay below 2.5 %. No stage limits the rate. The late delivery (events 0 for a
+   second, then a burst) is not a CPU limit of any stage. The cause is still open.
+3. **The channel size is what fails first at 200,000 QPS with busy CPUs.** At 131,072 one of four runs
+   dropped 63,443 events. At 262,144 none of four did. ETW held (allocated 62 to 72 of 128).
+4. **Memory follows the channel.** Working set peak 0.36 to 0.44 GB at 131,072, 0.65 to 0.71 GB at 262,144,
+   1.2 to 1.4 GB at 524,288.
+5. **The new warnings behave as documented in 12 of 16 cases. The other 4 were not tried.** The one open
+   point is ID 25 against ID 14 on a very small spool (problem 3).
+
+### Verdict
+
+| Question | Verdict |
+| --- | --- |
+| Defaults for 10,000 QPS | `--etw-buffer-kib 32 --etw-min-buffers 12 --etw-max-buffers 64 --capacity 131072`. 5 of 5 runs with no loss at any stage. 28 of 64 buffers at most (44 %), peak channel depth 35,072 (27 %). 65,536 was not tested. |
+| Recommended for 50,000 QPS | `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128 --capacity 131072`. 4 of 4 runs with no drop. Peak depth 54 %. |
+| Recommended for 100,000 QPS | The same ETW values with `--capacity 524288`. 4 of 4 runs with no drop. Peak depth 48 %. 262,144 is not enough (earlier section). |
+| Recommended for 200,000 QPS | The same ETW values with `--capacity 262144`. 4 of 4 runs with no drop. Peak depth 52 %. 131,072 dropped 63,443 events in the busy run. |
+| Loss and risk warnings | IDs 10, 11, 13, 14, 20, 21, 22, 23, 24, 25, 26, and 27 fire, with the right ID and level, and clear with an ID 2 event where one is defined (20, 23, 24, 25; 22 only after its 60 s window). IDs 12, 15, 16, and 28 were not triggered. |
+| Nothing at stop | Holds for IDs 10 to 16 and 20 to 28. Two other entries (an ID 3 warning and an ID 2 information entry) were written at stop while the receiver was down. |
+
+The owner set these values as the defaults (32 / 12 / 64 and 131,072) after this run, and kept the higher tiers as recommendations only. The 10,000 QPS values come from the stated rule,
+which starts the capacity at 131,072. The peak depth of 35,072 suggests a smaller channel would also
+hold at 10,000 QPS, but that was not measured.
+
+### Deviations and limits
+
+- **Two extra 10,000 QPS runs.** The brief asked for a probe of 2 idle runs and 1 busy run, then 3 idle
+  and 1 busy at the starting capacity. The capacity step started at 131,072 with the same ETW values
+  as the probe, so I counted the probe runs and added `p04` (idle) and `p05` (busy).
+- **Extra warning checks.** `w07` (spool folder denied), and `w08` to `w11` (stop during loss), were not
+  in the brief. They test ID 27 and the stop rule.
+- **IDs 12, 15, 16, and 28 not triggered.** See the table.
+- **Stall seconds under the busy load have a sampling effect.** They include late `typeperf`
+  intervals. Treat the stall counts of busy runs as an upper bound.
+- **Stage CPU resolution.** The service reads thread time in 15.6 ms ticks, so each reading is a
+  multiple of about 1.5 %. Means are fine. A maximum of 2 to 3 at 10,000 QPS is one or two ticks.
+- **Client shortfalls at 200,000 QPS.** `t200-c262k-idle-r3` (11 low seconds), `t200-c131k-idle-r1`
+  (6), `t200-c262k-idle-r2` (4), and `t100-c524k-idle-r3` (2) have `encoded` totals and events-per-second
+  means below nominal because of the client.
+- **No host CPU columns.** I did not sample the Hyper-V host counters in this run. The brief did not
+  ask for them.
+- **`send_queue_depth` is a 60 s peak,** not an instant value, and `channel_depth` is the value of
+  the once-a-second gauge. The peak channel depth in the tables is the `Channel Peak Depth` counter.
+- **Three runs a size.** A drop that happens in one run of ten would not show.
+- **Time alignment.** Each counter in `timeseries.csv` is the nearest 1 s sample. A sample can repeat
+  or be skipped by one second where the `typeperf` interval drifts (about 1.01 s).
+- **Events before the load.** `events.csv` starts about 16 s before the load and includes the last
+  lines of the service instance that the case restarted.
+
+### Lab state after
+
+- **Guest:** 12 vCPUs, 8 GiB static memory (Dynamic Memory off). The MSI of HEAD `f070a41` is
+  installed with exactly the three properties `RECEIVER=172.27.215.60:6000`,
+  `SESSION_NAME=EtwDnstap-Lab`, and `SERVICE_ARGS="--plaintext --stats-interval-seconds 5"`, and no
+  extra argument. The last reinstall used `REINSTALL=ALL REINSTALLMODE=vomus`, then a restart.
+  ProductCode `{FE17A170-C981-40F7-B517-E9A930ABFEFD}`, MSI SHA-256
+  `E773C2196DD9576202290605C94794A70E8F5726922535165274103ECF5DAB5E`, executable SHA-256
+  `3487CE7876B12AA258525C23F8AA375507A66E2088C4C89DF07CF186F137C12A`. The service is running as
+  `NT AUTHORITY\LocalService`, SID type restricted, recovery `restart/5000`, connected to the
+  receiver. The spool holds only `cursor.bin`. The busy processes, the samplers, WPR, and the staging
+  folder are gone. The spool folder ACL has no extra entry.
+- **Receiver:** `iptables` left an empty `ip filter` table in the nft ruleset, and the shaping loaded
+  five traffic-control modules (`ifb`, `act_mirred`, `cls_u32`, `sch_tbf`, `sch_ingress`). I deleted
+  the empty table and unloaded the modules. The record of `tc qdisc show`, the `eth0` ingress
+  filters, `iptables -S` (filter and mangle), `ip6tables -S`, `nft list ruleset`, the link list, the
+  loaded traffic-control modules, the collector config SHA-256, the null-output drop-in SHA-256, the
+  unit output settings, and the collector process id is identical to the record taken before the
+  first run (compared with `diff`). The service is connected to the receiver.
+- **Checkpoints:** `tiers-pre-2026-11-04` on both guests, kept, with all earlier checkpoints.
+  Restoring `tiers-pre-2026-11-04`, `capacity512k-pre-2026-11-04`, or `etw64k-pre-2026-11-04` on
+  `DNSTap-WS2025` returns the 12 vCPU, 8 GiB guest. Any older checkpoint returns it to 6 vCPUs and 4 GiB.

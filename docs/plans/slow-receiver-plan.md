@@ -1,6 +1,6 @@
 # Slow and saturated receiver plan
 
-> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, F, L1D, L1, L5, and S complete on 2026-11-04; findings L-7 and L-8 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
+> **Status:** In progress; Waves 1 to 4 complete on 2026-11-03 (I1, I2, D, reviews V2 and V3); B2, L, W, F, L1D, L1, L5, S, and Q complete on 2026-11-04; findings L-7 and L-8 open · **Describes:** `main` at commit `a06f6fd` · **Evidence dated:** not applicable (source analysis; no lab run) · **Reviewed:** 2026-11-03
 
 This plan covers a receiver that is connected but slow, and a link that carries less
 than the capture rate. It records what the code does today and the cost of each
@@ -206,6 +206,7 @@ the main working tree, one at a time, so they do not conflict.
 | F | before the next lab campaign, done | A failed FINISH no longer shows in the service exit code or in `output_errors`. Change the lab lifecycle checks to verify STOP/FINISH on the receiver side, from the receiver log or a packet capture. The affected scripts are `summarize-pooled-stage.py`, `build-pooled-report.py`, `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `windows-parser-stage.ps1`, and `windows-startup-capacity.ps1`. | `voltagent-lang:python-pro` | medium | Script changes and tests. |
 | L1, L5 | 8, done | Lab: repeat the L-1 case 14 times with the new counters, WPR traces, and guest and host counters (L1). Run risk 9 at 100,000 and 200,000 queries per second, idle and busy, unshaped (L5). | `general-purpose` (Sonnet) | high | Section "Follow-up runs L1 and L5" in `docs/history/slow-receiver-validation.md`. |
 | S | 9, done | Size the service for 200,000 queries per second and close risk 9: the send queue and the link FIFO go to 256 blocks each, the ETW defaults to `--etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128`, and `--capacity` to the size the lab shows is needed. Validate on the lab guest at 12 vCPUs and 8 GiB: risk 9 idle and busy at 100,000 and 200,000 queries per second, the channel size, the ETW defaults, and the L-1 case. | `voltagent-lang:rust-engineer` (Sonnet), `general-purpose` (Sonnet) | medium, high | Commit `6c8dd65` and the capacity change. Section "200,000 QPS sizing runs on 12 vCPUs" in `docs/history/slow-receiver-validation.md`. Section "S results" in this file. |
+| Q | 10, done | Set the defaults for 10,000 queries per second and document recommended settings, not defaults, for 50,000, 100,000, and 200,000. Add a distinct Event Log warning ID for each cause of data loss (ETW, event channel, buffer pool, network, spool, decode, inside the service) and for each risk of loss. Add per-thread CPU counters for each pipeline stage. Graph each lab run and each tier: dns.exe CPU, the service CPU by stage, and the loss at each failure point. Validate on the lab guest at 12 vCPUs and 8 GiB, including that each warning fires with its ID and nothing is written at stop. | `voltagent-lang:rust-engineer` (Sonnet), `voltagent-lang:python-pro` (Sonnet), `voltagent-qa-sec:code-reviewer` (Fable), `general-purpose` (Sonnet) | medium, medium, high, high | Commits `1b9d178`, `f070a41`, `1a7ecbe`, `8a633a9`, and the defaults change. Section "Default and tier sizing runs on 12 vCPUs" in `docs/history/slow-receiver-validation.md`. Section "Q results" in this file. |
 | L1D | 7, done | Find the cause of L-1 and L-6 from the code (review V5) and the 1 s counter data. Add the counters `router_wait_max_recent_us` and `router_pass_max_recent_us`. | `voltagent-qa-sec:code-reviewer` (Fable), `voltagent-data-ai:data-analyst` (Sonnet), `voltagent-lang:rust-engineer` (Sonnet) | medium, low, medium | Section "L-1 and L-6 results" in this file. Code, tests, and guide updates. |
 | W | 5, done | Correct the counter meaning for F6 in `docs/guide/monitoring.md` and `docs/design/data-path.md`. Update `docs/design/data-path.md`, `docs/guide/configuration.md`, `docs/guide/tuning.md`, and the animation if stage 5 changes. | `voltagent-dev-exp:documentation-engineer` | medium | Guide changes. |
 
@@ -615,8 +616,43 @@ lab then ran 22 runs on the guest at 12 vCPUs and 8 GiB static memory:
 - **New finding L-8.** Late delivery at 100,000 queries per second on 12 vCPUs
   overflows the channel at every size tried. The cause is on the capture side.
 
+### Q results
+
+Task Q, 2026-11-04. Commit `1b9d178` gave each cause of loss its own Event Log warning
+ID (10 to 16) and each risk of loss its own ID (20 to 28); `8a633a9` fixed four defects
+a review found in it. Commit `f070a41` added the CPU of the ETW consumer, parser,
+sender, and link threads as counters and stats fields. Commit `1a7ecbe` added
+`scripts/performance/plot-tier-runs.py`. The lab then ran 32 runs on the guest at 12
+vCPUs and 8 GiB:
+[default and tier sizing runs](../history/slow-receiver-validation.md#default-and-tier-sizing-runs-on-12-vcpus-2026-11-04).
+The graphs are in `docs/assets/performance/tiers-2026-11-04/`.
+
+- **Defaults for 10,000 queries per second:** `--etw-buffer-kib 32 --etw-min-buffers 12
+  --etw-max-buffers 64 --capacity 131072`. 5 of 5 runs lost nothing at any stage. At
+  most 28 of 64 ETW buffers were allocated, and the channel peaked at 27 %. The
+  service used about 1 % of one CPU. 65,536 was not tested.
+- **Recommended, not defaults** (all with `--etw-buffer-kib 128 --etw-min-buffers 12
+  --etw-max-buffers 128`): 50,000 with `--capacity 131072`, 100,000 with 524,288, and
+  200,000 with 262,144, each 4 of 4 runs with no drop. 100,000 needs the larger channel
+  because of L-8. At 200,000 with 131,072 the busy run dropped 63,443 events at the
+  channel.
+- **No stage is CPU-bound.** At 200,000 queries per second the parser averages 19 to
+  22 % of one CPU and the ETW consumer 10 to 14 %.
+- **Warnings:** 12 of the 16 IDs fired with the right ID and level; 12, 15, 16, and 28
+  were not triggered (no safe way). No loss or risk warning was written after a stop
+  began. Two other entries were: an ID 3 warning "no STOP sent" and an ID 2 entry
+  "spool backlog kept on disk", when the service stopped during a receiver outage.
+  They break the rule that a stop writes only `capture stopped` and `output stopped`.
+- **ID 25 can come after ID 14 on a small spool** (64 MiB): the spool grows in 8 MiB
+  steps, so a 5 s check can miss the 80 % mark. Not expected at the default 4,096 MiB.
+
 ### Decisions
 
+- 2026-11-04, user: the defaults are sized for 10,000 queries per second. The
+  settings for higher rates are documented as recommendations and are not defaults.
+  Each cause of data loss (ETW, capacity, network, and every other) writes its own
+  warning Event ID. Stage CPU comes from per-thread counters. The graphs are PNG files
+  in the repository.
 - 2026-11-04, user: size the service for 200,000 queries per second and fix risk 9.
   The ETW defaults are at least 12 and at most 128 buffers. The lab guest goes to 12
   vCPUs and 8 GiB of memory.
