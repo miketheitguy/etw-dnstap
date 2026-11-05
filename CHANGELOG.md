@@ -282,6 +282,21 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The service writes nothing at stop except `capture stopped` and
+  `output stopped`. Three messages that operators may filter on are removed:
+  `shutting down while the dnstap receiver is disconnected; no STOP sent` (Event ID 3),
+  `dnstap spool backlog kept on disk for the next run` (Event ID 2), and
+  `could not seal the dnstap spool segment` (Event ID 3). `output stopped` carries the same
+  facts in three new fields: `stop_sent` (`false` when no STOP frame was written),
+  `spool_backlog_kept` (`true` when unsent frames stay in the spool, also after a failed seal), and `spool_seal_error`
+  (present only when the segment could not be sealed, with the error text). An alert on
+  Event ID 3 for a seal failure must read the field instead.
+  The other lines that the sink and parser threads could still write while the
+  service stopped (a lost connection, a reconnect, a spool eviction, a rejected event) are
+  also no longer written once the stop begins; the counters in `output stopped` and
+  `capture stopped` still count them. The stats tick that races with a stop no longer writes
+  `capture stats` and `output stats`. See
+  [Shutdown results](docs/guide/monitoring.md#shutdown-results).
 - **Breaking.** The ETW buffer defaults are sized for 10,000 queries per second (about
   20,000 events per second). The command-line defaults are part of the public contract under
   the local policy, so this increases `y`. `--etw-buffer-kib` goes from 128 to 32 and

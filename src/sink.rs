@@ -3,7 +3,10 @@
 
 use std::{
     io,
-    sync::atomic::{AtomicBool, AtomicU64},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 use crate::threadcpu::ThreadCpu;
@@ -129,6 +132,50 @@ pub(crate) struct SinkStats {
     /// `--no-spool`, with an unusable folder, and while the spool is paused by an
     /// I/O error or by the free-space floor.
     pub(crate) spool_available: AtomicBool,
+    /// Flag: shutdown has begun. From then on the sink threads write no log
+    /// line; the counters and the three shutdown results below carry what they
+    /// would have said, and the `output stopped` report shows them.
+    pub(crate) stopping: AtomicBool,
+    /// Shutdown result: true once the STOP frame was written and flushed to the
+    /// receiver. FINISH may still be missing: the wait for it does not clear the
+    /// flag. False when no session was up, a data frame was cut, the socket did
+    /// not return to blocking mode, or the final data flush or the STOP write
+    /// failed. Meaningful only in the `output stopped` report.
+    pub(crate) stop_sent: AtomicBool,
+    /// Shutdown result: true when unsent frames stay in the spool for the next
+    /// run. Independent of the seal: a failed seal leaves them on disk too.
+    pub(crate) spool_backlog_kept: AtomicBool,
+    /// Shutdown result: the error text when the active spool segment could not
+    /// be sealed, `None` otherwise.
+    pub(crate) spool_seal_error: Mutex<Option<String>>,
+}
+
+impl SinkStats {
+    /// Marks the start of shutdown. Idempotent.
+    pub(crate) fn begin_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+    }
+
+    /// True once shutdown has begun, so a log line must not be written.
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
+
+    /// Records that the spool segment could not be sealed.
+    pub(crate) fn set_spool_seal_error(&self, error: String) {
+        *self
+            .spool_seal_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(error);
+    }
+
+    /// The error recorded by [`Self::set_spool_seal_error`], if any.
+    pub(crate) fn spool_seal_error(&self) -> Option<String> {
+        self.spool_seal_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// Destination for encoded dnstap frames.

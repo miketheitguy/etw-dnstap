@@ -342,6 +342,10 @@ impl LinkMonitor {
     }
 
     fn log(&self, change: Change, observation: &Observation) {
+        // Nothing is written once shutdown has begun.
+        if self.stats.is_stopping() {
+            return;
+        }
         let backlog_bytes = observation.backlog_bytes;
         let oldest_age_ms = u64::try_from(observation.oldest_age.as_millis()).unwrap_or(u64::MAX);
         let bytes_per_second = self.send_rate();

@@ -149,3 +149,51 @@ fn a_close_that_completes_writes_nothing_and_counts_nothing() {
     assert_eq!(logs.text(), "", "{}", logs.text());
     assert_eq!(stats.disconnects.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn stop_sent_is_true_after_a_completed_close() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("sender connects");
+        let mut stream = handshake(stream);
+        read_control(&mut stream, 3, false).expect("STOP arrives");
+        write_control(&mut stream, CONTROL_FINISH, false).expect("FINISH");
+    });
+    let stats = Arc::new(SinkStats::default());
+    Uplink::close(linked_sink(address, &stats), true).expect("close");
+    receiver.join().expect("receiver assertions pass");
+    assert!(stats.stop_sent.load(Ordering::Relaxed));
+}
+
+#[test]
+fn stop_sent_is_true_when_only_the_finish_is_missing() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let (release, hold) = mpsc::channel::<()>();
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("sender connects");
+        let mut stream = handshake(stream);
+        read_control(&mut stream, 3, false).expect("STOP arrives");
+        hold.recv_timeout(Duration::from_secs(10)).ok();
+    });
+    let stats = Arc::new(SinkStats::default());
+    Uplink::close(linked_sink(address, &stats), true).expect("close");
+    release.send(()).ok();
+    receiver.join().expect("receiver assertions pass");
+    assert!(stats.stop_sent.load(Ordering::Relaxed), "STOP was written");
+}
+
+#[test]
+fn stop_sent_is_false_after_a_close_with_a_cut_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("sender connects");
+        drop(handshake(stream));
+    });
+    let stats = Arc::new(SinkStats::default());
+    Uplink::close(linked_sink(address, &stats), false).expect("close");
+    receiver.join().expect("receiver ends");
+    assert!(!stats.stop_sent.load(Ordering::Relaxed));
+}

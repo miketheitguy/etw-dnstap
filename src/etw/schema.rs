@@ -131,11 +131,14 @@ pub(crate) struct Parser {
     // Events rejected without a TDH call because their key is in `rejected_keys`,
     // plus each failed load (the first failure of a key and each failed retry).
     rejected_events: u64,
+    // Set once shutdown has begun: a rejection is still counted but not logged.
+    quiet: bool,
 }
 
 impl Parser {
     pub(crate) fn new() -> Self {
         Self {
+            quiet: false,
             rejected_keys: Vec::with_capacity(MAX_CACHED_SCHEMAS),
             rejected_events: 0,
             schemas: Vec::with_capacity(MAX_CACHED_SCHEMAS),
@@ -156,6 +159,12 @@ impl Parser {
     /// did not compile into a single-pass plan.
     pub(crate) const fn schema_rejected_events(&self) -> u64 {
         self.rejected_events
+    }
+
+    /// Stops the schema warnings once shutdown has begun. Rejections stay
+    /// counted.
+    pub(crate) const fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
     }
 
     /// Remembers a failed schema key, clearing the list first when it is full.
@@ -181,15 +190,17 @@ impl Parser {
         let prior_failures = retried.map_or(0, |index| self.rejected_keys[index].load_failures);
         let (rejection, load_failures, error) = match failure {
             SchemaFailure::Unsupported(error) => {
-                tracing::warn!(
-                    event_id = key.0,
-                    version = key.1,
-                    "DNS event schema is unsupported and its events are rejected: {error:#}"
-                );
+                if !self.quiet {
+                    tracing::warn!(
+                        event_id = key.0,
+                        version = key.1,
+                        "DNS event schema is unsupported and its events are rejected: {error:#}"
+                    );
+                }
                 (Rejection::Unsupported, prior_failures, error)
             }
             SchemaFailure::Load(error) => {
-                if prior_failures < 4 || prior_failures.is_multiple_of(60) {
+                if (prior_failures < 4 || prior_failures.is_multiple_of(60)) && !self.quiet {
                     tracing::warn!(
                         event_id = key.0,
                         version = key.1,

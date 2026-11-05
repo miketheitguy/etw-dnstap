@@ -329,6 +329,31 @@ fn a_single_segment_is_never_deleted_for_the_floor() {
 }
 
 #[test]
+fn a_spool_error_after_a_stop_begins_is_counted_and_not_logged() {
+    fn failing(_: &Path) -> io::Result<u64> {
+        Err(io::Error::other("probe failed"))
+    }
+    let dir = TestDir::new("spool-error-stopping");
+    let stats = Arc::new(SinkStats::default());
+    let mut spool = Spool::open(
+        SpoolConfig {
+            dir: dir.path().to_path_buf(),
+            max_bytes: MIB,
+            min_free_bytes: 0,
+        },
+        Arc::clone(&stats),
+        failing,
+    )
+    .expect("spool opens");
+    stats.begin_stop();
+    let lines = capture_logs(|| {
+        assert_eq!(append_numbers(&mut spool, 0..3, 10), Appended::Dropped);
+    });
+    assert_eq!(get(&stats.spool_errors), 1);
+    assert_eq!(lines.text(), "");
+}
+
+#[test]
 fn a_probe_error_counts_an_error_and_pauses_the_spool() {
     fn failing(_: &Path) -> io::Result<u64> {
         Err(io::Error::other("probe failed"))

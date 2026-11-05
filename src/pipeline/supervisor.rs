@@ -319,6 +319,7 @@ where
         Ok(producer) => producer,
         Err(error) => {
             startup_watchdog.disarm()?;
+            begin_stop(&parse_counts, &sink_stats);
             let watchdog = ShutdownWatchdog::arm();
             producer_done.store(true, Ordering::Release);
             parser.thread().unpark();
@@ -345,13 +346,7 @@ where
     );
     startup_watchdog.disarm()?;
     let started = Instant::now();
-    let mut monitor = Monitor::new(
-        config,
-        &capture_counts,
-        &parse_counts,
-        &sink_stats,
-        Instant::now(),
-    );
+    let mut monitor = Monitor::new(config, &capture_counts, &parse_counts, &sink_stats, started);
     if let Some(publisher) = publisher {
         monitor.start_publishing(publisher, Instant::now());
     }
@@ -385,6 +380,14 @@ where
         bail!("{reason}");
     }
     Ok(())
+}
+
+/// Marks the start of shutdown for the threads that log: the parser and the
+/// sink threads write nothing after this. The counters still count, and the
+/// stop reports carry the results.
+fn begin_stop(parser: &ParseCounters, sink: &SinkStats) {
+    parser.stopping.store(true, Ordering::Release);
+    sink.begin_stop();
 }
 
 /// Received rate above which the default buffer settings are untested. The
@@ -572,7 +575,7 @@ fn supervise(
     capture: &impl EventProducer,
     monitor: &mut Monitor<'_>,
 ) -> Option<String> {
-    loop {
+    let reason = loop {
         if startup_failed {
             break None;
         }
@@ -612,7 +615,9 @@ fn supervise(
             query_session(capture);
             queried = true;
         }
-        if stats_due {
+        // Nothing but the two stop reports is written once shutdown begins; see
+        // the alerts check below.
+        if stats_due && !stop.load(Ordering::Relaxed) {
             let cpu = monitor.stats_cpu.sample(
                 now,
                 stage_cpu_totals(monitor.capture, monitor.parse, monitor.sink),
@@ -631,7 +636,11 @@ fn supervise(
             monitor.publish_counters(now);
         }
         thread::park_timeout(Duration::from_millis(50));
-    }
+    };
+    // From here the service writes only the two stop reports; the parser and
+    // the sink threads read these flags.
+    begin_stop(monitor.parse, monitor.sink);
+    reason
 }
 
 /// Refreshes the ETW gauges and returns whether the query succeeded. A failed
@@ -908,8 +917,26 @@ fn report_snapshot(
     );
 }
 
+/// Writes the two stop reports, the only log lines after a stop begins. The
+/// output line adds what the sink threads found at shutdown, in place of the
+/// lines they used to write: `stop_sent` (the STOP frame reached the receiver),
+/// `spool_backlog_kept` (unsent frames stay in the spool for the next run), and
+/// `spool_seal_error` (present only when the spool segment could not be sealed).
 fn report_counts(capture: &CaptureCounters, parser: &ParseCounters, sink: &SinkStats) {
-    emit_counts!("capture stopped", "output stopped", capture, parser, sink);
+    let spool_seal_error = sink.spool_seal_error();
+    emit_counts!(
+        "capture stopped",
+        "output stopped",
+        capture,
+        parser,
+        sink,
+        {},
+        {
+            stop_sent = sink.stop_sent.load(Ordering::Relaxed),
+            spool_backlog_kept = sink.spool_backlog_kept.load(Ordering::Relaxed),
+            spool_seal_error = spool_seal_error.as_deref(),
+        }
+    );
     parser.timing.report();
 }
 

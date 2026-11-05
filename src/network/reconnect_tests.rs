@@ -1,6 +1,6 @@
 use super::test_support::{RefusedPort, WAIT_TIMEOUT, handshake, retry_policy, wait_until};
 use super::*;
-use crate::spool::test_support::capture_logs;
+use crate::spool::test_support::{capture_logs, capture_logs_at};
 use std::net::TcpListener;
 
 /// Retries within tens of milliseconds, so reconnect tests finish quickly.
@@ -118,6 +118,69 @@ fn unreachable_receiver_at_startup_is_not_fatal_and_shutdown_is_prompt() {
     let started = Instant::now();
     sink.finish().expect("finish while disconnected succeeds");
     assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn a_stop_while_disconnected_writes_nothing_and_records_that_no_stop_was_sent() {
+    let refused = RefusedPort::new();
+    let stats = Arc::new(SinkStats::default());
+    let sink = NetworkSink::start_with(refused.address(), Arc::clone(&stats), fast_policy())
+        .expect("a refused connection starts the sink disconnected");
+    let mut closed = None;
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        closed = Some(Uplink::close(sink, true));
+    });
+    closed.expect("close ran").expect("a stop never fails here");
+    assert_eq!(logs.text(), "", "{}", logs.text());
+    assert!(!stats.stop_sent.load(Ordering::Relaxed));
+}
+
+#[test]
+fn the_blocking_finish_while_disconnected_writes_nothing() {
+    let refused = RefusedPort::new();
+    let stats = Arc::new(SinkStats::default());
+    let sink = NetworkSink::start_with(refused.address(), Arc::clone(&stats), fast_policy())
+        .expect("a refused connection starts the sink disconnected");
+    stats.begin_stop();
+    let mut finished = None;
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        finished = Some(sink.finish());
+    });
+    finished.expect("finish ran").expect("clean");
+    assert_eq!(logs.text(), "", "{}", logs.text());
+    assert!(!stats.stop_sent.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_connection_lost_before_a_stop_logs_the_exact_warning() {
+    let refused = RefusedPort::new();
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = NetworkSink::start_with(refused.address(), Arc::clone(&stats), fast_policy())
+        .expect("a refused connection starts the sink disconnected");
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        Uplink::lost(&mut sink, &io::Error::other("reset"));
+    });
+    let text = logs.text();
+    assert!(
+        text.contains(
+            "dnstap receiver connection lost; frames go to the spool, or are dropped and counted when no spool is in use, until it reconnects (frames already sent are never resent)"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_connection_lost_after_a_stop_begins_is_counted_and_not_logged() {
+    let refused = RefusedPort::new();
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = NetworkSink::start_with(refused.address(), Arc::clone(&stats), fast_policy())
+        .expect("a refused connection starts the sink disconnected");
+    stats.begin_stop();
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        Uplink::lost(&mut sink, &io::Error::other("reset during the final flush"));
+    });
+    assert_eq!(logs.text(), "", "{}", logs.text());
+    assert_eq!(stats.disconnects.load(Ordering::Relaxed), 1);
 }
 
 #[test]

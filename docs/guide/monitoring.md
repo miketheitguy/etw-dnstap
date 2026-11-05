@@ -12,7 +12,7 @@ unsent frames in segment files. See [Spool](configuration.md#spool). The
 | Event ID | Type | Written for |
 | --- | --- | --- |
 | 1 | Error | A fatal failure at startup or during the run. Text starts with `EtwDnstap failed:`. |
-| 2 | Information | `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, `dnstap link is no longer saturated`, the "cleared" event of each risk below, `ETW buffers applied`, `spool in use`, `dnstap spool backlog kept on disk for the next run`, and, in diagnostic builds, `diagnostic settings applied` and `parser timing`. |
+| 2 | Information | `capture started`, `capture stats`, `output stats`, `capture stopped`, `output stopped`, `dnstap receiver reconnected`, `dnstap link is no longer saturated`, the "cleared" event of each risk below, `ETW buffers applied`, `spool in use`, and, in diagnostic builds, `diagnostic settings applied` and `parser timing`. |
 | 3 | Warning | Warnings that are not data loss and not a risk of it, such as a rejected event, a failed reconnect, or `performance counters are unavailable`. |
 | 4 | Error | Errors, such as `ETW cleanup failed`. A fatal failure uses Event ID 1. |
 | 5 and 6 | Error | Watchdog expiry (5) or a panic (6), written just before the process aborts. A panic text starts with `EtwDnstap panicked:` and gives the message and location. |
@@ -84,8 +84,6 @@ actions are in [Spool warnings](troubleshooting.md#spool-warnings).
 | `dnstap spool discarded unreadable segment data` | 14 | `frames`, `bytes` | Segment data could not be read. |
 | `dnstap spool I/O error` | 27 | `error` | A spool file operation failed. The spool pauses for 10 seconds. |
 | `dnstap spool is refusing blocks: the volume is below the free-space floor and no older segment is left to delete` | 14 | `free_mib`, `needed_mib`, `pause_s` | The volume is below `--spool-min-free-mib` plus one segment, and only the newest segment is left. Refused blocks count in `spool_dropped`. `free_mib` rounds down, and `needed_mib` rounds up. |
-| `could not seal the dnstap spool segment` | 3 | `error` | Shutdown, when the active segment cannot take its STOP. |
-| `dnstap spool backlog kept on disk for the next run` | 2 | none | Shutdown, when unsent frames remain in the spool. |
 
 ### Receiver, schema, and rate messages
 
@@ -131,12 +129,16 @@ contain no frame data and no host path.
   repeated while it holds. When it ends, an Information event (ID 2) says so. A
   percentage risk clears 10 points below the level that raised it, so a value that sits
   on the threshold does not flip.
-- Nothing is written once shutdown has begun. The only entries at stop are
+- Nothing is written once the service has observed the stop. The only entries at a normal stop are
   `capture stopped` and `output stopped`. The checks only read counters: they never change
-  capture, parsing, or sending, and a receiver problem never stops the service.
+  capture, parsing, or sending, and a receiver problem never stops the service. What the
+  service found at shutdown is in the fields `stop_sent`, `spool_backlog_kept`, and
+  `spool_seal_error` of `output stopped` (see
+  [Output counters](#output-counters)).
 - A line that reports a loss as it happens (a spool eviction, for example) is written when
   it happens, not on the tick, and it keeps its repeat rule from
-  [Spool messages](#spool-messages).
+  [Spool messages](#spool-messages). After shutdown has begun, such a line is not written;
+  the counters still count.
 
 ### Loss warnings
 
@@ -215,7 +217,8 @@ These fields appear on `capture stats` and `capture stopped`.
 
 ## Output counters
 
-These fields appear on `output stats` and `output stopped`.
+These fields appear on `output stats` and `output stopped`. The three fields in
+[Shutdown results](#shutdown-results) appear on `output stopped` only.
 
 | Counter | Meaning |
 | --- | --- |
@@ -243,6 +246,34 @@ These fields appear on `output stats` and `output stopped`.
 | `spool_bytes`, `spool_segments` | Gauges: bytes and segment files now, including files whose removal has not yet succeeded. |
 | `spool_available` | Flag: `true` while the spool accepts data. `false` with `--no-spool`, with an unusable folder, or while an I/O error or the free-space floor pauses it. |
 | `cpu_sender_pct`, `cpu_link_pct` | `output stats` only. CPU time of the `dnstap-sender` thread (the router) and of the `dnstap-link` thread (the socket writes and TLS) since the previous `output stats` line, as a percentage of one logical processor, with one decimal. See [Stage CPU](#stage-cpu). |
+
+### Shutdown results
+
+The service writes no other line once it has observed the stop, with the exceptions listed below. These fields of `output stopped`
+replace the lines that earlier versions wrote for the same facts
+(`shutting down while the dnstap receiver is disconnected; no STOP sent`,
+`dnstap spool backlog kept on disk for the next run`, and
+`could not seal the dnstap spool segment`).
+
+| Field | Meaning |
+| --- | --- |
+| `stop_sent` | `true` when the service wrote the Frame Streams STOP frame to the receiver. `false` when no session was up at the stop (the receiver was disconnected), when a data frame was cut and the connection closed with no STOP, or when the STOP could not be written. A receiver that does not answer with FINISH after the STOP leaves it `true`. It is also `false` when the socket could not return to blocking mode or the final data flush failed. A `false` value never fails the stop: the service exits with code 0. |
+| `spool_backlog_kept` | `true` when unsent frames stay in the spool for the next start, also when the seal failed (see `spool_seal_error`). `false` with an empty spool or with no spool. `spool_segments` and `spool_bytes` give the size. |
+| `spool_seal_error` | Present only when the active spool segment could not be sealed: the error text. The next start still replays the frames of that segment. If it repeats, check the disk. The line stays Event ID 2: an alert on Event ID 3 no longer sees a seal failure. |
+
+Exceptions. An abnormal stop can still write these lines, because the stop itself is failing
+or the service has not yet seen it:
+
+- `ETW consumer did not return within N s of STOP; closing the trace handle` (warning).
+- `ETW cleanup failed` (Event ID 4).
+- The error for a DNS Server process ID change, which is what triggers the stop.
+- `parser timing`, in diagnostic builds, after the two stop reports.
+
+Example:
+
+```text
+INFO output stopped output_failed_events=0 output_errors=0 receiver_connected=false receiver_disconnects=1 ... link_saturated=false stop_sent=false spool_backlog_kept=true
+```
 
 ### Windows of the recent peaks
 

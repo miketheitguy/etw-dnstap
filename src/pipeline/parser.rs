@@ -31,6 +31,9 @@ use crate::{
 
 #[derive(Default)]
 pub(crate) struct ParseCounters {
+    /// Shutdown has begun: the parser logs nothing more. Rejections stay
+    /// counted.
+    pub(super) stopping: AtomicBool,
     pub(crate) dequeued: AtomicU64,
     pub(crate) encoded: AtomicU64,
     pub(super) ignored: AtomicU64,
@@ -128,6 +131,8 @@ fn parse_loop<S: FrameSink>(
             // The decoded view borrows the pooled record. Encoding copies the packet
             // into encoder storage, so the record is released before network I/O and
             // the returned payload borrows only reusable encoder storage.
+            let stopping = counters.stopping.load(Ordering::Acquire);
+            parser.set_quiet(stopping);
             let result = parse_and_encode(&mut parser, event, &mut encoder);
             if result.is_err() {
                 counters
@@ -157,7 +162,7 @@ fn parse_loop<S: FrameSink>(
                     // Same cadence as the other counters: the first four, then the
                     // 61st, 121st, and so on. The schema cache logs its own per-key
                     // load failure; this line covers every rejected event.
-                    if should_log_rejection(previous) {
+                    if should_log_rejection(previous) && !stopping {
                         tracing::warn!(
                             %error,
                             rejected = previous.saturating_add(1),

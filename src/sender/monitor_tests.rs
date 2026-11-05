@@ -473,6 +473,17 @@ fn each_change_logs_one_event_with_the_backlog_the_age_and_the_send_rate() {
 }
 
 #[test]
+fn no_event_is_logged_once_a_stop_has_begun_but_the_state_still_changes() {
+    let (mut monitor, stats, base) = monitor();
+    stats.begin_stop();
+    let logs = capture_logs_at(Level::INFO, || {
+        saturate(&mut monitor, &stats, base);
+    });
+    assert!(flag(&stats), "the flag is set without a log line");
+    assert_eq!(logs.text(), "");
+}
+
+#[test]
 fn the_stopped_growing_event_names_its_reason() {
     let (mut monitor, stats, base) = monitor();
     let logs = capture_logs_at(Level::INFO, || {

@@ -28,7 +28,7 @@ use std::{
     net::{SocketAddr, TcpStream},
     sync::{
         Arc,
-        atomic::Ordering,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, TryRecvError},
     },
     thread,
@@ -432,9 +432,16 @@ impl Connection {
 
     /// Ends the stream: flushes, sends STOP, and waits for FINISH, all under one
     /// fresh deadline. The socket must be in blocking mode.
-    fn finish(mut self) -> Result<()> {
+    #[cfg(test)]
+    fn finish(self) -> Result<()> {
+        self.finish_noting(&AtomicBool::new(false))
+    }
+
+    /// [`Self::finish`], and sets `stop_written` once the STOP frame is written
+    /// and flushed, before the wait for FINISH.
+    fn finish_noting(mut self, stop_written: &AtomicBool) -> Result<()> {
         self.reset_deadline();
-        finish_stream(self.writer)
+        finish_stream_noting(self.writer, stop_written)
     }
 }
 
@@ -690,15 +697,19 @@ impl NetworkSink {
         self.stats.connected.store(false, Ordering::Relaxed);
         self.stats.disconnects.fetch_add(1, Ordering::Relaxed);
         let delay = self.backoff.next_delay();
-        tracing::warn!(
-            target: crate::event_ids::RISK_RECEIVER_DOWN,
-            receiver = %self.config.address,
-            %error,
-            retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-            "dnstap receiver connection lost; frames go to the spool, or are dropped \
-            and counted when no spool is in use, until it reconnects (frames \
-            already sent are never resent)"
-        );
+        // Once shutdown has begun the service writes nothing; `receiver_disconnects`
+        // and `receiver_connected` in `output stopped` show the loss.
+        if !self.stats.is_stopping() {
+            tracing::warn!(
+                target: crate::event_ids::RISK_RECEIVER_DOWN,
+                receiver = %self.config.address,
+                %error,
+                retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                "dnstap receiver connection lost; frames go to the spool, or are dropped \
+                and counted when no spool is in use, until it reconnects (frames \
+                already sent are never resent)"
+            );
+        }
         self.state = State::Disconnected {
             next_attempt: Instant::now() + delay,
             attempt: None,
@@ -728,7 +739,12 @@ impl NetworkSink {
                     self.ever_connected = true;
                     // Each later outage reports each of its causes once again.
                     self.seen_failures.clear();
-                    tracing::info!(receiver = %self.config.address, "dnstap receiver reconnected");
+                    if !self.stats.is_stopping() {
+                        tracing::info!(
+                            receiver = %self.config.address,
+                            "dnstap receiver reconnected"
+                        );
+                    }
                     self.state = State::Connected(connection);
                 }
                 Ok(Err(error)) => {
@@ -739,7 +755,10 @@ impl NetworkSink {
                     let class = FailureClass::of(&error);
                     let new_class = self.seen_failures.insert(class);
                     // Bounded diagnostics; every failure stays counted.
-                    if error.kind() == io::ErrorKind::InvalidData
+                    if self.stats.is_stopping() {
+                        // Counted in `receiver_reconnect_failures`; not logged
+                        // once shutdown has begun.
+                    } else if error.kind() == io::ErrorKind::InvalidData
                         && !self.ever_connected
                         && !self.rejection_logged
                     {
@@ -768,7 +787,7 @@ impl NetworkSink {
                         .stats
                         .reconnect_failures
                         .fetch_add(1, Ordering::Relaxed);
-                    if failures < 4 || failures.is_multiple_of(60) {
+                    if (failures < 4 || failures.is_multiple_of(60)) && !self.stats.is_stopping() {
                         tracing::error!(
                             receiver = %self.config.address,
                             failures = failures + 1,
@@ -799,7 +818,7 @@ impl NetworkSink {
                     .stats
                     .reconnect_failures
                     .fetch_add(1, Ordering::Relaxed);
-                if failures < 4 || failures.is_multiple_of(60) {
+                if (failures < 4 || failures.is_multiple_of(60)) && !self.stats.is_stopping() {
                     tracing::warn!(
                         receiver = %self.config.address,
                         %error,
@@ -867,22 +886,14 @@ impl Uplink for NetworkSink {
                 let _closed = connection
                     .leave_link_mode()
                     .context("return the socket to blocking mode")
-                    .and_then(|()| connection.finish());
+                    .and_then(|()| connection.finish_noting(&self.stats.stop_sent));
                 Ok(())
             }
-            State::Disconnected { .. } => {
-                log_shutdown_disconnected(self.config.address);
-                Ok(())
-            }
+            // No session: no STOP can be sent. The service writes nothing; the
+            // `output stopped` report shows `stop_sent=false`.
+            State::Disconnected { .. } => Ok(()),
         }
     }
-}
-
-fn log_shutdown_disconnected(receiver: SocketAddr) {
-    tracing::warn!(
-        %receiver,
-        "shutting down while the dnstap receiver is disconnected; no STOP sent"
-    );
 }
 
 /// The blocking frame-at-a-time sink, for the parser and reconnect tests.
@@ -933,20 +944,28 @@ impl FrameSink for NetworkSink {
             }
             // Nothing to flush and no one to tell; an in-flight attempt is
             // abandoned and its thread ends on its own within the I/O timeouts.
-            State::Disconnected { .. } => {
-                log_shutdown_disconnected(self.config.address);
-                Ok(())
-            }
+            State::Disconnected { .. } => Ok(()),
         }
     }
 }
 
-fn finish_stream<W: Read + Write>(mut writer: FrameStreamWriter<BufWriter<W>>) -> Result<()> {
+#[cfg(test)]
+fn finish_stream<W: Read + Write>(writer: FrameStreamWriter<BufWriter<W>>) -> Result<()> {
+    finish_stream_noting(writer, &AtomicBool::new(false))
+}
+
+/// Runs the closing exchange and sets `stop_written` once the STOP frame is
+/// written and flushed, even when FINISH then fails to arrive.
+fn finish_stream_noting<W: Read + Write>(
+    mut writer: FrameStreamWriter<BufWriter<W>>,
+    stop_written: &AtomicBool,
+) -> Result<()> {
     // Flush the last data frame separately so a failure is not reported as a
     // STOP or FINISH failure. NetworkSink resets the shared deadline once
     // before entering this helper; these phases do not extend it.
     writer.flush().context("final buffered data flush")?;
     let buffered = writer.finish().context("STOP write/flush")?;
+    stop_written.store(true, Ordering::Relaxed);
     let mut transport = buffered
         .into_inner()
         .map_err(io::IntoInnerError::into_error)

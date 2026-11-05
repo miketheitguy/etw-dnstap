@@ -853,6 +853,44 @@ fn the_router_seals_with_batches_out_and_the_next_run_reads_from_the_last_frame_
     );
 }
 
+#[test]
+fn a_seal_with_a_backlog_writes_no_log_line_and_records_the_backlog() {
+    use crate::spool::test_support::capture_logs_at;
+    let dir = TestDir::new("seal-quiet");
+    let stats = Arc::new(SinkStats::default());
+    let rig = rig(
+        Some(spool_of_small_frames(&dir, &stats, 3 * SMALL_PER_BATCH)),
+        &stats,
+        true,
+    );
+    let (_input, parser) = bounded::<Block>(1);
+    let Rig {
+        router, returns, ..
+    } = rig;
+    drop(returns);
+    stats.begin_stop();
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        router.seal(&parser).expect("seal");
+    });
+    assert_eq!(logs.text(), "", "the service writes nothing at shutdown");
+    assert!(stats.spool_backlog_kept.load(Ordering::Relaxed));
+    assert_eq!(stats.spool_seal_error(), None);
+}
+
+#[test]
+fn a_seal_with_no_spool_records_no_backlog() {
+    let stats = Arc::new(SinkStats::default());
+    let rig = rig(None, &stats, true);
+    let (_input, parser) = bounded::<Block>(1);
+    let Rig {
+        router, returns, ..
+    } = rig;
+    drop(returns);
+    router.seal(&parser).expect("seal");
+    assert!(!stats.spool_backlog_kept.load(Ordering::Relaxed));
+    assert_eq!(stats.spool_seal_error(), None);
+}
+
 // ---- the deterministic batching test ----
 
 /// Blocks that arrive between two runs of the router.

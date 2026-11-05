@@ -818,7 +818,7 @@ impl Spool {
     fn note_low_space(&mut self, free: u64, needed: u64) {
         let blocks = self.low_space_blocks;
         self.low_space_blocks += 1;
-        if blocks < 4 || blocks.is_multiple_of(60) {
+        if (blocks < 4 || blocks.is_multiple_of(60)) && !self.stats.is_stopping() {
             tracing::warn!(
                 target: crate::event_ids::LOSS_SPOOL,
                 free_mib = free / MIB,
@@ -833,7 +833,7 @@ impl Spool {
     /// Counts an I/O error. The log is bounded: the first four, then every 60th.
     fn note_error(&self, error: &io::Error) {
         let errors = self.stats.spool_errors.fetch_add(1, Ordering::Relaxed);
-        if errors < 4 || errors.is_multiple_of(60) {
+        if (errors < 4 || errors.is_multiple_of(60)) && !self.stats.is_stopping() {
             tracing::warn!(
                 target: crate::event_ids::RISK_SPOOL_IO_ERROR,
                 %error,
@@ -1021,7 +1021,7 @@ impl Spool {
             // Counts only, never data. Bounded like the I/O error log.
             let evictions = self.evictions;
             self.evictions += 1;
-            if evictions < 4 || evictions.is_multiple_of(60) {
+            if (evictions < 4 || evictions.is_multiple_of(60)) && !self.stats.is_stopping() {
                 tracing::warn!(
                     target: crate::event_ids::LOSS_SPOOL,
                     frames,
@@ -1059,7 +1059,7 @@ impl Spool {
         }
         let discards = self.discards;
         self.discards += 1;
-        if discards < 4 || discards.is_multiple_of(60) {
+        if (discards < 4 || discards.is_multiple_of(60)) && !self.stats.is_stopping() {
             tracing::warn!(
                 target: crate::event_ids::LOSS_SPOOL,
                 frames,

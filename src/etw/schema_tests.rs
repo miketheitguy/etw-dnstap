@@ -928,6 +928,26 @@ fn a_retry_that_fails_as_unsupported_stays_rejected() {
 }
 
 #[test]
+fn a_quiet_parser_counts_rejections_and_logs_nothing() {
+    let mut parser = Parser::new();
+    parser.set_quiet(true);
+    let lines = crate::spool::test_support::capture_logs(|| {
+        let _unsupported = parser.reject(
+            (257, 3),
+            None,
+            SchemaFailure::Unsupported(anyhow!("DNS provider requires a manifest schema")),
+        );
+        let _load = parser.reject(
+            (256, 5),
+            None,
+            SchemaFailure::Load(anyhow!("TDH metadata size query failed")),
+        );
+    });
+    assert_eq!(lines.text(), "");
+    assert_eq!(parser.schema_rejected_events(), 2);
+}
+
+#[test]
 fn load_failure_logs_are_bounded_per_key() {
     let mut parser = Parser::new();
     parser.remember_rejected(load_failed((256, 5), 0, 0));

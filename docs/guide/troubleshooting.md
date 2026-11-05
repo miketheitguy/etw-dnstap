@@ -69,7 +69,6 @@ message.
 | `dnstap receiver reconnected` | 2 | |
 | `dnstap link is saturated` | 23 | The spool backlog trended up over 10 samples with the receiver connected. See [The receiver is slow](#the-receiver-is-slow). |
 | `dnstap link is no longer saturated` | 2 | The backlog is empty or stopped growing. |
-| `shutting down while the dnstap receiver is disconnected` | 3 | No STOP sent. |
 | `spool folder is not usable` | 26 | The `reason` field names the failed check. |
 | `spool could not be opened` | 26 | The folder passed the checks. |
 | `spool is disabled (--no-spool)` | 26 | Once, at start. Any receiver outage loses frames. |
@@ -77,8 +76,6 @@ message.
 | `dnstap spool discarded unreadable segment data` | 14 | |
 | `dnstap spool I/O error` | 27 | |
 | `dnstap spool is refusing blocks` | 14 | No free space, and no older segment to remove. |
-| `could not seal the dnstap spool segment` | 3 | At shutdown. |
-| `dnstap spool backlog kept on disk for the next run` | 2 | Not an error. |
 | `spool in use` | 2 | |
 | `the DNS Server service restarted` or `the DNS Server service stopped` | 4, then 1 | |
 | `a capture worker exited before shutdown was requested` | 1 | |
@@ -159,9 +156,9 @@ Frame Streams handshake, the service logs one Event ID 4 error and retries with 
     `received fatal alert: CertificateRequired`.
 - A Frame Streams rejection means the receiver does not accept `protobuf:dnstap.Dnstap`.
 
-**Shutdown while disconnected.** The service logs `shutting down while the dnstap
-receiver is disconnected; no STOP sent` and exits with code 0. Spooled frames stay on
-disk for the next start.
+**Shutdown while disconnected.** The service writes nothing about it except
+`output stopped`, which reads `stop_sent=false`, and exits with code 0. Spooled frames
+stay on disk for the next start (`spool_backlog_kept=true`).
 
 With a spool, `spool_available` should read `true`, and `spool_bytes` should fall
 after the receiver returns while `replayed` rises. If `spool_bytes` keeps rising while
@@ -263,11 +260,13 @@ Event fields, and the repeat rule for messages that log more than once, are in
   `--spool-max-mib`, or the volume is within 2 segments of the free-space floor. Nothing is
   lost yet. At the limit the spool deletes its oldest data (Event ID 14). Free space, or
   raise `--spool-max-mib`. See [Spool sizing](tuning.md#spool-sizing).
-- **`could not seal the dnstap spool segment`** (Event ID 3, at shutdown). The last
-  segment closed without its STOP. The next start replays its frames. If the message
-  repeats, check the disk.
-- **`dnstap spool backlog kept on disk for the next run`** (Event ID 2, at shutdown).
-  Not an error. `leftover_segments` in `spool in use` gives the count.
+- **`spool_seal_error` in `output stopped`** (Event ID 2, at shutdown). The last
+  segment closed without its STOP. The next start replays its frames. If the field
+  appears at every stop, check the disk. The field is absent when the seal worked.
+- **`spool_backlog_kept=true` in `output stopped`** (Event ID 2, at shutdown). Not an
+  error. Unsent frames stay in the spool for the next start, also when `spool_seal_error`
+  is present. `leftover_segments` in
+  `spool in use` gives the count at that start.
 - **`spool in use`** (Event ID 2, at startup). Not an error. `leftover_segments` and
   `leftover_bytes` show what an earlier run left.
 
@@ -283,7 +282,8 @@ the [recovery policy](install.md#5-configure-scm-recovery).
   shutdown was requested`.
 - **A receiver problem at shutdown does not fail the stop.** A STOP/FINISH exchange that does not
   complete, for example because the receiver is stalled at shutdown, does not fail the stop. The
-  service writes nothing about it and stops with success, so SCM does not restart it. Unsent
+  service writes nothing about it, except that `output stopped` reads `stop_sent=false` when no
+  STOP was written, and stops with success, so SCM does not restart it. Unsent
   frames stay in the spool, or count in `disconnected_dropped` when no spool is in use. A panic of
   the sender or link thread ends the process at once (release builds abort on a panic), and SCM
   handles it as a crash.

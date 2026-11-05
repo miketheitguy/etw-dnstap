@@ -827,6 +827,125 @@ fn the_output_report_carries_the_slow_receiver_signals() {
     }
 }
 
+/// The text of the `output stopped` line that `report_counts` writes.
+fn output_stopped_line(sink: &SinkStats) -> String {
+    let (capture, parser) = (CaptureCounters::default(), ParseCounters::default());
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        report_counts(&capture, &parser, sink);
+    });
+    logs.text()
+        .lines()
+        .find(|line| line.contains("output stopped"))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn output_stopped_says_when_no_stop_was_sent() {
+    let sink = SinkStats::default();
+    let line = output_stopped_line(&sink);
+    assert!(line.contains("stop_sent=false"), "{line}");
+    assert!(line.contains("spool_backlog_kept=false"), "{line}");
+    assert!(!line.contains("spool_seal_error"), "{line}");
+    sink.stop_sent.store(true, Ordering::Relaxed);
+    let sent = output_stopped_line(&sink);
+    assert!(sent.contains("stop_sent=true"), "{sent}");
+}
+
+#[test]
+fn output_stopped_carries_the_spool_backlog_and_a_seal_error() {
+    let sink = SinkStats::default();
+    sink.spool_backlog_kept.store(true, Ordering::Relaxed);
+    let line = output_stopped_line(&sink);
+    assert!(line.contains("spool_backlog_kept=true"), "{line}");
+    assert!(!line.contains("spool_seal_error"), "{line}");
+    sink.set_spool_seal_error("disk full".to_owned());
+    let failed = output_stopped_line(&sink);
+    assert!(
+        failed.contains(r#"spool_seal_error="disk full""#),
+        "{failed}"
+    );
+}
+
+#[test]
+fn the_periodic_output_report_does_not_carry_the_shutdown_results() {
+    let (capture, parser, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let logs = capture_logs_at(tracing::Level::INFO, || {
+        report_snapshot(
+            &capture,
+            &parser,
+            &sink,
+            &[StageCpu::default(); STAGE_COUNT],
+        );
+    });
+    assert_eq!(logs.count("stop_sent"), 0, "{}", logs.text());
+}
+
+#[test]
+fn supervision_ends_by_silencing_the_sink_and_parser_threads() {
+    let config = config_from(&[]);
+    let (capture, parse, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+    let parser = thread::spawn(|| Ok(()));
+    let stop = AtomicBool::new(true);
+    let producer = QueryCountingProducer {
+        queries: Arc::new(AtomicU64::new(0)),
+    };
+    assert!(!sink.is_stopping());
+    supervise(&stop, None, false, &parser, &producer, &mut monitor);
+    assert!(sink.is_stopping());
+    assert!(parse.stopping.load(Ordering::Acquire));
+}
+
+/// A sink that takes frames and does nothing.
+struct NullSink;
+
+impl FrameSink for NullSink {
+    fn write_frame(&mut self, _payload: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn finish(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_failed_capture_start_silences_the_sink_and_parser_threads() {
+    let config = config_from(&[]);
+    let mut seen = None;
+    let stop = AtomicBool::new(false);
+    let result = run_pipeline(
+        &config,
+        |_target, stats| {
+            seen = Some(stats);
+            Ok(NullSink)
+        },
+        |_start| -> Result<FakeProducer> { bail!("capture did not start") },
+        &stop,
+        Lifecycle {
+            progress: || Ok(()),
+            running: || Ok(()),
+            stopping: || Ok(()),
+        },
+        |_name, _sources| None,
+    );
+    result.expect_err("the start failure is returned");
+    assert!(seen.expect("connected").is_stopping());
+}
+
 /// Supervises for `run_for` with the loss and risk check due every 10 ms, a
 /// healthy sink, and `prepare` applied to the counters after the baseline is
 /// taken. Returns the log text of the supervisor thread and the ETW queries

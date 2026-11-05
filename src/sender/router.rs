@@ -847,11 +847,16 @@ impl Router {
         }
         if let Some(spool) = self.spool.as_mut() {
             let backlog = spool.has_backlog();
+            // Nothing is logged at shutdown: the `output stopped` report carries
+            // both results.
             if let Err(error) = spool.seal() {
-                tracing::warn!(%error, "could not seal the dnstap spool segment");
-            } else if backlog {
-                tracing::info!("dnstap spool backlog kept on disk for the next run");
+                self.stats.set_spool_seal_error(error.to_string());
             }
+            // A failed seal leaves the backlog on disk, and the next start
+            // replays it.
+            self.stats
+                .spool_backlog_kept
+                .store(backlog, Ordering::Relaxed);
         }
         match self.link.take() {
             Some(link) => link
