@@ -335,8 +335,7 @@ If `ring_dropped` or `etw_lost` rises in the `capture stats` events, restart wit
 262,144 uses 558.03 MiB of counted storage at 64 jumbo slots, and the startup deadline is
  seconds. The lab ran 200,000 queries per second with it and with the default 131,072.
 The largest `--capacity` is 524,288. It uses 1,108.03 MiB of counted storage at 64 jumbo slots,
-the startup deadline is 42 seconds, and the working set is expected near 1.6 GB (not measured
-yet). See [Defaults](tuning.md#defaults). Lab runs are in
+the startup deadline is 42 seconds, and the lab measured a working set of about 1.4 GB. See [Defaults](tuning.md#defaults). Lab runs are in
 [200,000 QPS sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04)
 and [Guide lab results, 2026-11](../history/guide-lab-results-2026-11.md).
 

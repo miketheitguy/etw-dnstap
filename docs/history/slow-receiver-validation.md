@@ -1138,3 +1138,224 @@ loss at 100,000 QPS, and no setting tried removes it.
   is the one that was running.
 - **Checkpoints:** `etw64k-pre-2026-11-04` on both guests, kept, with all earlier checkpoints.
   Restoring any checkpoint on `DNSTap-WS2025` returns the guest to 6 vCPUs and 4 GiB.
+
+## Event channel 262,144 and 524,288 at 100,000 QPS (2026-11-04)
+
+A fifth lab run on the same day, on repository HEAD `3333703` ("Accept --capacity up to 524,288
+events"). The earlier runs left one loss open. At 100,000 QPS on the idle 12-vCPU guest, ETW delivers
+events 1 to 3 s late and then in a burst, and the event channel overflows (`intake_dropped` equal to
+`ring_dropped`, `etw_lost` 0). Loss so far: 65,536 about 9 %, 131,072 about 2.5 to 4 %, 262,144
+156,618 and 26,285 events in two runs. The question: **raise the channel in powers of two until it
+no longer drops, and stop at 524,288.** The stopping rule: if all 3 runs at 262,144 have
+`intake_dropped` 0 and `ring_dropped` 0, stop there. Otherwise run 524,288. After the largest size,
+one run at idle 200,000 QPS.
+
+**Result in one line: 262,144 still drops (2 of 3 runs). 524,288 did not drop in 3 of 3 runs at
+100,000 QPS, and in 2 of 2 runs at 200,000 QPS.** The late delivery itself did not change. The
+channel peaked at 47 to 53 % of 524,288 while it absorbed the bursts.
+
+The raw data is lab evidence under `target/performance/capacity512k-20261104/`. It is not in the
+repository. The driver and analysis scripts are copies of those of the 64 KiB run, with two
+changes (see Method differences).
+
+### Method differences from the 64 KiB run
+
+| Item | 64 KiB run | This run |
+| --- | --- | --- |
+| Guest | 12 vCPUs, 8 GiB static | The same. Not resized. |
+| Checkpoints | `etw64k-pre-2026-11-04` | New `capacity512k-pre-2026-11-04` on both guests, taken before any change. It holds the 12 vCPU, 8 GiB guest. All earlier checkpoints kept. No older checkpoint was restored. |
+| Build | `6c8dd65` MSI | HEAD `3333703`, built with `scripts/build/Build-Msi.ps1` (the log shows the executable was compiled in this run). MSI SHA-256 `402702A20B549FBA08278722D27E6A7F2F47F3DC5BCFEDD32A44132839E50FBA`, executable SHA-256 `0112C5BF420745B5BAE33AF7C9060264C210A352AA46D0755C011F1CE8ED755A`. Installed with the three MSI properties (exit 3010, guest restarted). Later changes of `SERVICE_ARGS` used `REINSTALL=ALL REINSTALLMODE=vomus` with all three properties, then a restart. |
+| Options | Explicit | Explicit for every measured run: `--plaintext --stats-interval-seconds 5 --etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128 --etw-flush-seconds 1`, plus `--capacity 262144` or `--capacity 524288`. |
+| Capacity applied | not applicable | `capture started` logged `capacity=262144` and `capacity=524288` (and `capacity=131072` for the default), each with `etw_buffer_kib=128 etw_min_buffers=12 etw_max_buffers=128 etw_flush_seconds=1`. `Get-EtwTraceSession` showed buffer size 128, minimum 24, maximum 128, flush timer 1. |
+| Load | 60 s, 20 s tail | The same. 8 client threads for 100,000 QPS, 16 for 200,000 QPS. Link unshaped, no busy load, no `tc` shaping (the receiver record before the first run showed no qdisc and no filter). |
+| Added counters | none | The memory sampler also reads `Private Bytes` and `Working Set Peak` of the service process. The driver records three times at each service start: the start call, the return of `Start-Service` (Running), and the first established connection to the receiver. The `capture started` time comes from the Application event log. |
+| Stall seconds | Rule of the 64 KiB run | The same rule. A stall second is a 1 s sample, from 3 s into the load to its end, with `Events Received/sec` below half of the nominal rate (200,000 events/s at 100,000 QPS, 400,000 events/s at 200,000 QPS). |
+
+Receiver checks: the collector config has only the `devnull` logger, and the unit has
+`StandardOutput=null` and `StandardError=null`. The record taken at the start matched the one taken
+after the last run of the previous section, line for line, and matched again before each batch.
+Delivery was counted from `ss -tin` `bytes_received` (103.015 bytes a frame). The collector wrote
+nothing. No build ran on the host during a measured run (the MSI was built before the first install).
+
+Run IDs: `y01` to `y03` are `--capacity 262144` at 100,000 QPS. `z01` to `z03` are
+`--capacity 524288` at 100,000 QPS. `z04` is the planned 200,000 QPS run at 524,288. `z05` is an
+extra 200,000 QPS run (see Deviations). All runs are idle.
+
+### Tables
+
+Link unshaped, 60 s load. `intake_dropped` equals `ring_dropped` in every run. The gap is the
+delivered frames less the encoded frames (the handshake and a few frames in flight at the stop).
+
+| Run | Load | Busy | Encoded | Delivered (gap) | `queue_dropped` | Spooled | `intake_dropped` | `ring_dropped` | `etw_lost` | Events/s mean (min) | Rx MB/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| y01-cap262k-idle-100k | 100k | 0 | 11,999,729 | 11,999,736 (+7) | 0 | 0 | 0 | 0 | 0 | 199,637 (21) | 20.1 |
+| y02-cap262k-idle-100k-r2 | 100k | 0 | 11,980,834 | 11,980,899 (+65) | 0 | 0 | 19,092 | 19,092 | 0 | 205,668 (0) | 20.3 |
+| y03-cap262k-idle-100k-r3 | 100k | 0 | 11,990,532 | 11,990,559 (+27) | 0 | 0 | 9,468 | 9,468 | 0 | 198,852 (8) | 20.1 |
+| z01-cap524k-idle-100k | 100k | 0 | 11,767,258 | 11,767,134 (-124) | 0 | 0 | 0 | 0 | 0 | 197,366 (0) | 19.9 |
+| z02-cap524k-idle-100k-r2 | 100k | 0 | 11,999,934 | 11,999,958 (+24) | 0 | 0 | 0 | 0 | 0 | 197,309 (1) | 19.7 |
+| z03-cap524k-idle-100k-r3 | 100k | 0 | 11,999,982 | 12,000,006 (+24) | 0 | 0 | 0 | 0 | 0 | 205,222 (629) | 20.3 |
+| z04-cap524k-idle-200k | 200k | 0 | 22,596,256 | 22,596,228 (-28) | 0 | 0 | 0 | 0 | 0 | 374,812 (2,628) | 38.3 |
+| z05-cap524k-idle-200k-r2 | 200k | 0 | 22,749,433 | 22,749,089 (-344) | 0 | 0 | 0 | 0 | 0 | 376,961 (10,771) | 38.6 |
+
+| Run | Peak send queue (blocks) | Router wait peak (ms) | Router pass peak (ms) | Write wait peak (ms) | `link_saturated` | Guest CPU % mean (max) | Proc. queue mean (max) | Service CPU % | Min available MB | Host CPU % mean (max) | Host LP run % mean (max) | VP wait/dispatch mean (max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| y01-cap262k-idle-100k | 67 | 75.0 | 26.2 | 0.4 | 0 | 56.9 (67.4) | 2.4 (8) | 14.1 | 5,350 | 51.0 (58.9) | 57.6 (64.8) | 1,755 (2,982) |
+| y02-cap262k-idle-100k-r2 | 131 | 66.8 | 29.9 | 0.7 | 0 | 56.2 (69.7) | 1.5 (6) | 14.0 | 5,332 | 49.3 (60.7) | 56.1 (64.5) | 1,781 (3,179) |
+| y03-cap262k-idle-100k-r3 | 148 | 80.6 | 30.4 | 4.0 | 0 | 55.3 (66.3) | 1.7 (7) | 14.0 | 5,363 | 50.1 (57.9) | 56.8 (65.9) | 1,768 (3,044) |
+| z01-cap524k-idle-100k | 70 | 83.6 | 20.8 | 0.3 | 0 | 56.1 (68.2) | 1.6 (6) | 14.1 | 4,856 | 50.6 (60.6) | 57.0 (66.7) | 1,756 (3,038) |
+| z02-cap524k-idle-100k-r2 | 223 | 65.9 | 18.3 | 1.8 | 0 | 59.1 (71.8) | 2.0 (9) | 13.5 | 4,829 | 51.7 (58.6) | 58.3 (65.3) | 1,754 (3,732) |
+| z03-cap524k-idle-100k-r3 | 158 | 82.8 | 36.5 | 1.1 | 0 | 55.9 (67.0) | 1.5 (6) | 14.1 | 4,848 | 50.6 (62.5) | 57.2 (66.3) | 1,767 (3,084) |
+| z04-cap524k-idle-200k | 23 | 118.6 | 14.0 | 2.1 | 0 | 75.0 (87.3) | 2.2 (5) | 30.8 | 4,962 | 66.9 (77.1) | 71.4 (79.9) | 1,926 (3,212) |
+| z05-cap524k-idle-200k-r2 | 26 | 90.2 | 15.8 | 1.3 | 0 | 76.9 (88.5) | 2.7 (8) | 31.7 | 4,217 | 68.5 (82.0) | 73.0 (85.0) | 1,921 (3,281) |
+
+Every run: `spool_dropped` 0, `disconnects` 0, `link_saturated` 0, stop and FINISH confirmed.
+
+Loss, stall seconds, peak channel depth, and the ETW buffer counters (1 s samples). Loss is
+`intake_dropped` as a share of the events the service received (encoded plus dropped). The
+peak depth of `y01` (261,721) is 99.8 % of 262,144.
+
+| Run | Loss (% of events) | Stall seconds (events/s) | Peak channel depth (% of capacity) | ETW buffers allocated / in use, peak | `% ETW Buffers Used`, peak |
+| --- | --- | --- | --- | --- | --- |
+| y01-cap262k-idle-100k | 0.00 | 9: 5.2 s (1,263), 19.3 s (1,280), 20.3 s (10,599), 27.4 s (80,996), 28.4 s (16,327), 40.5 s (67,308), 41.5 s (21), 44.5 s (2,124), 48.6 s (18,270) | 261,721 (99.8 %) | 34 / 13 | 10.2 |
+| y02-cap262k-idle-100k-r2 | 0.16 | 14: 8.1 s (11,079), 11.1 s (4,889), 19.1 s (2,038), 23.2 s (2,056), 25.2 s (67,170), 39.3 s (2,165), 43.3 s (40,525), 47.4 s (0), 49.4 s (36,564), 50.4 s (17,013), 52.4 s (93,616), 54.4 s (1,390), 57.5 s (67,732), 58.5 s (0) | 262,144 (full) | 34 / 13 | 10.2 |
+| y03-cap262k-idle-100k-r3 | 0.08 | 16: 4.0 s (1,385), 6.0 s (68,846), 13.0 s (78,470), 14.1 s (663), 16.1 s (83,108), 21.1 s (767), 24.1 s (38,825), 25.1 s (2,252), 28.2 s (18,502), 35.2 s (2,282), 36.2 s (63,573), 39.3 s (2,166), 40.3 s (8), 44.3 s (66,034), 47.4 s (1,365), 54.4 s (1,412) | 262,145 (full) | 34 / 13 | 10.2 |
+| z01-cap524k-idle-100k | 0.00 | 14: 5.3 s (1,511), 8.3 s (32,619), 13.3 s (0), 14.3 s (7,333), 18.4 s (224), 19.4 s (85,808), 21.4 s (56,231), 29.5 s (50,901), 34.5 s (1,881), 35.5 s (85,585), 37.5 s (90,794), 38.5 s (11,358), 42.6 s (47,041), 50.6 s (831) | 246,165 (47 %) | 34 / 17 | 13.3 |
+| z02-cap524k-idle-100k-r2 | 0.00 | 10: 4.0 s (60,375), 5.1 s (28,566), 10.1 s (1), 28.3 s (41,004), 29.3 s (37,544), 32.3 s (4,239), 43.4 s (45,538), 49.4 s (4,200), 50.4 s (19,447), 59.6 s (1,938) | 272,632 (52 %) | 34 / 13 | 10.2 |
+| z03-cap524k-idle-100k-r3 | 0.00 | 12: 8.0 s (95,194), 13.1 s (629), 14.1 s (81,730), 16.1 s (17,811), 19.1 s (1,472), 23.2 s (44,322), 25.2 s (8,501), 26.2 s (2,828), 28.2 s (89,119), 29.2 s (2,269), 46.3 s (10,602), 55.4 s (30,492) | 275,866 (53 %) | 39 / 13 | 10.2 |
+| z04-cap524k-idle-200k | 0.00 | 3: 17.2 s (2,628), 18.2 s (181,073), 50.6 s (5,008) | 22,083 (4 %) | 48 / 13 | 10.2 |
+| z05-cap524k-idle-200k-r2 | 0.00 | 3: 32.3 s (176,135), 33.4 s (100,499), 55.6 s (10,771) | 71,214 (14 %) | 48 / 13 | 10.2 |
+
+Dropped events at idle 100,000 QPS, 128 KiB buffers, all runs so far:
+
+| Capacity | Runs (dropped events) | Runs with no drop |
+| --- | --- | --- |
+| 65,536 | 892,932, 1,403,492, 945,037 | 0 of 3 |
+| 131,072 | 443,994, 464,402, 311,161 (control `k01` of the 64 KiB run) | 0 of 3 |
+| 262,144 | 156,618 and 26,285 (sizing run), 0, 19,092, 9,468 (this run) | 1 of 5 |
+| 524,288 | 0, 0, 0 | 3 of 3 |
+
+### Service memory and start time
+
+Service process, from the 1 s memory counters over the load (`Working Set Peak` counter, with the
+largest `Working Set` sample in brackets). The "at start" column is the first sample, 3 s after the
+service start. The guest has 8 GiB. The available-memory column is the lowest `Available MBytes` in
+the run. Before the runs the guest had about 5.9 GB available.
+
+| Capacity | Runs | Working set at start (MB) | Working set peak (MB) | Private bytes peak (MB) | Min available (MB) |
+| --- | --- | --- | --- | --- | --- |
+| 131,072 | 3 start cycles after the final restore | 303 (2 s after start) | not run under load here; 356 in `c01` of the sizing run | 367 at start | 5,595 to 5,804 in the sizing and 64 KiB runs at 100,000 and 200,000 QPS |
+| 262,144 | `y01` to `y03` | 627 to 666 | 799 to 839 (785 to 802) | 822 to 839 | 5,332 to 5,363 |
+| 524,288 | `z01` to `z03` (100k) | 1,235 to 1,264 | 1,384 to 1,399 (1,367 to 1,375) | 1,415 to 1,424 | 4,829 to 4,856 |
+| 524,288 | `z04`, `z05` (200k) | 1,230 | 1,261 and 1,303 (1,236 and 1,292) | 1,284 and 1,340 | 4,962 and 4,217 |
+
+At 524,288 the service holds about 1.0 GB more than at 131,072. Most of it is there at start, so the
+channel memory is touched when the service starts. The peak of 1.4 GB is below the 1.6 GB I expected
+from the counted storage (1,108 MiB). Available memory never fell below 4.2 GB of 8 GB.
+
+Start time, in seconds from the `Start-Service` call. "Running" is the return of `Start-Service`.
+"Capture started" is the event-log time of the `capture started` line. "Connected" is the first
+established connection to the receiver. These are warm starts (the service stopped and started again
+with the guest up).
+
+| Capacity | Starts | To Running | To capture started | To connected |
+| --- | --- | --- | --- | --- |
+| 131,072 | 3 (after the final restore) | 0.27, 0.27, 0.27 | 0.08, 0.08, 0.08 | 0.58, 0.29, 0.29 |
+| 262,144 | 3 (`y01` to `y03`) | 0.27, 0.26, 0.27 | 0.14, 0.15, 0.14 | 0.56, 0.50, 0.51 |
+| 524,288 | 5 (`z01` to `z05`) | 0.27, 0.52, 0.51, 0.52, 0.53 | 0.26, 0.27, 0.27, 0.28, 0.27 | 0.49, 0.76, 0.74, 0.76, 0.76 |
+
+Start time grows with the capacity but stays far from the 42 s startup deadline (0.3 s to capture
+started at 524,288). The first start after each restart (delayed automatic start) logged `spool in
+use` 0.22 s before `capture started`. Its SCM start time is not known, so it is not in the table.
+
+### Findings
+
+1. **262,144 is not enough at 100,000 QPS.** Two of three runs dropped events (19,092 and 9,468, 0.16
+   and 0.08 %). The channel was full in both, and in `y01` it peaked at 261,721, 423 events below the
+   limit. With the two runs of the sizing run, 4 of 5 runs at 262,144 dropped events.
+2. **524,288 did not drop in 3 of 3 runs at 100,000 QPS.** The peak depth was 246,165, 272,632, and
+   275,866 events, 47 to 53 % of the channel. The largest burst the channel held was 275,866 events,
+   which is more than 262,144. The margin over the largest peak seen is a factor of 1.9.
+3. **The late delivery did not change.** The 524,288 runs had 14, 10, and 12 stall seconds, the
+   262,144 runs 9, 14, and 16, and the 131,072 runs 7 to 12. Stalls last at most 2 samples in a row. A
+   bigger channel only holds the burst that follows. It does not shorten the stall. The cause is still
+   open (see the 64 KiB run).
+4. **The send path absorbed the bursts.** `queue_dropped` 0 and `spooled` 0 in all eight runs. The
+   peak send queue was 67 to 223 blocks of 256 at 100,000 QPS (223 in `z02`), so the burst after a
+   stall fills most of the FIFO but does not overflow it.
+5. **ETW stayed healthy.** `etw_lost` 0 in all eight runs. At most 48 of 128 buffers allocated and 17
+   in use (`% ETW Buffers Used` at most 13.3 %).
+6. **Service CPU did not change with the capacity.** 13.5 to 14.1 % at 100,000 QPS for both sizes,
+   and 30.8 and 31.7 % at 200,000 QPS, as in the sizing run (29.8 to 33.4 %).
+7. **200,000 QPS at 524,288: no loss, but the client did not hold the rate.** `z04` and `z05` had
+   `intake_dropped` 0, `etw_lost` 0, `queue_dropped` 0, and `spooled` 0. The channel peaked at 22,083
+   and 71,214 events (4 and 14 %). The mean was 374,812 and 376,961 events/s, not 400,000. In both
+   runs the client had low seconds (it sent 0 queries in 2 and 1 seconds, with 2,916 and 5,195 query
+   timeouts), and the service saw what the client sent: the events per second are twice the
+   client's queries per second. In the seconds without a client stall, 50 of 56 (`z04`) and 48 of 56
+   (`z05`) samples were at or above 380,000 events/s, with a median of 399,785 and 399,515. So the
+   capture reached 400,000 events/s whenever the client sent at 200,000 QPS. The large channel has
+   no cost in loss at this rate. I cannot say why the client lost queries more often in these two
+   runs (earlier 200,000 QPS runs had query timeouts of 0 to 2,638, and client low seconds in 3 of
+   12 runs). Memory did not run short (available 4.2 to 5.0 GB).
+8. **Client stalls also show at 100,000 QPS.** `z01` had two client seconds of 66,232 and 22,096
+   queries (42 and 43 s, 1,270 timeouts), so its encoded count is 11,767,258, not 12,000,000, and
+   the stall at 42.6 s comes from the client. `y01` had 225 query timeouts and no low client second.
+   The other runs had none. This does not change the drop counts, which come from the service.
+
+### Verdict
+
+| Question | Verdict |
+| --- | --- |
+| Smallest power-of-two `--capacity` with no drop in 3 of 3 runs at 100,000 QPS, idle, 12 vCPUs | **524,288** (the largest value HEAD accepts). 262,144 failed in 2 of 3 runs here, and in 4 of 5 with the sizing run. |
+| Does 524,288 remove the loss? | **It hides the symptom, not the cause.** The stalls remain (10 to 14 a run). The channel holds the bursts with a 1.9 times margin over the largest peak seen. Three runs with no drop do not show that a drop is impossible. |
+| Cost | About 1.0 GB more working set than 131,072 (1.4 GB against about 0.35 GB). Start to capture started 0.3 s instead of 0.1 s. No extra CPU. Available memory stayed above 4.2 GB of 8 GB. |
+| Full rate | At 200,000 QPS with 524,288: `etw_lost` 0, no drop, and 400,000 events/s in the seconds the client ran at rate. |
+
+The choice of the default stays with the owner. 131,072 holds 200,000 QPS with a margin and costs
+0.35 GB. 524,288 is the only size here that held 100,000 QPS with no drop, for 1.4 GB. A host with
+less memory would need a smaller value. If the late delivery is found and removed, a smaller
+channel will do.
+
+### Deviations and limits
+
+- **One extra run.** `z05` was not in the brief. The brief asked for one 200,000 QPS run. `z04` was
+  held down by client stalls (mean 374,812 events/s), so I ran a second one. It had the same client
+  stalls. Neither run reached a 400,000 events/s mean.
+- **Three runs a size.** A drop that happens in one run of ten would not show. At 262,144 the loss
+  spread from 0 to 156,618 events over five runs.
+- **No run at 131,072 in this run.** The 131,072 numbers are from the sizing and 64 KiB runs, with
+  the same settings. Its start time and idle memory were measured after the final restore, not under
+  load.
+- **The first start after a restart is not in the start-time table.** The SCM start time is not
+  logged for a delayed automatic start.
+- **Client stalls.** `z01`, `z04`, and `z05` had client low seconds, and `y01` had query timeouts.
+  The loss counts are the service's, but the events/s means and the `encoded` totals of those runs
+  are below nominal because of the client.
+- **Counters are 1 s samples.** A dip under a second does not show.
+- **Restarts.** Each `SERVICE_ARGS` change ended with a guest restart (MSI exit 3010): one for the
+  first install, one for each of 262,144 and 524,288, and one for the final restore.
+- **Memory estimate.** The expected 1.6 GB was an estimate from the counted storage. The measured
+  peak is 1.4 GB.
+
+### Lab state after
+
+- **Guest:** 12 vCPUs, 8 GiB static memory (Dynamic Memory off). The MSI of HEAD `3333703` is
+  installed with exactly the three properties `RECEIVER=172.27.215.60:6000`,
+  `SESSION_NAME=EtwDnstap-Lab`, and `SERVICE_ARGS="--plaintext --stats-interval-seconds 5"`, and no
+  extra argument. Its default capacity is 131,072. The last reinstall used
+  `REINSTALL=ALL REINSTALLMODE=vomus`, then a restart. Three stop and start cycles followed, to
+  time the start. ProductCode `{6AE59C73-5EA3-4F4E-8FC9-D584C6D4339A}`, MSI SHA-256
+  `402702A20B549FBA08278722D27E6A7F2F47F3DC5BCFEDD32A44132839E50FBA`, executable SHA-256
+  `0112C5BF420745B5BAE33AF7C9060264C210A352AA46D0755C011F1CE8ED755A`. The service is running as
+  `NT AUTHORITY\LocalService`, SID type restricted, recovery `restart/5000`, connected to the
+  receiver. The spool holds only `cursor.bin`. The busy processes (none were started), the
+  samplers, WPR, and the staging folder are gone.
+- **Receiver:** the record of `tc qdisc show`, the `eth0` ingress filters, `iptables -S` (filter and
+  mangle), `ip6tables -S`, `nft list ruleset`, the link list, the loaded traffic-control modules,
+  the collector config SHA-256, the null-output drop-in SHA-256, the unit output settings, and the
+  collector process id is identical to the record taken before the first run (compared with `diff`).
+  The service is connected to the receiver.
+- **Checkpoints:** `capacity512k-pre-2026-11-04` on both guests, kept, with all earlier
+  checkpoints. Restoring `capacity512k-pre-2026-11-04` or `etw64k-pre-2026-11-04` on
+  `DNSTap-WS2025` returns the 12 vCPU, 8 GiB guest. Any older checkpoint, including
+  `sizing-200k-pre-2026-11-04`, returns it to 6 vCPUs and 4 GiB.

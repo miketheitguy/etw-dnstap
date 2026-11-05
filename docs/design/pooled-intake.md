@@ -147,8 +147,8 @@ At the largest channel (C 524,288), the same formulas give 1,161,853,008 bytes (
 with 64 jumbo slots and 1,187,098,704 bytes (1,132.11 MiB) with 256. The regular payloads
 are 1,073,745,920 bytes and the channel elements 58,720,256. The widest product is
 `(C + 2) x 2,048`, about 1.1e9, so the arithmetic fits a 32-bit count as well as `usize`.
-The working set is expected near 1.6 GB, twice the 812 MB measured at 262,144; that is
-not measured yet.
+The lab measured a working set of 1,384 to 1,399 MB at 524,288 under load, against
+about 812 MB at 262,144.
 
 These totals exclude allocator rounding and metadata, queue headers, worker stacks,
 native ETW buffers, TDH caches, protobuf data, and output buffers. They are not

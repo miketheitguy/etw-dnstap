@@ -287,8 +287,9 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   so a service that does not set the option behaves as before. The lab saw ETW deliver events
   1 to 3 seconds late in one burst at 100,000 queries per second, and 262,144 still dropped
   0.03 to 0.16 million events in two runs. Counted storage at 524,288 with 64 jumbo slots is
-  1,108.03 MiB (1,132.11 MiB with 256), and the startup deadline is 42 s. The working set is
-  expected near 1.6 GB; it is not measured yet. A wider accepted range is backward compatible.
+  1,108.03 MiB (1,132.11 MiB with 256), and the startup deadline is 42 s. The lab measured a
+  working set of about 1.4 GB at 524,288, and no dropped event at 100,000 queries per second
+  in 3 of 3 runs. A wider accepted range is backward compatible.
   See [Storage](docs/guide/configuration.md#storage).
 - The service no longer sets `SO_SNDBUF` (it was 1 MiB). Windows dynamic send
   buffering is on unless an application sets that option, and a fixed buffer limits

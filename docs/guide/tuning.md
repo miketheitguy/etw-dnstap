@@ -83,11 +83,11 @@ Why these values:
   | 65,536 | 24,223 to 61,903 (94%), 0 dropped in 3 runs | 63,940 (98%), 0 dropped | Full. One run dropped 12,264 events | 241 MB |
   | 131,072 | 27,385 and 28,129, 0 dropped in 2 runs | 61,239 (47%), 0 dropped | Not run | 356 MB |
   | 262,144 | Not run at 200,000 queries per second | Not run | Not run | 812 MB |
-| 524,288 | Not run | Not run | Not run | Not measured (expected near 1.6 GB) |
+  | 524,288 | 22,083 and 71,214, 0 dropped in 2 runs | Not run | Not run | 1,261 to 1,399 MB |
 
   At 65,536 the channel came close to full even on an idle guest. At 131,072 the busiest run
   used 47% of the channel and no run dropped an event. The step from 65,536 to 131,072 costs
-  115 MB of working set. The step to 262,144 would cost another 456 MB. The step to 524,288 is expected to bring the working set near 1.6 GB. That is not measured.
+  115 MB of working set. The step to 262,144 would cost another 456 MB. The step to 524,288 brings it to about 1.4 GB.
 
 Costs:
 
@@ -111,14 +111,15 @@ not mean events were lost. Watch `ring_dropped` and `etw_lost`. If they rise, ra
 and `--etw-max-buffers`, for example to `--etw-max-buffers 256 --capacity 262144`. An earlier lab load of 200,000 queries per second ran without loss at that
 value, but it uses 558.03 MiB of counted storage and about 812 MB of working set. The largest
 `--capacity` is 524,288. It uses 1,108.03 MiB of counted storage at 64 jumbo slots, and its
-working set is expected near 1.6 GB (not measured yet). The startup deadline is 42 seconds.
+working set is about 1.4 GB. The startup deadline is 42 seconds.
 
 The lab also found a case that the channel size does not fix. At 100,000 queries per second on
 the idle 12-vCPU guest, ETW delivered events late, in gaps of 1 to 3 seconds followed by a
-burst, and the channel overflowed at every size. 65,536 dropped 0.89 to 1.40 million events,
-131,072 dropped 0.44 to 0.46 million, and 262,144 dropped 0.16 and 0.03 million. A larger
-channel reduces this loss but does not remove it. The cause is on the ETW delivery side and is
-still open. If `ring_dropped` rises at a rate well below 200,000 queries per second, check the
+burst. 65,536 dropped 0.89 to 1.40 million events, 131,072 dropped 0.31 to 0.46 million, and
+262,144 dropped events in 4 of 5 runs (up to 0.16 million). 524,288 dropped nothing in 3 of 3
+runs, with the channel at most 53% full, at a working set of about 1.4 GB. The gaps themselves
+did not change with the channel size. The cause is on the ETW delivery side and is still open.
+See [Event channel 262,144 and 524,288](../history/slow-receiver-validation.md#event-channel-262144-and-524288-at-100000-qps-2026-11-04). If `ring_dropped` rises at a rate well below 200,000 queries per second, check the
 delivery gaps in the lab write-up before you raise `--capacity` further.
 The 12-vCPU runs are in [200,000 QPS sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
 
