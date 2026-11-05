@@ -41,12 +41,8 @@ nothing. For the file version, see [build.md](build.md#build-the-executable). Fo
 version, see the `version` field of `capture started` in
 [monitoring.md](monitoring.md#periodic-and-final-reports).
 
-### Removed options
-
-The service rejects these options during parsing: `--output` (`-o`), `--max-output-bytes`,
-`--metrics`, `--etw-flush-ms`, `--help` (`-h`), and `--version` (`-V`). A service path that
-contains a rejected option does not start. The service writes no capture or metrics files. The
-only files it writes are the spool files.
+The service rejects any option not listed here, and a service path that contains one does not
+start. The service writes no capture files. The only files it writes are the spool files.
 
 ### Diagnostic flags (`diag-timing` builds only)
 
@@ -69,9 +65,6 @@ See [pooled-intake.md](../design/pooled-intake.md).
 
 | `--capacity` | Jumbo slots | Counted storage |
 | --- | --- | --- |
-| 8,192 (earlier default) | 64 | 25.22 MiB |
-| 24,576 (previous default) | 64 | 59.59 MiB |
-| 65,536 (previous default) | 64 | 145.53 MiB |
 | 131,072 (default) | 64 | 283.03 MiB |
 | 262,144 | 64 | 558.03 MiB |
 | 262,144 | 256 | 582.11 MiB |
@@ -240,7 +233,7 @@ Protocol failures at startup are not.
 ### TLS
 
 TLS wraps the Frame Streams session unless `--plaintext` is set. With `--plaintext`, the connection
-is plaintext TCP with no peer authentication, as in earlier builds. A receiver that answers the
+is plaintext TCP with no peer authentication. A receiver that answers the
 handshake with plaintext fails it as a protocol failure. A receiver that stays silent or closes
 during the handshake is a network failure, and the service retries.
 
@@ -314,7 +307,7 @@ install ACL must keep other accounts out afterward.
 The spool writes no plaintext to disk. Each segment file starts with a 32-byte header. Each block
 of frames that the router appends becomes one record, encrypted and authenticated with AES-128-GCM.
 A record adds 28 bytes. A sealed segment ends with a 28-byte end record. Frames in memory, in the
-send queue, and on the wire are not encrypted; the receiver gets the same dnstap frames as before.
+send queue, and on the wire are not encrypted; the receiver gets the same dnstap frames.
 
 The key:
 
@@ -517,9 +510,6 @@ and continues. It never stops another session with that name, including one with
 Startup fails instead.
 
 The GUID comes from the exact spelling of `--session-name`, but ETW ignores case.
-
-The service does not reclaim `etw-dnstap-<pid>` sessions from earlier builds. Find them with
-`logman query -ets`, and stop each with `logman stop etw-dnstap-<pid> -ets`.
 
 ## Next steps
 

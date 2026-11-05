@@ -17,8 +17,7 @@ current build names the phase: `final buffered data flush`, `STOP write/flush`,
 The sender's shutdown has a shared two-second I/O deadline. A STOP/FINISH exchange that does
 not complete does not fail the service stop, and the service writes nothing about it. Frames
 that were not sent stay in the spool for the next start, or count in `disconnected_dropped`
-when no spool is in use. Earlier builds ended the stop with a
-service-specific error instead, and SCM then restarted the service.
+when no spool is in use.
 
 The strongest receiver-side candidate is DNS-collector's reset close:
 

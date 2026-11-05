@@ -29,8 +29,7 @@ and the binary path in step with `SESSION_NAME`.
 | Uninstall, `msiexec /x` | Skip | Run |
 
 The same MSI file, with the same `ProductCode`, is a maintenance run, not an upgrade. A maintenance run
-with a new `SESSION_NAME` or `RECEIVER` and no `REINSTALL` changes nothing. A product installed from an
-MSI built before this rule keeps the old behavior until you upgrade it. The lab has not yet run the
+with a new `SESSION_NAME` or `RECEIVER` and no `REINSTALL` changes nothing. The lab has not yet run the
 maintenance case with the current MSI. See [the plan](../history/code-review-findings-fix-plan.md#lab-validation-not-part-of-this-plans-agents).
 
 ### Upgrade to a newer build
@@ -43,17 +42,6 @@ The newer MSI removes the installed product and installs the new one in one tran
 stops during the upgrade and starts after the restart. The upgrade reuses the remembered `RECEIVER`,
 `SESSION_NAME`, and `SERVICE_ARGS` unless you pass new values. It keeps the spool folder, the ETW grants,
 and the Performance Log Users membership.
-
-### Upgrade to a build with spool encryption
-
-A build with spool encryption writes encrypted segments. The MSI writes the service dependency list
-again, so the service depends on `DNS` and `KeyIso`. Check it with `sc.exe qc EtwDnstap`. The upgrade
-keeps the spool key (`WrappedKey`).
-
-At its first start, the new build makes a spool key. It then deletes every spool segment that it cannot
-read. That includes the plaintext segments of the earlier build. It counts their bytes in
-`spool_dropped_bytes`, and it logs one warning with the counts. To keep those frames, drain the spool
-before you upgrade. See [Spool key errors](troubleshooting.md#spool-key-errors).
 
 ### Downgrade is refused
 
@@ -209,7 +197,7 @@ Then restore the rest of the snapshot:
 
 ## Add the spool folder
 
-This build adds the disk spool, which is on by default, at `C:\ProgramData\EtwDnstap\spool`. Make these changes together:
+The disk spool is on by default, at `C:\ProgramData\EtwDnstap\spool`. Make these changes together:
 
 1. Take the snapshot, as in [Snapshot before a change](#snapshot-before-a-change).
 2. Create the folder with [Create the spool folder](install.md#create-the-spool-folder), in the same PowerShell session. The service SID from step 3 must already be registered. `New-ProtectedFolder` stops if the folder exists. Inspect the folder first, and do not take ownership of it or reuse it without that check.
@@ -230,9 +218,7 @@ Do not delete the spool folder during a repair. It can hold frames that were not
   6. Start the service, and check the account with `sc.exe qc EtwDnstap`.
 
   On build 26100, `obj=` did not clear the SID type or the privilege list. After any `obj=` change, run `sc.exe sidtype EtwDnstap restricted`, and check it with `sc.exe qsidtype EtwDnstap`.
-- **First grant-script version** (commit `1a54272`). It granted `0x423` on the default GUID and `0x80` on the DNS provider GUID. Replace the executable, run the current script with `-SessionName`, and restart. The script removes the old grants and the provider descriptor. The lab tested this path.
 - **Changing `--session-name`.** Run the grant script with the new name and any others still in use. Restart before you start the service.
-- **Removed arguments.** `--output`, `--max-output-bytes`, and `--metrics` fail argument parsing. Remove them from the binary path, and add `--receiver` with the collector's numeric IP address and port.
 - **Changing the binary path.** Use `sc.exe config EtwDnstap binPath= "..."`, and keep the space after `binPath=`.
 
 ## Replace the executable
@@ -274,7 +260,7 @@ When the new executable works, remove `etw-dnstap.exe.bak`. The snapshot copy st
 ## Replace the counter manifest
 
 This section applies to a hand-provisioned install. Do this only when a new release changes `etw-dnstap.man`.
-The release that adds the spool changes it, so [Add the spool folder](#add-the-spool-folder) calls this section.
+[Add the spool folder](#add-the-spool-folder) calls this section.
 Take the snapshot first. Run these while the service is stopped, between `sc.exe stop` and `sc.exe start`, from
 the folder with the new `etw-dnstap.man` under `packaging\perfcounters\`, or with the `Copy-Item` source changed.
 

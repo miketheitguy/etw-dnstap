@@ -1,6 +1,6 @@
 # Slow receiver: link writer and progress liveness
 
-> **Status:** Current. Sections describe the built code. Open item: lab repeat of the B2 replay drain on Windows Server (plan task L). Not built: H1b, H3b, H3c, other shedding options, and optional task T (a TCP-statistics signal). · **Describes:** the sender at `main` commit `a06f6fd` (Problem) and the design built on this branch (later sections). · **Evidence:** source review on 2026-11-05. The B2 throughput numbers come from the build host on 2026-11-04, not from Windows Server. Lab results are in the [plan](../plans/slow-receiver-plan.md). · **Reviewed:** 2026-11-05
+> **Status:** Current. Open item: lab repeat of the B2 replay drain on Windows Server (plan task L). · **Describes:** the sender on this branch. · **Evidence:** source review on 2026-11-05. The B2 throughput numbers come from the build host on 2026-11-04, not from Windows Server. Lab results are in the [plan](../plans/slow-receiver-plan.md). · **Reviewed:** 2026-11-05
 
 ## Summary
 
@@ -10,26 +10,9 @@ A session (one connected run of TCP, TLS, and the Frame Streams handshake) ends 
 
 When a session fails, unsent live data goes back to the router in order. Replay data (frames read back from the spool) stays on disk until the receiver accepts it. So a failure does not lose frames. The one exception is a crash or kill. Then frames that were read ahead are sent again. A normal stop repeats nothing.
 
-## Status by section
+## Units
 
-| Section | Status |
-| --- | --- |
-| Problem | Describes the baseline at `a06f6fd`. Fixed. |
-| Requirements | Held by the design. |
-| Design: threads, FIFO, writes, liveness, hand-back, states | Built (H1a, H2, B1, D, H4). |
-| B2. Spool rewind | Built on 2026-11-04. |
-| Constants | Values in code. |
-| Decisions and risks | See each entry. |
-| Tests | Built. |
-
-## Problem
-
-**Units.** A query makes two dnstap frames of 103 bytes on average (lab measurement). So 10,000 queries per second is 2.06 MB/s, 50,000 is 10.3 MB/s, and 200,000 is 41.2 MB/s.
-
-At `a06f6fd`, one thread routed blocks and wrote the socket. Each chunk of a write had a 2-second deadline. Two faults followed.
-
-- **A blocked write stopped the spill (F1).** While a write blocked, the router did not run, so it could not move data to the spool. The send queue holds 128 blocks of about 64 KiB (8 MiB), and the spill point is 96 blocks. That leaves 2 MiB. A write blocked for its full 2 s fills those 2 MiB at about 5,000 queries per second and above. At 50,000 queries per second they last about 0.2 s. After that the parser counted `queue_dropped`, even though the spool had room.
-- **A slow receiver looked dead (F2).** A chunk that did not finish in 2 s ended the session. The block in progress and the 64 KiB write buffer counted as `disconnected_dropped`. The reconnect then waited for the backoff (250 ms to 30 s) and for the TLS and Frame Streams handshakes. A 2.5-second collector pause cost frames and a reconnect.
+A query makes two dnstap frames of 103 bytes on average (lab measurement). So 10,000 queries per second is 2.06 MB/s, 50,000 is 10.3 MB/s, and 200,000 is 41.2 MB/s.
 
 ## Requirements
 
@@ -38,7 +21,7 @@ At `a06f6fd`, one thread routed blocks and wrote the socket. Each chunk of a wri
 - **I3. Delivery.** Delivery is at most once, except across a crash (B2). A frame counts as delivered only when the socket accepted its bytes.
 - **I4. The parser never blocks.** It never allocates per frame. It draws blocks from a fixed pool.
 - **I5. Shutdown.** Shutdown takes about 5 s at most, inside the 10 s shutdown watchdog. The design target is about 3.2 s.
-- **I6. Connect in the background.** Connect and handshakes run on the `dnstap-reconnect` helper thread. The backoff is unchanged (250 ms to 30 s).
+- **I6. Connect in the background.** Connect and handshakes run on the `dnstap-reconnect` helper thread. The backoff is 250 ms to 30 s.
 - **R1. No send timeout on data.** Microsoft Learn says that after a blocking send times out, the connection is in an indeterminate state and must be closed. It does not say whether some bytes were queued. So a session must never continue after a send that returned a timeout. The design avoids timeouts on data writes altogether.
 
 ## Design
@@ -86,7 +69,7 @@ Blocks go straight to the transport. The `BufWriter` flush timers do not run on 
 
 The writer feeds rustls one piece of at most `TLS_FEED_BYTES` (16 KiB, one record at the default fragment size). The piece ends at a frame boundary. The writer drains `write_tls` until `wants_write()` is false before it feeds the next piece. The unconfirmed piece is the only plaintext whose fate is unknown at a failure. Plaintext sessions know the exact offset.
 
-**TLS record limit (found in review V4).** At its confidentiality limit (2^24 records for TLS 1.2 with AES-GCM), rustls 0.23.46 queues `close_notify`, refuses the record, and still reports the length as written. Before B2 this made the link see every block as complete. The stall timer never fired, and frames were dropped silently. `tls_offer` (`src/network/wire.rs`) now checks the ciphertext rustls queued (`process_new_packets().tls_bytes_to_write()`, which does no I/O) against the plaintext it took. Each record is longer than its plaintext by a 5-byte header and a 16-byte tag. So if the queued bytes are shorter, the data was dropped and the offer fails. The data is then unconfirmed and goes back at the hand-back. The check needs no record-count constant. One gap: a refused piece of 10 bytes or fewer can pass once. The next offer then fails. The encoder never produces a frame that small.
+**TLS record limit (found in review V4).** At its confidentiality limit (2^24 records for TLS 1.2 with AES-GCM), rustls 0.23.46 queues `close_notify`, refuses the record, and still reports the length as written. The link would then see every block as complete, the stall timer would never fire, and frames would drop silently. `tls_offer` (`src/network/wire.rs`) checks the ciphertext rustls queued (`process_new_packets().tls_bytes_to_write()`, which does no I/O) against the plaintext it took. Each record is longer than its plaintext by a 5-byte header and a 16-byte tag. So if the queued bytes are shorter, the data was dropped and the offer fails. The data is then unconfirmed and goes back at the hand-back. The check needs no record-count constant. One gap: a refused piece of 10 bytes or fewer can pass once. The next offer then fails. The encoder never produces a frame that small.
 
 ### Liveness from progress (H2)
 
@@ -98,13 +81,13 @@ The writer feeds rustls one piece of at most `TLS_FEED_BYTES` (16 KiB, one recor
 
 **Shutdown timing.** Once shutdown starts, the link stops at the earlier of the stall deadline and the link deadline. The stall timeout never extends shutdown.
 
-| Step | At `a06f6fd` | Design |
-| --- | --- | --- |
-| Final partial block, then the link budget | 1.1 s | 1.1 s |
-| Write in progress at the deadline, then the hand-back | up to 2 s | up to 50 ms |
-| STOP/FINISH | up to 2 s | up to 2 s |
-| Returned block, FIFO, and channel to the spool | up to 128 blocks, after the link | up to 513 blocks (about 32 MiB), at the same time as STOP/FINISH |
-| Total | about 5 s | about 3.2 s, or longer only if the seal outlasts STOP/FINISH |
+| Step | Time |
+| --- | --- |
+| Final partial block, then the link budget | 1.1 s |
+| Write in progress at the deadline, then the hand-back | up to 50 ms |
+| STOP/FINISH | up to 2 s |
+| Returned block, FIFO, and channel to the spool | up to 513 blocks (about 32 MiB), at the same time as STOP/FINISH |
+| Total | about 3.2 s, or longer only if the seal outlasts STOP/FINISH |
 
 A stall shorter than the timeout fills the FIFO and then spills. That costs no loss and no reconnect. With no spool, a full FIFO means `queue_dropped` until the receiver resumes.
 
@@ -159,25 +142,23 @@ Each router turn does the following, in order: take the link's messages, follow 
 
 **Closing rules.** A STOP or FINISH that does not complete never fails the service. `NetworkSink` returns `Ok` and writes no log event and no counter, because every data frame was already accepted, handed back, or counted. The shutdown worst case is a link that finishes just inside the budget, then a closing exchange that runs to its 2-second bound: about 3 s. A stalled shutdown takes about 1.1 s.
 
-### Loss after B2
+### Loss at a failure
 
-| Case | Before B2 | After B2 |
-| --- | --- | --- |
-| Failure in Direct | None counted. | None counted. |
-| Failure in Draining (replay in the FIFO or in hand) | Under 140 KiB, in `disconnected_dropped`. | None counted. The frames are read again. |
-| TLS unconfirmed piece, replay | At most 16 KiB, in `disconnected_dropped`. | None. The frames are read again. |
-| TLS unconfirmed piece, live | At most 16 KiB, in `disconnected_dropped`. | None. Returned to the router with the cut frame. |
-| Shutdown with batches out | Counted. | None. The batches stay on disk. |
-| Shutdown with a backlog and a front block | At most one block, in `disconnected_dropped`. | Unchanged. |
-| Crash or kill (not a stop) | Under 140 KiB of replay, uncounted. | None lost. Up to 127 batches and the frames of the last router pass are sent again. The receiver may see them twice. |
+| Case | Counted loss |
+| --- | --- |
+| Failure in Direct | None. |
+| Failure in Draining (replay in the FIFO or in hand) | None. The frames are read again. |
+| TLS unconfirmed piece, replay | None. The frames are read again. |
+| TLS unconfirmed piece, live | None. Returned to the router with the cut frame. |
+| Shutdown with batches out | None. The batches stay on disk. |
+| Shutdown with a backlog and a front block | At most one block, in `disconnected_dropped`. |
+| Crash or kill (not a stop) | None lost. Up to 127 batches and the frames of the last router pass are sent again. The receiver may see them twice. |
 
-Bytes the kernel held at a failure are the only data still lost, and they stay uncounted. A frame counts in at most one counter. With B2 a spool frame ends in one of three ways: delivered (`replayed`), evicted or unreadable (`spool_dropped`), or still on disk.
+Bytes the kernel held at a failure are the only data still lost, and they stay uncounted. A frame counts in at most one counter. A spool frame ends in one of three ways: delivered (`replayed`), evicted or unreadable (`spool_dropped`), or still on disk.
 
 ## B2. Spool rewind
 
-*Built on 2026-11-04.* The user approved the design that day.
-
-**Problem.** B1 gives unsent live data back. A replay batch could not go back, because `Spool::read_batch` saved the cursor, and the segment could be deleted before the link sent the batch. So the replay credit was 2. A failure lost at most two batches (under 140 KiB). Replay was also slow on a busy host, because each batch needed a router wake.
+B1 gives unsent live data back. B2 does the same for replay data: a replay batch can go back to the spool after a failure.
 
 **Design.** The spool keeps two positions. A *held* frame is one that was read but not yet delivered. Held data stays on disk.
 
@@ -205,7 +186,7 @@ D never passes R. The spool keeps the data between them on disk.
 - A sweep deletes the head segment while it has ended and `frames_done == frames_read`. The sweep runs at the end of `delivered`, and at the end of a read that ended a segment. A segment with no frame left to deliver gets no report, so the sweep is needed there.
 - The active segment never ends, because more data can arrive. When it is the only segment, R is at the writer position, and `frames_done == frames_read`, the sweep deletes it and closes the writer.
 - A deletion writes the cursor only when no span is out. With a span out, the cursor already holds D, and the deletion writes nothing.
-- `has_backlog()` is true while any segment remains. It now means "data not yet delivered." `has_unread()` means R is before the end of the data. `replay()` tests `has_unread()`. `unread_bytes()` is measured from R, and the monitor reads it.
+- `has_backlog()` is true while any segment remains. It means "data not yet delivered." `has_unread()` means R is before the end of the data. `replay()` tests `has_unread()`. `unread_bytes()` is measured from R, and the monitor reads it.
 
 **Rewind at the hand-back.** The router rewinds only after it has applied everything the link sent and taken the FIFO.
 
@@ -223,7 +204,7 @@ D never passes R. The spool keeps the data between them on disk.
 - *The front list stays at one block.* Draining sends no live block to the FIFO, whatever the credit.
 - *A spill never meets a replay item.* A spill runs only in Direct, where no replay is out.
 
-**Unconfirmed TLS piece (decided 2026-11-04).** The frames of an unconfirmed piece go back with the rest. A replay batch goes to the spool. A live block goes to the router, like the cut frame. Before B2 the live piece counted as lost. Those frames cannot have reached the receiver whole:
+**Unconfirmed TLS piece (decided 2026-11-04).** The frames of an unconfirmed piece go back with the rest. A replay batch goes to the spool. A live block goes to the router, like the cut frame. Those frames cannot have reached the receiver whole:
 
 - A piece holds at most 16 KiB, one TLS record. The exception is one long first frame. Then the piece is that frame, in several records.
 - `pending()` is true while some queued ciphertext has not reached the socket. TCP is in order, so the receiver holds a prefix of the pending bytes. If the last of those bytes is the tail of a data record, the receiver holds a prefix of that record and cannot decrypt it.
@@ -240,12 +221,12 @@ D never passes R. The spool keeps the data between them on disk.
 - *A failed write.* The file keeps the older D. A crash then repeats more frames, never fewer. The error counts in `spool_errors` and is logged like any spool I/O error. Reads do not pause for it. The spool retries after the pause (10 s), at the next deletion, and in `seal`.
 - *Opening.* `Spool::open` applies D. A cursor that names a missing segment, or one older than every segment, starts reading at the first segment's start, because the segments between were already delivered. A cursor inside an existing segment resumes at its offset, and the segments below it are deleted uncounted. A damaged file (wrong size, magic, or check value, or an offset inside a segment header) is not a crash. The oldest segment is dropped and counted. That limits what a damaged file can repeat.
 - *A segment that cannot be deleted.* The deletion writes the cursor first, so the file already names a position past the stray file. The next start deletes the stray file and does not send it again. If that cursor write also fails, a crash can send the stray file again. At-least-once allows that.
-- *Rejected earlier proposal.* A cursor at R, written before each batch leaves, would give at most once. The user chose to resend instead, so a crash loses no replay data.
+- *Why at least once.* A cursor at R, written before each batch leaves, would give at most once. The design resends instead, so a crash loses no replay data.
 
 **Eviction and `--spool-max-mib`.**
 
 - *The cap.* Held segments are on disk. They count in `total_bytes`, `spool_bytes`, and the cap.
-- *The victim.* `Spool::evict_oldest(keep_last)` deletes the oldest segment that the reader has not ended and that holds no held data (its read offset is not past its delivered offset). Held segments are skipped. The cap path may delete the newest segment. The free-space floor path keeps the newest segment, as before.
+- *The victim.* `Spool::evict_oldest(keep_last)` deletes the oldest segment that the reader has not ended and that holds no held data (its read offset is not past its delivered offset). Held segments are skipped. The cap path may delete the newest segment. The free-space floor path keeps the newest segment.
 - *Counters.* A victim was never read, so its frames count in `spool_dropped` in full. A leftover segment adds only bytes. Eviction never counts a held frame. A frame the link took counts in `replayed`. Each frame is in one counter, or it is sent.
 - *A loss counted once.* A cut-off tail, a corrupt rest, or an unreadable rest counts when the reader first meets it. The segment then keeps a mark: `cut`, `lost_frames`, and `lost_bytes`. After a rewind the reader stops at `cut` and counts nothing more. A read error or a bad header on the read segment ends the segment at its read offset and counts the unread part at once (`Spool::abandon`). The mark survives a rewind.
 - *Order (H3a).* The victim is the oldest segment with no held data. It is newer than the held data by at most P + 2S (below). The receiver still gets frames in capture order, with a gap after the held run. H3a keeps its meaning: the oldest data that is not already on its way to the receiver goes first.
@@ -258,43 +239,41 @@ D never passes R. The spool keeps the data between them on disk.
 - `serve` takes up to 256 parser blocks first, then replay. Replay stops after the first batch that reaches `REPLAY_TURN_BYTES`, so a turn reads under 1 MiB + 70 KiB. The turn returns `Moved`, and the next turn serves the parser again.
 - The parser channel holds 16 MiB, 0.41 s at 41.2 MB/s. One Server quantum of router pause already uses 7.7 MB of it (118 of 256 blocks). Reading 1 MiB from an uncached disk at 100 MB/s takes 10.5 ms. That is 2.6 % of 0.41 s, and the parser adds about 0.43 MB (7 blocks) meanwhile. The 100 MB/s figure is an assumption that lab task L checks.
 - One turn queues about 16 batches (103-byte frames). Eight turns fill the credit. A router wake keeps running turns while they move data, so one wake queues all 127 batches. At 41.2 MB/s the link then needs no router for 127 × 64 KiB / 41.2 MB/s = 0.20 s.
-- At shutdown `serve` reads no replay. Batches out finish within the link budget or come back. `Router::seal` then runs. It drops the FIFO and fence senders and applies every message until the return channel closes, so each finished batch moves D. It takes the FIFO, releasing replay items without counting them. It places the live blocks that are older than a backlog, and the front list, as before. It sends the parser channel's blocks to the spool. Then `Spool::seal` writes D to the cursor file and STOP to the active segment.
+- At shutdown `serve` reads no replay. Batches out finish within the link budget or come back. `Router::seal` then runs. It drops the FIFO and fence senders and applies every message until the return channel closes, so each finished batch moves D. It takes the FIFO, releasing replay items without counting them. It places the live blocks that are older than a backlog, and the front list, as in the hand-back. It sends the parser channel's blocks to the spool. Then `Spool::seal` writes D to the cursor file and STOP to the active segment.
 - The held data stays on disk, in order, and the next start reads from D. The router does not rewind at a stop, because nothing reads the spool again. A failed cursor write at stop counts in `spool_errors` and is logged. A stop-time disk fault is not a receiver problem, so the rule that a receiver problem adds no output at stop does not cover it. The shutdown bound (about 3.2 s) does not change.
 
 **Test seam and fuzzing.** `Spool::read_and_deliver` (`src/spool/test_support.rs`, tests only) reads a batch and reports it delivered at once. Spool-only tests use it. `src/spool/fuzzing.rs` ends up to eight batches in a failed link, at points the input chooses. It delivers part of the frames, then rewinds.
 
-**Manifest.** The help text of perfmon counters 18 and 54 changed in `packaging/perfcounters/etw-dnstap.man`, and `etw-dnstap-perf.rc` was regenerated with CTRPP. An upgrade must register the updated manifest again.
+**Throughput evidence.** The review harness is not in the repository. Settings: release profile, loopback, a receiver that counts bytes, 103-byte frames, busy threads at normal priority, 24 logical CPUs, Windows 11 client. Ten runs of each replay case:
 
-**Throughput evidence.** The review harness is not in the repository. It was rebuilt from the review notes for this measurement, and the temporary test was removed afterwards. Settings: release profile, loopback, a receiver that counts bytes, 103-byte frames, busy threads at normal priority, 24 logical CPUs, Windows 11 client. Ten runs of each replay case:
+| Case | B2 (MB/s) |
+| --- | --- |
+| Replay, idle | 725 to 787 (median 753) |
+| Replay, 1 busy thread per CPU | 320 to 505 (median 361) |
+| Replay, 2 busy threads per CPU | 51 to 368 (median 73.9) |
+| Live paced at 41.2 MB/s, idle, 1 and 2 busy per CPU | 41.2, 41.0, 40.7; nothing spooled or dropped |
 
-| Case | B2 (MB/s) | Before B2, `7ac0c1c` (MB/s) |
-| --- | --- | --- |
-| Replay, idle | 725 to 787 (median 753) | 600 to 914 (median 789) |
-| Replay, 1 busy thread per CPU | 320 to 505 (median 361) | 12.8 to 41.9 (median 27.4) |
-| Replay, 2 busy threads per CPU | 51 to 368 (median 73.9) | 4.7 to 9.0 (median 5.3) |
-| Live paced at 41.2 MB/s, idle, 1 and 2 busy per CPU | 41.2, 41.0, 40.7; nothing spooled or dropped | 41.2, 41.2, 40.7; 2,548 frames dropped at 2 busy |
-
-A first set of five runs agreed: 56 to 85 MB/s at 2 busy threads per CPU. Review V3 had measured 5.6 to 40.7 MB/s before B2 on its host. The same load gave 4.7 to 9.0 MB/s on this host. Lab task L repeats the replay case on Windows Server, whose scheduler quantum is longer. Until then the replay result holds on this host only.
+Lab task L repeats the replay case on Windows Server, whose scheduler quantum is longer. Until then the replay result holds on this host only.
 
 ## Constants
 
-Values are from the code on this branch. Byte rates use the conversion in Problem.
+Values are from the code on this branch. Byte rates use the conversion in Units.
 
 | Constant | Value | Notes |
 | --- | --- | --- |
-| `SEND_QUEUE_BLOCKS` | 256 (128 at `a06f6fd`) | Parser-to-router channel, 16 MiB. It holds one Server quantum of router pause (118 blocks) twice over, and it absorbs late ETW bursts (finding L-7). |
-| `LINK_FIFO_BLOCKS` | 256 (128 at `7ac0c1c`) | Router-to-link FIFO, 16 MiB. A waiting thread can lose a quantum: 2 clock ticks (31.25 ms) on a Windows client, 12 ticks (187.5 ms) on Windows Server. At 41.2 MB/s that is 20 blocks and 118 blocks. Late wakes of 195 to 216 ms, up to 136 blocks, were measured in the lab, and 128 blocks did not cover them. 256 blocks hold 0.41 s at 41.2 MB/s: two Server quanta (236 blocks) with an 8 % margin. |
+| `SEND_QUEUE_BLOCKS` | 256 | Parser-to-router channel, 16 MiB. It holds one Server quantum of router pause (118 blocks) twice over, and it absorbs late ETW bursts (finding L-7). |
+| `LINK_FIFO_BLOCKS` | 256 | Router-to-link FIFO, 16 MiB. A waiting thread can lose a quantum: 2 clock ticks (31.25 ms) on a Windows client, 12 ticks (187.5 ms) on Windows Server. At 41.2 MB/s that is 20 blocks and 118 blocks. Late wakes of 195 to 216 ms, up to 136 blocks, were measured in the lab, and 128 blocks did not cover them. 256 blocks hold 0.41 s at 41.2 MB/s: two Server quanta (236 blocks) with an 8 % margin. |
 | `FRONT_LIST_BLOCKS` | 1 | Live blocks that go out before the FIFO. |
-| `POOL_BLOCKS` | 516 = 256 + 256 + 1 + 3 | One block each for the parser, the router, and the link thread, plus the front list. Blocks the router takes out of the FIFO, or the link returns, were already counted. 516 × 136 KiB = 68.5 MiB, against 17.3 MiB at `a06f6fd`. B2 adds none. |
+| `POOL_BLOCKS` | 516 = 256 + 256 + 1 + 3 | One block each for the parser, the router, and the link thread, plus the front list. Blocks the router takes out of the FIFO, or the link returns, were already counted. 516 × 136 KiB = 68.5 MiB. |
 | `BLOCK_CAPACITY` | 136 KiB | Blocks are sent at about 64 KiB (`BLOCK_SEND_BYTES`). |
-| `REPLAY_BATCH_BYTES` | 64 KiB limit | `read_batch` takes a frame only if it fits, and always takes the first. So a batch is at most 71,684 bytes (70 KiB + 4). An earlier figure of 134 KiB was wrong. The batch fits `BLOCK_CAPACITY` with no reallocation. |
-| `REPLAY_CREDIT` | 127 (2 before B2) | Replay batches out at once. The code needs only that the credit and the front block fit in the FIFO, which a compile-time assert checks. 118 batches cover a Server quantum at 41.2 MB/s (41.2 MB/s × 0.1875 s / 64 KiB). 127 gives a 7.6 % margin, up to 44.4 MB/s. A larger credit would widen the held data and the crash window for no gain. |
+| `REPLAY_BATCH_BYTES` | 64 KiB limit | `read_batch` takes a frame only if it fits, and always takes the first. So a batch is at most 71,684 bytes (70 KiB + 4). The batch fits `BLOCK_CAPACITY` with no reallocation. |
+| `REPLAY_CREDIT` | 127 | Replay batches out at once. The code needs only that the credit and the front block fit in the FIFO, which a compile-time assert checks. 118 batches cover a Server quantum at 41.2 MB/s (41.2 MB/s × 0.1875 s / 64 KiB). 127 gives a 7.6 % margin, up to 44.4 MB/s. A larger credit would widen the held data and the crash window for no gain. |
 | `REPLAY_TURN_BYTES` | 1 MiB | Most the router reads from the spool in one pass. |
-| `RETURN_MESSAGES` | `REPLAY_CREDIT` + 2 = 129 (4 before B2) | Return channel capacity. See "Why it holds" under the hand-back. |
+| `RETURN_MESSAGES` | `REPLAY_CREDIT` + 2 = 129 | Return channel capacity. See "Why it holds" under the hand-back. |
 | `TLS_FEED_BYTES` | 16 KiB | One TLS record at the default fragment size. |
 | `LINK_POLL`, `SENDER_POLL` | 50 ms each | The link's wait for readiness and the FIFO. It bounds the shutdown reaction, the stall check, the fence wait, and the reconnect poll. The router's wait for input. |
-| `IO_TIMEOUT` | 2 s (unchanged) | Connect, TLS handshake, READY/ACCEPT/START, and STOP/FINISH. Never a data write. The stall minimum. |
-| `SHUTDOWN_LINK_BUDGET` | 1 s (unchanged) | Time the link may spend after shutdown starts. |
+| `IO_TIMEOUT` | 2 s | Connect, TLS handshake, READY/ACCEPT/START, and STOP/FINISH. Never a data write. The stall minimum. |
+| `SHUTDOWN_LINK_BUDGET` | 1 s | Time the link may spend after shutdown starts. |
 | `--receiver-stall-seconds` | 15 s default, 2 to 300 | At 50,000 queries per second (10.3 MB/s), 15 s spools about 155 MB, about 4 % of the default cap. |
 | `--spool-max-mib` | 4,096 default, 64 to 1,048,576 | See [configuration](../guide/configuration.md). |
 | Segment size `S` | min(64 MiB, cap / 8) | `segment_bytes_for`. |
@@ -305,33 +284,33 @@ Values are from the code on this branch. Byte rates use the conversion in Proble
 
 ## Decisions
 
-- **Stall timeout.** The 15 s default and the name `--receiver-stall-seconds` were accepted on 2026-11-03. The MSI has properties only for `RECEIVER` and `SESSION_NAME`. Other options, including this one and `--spool-max-mib`, go in `SERVICE_ARGS`, which the MSI passes to the service command line. So the MSI did not change.
-- **Unsent data at a failure.** B1, on 2026-11-03: unsent live data goes back to the router. Only replay data whose cursor had moved could be lost. B2 removes that loss.
+- **Stall timeout.** The 15 s default and the name `--receiver-stall-seconds` were accepted on 2026-11-03. The MSI has properties only for `RECEIVER` and `SESSION_NAME`. Other options, including this one and `--spool-max-mib`, go in `SERVICE_ARGS`, which the MSI passes to the service command line.
+- **Unsent data at a failure.** B1, on 2026-11-03: unsent live data goes back to the router. B2 does the same for replay data.
 - **Parser channel.** 256 blocks, on 2026-11-04, with the FIFO and risk 9.
 - **Batched hand-offs.** Decision D, on 2026-11-03. Thread priority was rejected. Above-normal priority fixed every case in review V2, but the service must not compete with the DNS Server process.
-- **Saturated link.** H3a, on 2026-11-03: capture order is kept, and the oldest spool data is deleted at the cap. H4 removes the fixed `SO_SNDBUF`, so Windows send autotuning stays on. H3b, H3c, and the other shedding options were not built.
-- **Spool rewind (B2).** Approved on 2026-11-04, with four points. (1) Across a crash or kill, the read-ahead is sent again, so delivery is at least once. A stop repeats nothing. (2) `replayed` counts a frame when the connection accepts it. (3) The unconfirmed TLS piece of a live block goes back to the router, like the cut frame. (4) While batches are in flight, eviction deletes the oldest segment that has not been read. This is still H3a.
+- **Saturated link.** H3a, on 2026-11-03: capture order is kept, and the oldest spool data is deleted at the cap. H4: the service does not set `SO_SNDBUF`, so Windows send autotuning stays on.
+- **Spool rewind (B2).** Decided on 2026-11-04, with four points. (1) Across a crash or kill, the read-ahead is sent again, so delivery is at least once. A stop repeats nothing. (2) `replayed` counts a frame when the connection accepts it. (3) The unconfirmed TLS piece of a live block goes back to the router, like the cut frame. (4) While batches are in flight, eviction deletes the oldest segment that has not been read. This is still H3a.
 
 ## Risks and open questions
 
 Numbers are stable. Other documents refer to them (risk 19 in `docs/design/data-path.md`).
 
-1. **Half-open receiver.** The 15 s stall timeout delays detection, compared with the 2 s that the design first used. With a spool, the disk absorbs the delay. Without a spool, up to 15 s of `queue_dropped`. Accepted.
+1. **Half-open receiver.** The 15 s stall timeout delays detection. With a spool, the disk absorbs the delay. Without a spool, up to 15 s of `queue_dropped`. Accepted.
 2. **Disk is the new limit.** `queue_dropped` can still occur if spool appends are slower than the capture input. Open. Lab task L should measure the append rate.
 3. **Counter meaning.** Resolved. `slow_writes` and `write_max_us` count the readiness wait per block: a block whose wait reaches 5 ms counts once as slow. `write_max_recent_us` (counter 64) is the 60-second peak.
-4. **H4, kernel send buffer.** Built. `SO_SNDBUF` is no longer set, so Windows grows the buffer with the link (dynamic send buffering). Bytes the kernel holds at a failure grow with the buffer, and they stay uncounted. The lab measured up to about 1.08 MB before the change (fixed 1 MiB buffer), 0.58 MB after on an idle host, and about 4.2 MB after on a busy host. Accepted. No test assumes a buffer size.
+4. **H4, kernel send buffer.** Built. The service does not set `SO_SNDBUF`, so Windows grows the buffer with the link (dynamic send buffering). Bytes the kernel holds at a failure grow with the buffer, and they stay uncounted. The lab measured about 0.58 MB on an idle host and about 4.2 MB on a busy host. Accepted. No test assumes a buffer size.
 5. **Trickle receiver.** A receiver that accepts a few bytes before each stall timeout keeps the session forever. The liveness rule does not detect it. The saturated-link state (plan detection D4) reports it. Open.
 6. **Receiver and cut frames.** B1 assumes the receiver discards a frame cut by a closed connection. The lab confirmed this for the DNS collector (plan, results for L).
 7. **rustls API.** The data path relies on rustls 0.23 (0.23.46 in `Cargo.lock`): `writer()`, `write_tls`, `wants_write`, and the default fragment size. A version change reruns the TLS tests in `src/network/wire_tests.rs`.
-8. **B2.** Built. See the B2 section.
-9. **Server quantum at full rate.** Closed by lab task S on 12 vCPUs. With the 256-block FIFO, 22 of 22 runs had no spill and no `queue_dropped`. That included 40.6 MB/s with 12 busy threads, and 40.5 MB/s with 24 busy threads and a router wait of 198 ms.
-10. **Replay on a saturated host.** Before B2, replay stayed below the capture rate on a host with about two busy threads per CPU, so a backlog could grow. B2 fixes this on the build host: 51 to 368 MB/s at 2 busy threads per CPU, in 10 of 10 runs, against 4.7 to 9.0 MB/s before. Open for Windows Server (lab task L).
+8. **B2.** See the B2 section.
+9. **Server quantum at full rate.** Lab task S, on 12 vCPUs: With the 256-block FIFO, 22 of 22 runs had no spill and no `queue_dropped`. That included 40.6 MB/s with 12 busy threads, and 40.5 MB/s with 24 busy threads and a router wait of 198 ms.
+10. **Replay on a saturated host.** On the build host, replay ran at 51 to 368 MB/s at 2 busy threads per CPU, in 10 of 10 runs, above the 41.2 MB/s capture rate. Open for Windows Server (lab task L).
 11. **Take lock.** If the router is preempted while it holds the take lock, the link waits up to one quantum. The lock is held only for queue pops during a spill. Accepted.
 12. **Duplicates after a crash.** Delivery across a crash or kill is at least once (decided 2026-11-04). The receiver can see up to 127 replay batches twice (8.0 MiB, 8.7 MiB at worst), and the frames of the last router pass. A receiver that cannot tolerate a repeat must deduplicate, as for any TCP restart. Accepted.
 13. **Disk in use.** Held data stays on disk until delivered. Eviction spares any segment with held data, so the bytes the cap cannot delete reach P + 2S. That is 24.7 MiB at the minimum cap of 64 MiB (39 % of it), and about 137 MiB with 64 MiB segments (caps of 512 MiB and above). `spool_bytes` includes them. At the minimum cap an eviction victim always exists.
-14. **Live data behind read-ahead.** In Draining, a live block goes through the spool and then waits behind up to 8 MiB of replay in the FIFO. That is 0.2 s at 41.2 MB/s and 1.7 s at 5 MB/s. Before B2 it waited behind two batches. Accepted, because the backlog delay of Draining is already the larger cost.
+14. **Live data behind read-ahead.** In Draining, a live block goes through the spool and then waits behind up to 8 MiB of replay in the FIFO. That is 0.2 s at 41.2 MB/s and 1.7 s at 5 MB/s. Accepted, because the backlog delay of Draining is already the larger cost.
 15. **Router turn length.** A replay read adds under 1 MiB + 70 KiB to a turn, about 10 ms on a disk that reads 100 MB/s. The 100 MB/s figure is an assumption. If the lab shows `send_queue_depth_max` rising during a drain, lower `REPLAY_TURN_BYTES`. Open.
-16. **Counter meaning.** Resolved in the guides (plan task W). `replayed` counts at delivery. `disconnected_dropped` no longer holds replay frames or the unconfirmed TLS piece, except on the two defensive paths and with no spool. `bytes_sent` again counts the accepted prefix of a cut frame when the frame is sent again, as it does for live data.
+16. **Counter meaning.** Resolved in the guides (plan task W). `replayed` counts at delivery. `disconnected_dropped` holds replay frames or the unconfirmed TLS piece only on the two defensive paths and with no spool. `bytes_sent` counts the accepted prefix of a cut frame again when the frame is sent again, as it does for live data.
 17. **Duplicates at a failure.** None are expected, except in risk 19. D is the end of the last frame the kernel fully accepted, and an unconfirmed TLS piece cannot have arrived whole. An error in this argument would show as a frame twice at the receiver. The B2 tests check it.
 18. **Eviction victim.** B2 deletes the oldest segment with no held data. It is newer than the held data by at most P + 2S. Decided as H3a on 2026-11-04.
 19. **TLS 1.3 key update window.** A duplicate can occur if rustls queues a `KeyUpdate` after a data record and the connection resets while it is pending. The window is about 22 bytes of writing, once per 2^23 or more records. The service never asks for a key update. No code change.
@@ -373,8 +352,8 @@ Named tests for the main behaviors (file in parentheses):
 | The fence wait ends at the shutdown deadline | `a_link_that_waits_for_the_fence_ends_at_the_shutdown_deadline` (`link_tests.rs`) |
 | A receiver that never answers FINISH does not fail the shutdown | `a_receiver_that_never_answers_finish_does_not_fail_the_shutdown` (`sender_tests.rs`) |
 
-**Other tests.** The earlier B2 test plan is not repeated here. The test names in these files are the reference. The spool property tests (`src/spool/property_tests.rs`) and the fuzz target (`src/spool/fuzzing.rs`) rewind at random points. They check conservation (appended = `replayed` + `spool_dropped` + on disk), order, and no repeats. Several tests assert `pool_fallbacks == 0`.
+**Other tests.** The spool property tests (`src/spool/property_tests.rs`) and the fuzz target (`src/spool/fuzzing.rs`) rewind at random points. They check conservation (appended = `replayed` + `spool_dropped` + on disk), order, and no repeats. Several tests assert `pool_fallbacks == 0`.
 
-**Characterization tests.** The tests that showed F1 and F2 now assert the new behavior. A stall shorter than the timeout causes no `queue_dropped`, no reconnect, and no `disconnected_dropped`. A stall at a 2-second timeout ends the session. Its unsent live frames go back to the spool, and B2 counts nothing.
+**Characterization tests.** A stall shorter than the timeout causes no `queue_dropped`, no reconnect, and no `disconnected_dropped`. A stall at a 2-second timeout ends the session. Its unsent live frames go back to the spool, and B2 counts nothing.
 
 **Throughput acceptance.** From the review harness: a 41 MB/s paced capture is delivered at 40 MB/s or more, at one and at two busy threads per CPU, with under 1 % of frames spooled. Replay drains faster than 41 MB/s at two busy threads per CPU in every run. The build-host result is in the B2 section. Lab task L repeats it on Windows Server.

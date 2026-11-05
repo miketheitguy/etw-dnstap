@@ -35,7 +35,7 @@ If there are no events, check the source with
 ## Run from a console
 
 A console start exits with code 1 and prints nothing, whatever arguments you pass.
-`--help`, `-h`, `--version`, and `-V` are not options. Read the version from the
+The program has no `--help` or `--version` option. Read the version from the
 `version` field of the `capture started` event, or run `(Get-Item <exe>).VersionInfo`.
 
 ## Event log messages
@@ -75,7 +75,7 @@ or parts of one.
 | `spool could not be opened` | 26 | The folder passed the checks. |
 | `spool is disabled (--no-spool)` | 26 | Once, at start. Any receiver outage loses frames. |
 | `dnstap spool deleted its oldest segment unsent` | 14 | Cap or free-space floor removed unsent frames. |
-| `dnstap spool deleted segments it cannot read at startup` | 14 | Segments of an earlier version or of another spool key. Once per start. |
+| `dnstap spool deleted segments it cannot read at startup` | 14 | Segments in a format the spool cannot read, or sealed with another spool key. Once per start. |
 | `dnstap spool discarded unreadable segment data` | 14 | |
 | `dnstap spool I/O error` | 27 | |
 | `dnstap spool is refusing blocks` | 14 | No free space, and no older segment to remove. |
@@ -101,7 +101,7 @@ order.
 
 | Cause | Event ID 1 text | Fix |
 | --- | --- | --- |
-| Invalid option | `invalid service arguments` | Fix the binary path. Removed options fail here. See [configuration.md](configuration.md). |
+| Invalid option | `invalid service arguments` | Fix the binary path. An unknown option fails here. See [configuration.md](configuration.md). |
 | Invalid session name | `invalid service arguments`, then `session name must be 1 to 128 ASCII letters, digits, underscore, dot, or hyphen, not starting with a hyphen`, with the reason appended | Use a valid name. See [configuration.md](configuration.md#options). |
 | Malformed `--spool-dir` | `invalid service arguments` | Use an absolute path with a drive letter and no `.` or `..` part. |
 | Wrong identity | `must run as NT AUTHORITY\LocalService` | Run `cmd.exe /c 'sc.exe config EtwDnstap obj= "NT AUTHORITY\LocalService" password= ""'`. Use `cmd.exe`, because Windows PowerShell 5.1 drops the empty password. Then run `sc.exe sidtype EtwDnstap restricted`. |
@@ -250,10 +250,9 @@ Event fields, and the repeat rule for messages that log more than once, are in
 - **`dnstap spool deleted segments it cannot read at startup`** (Event ID 14, once at
   startup). The service deleted segments it cannot decrypt and counted their bytes in
   `spool_dropped_bytes`. The fields give the counts: `segments`, `bytes`, `earlier_format`
-  (plaintext segments of a version before encryption, or files that are not segments), and
+  (segments in a format the spool cannot read, or files that are not segments), and
   `other_key` (segments sealed with another spool key). `new_key=true` means the service made
-  a new spool key at this start, so it deleted every segment. Expected once after an upgrade
-  from a version before encryption, and after you force a new key. At any other time, check
+  a new spool key at this start, so it deleted every segment. Expected once after you force a new key. At any other time, check
   whether something replaced `WrappedKey` or copied segment files from another server.
 - **`dnstap spool deleted its oldest segment unsent`** (Event ID 14). The cap or the
   free-space floor removed unsent frames. Check `spool_dropped`, `spool_dropped_bytes`,
@@ -527,9 +526,7 @@ logman query -ets
 logman stop EtwDnstap -ets
 ```
 
-Use your `--session-name` in place of `EtwDnstap`. Stop a session named
-`etw-dnstap-<pid>` from an earlier build only if you can identify it as this
-service's. If a reclaim fails, Event ID 1 says
+Use your `--session-name` in place of `EtwDnstap`. If a reclaim fails, Event ID 1 says
 `query existing ETW session '<name>' failed` or `stopping stale ETW session '<name>' failed`.
 
 ## Watchdog aborts or stop hangs
@@ -556,24 +553,6 @@ The service accepts Stop and Shutdown only in `RUNNING`, so SCM refuses a stop d
 A panic writes Event ID 6, starting with `EtwDnstap panicked:`, and then aborts the
 process. The abort skips cleanup. Check for a leftover ETW session with
 `logman query -ets`. Report the Event ID 6 text with the steps that led to it.
-
-## Upgrading
-
-- A removed option (`--output`, `--max-output-bytes`, `--metrics`, `--etw-flush-ms`)
-  fails command-line parsing, and the service does not start. Remove it from the
-  binary path. To replace `--etw-flush-ms`, see
-  [High-rate settings](tuning.md#high-rate-settings).
-- After an upgrade, the service logs `spool folder is not usable` until the spool
-  folder exists. Create it as in [upgrade.md](upgrade.md#add-the-spool-folder). Also
-  register the new counter manifest, or the spool counters do not appear.
-- The first start after an upgrade from a version before spool encryption deletes the
-  plaintext segments of that version and logs
-  `dnstap spool deleted segments it cannot read at startup` with their count. Their
-  frames are lost. To keep them, let the old version drain the spool to the receiver
-  before you upgrade.
-- A service still running as LocalSystem or the virtual account refuses to start.
-  Follow the ordered steps in [upgrade.md](upgrade.md#repair-cases).
-- Record identity, privilege, and ACL changes against the binary's commit.
 
 ## Still stuck
 

@@ -1,6 +1,6 @@
 # Ring capacity and shutdown
 
-> **Status:** Current · **Describes:** `src/etw/` and the parser thread on branch `spool-encryption` as of 2026-11-05 · **Evidence dated:** October 28-29, 2026 for the capacity experiment, which is historical · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** `src/etw/` and the parser thread on branch `spool-encryption` as of 2026-11-05 · **Evidence dated:** 2026-11-01 for the buffer wake and flush validations · **Reviewed:** 2026-11-05
 
 This note covers the bounds of the event channel, how the parser wakes, how ETW delivers
 events in bursts, and how the ETW threads shut down. It does not promise loss-free
@@ -19,10 +19,6 @@ The default buffer settings were validated at about 20,000 events per second (10
 queries per second). The defaults and the settings tested at lower rates are in the
 [tuning guide](../guide/tuning.md#defaults). Read that section before you choose
 `--capacity`, `--etw-flush-seconds`, or the ETW buffer options.
-
-Earlier builds used smaller channel defaults. The
-[ring capacity experiment](../history/ring-capacity-experiment.md) records the 8,192 default
-and its allocation-based queue. Its results do not validate the pooled implementation.
 
 The pool sizes, the jumbo limit, and the counted storage (296,777,808 bytes at the defaults)
 are in [Memory budget and configuration](pooled-intake.md#memory-budget-and-configuration).
@@ -46,7 +42,7 @@ explains.
 
 ## Delivery batches
 
-The service does not ask ETW to flush the session. ETW delivers real-time events about once
+The service does not flush the ETW session. ETW delivers real-time events about once
 per `--etw-flush-seconds` (default 1), as one batch. The buffer callback wakes the parser
 for each delivered buffer, so the parser drains the batch while it arrives.
 
@@ -55,15 +51,6 @@ Size the channel for a batch. One batch holds up to about 2 × queries per secon
 above that size. The peak queue is usually far below that size, because the parser drains
 during delivery. Lab results at high rates are in the
 [flush removal validation](../history/flush-removal-validation.md) record.
-
-## Removed periodic flush
-
-Earlier builds had an opt-in periodic flush. The supervisor asked ETW to flush the session
-at a set interval, and it woke the parser after each flush. The buffer wake in commit
-`7f91264` made the flush unnecessary, so the maintainer removed it. The current build does
-not flush. The results for the old flush are in the
-[flush removal validation](../history/flush-removal-validation.md) record, and they do not
-apply to the current build.
 
 ## Completion and resource ownership
 

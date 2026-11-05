@@ -215,7 +215,7 @@ The 2026-11-03 history rewrite changed every commit hash from `253df79` (old `85
 
 ## Instrumentation compatibility note
 
-- **Recorded binaries.** The historical campaigns used binaries with a service JSONL metrics writer, since removed. Their commands, ledgers, and overhead apply to those binaries only. The service-metrics harnesses reject new campaigns before any VM, load, or SCM change.
+- **Recorded binaries.** The historical campaigns used binaries with a service JSONL metrics writer. The current service has none. The campaigns' commands, ledgers, and overhead apply to the recorded binaries only. The service-metrics harnesses reject new campaigns before any VM, load, or SCM change.
 - **Current telemetry.** The service writes its counters to the Application event log every `--stats-interval-seconds` and at shutdown, and publishes them as [performance counters](guide/monitoring.md#performance-counters). It has no durable metrics export. The historical campaigns did not measure this telemetry, and measuring it needs a separately designed method.
 - **Before another campaign,** design compatible telemetry, and use a fresh backup, unique run IDs, verified guest identities, and fixture readiness.
 

@@ -37,7 +37,6 @@ because the old value cannot be unwrapped by that key.
 
 The component conditions above implement the run table in
 [upgrade.md](../../docs/guide/upgrade.md#when-the-install-steps-run). A product installed from an MSI built before the
-component condition keeps the old behavior until it is upgraded.
 
 ## Session name rule
 
@@ -75,21 +74,21 @@ Code-level facts:
   So a major upgrade keeps the CNG key and `WrappedKey` without a copy step.
 - WiX does not author or remove `SOFTWARE\ETW-DNSTapService`. Only the script does. The script creates the parent key only if it is missing, with
   the default ACL, and it never changes that ACL.
-- The installer does not create, read, or change anything under `Services\EtwDnstap\Parameters`, and it never changes that ACL. An earlier build
-  created `Parameters\SpoolKey`. Install deletes that subkey if it exists. A failure is a warning.
+- The installer does not create, read, or change anything under `Services\EtwDnstap\Parameters`, and it never changes that ACL. Install deletes a
+  `Parameters\SpoolKey` subkey if one exists. A failure is a warning.
 - A rollback of a failed first install runs the uninstall action. The script cannot tell whether the install created the CNG key or accepted an
   existing one. So a rollback also deletes a CNG key that the failed install only accepted. That case needs a key left behind by hand or by a
   failed uninstall.
 
 ## Service dependencies
 
-`Product.wxs` declares two `ServiceDependency` rows: `DNS` (as before) and `KeyIso` (CNG Key Isolation). The service calls
+`Product.wxs` declares two `ServiceDependency` rows: `DNS` and `KeyIso` (CNG Key Isolation). The service calls
 `NCryptOpenStorageProvider`, `NCryptOpenKey`, `NCryptDecrypt`, and `NCryptEncrypt` while it starts. Microsoft Learn warns that such
 calls can deadlock unless `KeyIso` is already running. `KeyIso` exists on Windows Server 2019 and later.
 
 `ServiceInstall` writes the dependency list when it creates the service. A major upgrade removes the old service and creates the
 new one, so the new list applies. A repair or `REINSTALL=ALL` runs `InstallServices` again. A plain maintenance `msiexec /i` runs
-neither. An MSI from before this change has only `DNS`. Upgrade it with any newer build, or repair it. Check with `sc.exe qc EtwDnstap`.
+neither. Check with `sc.exe qc EtwDnstap`.
 
 ## Tests
 

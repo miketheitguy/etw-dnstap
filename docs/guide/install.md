@@ -159,8 +159,8 @@ Key facts:
 - The `Protect` key is outside the service key. Deleting the old service in a major upgrade does not
   delete it, so the upgrade keeps the key and `WrappedKey`.
 - The installer never writes `WrappedKey`. It never changes anything under
-  `Services\EtwDnstap\Parameters`, except that it deletes the `Parameters\SpoolKey` subkey that an
-  earlier build made.
+  `Services\EtwDnstap\Parameters`, except that it deletes a `Parameters\SpoolKey` subkey if one
+  exists.
 - The installer checks both DACLs after it sets them. A repair or reinstall sets them again. If a DACL
   is wrong, the install fails and names the item.
 - The installer never replaces an existing CNG key. If it creates a new key while a `WrappedKey`
@@ -600,7 +600,7 @@ sc.exe stop EtwDnstap
 sc.exe query EtwDnstap
 ```
 
-The service should reach `STOPPED` with exit code 0. It writes no capture or metrics files.
+The service should reach `STOPPED` with exit code 0. It writes no capture files.
 
 Frames that the receiver did not accept stay in the spool until the next start. Check
 `spool_segments` in the final `output stopped` line. The spool holds DNS data. Delete it when you no
@@ -624,8 +624,8 @@ Record each result with the binary's commit. Items marked *lab* passed on build 
   restart. The service has no process filter, so events from the new DNS Server process are accepted.
   A stop of DNS Server through SCM also stops EtwDnstap first (the service dependency). Start
   EtwDnstap again afterward. Not yet checked in the lab.
-- A second `sc.exe start EtwDnstap` fails with error 1056 while the service runs. The service has no
-  instance mutex. The identity check refuses any other process.
+- A second `sc.exe start EtwDnstap` fails with error 1056 while the service runs. The identity check
+  refuses any other process.
 - *lab:* `sc.exe sidtype EtwDnstap unrestricted` stops the service at startup with
   `the process token is not restricted`.
 - *lab:* `typeperf -q EtwDnstap` lists the counters, and `typeperf "\EtwDnstap(*)\*" -sc 5` shows values

@@ -129,8 +129,7 @@ net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /delete
 .\scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -Remove
 ```
 
-`-Remove` strips every ACE for the service SID from every ETW descriptor. That includes grants made
-by earlier script versions. Restart the computer, because ETW applies descriptors at boot.
+`-Remove` strips every ACE for the service SID from every ETW descriptor. Restart the computer, because ETW applies descriptors at boot.
 
 Before its first change, the script saves the `WMI\Security` key and the original bytes of each changed
 value to `$env:ProgramData\EtwDnstap\backup\<yyyyMMddHHmmssfff>`, and prints the path. `-Restore <folder>`
@@ -163,10 +162,7 @@ logman query -ets
 logman stop EtwDnstap -ets
 ```
 
-Use your `--session-name` if it is not the default. Earlier builds named sessions `etw-dnstap-<pid>`.
-To stop one of those, find its process ID with `logman query -ets`, and then run
-`logman stop etw-dnstap-<pid> -ets`.
-
+Use your `--session-name` if it is not the default.
 ### 6. Unregister the performance counters
 
 ```powershell

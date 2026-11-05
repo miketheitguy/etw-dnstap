@@ -78,7 +78,7 @@ connection, divided by the bytes for each frame. The expected count is
 - At 50,000 QPS, the default intake settings filled the 24,576-event channel
   (`queue_depth_max` 24,577), and the service logged the rate warning. This
   loss is at intake, before the sink, and it is not related to the spool.
-  [Tuning](../guide/tuning.md#high-rate-settings) describes it.
+  [Tuning](../guide/tuning.md#recommended-settings-for-higher-rates) describes it.
 
 ## Provisioning results
 

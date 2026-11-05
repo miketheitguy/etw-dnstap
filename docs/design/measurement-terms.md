@@ -1,6 +1,6 @@
 # Measurement terms and result gates
 
-> **Status:** Current · **Describes:** the live counter names in `src/pipeline/supervisor.rs` on branch `spool-encryption` as of 2026-11-05. The JSONL schema 2 names describe historical binaries. · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the live counter names in `src/pipeline/supervisor.rs` on branch `spool-encryption` as of 2026-11-05. · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-05
 
 This glossary defines the units, the counters, and the gates that the performance reports
 share. Maintainers and administrators use it to read those reports. It keeps DNS responses,
@@ -8,10 +8,9 @@ captured records, trace fidelity, and shutdown status apart. Each report keeps i
 binary, workload, and evidence cutoff. The
 [completed pooled VM review](../performance/pooled-vm-performance-review.md) uses these terms.
 
-The JSONL schemas and final samples describe historical binaries. The TCP-only service has no
-durable metrics export. Before you use a campaign harness, read the
-[instrumentation compatibility note](../README.md#instrumentation-compatibility-note). A live
-log line cannot replace a historical final JSONL ledger.
+The TCP-only service has no durable metrics export. Campaign results that use JSONL
+ledgers come from historical binaries. Before you use a campaign harness, read the
+[instrumentation compatibility note](../README.md#instrumentation-compatibility-note).
 
 ## DNS work and capture records
 
@@ -54,13 +53,13 @@ Each row says what the counter counts. Read the unit before you add two counters
 
 | Counter | Unit and meaning |
 | --- | --- |
-| `ring_dropped` | Events rejected because the bounded event channel is full. The legacy name remains in schema 2. |
-| `pool_exhausted_regular`, `pool_exhausted_jumbo` | Events rejected because their storage class has no free slot. Schema 2 reports the sum as `pool_exhausted`. |
+| `ring_dropped` | Events rejected because the bounded event channel is full. The name comes from an earlier design and is kept. |
+| `pool_exhausted_regular`, `pool_exhausted_jumbo` | Events rejected because their storage class has no free slot. |
 | `receiver_disconnected` | Events rejected because the event channel has no receiver. It does not describe the remote TCP collector. |
 | `intake_dropped` | Sum of the three admission categories above. |
 | `callback_errors` | Supported records rejected for malformed metadata, or because callback thread-local storage was unavailable, wrong, or re-entered. |
-| `etw_lost` (schema 2: `etw_events_lost`) | Events lost by the enabled ETW session. Its event-ID domain can be larger than the supported IDs. |
-| `etw_buffers_lost` (schema 2: `etw_realtime_buffers_lost`) | Lost ETW buffers, not lost events. Never add this count to event counts. |
+| `etw_lost` | Events lost by the enabled ETW session. Its event-ID domain can be larger than the supported IDs. |
+| `etw_buffers_lost` | Lost ETW buffers, not lost events. Never add this count to event counts. |
 | `received` | Supported provider records that enter the callback, including records later rejected. |
 | `dequeued` | Records the parser removes from the channel, before parsing or output. |
 | `encoded` | Records whose dnstap frame the parser handed to the sink. |
@@ -68,7 +67,7 @@ Each row says what the counter counts. Read the unit before you add two counters
 | `rejected` | Records that failed to decode or encode. `schema_rejected` counts the subset whose schema failed. |
 | `output_failed_events` | Dequeued events whose frame write failed. |
 | `output_errors` | Failed output operations in the parser. |
-| `queue_depth_max` | Largest sampled depth of the event channel. It replaces the schema 2 `queue_backlog` field. |
+| `queue_depth_max` | Largest sampled depth of the event channel. |
 | `etw_buffers_delivered` | ETW buffers whose delivery finished (buffer callback calls). |
 | `parser_wake_requests` | Delivered buffers that enqueued events and so sent the parser a wake request. |
 | `etw_stats_errors` | Failed ETW statistics queries. This counts query failures, not loss. |
@@ -81,25 +80,6 @@ Each row says what the counter counts. Read the unit before you add two counters
 
 Two more fields are gauges or flags, not counts: `spool_bytes` and `spool_segments` (current
 spool size), and `spool_available` and `link_saturated` (flags).
-
-## Historical service loss and final ledgers
-
-The schema 2 JSONL binaries used these identities. They apply to those binaries only. The live
-service reports the names above, and its identities are in the monitoring guide.
-
-After native capture stops and the parser joins, schema 2 requires these exact identities:
-
-```text
-intake_dropped = ring_dropped + pool_exhausted + receiver_disconnected
-received = intake_dropped + callback_errors + dequeued + queue_backlog
-dequeued = encoded + ignored + rejected + output_limit_dropped + output_failed_events
-```
-
-Schema 1 predates the pools and has ring-only intake accounting. Schema 2 also has
-`queue_backlog` and `output_limit_dropped`, which the live log does not report. Live samples
-read separate relaxed atomics and can briefly fail to reconcile. A final sample must close
-with valid final ETW statistics. Transient statistics-query errors stay separate from
-cumulative loss. See [Pooled ETW intake](pooled-intake.md#metrics-schema-2).
 
 ## Independent result gates
 
@@ -117,10 +97,8 @@ The pooled campaign records these outcomes separately:
 
 The gates are independent. A zero-loss WPR trace can describe a stage that drops application
 capture records. Exact receiver delivery can describe a correctly reconciled, lossy capture
-stage. A final-only STOP/FINISH failure in builds before the link thread counted as a failed
-lifecycle, even when every encoded record reached the receiver. In the current service, a
-STOP/FINISH that does not complete at a requested stop does not fail the stop, and the service
-writes nothing about it. Preserve each outcome. A continuation exception does not turn a strict
+stage. A STOP/FINISH that does not complete at a requested stop does not fail the stop, and the
+service writes nothing about it. Preserve each outcome. A continuation exception does not turn a strict
 failure into a pass.
 
 ## CPU, memory, and time units

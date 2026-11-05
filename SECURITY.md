@@ -26,7 +26,7 @@ This section states what the service trusts and what it protects. The reference 
 
 ### Forged provider records
 
-The service does not filter records by process ID. The ETW session and the callback accept Microsoft-Windows-DNSServer events from any process. Earlier builds filtered on the `DNS` service process ID (`EVENT_FILTER_TYPE_PID`) and rechecked it every 5 seconds. That filter and check were removed, so a DNS Server restart no longer stops EtwDnstap.
+The service does not filter records by process ID. The ETW session and the callback accept Microsoft-Windows-DNSServer events from any process. A DNS Server restart does not stop EtwDnstap.
 
 - Any local process that can register the Microsoft-Windows-DNSServer provider GUID and write events can inject records into the capture. Any user can register a provider GUID. The service sends these records to the receiver as DNS queries and responses. The event-ID and provider checks still apply, and the parser rejects malformed records. Nothing ties a record to `dns.exe`.
 - Code that runs inside the DNS Server process can emit records that the service accepts. The event-ID filter does not stop it.

@@ -30,8 +30,7 @@ Decoding happens in stage 4, after the buffer. The intake callback only copies b
 ### 1. Produce
 
 The service starts a real-time ETW session and enables the DNS Server provider. The
-session admits only events 256, 257, and 258. It has no process filter, so events from
-any process that writes them are accepted. ETW delivers events about once per
+session admits only events 256, 257, and 258, from any process that writes them. ETW delivers events about once per
 `--etw-flush-seconds` (default 1). The [Subscription](../guide/configuration.md#subscription)
 section lists the filters. The exact provider settings are in
 [Subscription and event selection](pooled-intake.md#subscription-and-event-selection).
@@ -217,7 +216,7 @@ start, the run continues without a spool. The spool never writes plaintext. See
 [SECURITY.md](../../SECURITY.md).
 
 **At open.** The spool reads the header of each leftover segment. It deletes segments of
-earlier versions, other files, and segments sealed with another key. It counts their
+another format, other files, and segments sealed with another key. It counts their
 bytes in `spool_dropped_bytes` and logs one warning. If the key was created at this
 start, the spool deletes every segment and resets `cursor.bin`.
 

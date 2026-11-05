@@ -212,26 +212,20 @@ zero-copy. Pooling removes repeated storage allocation. The design alone does no
 maximum throughput or allow a smaller safe queue. Warmed fixture tests do not show zero
 allocation across the whole pipeline, higher throughput, or lower CPU use.
 
-## Metrics schema 2
+## Loss accounting
 
-Schema 2 is the JSONL format of historical binaries. The TCP-only service has no JSONL
-writer and no durable metrics export. See the
-[instrumentation compatibility note](../README.md#instrumentation-compatibility-note).
-The schema 2 counter meanings and identities are in
-[Historical service loss and final ledgers](measurement-terms.md#historical-service-loss-and-final-ledgers).
-The live log uses the names in [Log events and counters](../guide/monitoring.md).
+The service writes its counters to the Application event log. The names and identities are
+in [Log events and counters](../guide/monitoring.md).
 
 Live samples read separate relaxed atomics, so they can briefly disagree with the
-identities. Final samples follow native completion and the parser join. Historical metrics
-and supervisor receiver references can keep the channel connected after a parser failure,
+identities. Final samples follow native completion and the parser join. Supervisor
+receiver references can keep the channel connected after a parser failure,
 so `receiver_disconnected` does not detect every parser exit. The supervisor still detects
 parser completion, ends capture, reports the error, and keeps the remaining backlog in the
 final ledger. Treat every intake loss category as loss when you evaluate a zero-loss target.
 
-The Python analyzers check the schema 1 and schema 2 fields, the schema 2 intake sum, and
-final capture and parser closure. `etw_stats_errors` counts failed statistics queries
-separately. Invalid final statistics cannot establish zero loss. The analysis checks are
-in the [measurement review](../history/pooled-intake-review-plan.md).
+`etw_stats_errors` counts failed statistics queries separately. Invalid final statistics
+cannot establish zero loss.
 
 ## Validation scope
 

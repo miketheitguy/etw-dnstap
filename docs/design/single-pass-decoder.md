@@ -5,8 +5,7 @@
 This page states the rules that the code enforces today. For the ownership of pooled
 events, read [Pooled ETW intake](pooled-intake.md). The
 [implementation plan and completion record](../history/single-pass-decoder-plan.md) is
-historical. Earlier builds decoded unsupported schemas with per-event TDH property calls.
-The [CHANGELOG](../../CHANGELOG.md) records that removal.
+historical.
 
 ## Which events are decoded
 

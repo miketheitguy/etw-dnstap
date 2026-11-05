@@ -83,7 +83,7 @@ identity) are parameters, never baked in.
    `export-pooled-evidence.ps1`, `export-pooled-graph-data.py`, `build-parser-ramp-report.py`, `build-pooled-report.py`,
    `plot-pooled-wpr.py`, `aggregate-cpu-precise.py`. The full list is under [Python](#python).
 
-Historical service-metrics harnesses (JSONL metrics were removed from the service) are in
+The service-metrics harnesses are archived, because the service has no JSONL metrics writer. They are in
 [`archive/`](archive/): `windows-1000qps-campaign.ps1`, `windows-service-campaign.ps1`, `windows-pooled-stage.ps1`,
 `windows-pooled-wpr.ps1` and `windows-control.ps1`. Their `Backup/Prepare/Deploy/Start` actions are disabled. The
 cleanup/evidence actions still work. Also archived (Python): the service-stop tools `ubuntu-service-stop-config.py` and
@@ -98,7 +98,7 @@ cleanup/evidence actions still work. Also archived (Python): the service-stop to
 | `unmount-ubuntu-data-disk.py` | `umount` of the data filesystem | Dry run by default. Use `--apply` to act. Re-verifies UUID, serial/WWN, label, major:minor and open descriptors |
 | `remove-verified-guest-archives.py` | Deletes guest archive duplicates | Dry run by default. Use `--apply` to act. Requires host hash/count proofs and a campaign-scoped directory |
 | `ubuntu-performance-data-disk.ps1` | Creates/attaches a VHDX, or detaches it (VHDX is kept) | `SupportsShouldProcess` (`-WhatIf`/`-Confirm`, `ConfirmImpact High`). GUID, OS-disk and free-space checks |
-| zone removal (`Remove-LabOwnedZone`) | `Remove-DnsServerZone -Force` | Only for zones listed in the campaign's `owned-zones.txt` (legacy `owned-rec-forwarder.txt`/`owned-forwarder.txt` still honoured). Anything else is refused |
+| zone removal (`Remove-LabOwnedZone`) | `Remove-DnsServerZone -Force` | Only for zones listed in the campaign's `owned-zones.txt`. Anything else is refused |
 | `windows-*campaign*.ps1` Deploy/Restore | Replaces the installed service binary / SCM command line | Hash and ACL checks. Backup refuses to reuse a campaign ID |
 | `windows-startup-capacity.ps1` | Changes the installed service's SCM command line (`--capacity`) and optionally the installed binary for the duration of the check, starts and stops the service | `SupportsShouldProcess` (`-WhatIf` runs the preflight only). Hash and ACL (SDDL) checks. Restore in `finally`, compared against the preflight |
 | `setup-ubuntu-workload.sh` | Edits the collector config, installs units and an nft table | Root only, refuses if a backup/drop-in/log already exists |
@@ -108,9 +108,9 @@ Always run the Python destructive scripts without `--apply` first and read the p
 ## Receiver STOP/FINISH check
 
 At a requested stop the service sends a Frame Streams STOP and the receiver answers FINISH. A stop whose
-STOP/FINISH does not complete no longer fails the service: it exits with code 0, logs nothing and does not
-count in `output_errors`. The SCM state and exit code are still required to be Stopped and 0, but they no
-longer prove FINISH. `windows-parser-stage.ps1` therefore asks the receiver, through `receiver_stop_finish.py`
+STOP/FINISH does not complete does not fail the service: it exits with code 0, logs nothing and does not
+count in `output_errors`. The SCM state and exit code must be Stopped and 0, but they do not
+prove FINISH. `windows-parser-stage.ps1` therefore asks the receiver, through `receiver_stop_finish.py`
 and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
 
 - The check runs `sudo -n tcpdump` over ssh on the receiver, only around the stop. The filter keeps TCP port
@@ -121,7 +121,7 @@ and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
 - A preflight (`Assert-LabReceiverStopCaptureReady`) needs `python` on the host and `tcpdump` plus
   passwordless sudo on the receiver. It fails before the load starts when either is missing.
 - The verdict is `receiver_stop_finish`: `confirmed` (STOP from the service, then FINISH from the receiver on
-  the same connection), `not-seen`, or `not-checked` (no capture, as in all earlier evidence). It is in
+  the same connection), `not-seen`, or `not-checked` (no capture). It is in
   `completion.json`, `stage-summary.json`, the parser-ramp ledger and both reports. `not-seen` never fails the
   stop, but it fails the strict stage pass. `not-checked` never fails anything.
 - `windows-startup-capacity.ps1` runs without a receiver and records `not-checked`.
@@ -132,7 +132,7 @@ and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
 
 Campaign and run IDs are never hard coded. `-CampaignId` (1-64 letters, digits, `_`, `-`) is mandatory
 for the campaign scripts. `Backup` and `Prepare` refuse to start when the host evidence directory or the
-guest campaign directory already exists. An earlier run is therefore never overwritten.
+guest campaign directory already exists. A run is therefore never overwritten.
 
 Fetches verify every file's SHA-256 after `Copy-Item -FromSession`.
 `windows-service-campaign.ps1` and the archived WPR helper keep an identical file and refuse to
@@ -194,7 +194,7 @@ Host-side analysis (each has argparse `--help` and a module docstring with its p
 - Pooled intake benchmark: `pooled_intake_run.py` runs the private Rust callback benchmark. It, `plot-pooled-wpr.py` and
   `export-pooled-graph-data.py` hash their own source into provenance records, so editing them changes the recorded hashes.
 - Shared code: `metrics_ledger.py` (service ledger validation), `perf_common.py` (JSON/hash/process-name/distribution
-  helpers formerly copied between summarizers), `parser_ramp_receipts.py`, `lab_config.py`, `guest_common.py`.
+  helpers shared by the summarizers), `parser_ramp_receipts.py`, `lab_config.py`, `guest_common.py`.
 
 ## Tests
 
@@ -230,18 +230,14 @@ The unit tests need no lab. Do not execute the lab scripts to "test" them.
 | `windows-pooled-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant Pooled` |
 | `windows-ring-fix-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant RingFix` |
 | `windows-pooled-stage.ps1`, `windows-pooled-wpr.ps1` | same names under `archive/` |
-| `windows-pooled-diagnostics.ps1`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | moved to `archive/` in `f1475d8`. Deleted in `18a29a9` (see git history) |
+| `windows-pooled-diagnostics.ps1`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | deleted (see git history) |
 | `windows-control.ps1` | `archive/windows-control.ps1` |
 | `ubuntu-service-stop-config.py`, `ubuntu-service-stop-pcap.py` | same names under `archive/` |
 | `count-parser-ramp-diagnostic.py` | `archive/count-parser-ramp-diagnostic.py` |
 | `analyze-ring-fix-cpu.py`, `analyze-metrics-phases.py`, `analyze-send-window.py`, `summarize-receiver-results.py` | same names under `archive/` (their tests moved from `test_metrics_ledger.py` to `archive/test_archived_analyzers.py`) |
 
-Added: `lab.json`, `LabCommon.psm1`, `lab_config.py`, `perf_common.py`, `guest_common.py`, `requirements.txt`, this README.
-
 ## Known limits
 
 - The Ubuntu controllers (`ubuntu-parser-ramp-*.py` and the archived `ubuntu-service-stop-*.py`) still default `--campaign-id`
   to their dated campaigns and embed that campaign's filesystem UUIDs. Pass the campaign explicitly.
-- Behaviour changes from the originals: `-ExpectedHash` is now mandatory where a hash used to be a
-  default. The service command line quotes the metrics path only when needed. `windows-service-campaign.ps1` Fetch
-  no longer overwrites a differing host file.
+- `-ExpectedHash` is mandatory. `windows-service-campaign.ps1` Fetch does not overwrite a differing host file.

@@ -726,7 +726,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   dropped 0.28 to 0.58% at about 10,000 QPS, 12 to 17% at about 30,000 QPS,
   and 0.34 to 4.39% at about 50,000 QPS, with `etw_lost` about 0.2%. See
   [the flush removal validation](docs/history/flush-removal-validation.md) and
-  [High-rate settings](docs/guide/tuning.md#high-rate-settings).
+  [High-rate settings](docs/guide/tuning.md#recommended-settings-for-higher-rates).
 - The per-event TDH fallback reader. Every captured event is now decoded by a
   plan compiled from the manifest schema. A DNS Server schema that does not
   compile is no longer decoded through `TdhGetPropertySize` and `TdhGetProperty`.

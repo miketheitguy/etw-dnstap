@@ -95,8 +95,7 @@ Why these values:
 Costs:
 
 - ETW buffer memory is at most 2 MiB (64 buffers of 32 KiB), plus what ETW adds on a host with
-  more than 32 logical processors. The previous defaults allowed 16 MiB (128 buffers of
-  128 KiB). The minimum reserves 12 × 32 KiB = 384 KiB at start, or 768 KiB on a 12-vCPU guest,
+  more than 32 logical processors. The minimum reserves 12 × 32 KiB = 384 KiB at start, or 768 KiB on a 12-vCPU guest,
   where ETW's own minimum is 24.
 - Counted storage at the default capacity is 283.03 MiB. See [Storage](configuration.md#storage).
   The working set at 131,072 is about 356 to 400 MB.
@@ -165,7 +164,7 @@ seconds followed by a burst. The cause is on the ETW delivery side and is still 
 did not change with the channel size. A channel of 524,288 absorbs the bursts: it dropped
 nothing, and the largest peak was 48 % of it. The cost is a working set of 1.2 to 1.4 GB.
 
-Smaller channels lost events in earlier idle runs at this rate. 65,536 dropped 0.89 to 1.40
+Smaller channels lost events in idle runs at this rate. 65,536 dropped 0.89 to 1.40
 million events, 131,072 dropped 0.31 to 0.46 million, and 262,144 dropped events in 4 of 5 runs
 (up to 0.16 million). See
 [Event channel 262,144 and 524,288](../history/slow-receiver-validation.md#event-channel-262144-and-524288-at-100000-qps-2026-11-04).
@@ -206,8 +205,8 @@ Runs with `--capacity 131072`, for comparison:
 [3](../assets/performance/tiers-2026-11-04/t200-c131k-idle-r3.png), and
 [4, busy](../assets/performance/tiers-2026-11-04/t200-c131k-busy12.png).
 
-Earlier runs, before the tier runs, compared channel sizes at 200,000 queries per second on the
-same guest. The `--capacity 131072` busy run above came later and dropped events:
+Runs on the same guest also compared channel sizes at 200,000 queries per second. The busy
+`--capacity 131072` run above dropped events; the busy run in this table did not:
 
 | `--capacity` | Idle, peak queue | 12 busy CPU threads, peak queue | 24 busy CPU threads | Service working set (peak) |
 | --- | --- | --- | --- | --- |
@@ -227,14 +226,14 @@ At 65,536 the channel came close to full even on an idle guest. See
 - A longer `--etw-flush-seconds` makes each delivery larger. Raise `--capacity` by the same
   factor.
 - Larger ETW buffers reduce `etw_lost`. In the lab, 64 KiB × 256 buffers removed the
-  `etw_lost` that earlier defaults had at 30,000 queries per second and above.
+  `etw_lost` that smaller buffers had at 30,000 queries per second and above.
 - The largest `--capacity` is 524,288. Its storage and startup deadline are in
   [Storage](configuration.md#storage) and
   [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
 - If `ring_dropped` rises at a rate well below the tier, check the delivery gaps in the lab
   write-up before you raise `--capacity` further.
 
-Earlier lab runs with `--etw-max-buffers 32` and `--capacity 24576` lost events at 200,000
+Lab runs with `--etw-max-buffers 32` and `--capacity 24576` lost events at 200,000
 queries per second. Their buffer size is not recorded. See
 [200,000 queries per second with 32 buffers and a 24,576-event channel](../history/guide-lab-results-2026-11.md#200000-queries-per-second-with-32-buffers-and-a-24576-event-channel).
 
@@ -242,7 +241,7 @@ queries per second. Their buffer size is not recorded. See
 
 The defaults suit 10,000 queries per second and below. At a lower rate they use more memory than
 the load needs, but the ETW buffer memory is at most 2 MiB, so the saving is mostly the channel.
-The settings below were tested at 10,000 and 50,000 queries per second. The
+The settings below were tested at 10,000 queries per second. The
 [rate warning](#defaults) is off when any ETW buffer value, the flush interval, or `--capacity`
 differs from its default.
 
@@ -250,25 +249,20 @@ differs from its default.
 
 <a id="low-rate-defaults"></a>
 
-These were the defaults until the 200,000 queries-per-second sizing: `--etw-buffer-kib 16
---etw-max-buffers 64 --capacity 24576`, with `--etw-min-buffers 0`. That is 16 KiB buffers, at
+For a host with a low rate, you can use `--etw-buffer-kib 16 --etw-max-buffers 64 --capacity
+24576` with `--etw-min-buffers 0`. That is 16 KiB buffers, at
 most 64 of them, and a channel of 24,576 events. They use 59.59 MiB of counted storage, a
 12-second startup deadline, and at most 1 MiB of ETW buffers.
 
 At 10,000 queries per second (about 20,000 events per second), a 60-second run with these
 settings had no ring drops and no `etw_lost`. See
-[60-second run with the defaults](../history/guide-lab-results-2026-11.md#60-second-run-with-the-defaults-at-10000-queries-per-second).
+[60-second run](../history/guide-lab-results-2026-11.md#60-second-run-with-the-defaults-at-10000-queries-per-second).
 
 ETW delivers real-time events in batches about `--etw-flush-seconds` apart. A batch larger
 than the channel drops the excess, unless the parser drains it on arrival. The ETW buffer
 callback wakes the parser for each delivered buffer, so it drains each batch as it arrives.
 
-With the defaults before those (12 maximum buffers and an 8,192-event channel), the channel was
-full from about 9,000 queries per second. Loss rose with rate. Two 60-second runs with that
-channel dropped events after late deliveries. See [Two 60-second runs with the previous
-channel](../history/guide-lab-results-2026-11.md#two-60-second-runs-at-10000-queries-per-second-with-the-previous-channel).
-The per-rate loss tables are in [ETW flush removal
-validation](../history/flush-removal-validation.md) and [ETW buffer wake
+The per-rate loss tables are in [ETW buffer wake
 validation](../history/buffer-wake-validation.md).
 
 Not tested: other machines and vCPU counts, recursive or mixed workloads, runs longer than
@@ -277,43 +271,6 @@ Not tested: other machines and vCPU counts, recursive or mixed workloads, runs l
 A 10-minute run at 10,000 queries per second used at most 16 buffers, far below 64. See
 [10-minute run](../history/guide-lab-results-2026-11.md#10-minute-run-at-10000-queries-per-second).
 The 60-second run above is the only run of these settings.
-
-### Older settings, tested at 50,000 queries per second
-
-<a id="high-rate-settings"></a>
-
-```text
---etw-max-buffers 256 --etw-buffer-kib 64 --capacity 65536
-```
-
-This was the first 50,000 queries-per-second setting. For current builds, use the
-[recommended settings](#50000-queries-per-second). Tested on the 6-vCPU VM with an authoritative load, 50-second runs, and a plaintext receiver.
-The per-rate table is in [ETW flush removal validation](../history/flush-removal-validation.md).
-
-- ETW lost no events in any run. The channel dropped no events up to about 44,000 queries per
-  second.
-- At about 49,400 queries per second, one of two runs filled the channel and dropped 0.28%.
-- At about 49,500 queries per second, the service used about 4.4 seconds of CPU per 50-second
-  run. The settings before the previous defaults used 8.4 to 8.7 seconds.
-
-**65,536 is enough up to about 44,000 queries per second on this VM. It is marginal at a
-sustained 50,000.** The default `--capacity` is now 131,072, which this 6-vCPU VM did not run. The later
-12-vCPU runs used `--capacity 65536` and the 256-block send queue and link FIFO, with a 320 Mbit
-shaped link at 50,000 queries per second.
-Four of four runs dropped no events and spilled nothing, and the channel peaked at 37,000 to
-40,000. See
-[200,000 QPS sizing runs on 12 vCPUs](../history/slow-receiver-validation.md#200000-qps-sizing-runs-on-12-vcpus-2026-11-04).
-
-These results cover one VM, an authoritative load, 50-second runs, and
-`--etw-flush-seconds 1`. Monitor `ring_dropped` and `etw_lost` under the real load after each
-change.
-
-Earlier periodic-flush results do not apply, because this build has no periodic flush. See
-[Removed periodic flush](../design/ring-buffer.md#removed-periodic-flush). With no flush and an
-8,192-event channel, the channel lost most events at 10,000 to 20,000 queries per second. That
-result predates the buffer wake and has not been repeated. See
-[no periodic flush](../history/guide-lab-results-2026-11.md#no-periodic-flush-channel-loss-of-59-to-79-at-10000-to-20000-queries-per-second) and
-[periodic flush](../history/guide-lab-results-2026-11.md#periodic-flush-0-ring-drops-at-10000-and-20000-queries-per-second).
 
 ## Spool sizing
 

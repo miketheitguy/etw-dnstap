@@ -87,10 +87,10 @@ The MSI runs the script as SYSTEM with `-Confirm:$false`. See
 
 Every run also strips ACEs for the service SID from every other descriptor
 under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. This removes grants
-that earlier script versions made on the default GUID and on the DNS provider
-GUID, and copies of those grants that other components made. A non-default
+on the default GUID and on the DNS provider GUID, including copies of those
+grants that other components made. A non-default
 descriptor that equals the default once those ACEs are gone is deleted, so ETW
-falls back to the default exactly as before. Nothing else changes. `-Remove`
+falls back to the default. Nothing else changes. `-Remove`
 does the same for every descriptor, including the session GUIDs.
 
 The script is idempotent. It does not change group membership. Add the service
@@ -167,11 +167,6 @@ The script skips a descriptor that it cannot parse and writes a warning:
 `Descriptor {<guid>} is unparseable; left unchanged`. If the descriptor of the
 session GUID itself exists and cannot be parsed, the script stops with an error
 and does not grant on it.
-
-**Upgrading from the first version** (commit `1a54272`), which granted `0x423`
-on the default GUID and `0x80` on the DNS provider GUID: run the current script
-with `-SessionName`, then restart. It removes both old grants and the
-provider descriptor that the first version created. The lab tested this path.
 
 The full procedure is in [install.md](../../docs/guide/install.md#4-set-the-service-identity-privileges-etw-access-and-event-source)
 and [uninstall.md](../../docs/guide/uninstall.md).
