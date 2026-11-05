@@ -53,6 +53,8 @@ The [`guide/`](guide/) documents are the source of truth for install, configurat
 | Prepare the receiver and its certificate | [Set up the dnstap receiver](guide/receiver.md) |
 | Look up an option, default, or range | [Configuration reference](guide/configuration.md) |
 | Choose settings for a high query rate (defaults suit 10,000 queries per second) | [Tune capture for load](guide/tuning.md) |
+| Check the spool encryption key and the service dependencies | [Spool encryption key](guide/install.md#spool-encryption-key) |
+| Fix `spool key is not usable` or force a new spool key | [Spool key errors](guide/troubleshooting.md#spool-key-errors) |
 | Read the log events and counters | [Log events and counters](guide/monitoring.md) |
 | Fix a failed start, drops, or missing records | [Troubleshooting](guide/troubleshooting.md) |
 | Diagnose receiver resets during service stop | [Service shutdown remediation](guide/service-stop-remediation.md) |
@@ -105,6 +107,7 @@ Plans in [`plans/`](plans/) are not executed, or only partly. A plan moves to `h
 
 | Document | Contents |
 | --- | --- |
+| [Spool encryption plan](plans/spool-encryption-plan.md) | AES-128-GCM spool records, the CNG-wrapped key, and the key held in memory. Implemented on the `spool-encryption` branch; lab run open |
 | [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Client-event filter ramp. Regenerate before the next campaign |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Parallel parsing and TCP threading. Partly out of date |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Bottleneck diagnosis and parallel workers. Partly executed |

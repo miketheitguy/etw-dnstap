@@ -1,17 +1,18 @@
 # Data path: from an ETW event to a TCP frame
 
-> **Status:** Current · **Describes:** the code at commit `13972d8` · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-04
+> **Status:** Current · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-05
 
 This reference follows one DNS Server event through the service. It names the
 thread, code, and counters of each stage. Maintainers use it to find the stage that
 changes or loses an event. Operators use it to match a counter to a stage.
 
-![Animation of the data path in six stages. An ETW event moves through intake, a pool slot, a bounded channel, the parser, and the sender to the TCP receiver. In the fifth stage a slow receiver fills the link FIFO, the router spills blocks to the disk spool, and the spool replays them. In the last stage the receiver is down. Frames go to the disk spool, and the spool replays them, oldest first, after the reconnect.](../assets/pipeline/etw-to-tcp-pipeline.gif)
+![Animation of the data path in six stages. An ETW event moves through intake, a pool slot, a bounded channel, the parser, and the sender to the TCP receiver. In the fifth stage a slow receiver fills the link FIFO, the router spills blocks to the disk spool, and the spool replays them. In the last stage the receiver is down. Frames go to the disk spool, encrypted, and replay decrypts each record, oldest first, after the reconnect.](../assets/pipeline/etw-to-tcp-pipeline.gif)
 
 The animation slows the events and shows illustrative counter values. It splits stage
 5 in two. Tab 05 shows normal sending and a slow receiver: the link FIFO fills, the
-router spills to the spool, and the spool replays. Tab 06 shows a receiver outage, the
-spool, and the replay. The [stage table](#stages) gives the same information as text.
+router spills to the spool as AES-128-GCM records, and the spool replays them. Tab 06 shows
+a receiver outage, the encrypted spool, and the replay, which decrypts each record. The link
+thread writes without blocking: it waits for the socket to become writable for a bounded time. The [stage table](#stages) gives the same information as text.
 
 ## Stages
 
@@ -154,18 +155,76 @@ the frame boundary inside it. A record that does not authenticate ends the segme
 is counted in `spool_dropped_bytes` and never replayed.
 
 The key is unwrapped once for each start (`src/spool/key.rs`, one `NCryptDecrypt`), when the
-spool opens. The service builds the AES key schedule from the 16 key bytes once, moves it
-into one page of its own (`src/spool/locked.rs`), and drops the raw key bytes, which zeroes
-them. The page is locked with `VirtualLock`, so it is never written to the pagefile, and
+spool opens. The 16 key bytes go straight into one page of their own (`src/spool/locked.rs`).
+No buffer the service allocates holds them. With key isolation, the reply of `NCryptDecrypt`
+also passes through an RPC receive buffer in the process, which the service does not zero.
+`CryptProtectMemory` with `CRYPTPROTECTMEMORY_SAME_PROCESS` encrypts the bytes in place at
+once. The page is locked with `VirtualLock`, so it is never written to the pagefile, and
 registered with `WerRegisterExcludedMemoryBlock`, so Windows Error Reporting leaves it out of
-WER crash dumps. Every writer and reader shares that one schedule through an `Arc`; nothing copies
-it. When the spool closes, the page is zeroed, unlocked, and freed. Limits: `ring` expands the
-schedule on the stack before it is moved into the page, so stack residue can remain; the key
-is in the clear in the locked page while the service runs; SYSTEM and Administrators can read
-the memory of the process; and the locked page is in physical memory, so it is in a VM saved
-state or memory checkpoint, in `hiberfil.sys`, and in a complete kernel memory dump (the WER
-exclusion covers WER crash dumps only). If the key cannot be loaded or locked, the run continues
-without a spool, with one warning; the spool never writes plaintext.
+WER crash dumps. Every writer and reader shares the page through an `Arc`; nothing copies it.
+When the spool closes, the page is zeroed, unlocked, and freed.
+
+For each record, the service takes a mutex, calls `CryptUnprotectMemory`, builds the `ring`
+AES-GCM key schedule in a scratch area of the same page, and calls `CryptProtectMemory` on the
+raw bytes at once. It then encrypts or decrypts that one record and zeroes the schedule. The
+expanded schedule holds the key for the whole seal or open: about 5 µs for a 64 KiB record,
+longer for larger records (up to about 70 µs for a 1 MiB record). Between records, the key
+bytes in the page are ciphertext. A guard does the re-protect and the zeroing, so in a build
+that unwinds, a panic does not leave the schedule behind. The shipped release build uses
+`panic = "abort"`, so a panic aborts the process: the page is excluded from WER dumps, and the
+stack is not. After each use, the service overwrites 16 KiB of stack in the caller's frame, which
+covers the frames that held the `ring` key. Each seal or open also checks the decrypted bytes
+against a SHA-256 check value taken when the key was loaded. A record costs about 2.5 µs for
+the protect/unprotect pair and the check, which is about 75 µs of CPU a second at 10,000
+queries per second.
+
+If `CryptUnprotectMemory` fails, nothing changes and the service keeps the key. That append
+fails as an ordinary spool I/O error: it counts in `spool_errors`, logs Event ID 27
+(`dnstap spool I/O error`), and pauses the spool for 10 seconds. That read fails as a transient
+read error: it is counted, reads pause for 10 seconds, and the segment and cursor are kept. A
+later operation tries again.
+
+If `CryptProtectMemory` fails, the service tries it once more. If it fails again, or the
+decrypted bytes fail the key check, the service zeroes the key bytes and suspends the spool
+until it restarts:
+
+- Every append is refused, and the refused frames count in `spool_dropped` only. An append
+  seals its block before it evicts a segment or creates one, so the append that finds the loss
+  deletes and creates nothing. Only a roll comes first: the end record of a full segment is
+  itself a use of the key, and the segment is sealed normally if that use succeeds. In one
+  rare case an eviction can come first: the size cap evicts the active segment, and the key
+  fails when the block is sealed again for the new segment.
+- Reads stop and drop nothing.
+- The loss deletes no segment and does not move the cursor. Replay batches already handed to
+  the link before the loss are still acknowledged as usual: a segment they finish is deleted
+  and the cursor moves past it. A batch the link gives back stays on disk. The active segment
+  closes without its end record, so the next start reads it as an unsealed leftover.
+- `spool_available` becomes false.
+- The service logs one warning, Event ID 26: `the spool key is unusable after a memory protection failure (CryptProtectMemory, Win32 error N); the spool is suspended until the service restarts; spooled files are kept`, or with `(CryptUnprotectMemory
+  returned bytes that fail the key check)` instead of the call and its error. It does not log
+  it once shutdown has begun.
+- While the key is lost, live frames go straight to the receiver when it is up. This relaxes
+  the strict-order rule in this case only. When the receiver is down, they are refused and
+  counted in `spool_dropped`. A full send queue then stops intake as with no spool (the parser
+  counts `queue_dropped`), instead of spilling the queue to a spool that refuses it.
+- `link_saturated` clears at once, with the reason `the spool is suspended until the service
+  restarts`, and does not set again in this run: the frozen backlog says nothing about the
+  link.
+- The next start unwraps the key again and replays the whole kept backlog, after the frames
+  already sent in this run.
+
+This protects the idle key bytes in the page in a user-mode process dump, the pagefile, and a
+memory-disclosure bug, and it blocks casual inspection of the process. It does not protect
+against code in the service process, which can call `CryptUnprotectMemory`; against SYSTEM and
+Administrators, who can inject code; or against a full kernel memory capture (a complete
+memory dump, `hiberfil.sys`, or a VM saved state or memory checkpoint). The system holds the
+protection key, so such a capture likely lets an analyst recover the key. Microsoft's
+documentation does not say where that key lives, so this is the likely behavior, not a
+documented one. Register contents are not cleared: AES-NI leaves round keys in XMM registers,
+and a dump captures them in thread contexts. Stack below the 16 KiB scrub is not cleared, and a
+dump taken during a seal or open can hold the schedule. The WER exclusion covers WER crash
+dumps only. If the key cannot be loaded or locked at start, the run continues without a spool,
+with one warning; the spool never writes plaintext.
 
 The key is loaded on a helper thread (`spool-key-load`) and the start waits at most 3 seconds
 for it (`KEY_LOAD_TIMEOUT`). The CNG calls must not hold the service start: Microsoft Learn warns

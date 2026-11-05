@@ -1,6 +1,6 @@
 # etw-dnstap
 
-> **Status:** Current · **Describes:** the repository at commit `58fde72`, with the MSI, the TLS receiver, and response failure capture (event 258) · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code on branch `spool-encryption`, 2026-11-05, with the MSI, the TLS receiver, response failure capture (event 258), and spool encryption · **Reviewed:** 2026-11-05
 
 `etw-dnstap` is a Windows service. It captures DNS Server query and response events from Event Tracing for Windows (ETW) and sends them to a [dnstap](https://dnstap.info/) receiver over TCP, using Frame Streams.
 
@@ -8,6 +8,9 @@
 - **Only reads events.** Its one ETW grant lets it create its own real-time trace session. It does not enable or change the DNS Server Analytical event log.
 - **Has no foreground mode.** It has no `--help` or `--version`.
 - **Writes files only for the spool**, in `C:\ProgramData\EtwDnstap\spool` by default. The spool keeps frames that the receiver has not accepted yet. Diagnostics go to the Application event log and performance counters. See [Spool](docs/guide/configuration.md#spool).
+- **Encrypts the spool at rest** with AES-128-GCM. A non-exportable CNG machine key wraps the AES key, and only the service, SYSTEM, and Administrators can use that key. The service keeps the AES key encrypted in memory between uses. See [Spool encryption](docs/guide/configuration.md#encryption) and [SECURITY.md](SECURITY.md).
+- **Depends on `DNS` and `KeyIso`** (CNG Key Isolation). If the key store does not answer within 3 seconds, the service runs without a spool (Event ID 26). See [Spool encryption key](docs/guide/install.md#spool-encryption-key).
+- **Has no process ID filter.** It does not check the DNS Server process, so capture follows a DNS Server restart. See [SECURITY.md](SECURITY.md) for the trade-off.
 
 > **Security.** TLS 1.2 or 1.3 is the default transport. `--plaintext` turns TLS off, so use it only on a trusted network. Read [SECURITY.md](SECURITY.md) and [TLS](docs/guide/configuration.md#tls) before you deploy.
 
@@ -46,7 +49,7 @@ The release executable is `target\x86_64-pc-windows-msvc\release\etw-dnstap.exe`
 
 An event moves from the ETW producer through a bounded buffer to the parser and the sink. A sender thread writes the frames to the TCP receiver. While the receiver is down or slow, frames go to the disk spool. See the [data path](docs/design/data-path.md) for each stage.
 
-![Animated data path: ETW session, intake callback, bounded channel, parser, dnstap-sender thread, and TCP receiver. Frames go to the disk spool while the receiver is down and replay oldest first after reconnect.](docs/assets/pipeline/etw-to-tcp-pipeline.gif)
+![Animated data path: ETW session, intake callback, bounded channel, parser, dnstap-sender thread, and TCP receiver. Frames go to the disk spool, encrypted, while the receiver is down. Replay decrypts them, oldest first, after reconnect.](docs/assets/pipeline/etw-to-tcp-pipeline.gif)
 
 ## What is captured
 
@@ -67,6 +70,7 @@ The keyword masks, the event-ID filter, and the callback check are in [Subscript
 
 - **Receiver outage.** The service reconnects with backoff (250 ms to 30 s). Frames go to the spool when one is in use. Without a spool, frames lost during the outage are counted in `disconnected_dropped`, and they are never resent. See [Spool](docs/guide/configuration.md#spool) and [Receiver connection](docs/guide/configuration.md#receiver-connection).
 - **DNS Server restart.** Capture continues with the new DNS Server process. The session has no process ID filter, so it also accepts events from any other process that writes the DNS Server provider. See [SECURITY.md](SECURITY.md).
+- **Spool encryption.** A copy of the spool folder alone is unreadable. A copy of a system volume without BitLocker, SYSTEM, Administrators, and a complete kernel memory dump or hibernation file are not covered. Offline copy and memory limits are in [SECURITY.md](SECURITY.md). Key errors are in [Spool key errors](docs/guide/troubleshooting.md#spool-key-errors).
 - **Recovery.** Data in flight at a failure is lost. See the [recovery policy](docs/guide/install.md#5-configure-scm-recovery).
 - **Windows builds.** The identity profile was validated on build 26100 only. See the [validation checklist](docs/guide/install.md#validation-checklist-for-the-localservice-restricted-profile).
 - **Evidence.** Unit tests do not cover live SCM token behavior, live DNS provider delivery, or production load. The [pooled VM performance review](docs/performance/pooled-vm-performance-review.md) is not a capacity claim.

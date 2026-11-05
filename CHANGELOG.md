@@ -306,8 +306,21 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   the service key, so a major upgrade keeps the spool key. Uninstall deletes `Protect`, the
   `ETW-DNSTapService` key when it is empty, and the CNG key.
   At its first start the service makes the AES key and stores it wrapped in the
-  `WrappedKey` value. It unwraps the key once at each start and keeps the key schedule in
-  one locked memory page, left out of WER crash dumps and zeroed at stop. Without a usable key
+  `WrappedKey` value. It unwraps the key once at each start and keeps it encrypted
+  with `CryptProtectMemory` in one locked memory page, left out of WER crash dumps and zeroed
+  at stop. For each record the service decrypts the key, builds the key schedule in that page,
+  encrypts the key bytes again, and zeroes the schedule. The schedule holds the key for the
+  whole seal or open: about 5 µs for a 64 KiB record, up to about 70 µs for a 1 MiB record.
+  Between records the key bytes are ciphertext. Each seal or open checks the decrypted
+  bytes against a SHA-256 check value taken at load. The cost is about 2.5 µs for each record,
+  or about 75 µs of CPU a second at 10,000 queries per second. If `CryptUnprotectMemory`
+  fails, the key is kept and that one append or read fails as an ordinary spool error (Event
+  ID 27). If `CryptProtectMemory` fails twice, or the bytes fail the check, the service zeroes
+  the key and suspends the spool until restart. It logs one warning (Event ID 26) that names
+  the failed call and its Win32 error, refuses every append and counts the frames in
+  `spool_dropped`, and stops reads. The loss itself deletes no segment and does not move the
+  cursor; replay batches the link already took are still acknowledged as usual. Live frames go
+  to the receiver while it is up. The next start replays the kept backlog. Without a usable key
   the service runs without a spool and logs `spool key is not usable` (Event ID 26) with
   the cause; it never writes the spool in plaintext. The first start deletes the plaintext
   segments of earlier versions, and every segment it cannot decrypt, counts their bytes in
@@ -325,7 +338,8 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   alone, other local accounts, and a volume that BitLocker protects. It does not protect an
   offline copy of a system volume without BitLocker (the machine key is protected by
   machine DPAPI, whose secret is on the same volume), SYSTEM, Administrators, a VM saved
-  state or checkpoint, the hibernation file, or a complete memory dump. See
+  state or checkpoint, the hibernation file, a complete memory dump, or register contents
+  (AES-NI round keys in XMM registers). See
   [Encryption](docs/guide/configuration.md#encryption), [SECURITY.md](SECURITY.md), and
   [Spool key errors](docs/guide/troubleshooting.md#spool-key-errors).
 - **Breaking.** The service writes nothing at stop except `capture stopped` and

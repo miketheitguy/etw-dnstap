@@ -1,6 +1,6 @@
 # MSI package sources
 
-> **Status:** Current · **Describes:** the MSI sources at commit `58fde72` · **Evidence dated:** 2026-11-03 (lab run on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** 2026-11-03 (lab run on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-05
 >
 > The guides that describe the MSI are in [docs/guide/install.md](../../docs/guide/install.md)
 > and the plan is [docs/history/msi-installer-plan.md](../../docs/history/msi-installer-plan.md).

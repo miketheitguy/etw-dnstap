@@ -158,7 +158,16 @@ first install also deletes a CNG key that the install only accepted.
 
 The service depends on `DNS` and on `KeyIso` (CNG Key Isolation). The service uses CNG while it
 starts, and a service must not do that without `KeyIso` running, so SCM starts `KeyIso` first.
+The service also bounds the key load: it waits at most 3 seconds for the key store. After that
+it logs `spool key is not usable` (Event ID 26) and runs without a spool.
 A major upgrade or a repair writes the dependency list again. Check it with `sc.exe qc EtwDnstap`.
+
+While the service runs, it keeps the unwrapped AES key encrypted in memory, in one locked page,
+with `CryptProtectMemory`. For each spool record it decrypts the key, builds the key schedule,
+and zeroes it again. The schedule holds the key for about 5 microseconds for a 64 KiB record,
+and longer for larger records. Between records, the key bytes are ciphertext. SYSTEM,
+Administrators, and a process that runs as the service can still read the process memory.
+See [SECURITY.md](../../SECURITY.md) for what the encryption does and does not protect.
 
 ## Prerequisites
 
@@ -273,6 +282,11 @@ For plaintext, add `--plaintext`.
 The spool is on by default, but step 3 does not create its folder. Until the folder passes the
 checks, the service runs without a spool and logs one warning. Add `--no-spool` to run without
 one. See [Create the spool folder](#create-the-spool-folder).
+
+The manual steps do not create the spool encryption key or the `Protect` registry key. Only the
+MSI creates them (see [Spool encryption key](#spool-encryption-key)). Without them the service
+logs `spool key is not usable` (Event ID 26) and runs without a spool. Use the MSI for an
+encrypted spool, or add `--no-spool`.
 
 The `icacls` grant must follow `New-Service`, because `NT SERVICE\EtwDnstap` resolves only once
 the service exists. Without it, the service cannot read the executable. Without the `lodctr`
@@ -478,8 +492,8 @@ Record the OS build and the descriptor that you found.
 
 ### 5. Configure SCM recovery
 
-A DNS Server restart, a capture worker failure, or another run failure makes the service exit
-with a service-specific error. SCM ignores that non-crash failure unless the non-crash flag is
+A capture worker failure or another run failure makes the service exit
+with a service-specific error. A DNS Server restart is not a failure: capture continues. SCM ignores that non-crash failure unless the non-crash flag is
 set. Without these two commands, one failure stops capture.
 
 ```powershell
@@ -517,11 +531,11 @@ sc.exe qc EtwDnstap
 - `depend= DNS/KeyIso` keeps both dependencies, so the dependencies do not change. `KeyIso` is the CNG Key Isolation service, which the service needs when it starts.
 - With the `DNS` dependency, stopping `DNS` on request also stops `EtwDnstap`. `Restart-Service DNS`
   fails, so use `Restart-Service DNS -Force`. In the lab, that command stopped `EtwDnstap` with
-  exit code 0, and the new DNS Server process was captured in under 2 seconds. After
-  `Stop-Service DNS -Force` and `Start-Service DNS`, start `EtwDnstap` by hand.
-- If the DNS Server process crashes, `EtwDnstap` stops about 5 seconds later with a
-  service-specific error. The recovery policy restarts it 5 seconds after that. The lab
-  restart also started `DNS`.
+  exit code 0. After `Stop-Service DNS -Force` and `Start-Service DNS`, or after
+  `Restart-Service DNS -Force`, start `EtwDnstap` by hand.
+- If the DNS Server process crashes or restarts without an SCM stop, `EtwDnstap` keeps
+  running and captures the new DNS Server process. The service has no process ID filter and
+  does not check the DNS Server process. Not yet checked in the lab.
 - Do not set this before step 7 succeeds. A service that fails at startup would fail at each
   boot.
 

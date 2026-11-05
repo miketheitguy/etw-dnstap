@@ -324,9 +324,28 @@ The key:
   wrapped key in the registry value
   `HKLM\SOFTWARE\ETW-DNSTapService\Protect\WrappedKey`. This key is outside the service key, so a
   major upgrade keeps it. Uninstall deletes it.
-- At every start, the service unwraps the key once. It keeps the AES key schedule in one locked
-  memory page that is never written to the pagefile and is left out of WER crash dumps, and it
-  zeroes the page at stop.
+- At every start, the service unwraps the key once and writes it into one locked memory page that
+  is never written to the pagefile and is left out of WER crash dumps. The service keeps the key
+  encrypted there with `CryptProtectMemory`. For each record, it decrypts the key, builds the
+  AES-GCM key schedule in the same page, encrypts the key bytes again at once, processes that
+  record, and zeroes the schedule. The expanded schedule holds the key for the whole seal or
+  open: about 5 µs for a 64 KiB record, longer for larger records (up to about 70 µs for a
+  1 MiB record). Between records, the key bytes in the page are ciphertext. The cost is about
+  75 µs of CPU a second at 10,000 queries per second (about 2.5 µs for each record). Each seal or
+  open checks the decrypted bytes against a SHA-256 check value taken when the key was loaded.
+  The service zeroes the page at stop.
+- If `CryptUnprotectMemory` fails, nothing changes and the service keeps the key. That write
+  fails as an ordinary spool I/O error (Event ID 27), and that read fails as a transient read
+  error. A later operation tries again.
+- If `CryptProtectMemory` fails twice, or the decrypted bytes fail the key check, the service
+  zeroes the key and suspends the spool until the service restarts. It refuses every append,
+  counts the frames in `spool_dropped`, and stops reads. The loss itself deletes no segment and
+  does not move the cursor; replay batches the link already took are still acknowledged as
+  usual. It logs one warning (Event ID 26) that names the failed call and its Win32 error.
+  While the key is lost,
+  live frames go straight to the receiver when it is up, and are refused and counted when it is
+  down. The next start replays the kept backlog. See
+  [Spool key errors](troubleshooting.md#spool-key-errors).
 - If the key cannot be loaded, the service runs without a spool and logs one warning that names
   the cause. It never writes the spool in plaintext. The service waits at most 3 seconds for the
   key store, so a key problem never holds the service start or stops the service. See
@@ -336,6 +355,8 @@ What the encryption protects against:
 
 - A copy or backup of the spool folder alone.
 - Other local accounts.
+- The idle key bytes in the locked page in a user-mode process dump, in the pagefile, and in a
+  memory-disclosure bug in the service. The key bytes are ciphertext between records.
 - A disk, image, or backup of a volume that BitLocker protects, with a TPM. The copied-disk case
   needs BitLocker.
 
@@ -345,10 +366,16 @@ What it does not protect against:
   protected by machine DPAPI. The DPAPI secret is in the SECURITY and SYSTEM registry hives on
   the same volume, and `WrappedKey` is in the SOFTWARE hive. Standard offline DPAPI tools recover
   the RSA key, and with it every segment.
-- SYSTEM, Administrators, and code running as the service.
-- A VM saved state or memory checkpoint, the hibernation file (`hiberfil.sys`), and a complete
-  kernel memory dump. They contain the locked key page. The WER exclusion covers WER crash dumps
-  only.
+- SYSTEM, Administrators, and code running as the service. Code in the service process can call
+  `CryptUnprotectMemory`, and SYSTEM and Administrators can inject such code.
+- A full kernel memory capture: a complete memory dump, the hibernation file (`hiberfil.sys`), or
+  a VM saved state or memory checkpoint. The system holds the key that protects the key page, so
+  these captures likely let an analyst recover the AES key. Microsoft's documentation does not
+  say where that key lives, so this is the likely behavior, not a documented one. The WER
+  exclusion covers WER crash dumps only.
+- Register contents and stack residue. AES-NI leaves round keys in XMM registers, and a dump
+  captures them in thread contexts. The service overwrites 16 KiB of stack after each use, but
+  stack below that is not cleared. A dump taken during a seal or open can hold the key schedule.
 
 Startup deletes every segment the service cannot read, and counts its bytes in
 `spool_dropped_bytes`:

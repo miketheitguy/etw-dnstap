@@ -32,6 +32,12 @@ msiexec.exe /i etw-dnstap-<new-version>-x64.msi /qn /norestart /l*v upgrade.log
 
 The newer MSI removes the installed product and installs the new one in one transaction. The service stops during the upgrade and starts after the restart. It reuses the remembered `RECEIVER`, `SESSION_NAME`, and `SERVICE_ARGS` unless you pass them, and it keeps the spool folder, the ETW grants, and the Performance Log Users membership.
 
+### Upgrade to a build with spool encryption
+
+A build with spool encryption writes encrypted segments. The MSI writes the service dependency list again, so the service depends on `DNS` and `KeyIso`. Check it with `sc.exe qc EtwDnstap`. The spool key (`WrappedKey`) is kept on a major upgrade.
+
+At its first start, the new build makes a spool key and deletes every spool segment it cannot read. That includes the plaintext segments of the earlier build. It counts their bytes in `spool_dropped_bytes` and logs one warning with the counts. Drain the spool before you upgrade to keep those frames. See [Spool key errors](troubleshooting.md#spool-key-errors).
+
 ### Downgrade is refused
 
 An MSI with a lower version is refused with `A newer version of EtwDnstap is already installed. Uninstall it first.`

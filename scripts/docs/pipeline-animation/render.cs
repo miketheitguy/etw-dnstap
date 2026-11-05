@@ -48,14 +48,14 @@ public static class PipelineAnimation
         "A bounded channel holds the records. A full channel drops the newest event.",
         "The parser decodes each record in one pass and encodes it as dnstap.",
         "The router feeds the link FIFO. A full FIFO spills to the disk spool.",
-        "While the receiver is down, frames go to the disk spool." };
+        "While the receiver is down, frames go to the disk spool, encrypted." };
     static readonly string[] StageSub = {
         "ETW keeps the events in session buffers. It delivers them about once per second.",
         "It checks the provider and event ID. It does not wait or allocate.",
         "After each delivered ETW buffer, the buffer callback wakes the parser once.",
         "It packs the frames into 64 KiB blocks and queues them for the sender thread.",
-        "The link thread writes without blocking. The router never waits on the socket.",
-        "After the reconnect, the spool replays oldest first. Unsent frames are sent again." };
+        "The link thread writes without blocking. Spilled blocks are sealed as AES-128-GCM records.",
+        "After the reconnect, replay decrypts each record, oldest first. Unsent frames are sent again." };
 
     static Graphics g;
     static Color[] palette;
@@ -481,6 +481,14 @@ public static class PipelineAnimation
         }
         Text("Disk spool", x0 + 15, BoxY + 176, 12, Amber, true);
 
+        // Spool encryption: one AES-128-GCM record per append, decrypted on replay.
+        bool sealing = Count(e => e.Spooled && t >= e.FlushDepart && t < e.SpoolAt + 0.15) > 0;
+        bool opening = Count(e => e.Spooled && t >= e.ReplayDepart - 0.05 && t < e.ReplayDepart + 0.35) > 0;
+        Color lk = sealing || opening ? Amber : Muted;
+        Lock(x0 + 113, BoxY + 172, lk, !opening);
+        Center(sealing ? "encrypt" : (opening ? "decrypt" : "AES-GCM"), x0 + 113, BoxY + 183, 11, lk, sealing || opening);
+        KeyNote(sealing || opening);
+
         int got = Count(e => t >= e.ReceivedAt);
         bool receiving = Count(e => t >= e.ReceivedAt - 0.05 && t < e.ReceivedAt + 0.3) > 0;
         Color edge = down ? Red : (receiving ? Green : Line);
@@ -488,6 +496,31 @@ public static class PipelineAnimation
         Center("dnstap receiver", x0 + 70, ReceiverTop + 10, 13, White, true);
         Center(down ? "down" : "frames " + got, x0 + 70, ReceiverTop + 32, 13,
             down ? Red : (receiving ? Green : Muted), down);
+    }
+
+    // A padlock centred on (cx, cy). The shackle is open when closed is false.
+    static void Lock(float cx, float cy, Color c, bool closed)
+    {
+        using (var pen = new Pen(c, 2))
+        {
+            if (closed) g.DrawArc(pen, cx - 5, cy - 12, 10, 12, 180, 180);
+            else g.DrawArc(pen, cx - 1, cy - 12, 10, 12, 180, 180);
+            if (closed) { g.DrawLine(pen, cx - 5, cy - 6, cx - 5, cy - 3); g.DrawLine(pen, cx + 5, cy - 6, cx + 5, cy - 3); }
+            else g.DrawLine(pen, cx - 1, cy - 6, cx - 1, cy - 3);
+        }
+        using (var b = new SolidBrush(c)) g.FillRectangle(b, cx - 8, cy - 3, 16, 11);
+        using (var b = new SolidBrush(Panel)) g.FillEllipse(b, cx - 2, cy, 4, 4);
+    }
+
+    // The spool key, drawn under the router: CNG key, unwrap once, protected in RAM.
+    static void KeyNote(bool active)
+    {
+        const float x = 780, y = 537;
+        Box(x, y, 180, 46, Bg, active ? Amber : Line, 8, active ? 2f : 1.5f);
+        Lock(x + 12, y + 17, active ? Amber : Muted, true);
+        Text("Spool key: AES-128", x + 24, y + 3, 11, active ? Amber : Muted, true);
+        Text("CNG key unwraps it once", x + 24, y + 17, 11, Muted);
+        Text("RAM: encrypted between uses", x + 24, y + 31, 11, Muted);
     }
 
     static void ThreadStrip(double t)

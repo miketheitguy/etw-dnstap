@@ -66,9 +66,11 @@ message.
 | `could not start the dnstap reconnect thread` or `dnstap reconnect thread ended without a result` | 3, 4 | Retries with backoff. |
 | `dnstap receiver reconnected` | 2 | |
 | `dnstap link is saturated` | 23 | The spool backlog trended up over 10 samples with the receiver connected. See [The receiver is slow](#the-receiver-is-slow). |
-| `dnstap link is no longer saturated` | 2 | The backlog is empty or stopped growing. |
+| `dnstap link is no longer saturated` | 2 | The backlog is empty or stopped growing, or the spool lost its key and is suspended. |
 | `spool folder is not usable` | 26 | The `reason` field names the failed check. |
 | `spool key is not usable` | 26 | The `reason` field names the cause. See [Spool key errors](#spool-key-errors). |
+| `the spool key is unusable after a memory protection failure (CryptProtectMemory, Win32 error N); the spool is suspended until the service restarts; spooled files are kept` | 26 | The spool is suspended until restart. Restart the service to replay. See [Spool key errors](#spool-key-errors). |
+| `the spool key is unusable after a memory protection failure (CryptUnprotectMemory returned bytes that fail the key check); the spool is suspended until the service restarts; spooled files are kept` | 26 | As above. |
 | `spool could not be opened` | 26 | The folder passed the checks. |
 | `spool is disabled (--no-spool)` | 26 | Once, at start. Any receiver outage loses frames. |
 | `dnstap spool deleted its oldest segment unsent` | 14 | Cap or free-space floor removed unsent frames. |
@@ -300,6 +302,44 @@ installer's CNG key `EtwDnstap Spool Key` wraps it. See
 | ``the `WrappedKey` registry value is not valid`` | The value is damaged or was written by hand. | Force a new key (below). |
 | ``cannot make random spool key bytes`` | The system random number generator failed. | Restart the service. If it fails again, report it. |
 | ``cannot allocate a page for the spool key`` or ``cannot lock the spool key page in memory`` | `VirtualAlloc` or `VirtualLock` failed. `VirtualLock` usually fails because the process working set quota is used up (`Win32 error 1453`). The service does not keep the key in pageable memory. | Restart the service. If it fails again, report it. |
+
+While it runs, the service keeps the key bytes encrypted in memory with `CryptProtectMemory`.
+For each spool record it decrypts the key, builds the key schedule, and zeroes it again. The
+schedule holds the key for the whole seal or open: about 5 microseconds for a 64 KiB record,
+and up to about 70 microseconds for a 1 MiB record. Two things can go wrong at run time:
+
+- **`CryptUnprotectMemory` fails.** Nothing changes, and the service keeps the key. That
+  append fails as an ordinary spool I/O error: it counts in `spool_errors`, logs
+  `dnstap spool I/O error` (Event ID 27), and pauses the spool for 10 seconds. That read fails
+  as a transient read error: it is counted, reads pause for 10 seconds, and the segment and
+  cursor are kept. A later operation tries again. Restart the service if it repeats.
+- **`CryptProtectMemory` fails twice, or the decrypted bytes fail the key check.** The
+  service zeroes the key bytes and suspends the spool until it restarts. It logs one warning
+  (Event ID 26), in one of two forms:
+
+  ```text
+  the spool key is unusable after a memory protection failure (CryptProtectMemory, Win32 error N); the spool is suspended until the service restarts; spooled files are kept
+  the spool key is unusable after a memory protection failure (CryptUnprotectMemory returned bytes that fail the key check); the spool is suspended until the service restarts; spooled files are kept
+  ```
+
+  While the spool is suspended:
+
+  - Every append is refused, and the refused frames count in `spool_dropped` only. The
+    append that finds the loss seals its block first, so it deletes and creates no segment
+    (except in one rare case, when the size cap evicts the active segment and the key fails
+    as the block is sealed again).
+  - Reads stop and drop nothing.
+  - The loss deletes no segment and does not move the cursor. Replay batches that the link
+    already took are still acknowledged as usual, so a segment they finish is deleted and the
+    cursor moves past it. `spool_available` is false.
+  - Live frames go straight to the receiver when it is up, and are refused and counted when
+    it is down. A full send queue stops intake as with no spool (`queue_dropped`), instead of
+    spilling to the spool.
+  - `link_saturated` clears with the reason `the spool is suspended until the service
+    restarts`.
+
+  Restart the service. The next start unwraps the key again and replays the whole kept
+  backlog, after the frames already sent in this run.
 
 The service never replaces an existing `WrappedKey` value on its own. To force a new key,
 an administrator deletes the value and restarts the service:

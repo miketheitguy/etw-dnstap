@@ -1,6 +1,6 @@
 # Spool encryption plan
 
-> **Status:** Approved 2026-11-04; Wave 1 (K, C, I), Wave 2 (G), and task R complete, Wave 3 task L open · **Describes:** `main` at commit `64b5e91` · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-04
+> **Status:** Approved 2026-11-04; Wave 1 (K, C, I), Wave 2 (G), and task R complete, Wave 3 task L open · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-05
 
 The spool writes dnstap frames to disk while the receiver is down or slow. Today they are
 plaintext Frame Streams files. This plan encrypts what the spool writes, and only that:
@@ -14,8 +14,9 @@ segment before its frames go back to the router.
 | Cipher | AES-128-GCM, one record per spool append. GCM is CTR mode with an authentication tag, so a changed or torn record is detected and counted, not replayed. |
 | Key protection | A persisted, non-exportable RSA-3072 machine key in the Microsoft Software Key Storage Provider, created by the installer. Its DACL grants use to `NT SERVICE\EtwDnstap`. The AES key is wrapped with RSA-OAEP (SHA-256) and stored as `REG_BINARY` in the value `WrappedKey` of `HKLM\SOFTWARE\ETW-DNSTapService\Protect`, which has its own DACL and lies outside the service key, so a major upgrade keeps it (user, 2026-11-04). Nothing under `Services\EtwDnstap\Parameters` is used. |
 | Disk I/O | Keep cached file I/O. No `FILE_FLAG_NO_BUFFERING`. |
+| Key lost at run time | User, 2026-11-05: if `CryptProtectMemory` fails twice, or the decrypted key fails its check, the spool is suspended until restart and its files are kept. Live frames go straight to the receiver when it is up (the strict-order rule is relaxed only in this case), and are refused and counted in `spool_dropped` when it is down. The next start replays the kept backlog, after the frames already sent in this run. |
 | Old segments | At startup, delete every segment the service cannot read (plaintext segments from earlier versions, and segments made with another key) and count them as dropped. |
-| Key in memory | Unwrapped once per start; the expanded key is held in one VirtualLock'ed page, excluded from WER dumps, zeroed on drop; never copied (user, 2026-11-04). |
+| Key in memory | Unwrapped once per start and written straight into one VirtualLock'ed page, excluded from WER dumps and never copied. The 16-byte key stays encrypted there with `CryptProtectMemory` (same-process scope). For each record the service decrypts it, builds the `ring` key schedule in the same page, re-encrypts the raw bytes, runs one seal or open, and zeroes the schedule. Option A: `ring` with manual zeroing (user, 2026-11-04). See "Option A". |
 
 ## Research summary
 
@@ -62,23 +63,40 @@ Does not protect against:
   DPAPI tools recover the RSA key, and with it every segment.
 - SYSTEM or Administrators (they can always use or re-ACL the key), and a process running as
   the service.
-- Memory inspection of the running service. The locked page is in physical memory, so a VM
-  saved state or memory checkpoint, `hiberfil.sys`, and a complete kernel memory dump contain
-  it. `WerRegisterExcludedMemoryBlock` covers WER crash dumps only.
+- Code running in the service process. It can call `CryptUnprotectMemory` on the key. SYSTEM
+  and Administrators can inject such code.
+- A full kernel memory capture: a complete memory dump, `hiberfil.sys`, or a VM saved state or
+  memory checkpoint. The system holds the `CryptProtectMemory` protection key, so these
+  captures likely let an analyst recover the key. Microsoft's documentation does not say where
+  that key lives, so this is the likely behavior, not a documented one.
+- Register contents and stack residue. AES-NI leaves round keys in XMM registers, and a dump
+  captures them in thread contexts. `ring` builds the key schedule on the stack. The service
+  overwrites 16 KiB of stack after each use, but stack below that scrub is not cleared.
+- A dump taken during a seal or open. The expanded schedule is in the page for that time.
+- The reply buffer of `NCryptDecrypt`. With key isolation, the reply passes through an RPC
+  receive buffer in the process that the service does not zero.
 
-The AES key is zeroed when the spool closes; `ring`'s expanded key schedule is not zeroed by
-`ring`.
+Key in memory (option A, task P): the service unwraps the key once for each start. The 16 key
+bytes go straight into one page of their own (`src/spool/locked.rs`), where
+`CryptProtectMemory` with `CRYPTPROTECTMEMORY_SAME_PROCESS` encrypts them at once. The page is
+locked with `VirtualLock`, so it is never written to the pagefile, and registered with
+`WerRegisterExcludedMemoryBlock`, so WER leaves it out of WER crash dumps. Every writer and
+reader shares it through an `Arc`, and it is zeroed before it is freed. For each record the
+service decrypts the key, builds the `ring` key schedule in the same page, re-encrypts the raw
+bytes, encrypts or decrypts that one record, and zeroes the schedule. The expanded key schedule holds the key for the whole seal or open: about 5 µs for a 64 KiB record, longer for larger records (up to about 70 µs for a 1 MiB record). Between
+records, the key bytes in the page are ciphertext.
 
-Key in memory (task G): the service unwraps the key once for each start and builds the
-`ring` key schedule once. The raw key bytes are zeroed as soon as the schedule is built. The
-schedule lives in one page of its own (`src/spool/locked.rs`), locked with `VirtualLock` so it
-is never written to the pagefile, registered with `WerRegisterExcludedMemoryBlock` so WER
-leaves it out of WER crash dumps, shared by every writer and reader through an `Arc`, and zeroed
-before the page is freed. Limits: `ring` builds the schedule on the stack during
-construction, and it is moved into the page, so stack residue of it may remain; SYSTEM and
-Administrators can read the memory of the process; and the key is in the clear in that
-locked page while the service runs. A failed `VirtualLock` is a key error: the spool is
-unavailable, and the key is never kept in pageable memory.
+Protects against: the idle key bytes in the page in a user-mode process dump, the pagefile, a
+memory-disclosure bug in the service, and casual inspection of the process.
+
+Limits: code in the service process can call `CryptUnprotectMemory`; SYSTEM and Administrators
+can inject code; full kernel memory captures likely contain the protection key; register
+contents and stack residue are not cleared everywhere; and a dump taken during a seal or open
+can hold the schedule. A failed `VirtualLock` is a key error: the spool is unavailable, and the
+key is never kept in pageable memory. A failed `CryptProtectMemory` suspends the spool until
+the service restarts (see "Failure" under Option A). The shipped release build uses
+`panic = "abort"`, so a panic aborts the process; the locked page is excluded from WER dumps,
+and the stack is not.
 
 ## Design
 
@@ -102,7 +120,9 @@ unavailable, and the key is never kept in pageable memory.
    written, or an existing `WrappedKey` does not unwrap, the spool is disabled with one
    warning that names the cause (the existing spool-unavailable path). The service keeps
    running, and the spool never writes plaintext. An existing `WrappedKey` is never replaced
-   automatically; an administrator deletes the value to force a new key.
+   automatically; an administrator deletes the value to force a new key. A failure of
+   `CryptProtectMemory` while the service runs is different: it suspends the spool, and the
+   files are kept (see "Failure" under Option A).
 
 `WrappedKey` layout (`REG_BINARY`, little-endian): version `u8` = 1, key id `[u8; 8]`,
 wrapping algorithm `u8` = 1 (RSA-OAEP-SHA256, with the key id as the OAEP label, so a
@@ -233,12 +253,14 @@ each record operation. `ring` stays; its key schedule is zeroed by hand.
 Measured on the build host (release build): `CryptUnprotectMemory` plus `CryptProtectMemory`
 on 16 bytes 2.25 µs, `ring` AES-128-GCM key setup 0.09 µs, sealing a 64 KiB record 4.3 µs.
 At 10,000 queries per second the spool writes about 30 records a second, so the added cost
-is about 70 µs of CPU a second.
+is about 70 µs of CPU a second. With the key check (below), a record costs about 2.5 µs, or
+about 75 µs a second.
 
 ### Design
 
 - **Load.** `NCryptDecrypt` writes the 16 key bytes directly into the locked page that will
-  hold them (no other buffer holds the raw key), and `CryptProtectMemory(SAME_PROCESS)`
+  hold them (no buffer the service allocates holds the raw key; with key isolation, the reply
+  of `NCryptDecrypt` also passes through an RPC receive buffer that the service does not zero), and `CryptProtectMemory(SAME_PROCESS)`
   encrypts them in place before anything else runs. The first-start path does the same with
   the random key from `BCryptGenRandom`: generate into the page, wrap from the page, protect.
   The check unwrap on first start writes into a second locked buffer that is compared and
@@ -248,12 +270,40 @@ is about 70 µs of CPU a second.
   `LessSafeKey` in place in a scratch area of the same locked page, calls
   `CryptProtectMemory` on the raw bytes at once, runs the closure (one seal or one open),
   then drops the schedule in place and zeroes the scratch area with volatile writes. A
-  guard does the re-protect and the zeroing in `Drop`, so a panic in the closure cannot
-  leave plaintext. Plaintext exists for about 5 µs per record.
-- **Failure.** If `CryptUnprotectMemory` or `CryptProtectMemory` fails, the operation fails
-  and the raw bytes are zeroed (the key is then unusable): a seal failure is a spool append
-  error and an open failure reads as a corrupt record, both counted as today. The service
-  never stops for it.
+  guard does the re-protect and the zeroing in `Drop`, so in a build that unwinds, a panic in
+  the closure does not leave plaintext. The shipped release build uses `panic = "abort"`, so
+  a panic aborts the process instead. The service also overwrites 16 KiB of stack after each
+  use, in the caller frame. The expanded key schedule holds the key for the whole seal or open: about 5 µs for a 64 KiB record, longer for larger records (up to about 70 µs for a 1 MiB record).
+- **Key check.** Each seal or open compares the decrypted 16 bytes with a SHA-256 check value
+  taken when the key was loaded (about 0.1 µs).
+- **Failure.** If `CryptUnprotectMemory` fails, nothing changes and the service keeps the key.
+  That append fails as an ordinary spool I/O error (`spool_errors`, Event ID 27 `dnstap spool
+  I/O error`, spool paused 10 seconds). That read fails as a transient read error (counted,
+  reads paused 10 seconds, segment and cursor kept). A later operation tries again. If
+  `CryptProtectMemory` fails, the service tries it once more. If it fails again, or the
+  decrypted bytes fail the key check, the service zeroes the key bytes and suspends the spool
+  until it restarts. Every append is refused, and the refused frames count in `spool_dropped`
+  only. An append seals its block before it evicts or creates a segment, so the append that
+  finds the loss deletes and creates nothing; only a roll comes first (its end record is a key
+  use), and in one rare case an eviction (the size cap evicts the active segment and the key
+  fails when the block is sealed again for the new segment). Reads stop with nothing dropped.
+  The loss deletes no segment and does not move the cursor; replay batches already handed to
+  the link are still acknowledged as usual, so a segment they finish is deleted and the cursor
+  moves past it. The active segment closes without its end record, so the next start reads it
+  as an unsealed leftover. `spool_available` becomes false. The
+  service logs exactly one warning, Event ID 26, and not once shutdown has begun:
+  `the spool key is unusable after a memory protection failure (CryptProtectMemory, Win32 error N); the spool is suspended until the service restarts; spooled files are kept`, or with
+  `(CryptUnprotectMemory returned bytes that fail the key check)` in place of the call and its
+  error. While the key is lost, live frames go straight to the receiver when it is up (user
+  decision, 2026-11-05: the strict-order rule is relaxed only in this case), and are refused
+  and counted in `spool_dropped` when it is down. A full send queue then stops intake as with
+  no spool instead of spilling to the refused spool, and `link_saturated` clears with the
+  reason `the spool is suspended until the service restarts`. The next start unwraps the key again and
+  replays the whole kept backlog, after the frames already sent in this run. The service never
+  stops for it.
+- **Stack scrub.** After each key use, the stack scrub runs in the caller frame, which covers
+  the frames that held the `ring` key.
+- **First start.** The service opens the wrapping key before it generates the AES key.
 - **Unchanged.** One unwrap per start, one locked page excluded from WER dumps, shared by
   `Arc<SegmentKey>`, never copied; the record format and the cursor.
 
@@ -262,5 +312,17 @@ is about 70 µs of CPU a second.
 | ID | Task | Agent (model) | Effort |
 | --- | --- | --- | --- |
 | P | Implement the design: `SegmentKey` internals (new module `src/spool/protected.rs`), `with_aead` at the two call sites in `crypt.rs`, key generation and unwrap into the locked page in `key.rs` and `supervisor.rs`, tests. | `voltagent-lang:rust-engineer` (Opus) | high |
-| PD | Docs: this plan's threat model and decisions, SECURITY.md, `docs/design/data-path.md`, `docs/guide/configuration.md#encryption`, CHANGELOG. | `voltagent-dev-exp:documentation-engineer` (Sonnet) | medium |
-| PR | Security review of P and PD. | `voltagent-qa-sec:code-reviewer` (Opus) | high |
+| PD | Docs: this plan's threat model and decisions, SECURITY.md, `docs/design/data-path.md`, `docs/guide/configuration.md#encryption`, CHANGELOG. Done 2026-11-04. | `voltagent-dev-exp:documentation-engineer` (Sonnet) | medium |
+| PR | Security review of P and PD. Done 2026-11-05: see "Review PR findings". | `voltagent-qa-sec:code-reviewer` (Opus) | high |
+
+### Review PR findings (2026-11-05)
+
+- A failure of `CryptProtectMemory` zeroed the key and made every later operation fail, and
+  the failures deleted the backlog. Fixed: the spool now suspends until restart and keeps its
+  files (see "Failure").
+- The docs overclaimed. They said plaintext exists for about 5 µs per record, that only
+  ciphertext is in memory between records, that no other buffer holds the key, and that a
+  guard protects against a panic. Fixed in this plan, SECURITY.md, the data-path reference, the
+  guides, and the CHANGELOG. They now name the register contents, the stack, the RPC reply
+  buffer, and `panic = "abort"`.
+- Hardened: the placement of the stack scrub, and the window at first start.
