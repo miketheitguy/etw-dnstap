@@ -329,7 +329,7 @@ capture under actual Windows DNS traffic.
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Preserved counters,
+See the [instrumentation compatibility note](../../scripts/performance/README.md#common-gotchas). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 {completion_status}

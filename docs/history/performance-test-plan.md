@@ -8,7 +8,7 @@ Record results separately from this plan; pilot data is not a measured result.
 
 This plan depends on the historical service JSONL metrics writer. It cannot
 measure the TCP-only service; new campaigns through its helpers are disabled.
-See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Recorded evidence and
+See the [instrumentation compatibility note](../../scripts/performance/README.md#common-gotchas). Recorded evidence and
 collector file destinations remain unchanged.
 
 ## Status and scope

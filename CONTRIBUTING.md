@@ -93,7 +93,8 @@ Rules:
 
 ##### Document types
 
-Current documents: the H1, the status line, then exactly three H3s:
+Current documents: the H1, the status line, then exactly three H3s. The index, `docs/README.md`, is the exception: it uses task headings.
+
 
 - **Quick Start:** one code block or three commands.
 - **Steps / Configuration:** imperative steps, reference tables.

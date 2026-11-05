@@ -10,7 +10,7 @@ recursive expected records     = 2 * client_sent + upstream_queries + upstream_r
 ```
 
 Check units before adding counters. Reports such as the [pooled VM review](../history/pooled-vm-performance-review.md)
-keep their own binary, workload, and evidence cutoff; read the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note)
+keep their own binary, workload, and evidence cutoff; read the [instrumentation compatibility note](../../scripts/performance/README.md#common-gotchas)
 before using a campaign harness.
 
 ### Steps / Configuration

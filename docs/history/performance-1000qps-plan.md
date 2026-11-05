@@ -7,11 +7,11 @@ acceptance gates for the original paced comparison. The two runs are complete;
 their [review](performance-1000qps-review.md) records ring loss in both modes.
 The fixed binary hashes and campaign paths belong to that experiment, before
 the capacity-only and pooled changes. See the
-[documentation index](../README.md#performance-campaigns) for the sequence.
+[documentation index](../README.md#history) for the sequence.
 
 This plan depends on the historical service JSONL metrics writer. It cannot
 measure the TCP-only service; new campaigns through its helpers are disabled.
-See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Recorded evidence and
+See the [instrumentation compatibility note](../../scripts/performance/README.md#common-gotchas). Recorded evidence and
 collector file destinations remain unchanged.
 
 Run authoritative and recursive-request workloads for 300 seconds each at a

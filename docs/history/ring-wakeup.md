@@ -13,7 +13,7 @@ uses timed polling; see [Ring capacity and shutdown](../design/ring-buffer.md).
 This record describes historical binaries with service JSONL metrics
 instrumentation. The TCP-only service has no durable metrics export; its
 instrumentation and performance have not been measured by this campaign.
-See the [instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Preserved counters,
+See the [instrumentation compatibility note](../../scripts/performance/README.md#common-gotchas). Preserved counters,
 tables, hashes, and collector artifacts retain their historical meaning.
 
 The experiment retained the 1024-event ring and 2 ms idle timeout. It added an

@@ -35,5 +35,5 @@ The later [pooled VM campaign](pooled-vm-performance-review.md) measures a
 historical pooled binary with a JSONL metrics writer. The TCP-only service has
 no durable metrics export. It logs its counters to the event log and samples the
 deepest queue depth as a lower bound (`queue_depth_max`); see the
-[instrumentation compatibility note](../README.md#instrumentation-compatibility-note). Keep its results separate from this historical
+[instrumentation compatibility note](../../scripts/performance/README.md#common-gotchas). Keep its results separate from this historical
 allocation-based capacity experiment, especially when comparing CPU or memory.

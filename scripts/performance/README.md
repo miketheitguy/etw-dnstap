@@ -151,3 +151,4 @@ python -I scripts/performance/archive/test_archived_analyzers.py   # also run by
 - Ubuntu controllers default `--campaign-id` to their dated campaigns and embed its filesystem UUIDs. Pass the campaign.
 - `-ExpectedHash` is mandatory. `windows-service-campaign.ps1` Fetch keeps a differing host file.
 - `.gitattributes` keeps `*.sh` as LF. Run Python destructive scripts without `--apply` first.
+- The recorded campaigns used binaries with a JSONL metrics writer that the current service lacks. Their commands, ledgers, and overhead apply to those binaries only. The service-metrics harnesses reject new campaigns before any VM, load, or SCM change. Before another campaign, design compatible telemetry, and use a fresh backup, unique run IDs, verified guest identities, and fixture readiness.

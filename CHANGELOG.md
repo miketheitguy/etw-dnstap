@@ -749,7 +749,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   parsing. Remove them from the binary path before you start this build. See
   [upgrade.md](docs/guide/upgrade.md). The removing commit is
   not identified in this file. See the
-  [instrumentation compatibility note](docs/README.md#instrumentation-compatibility-note).
+  [instrumentation compatibility note](scripts/performance/README.md#common-gotchas).
 - Five unreferenced archived lab scripts, `Test-LabAnswer`,
   `lab_config.receiver_endpoint()`, the unread `lab.json` key
   `windows_vm.install_dir`, and the PyYAML requirement (only an archived tool
