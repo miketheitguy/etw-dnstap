@@ -594,21 +594,20 @@ build. Record each result with the binary's commit. Items marked *lab* passed on
 
 - *lab:* The service reaches `RUNNING`. `capture started` (Event ID 2) shows the expected
   keyword masks, without `keyword_fallback`.
-- *lab:* `foreign_pid_rejected` stays 0. `received` rises, and `receiver_connected` is true,
-  under DNS traffic.
+- *lab:* `received` rises, and `receiver_connected` is true, under DNS traffic.
 - *lab:* With the `0x20` grant and a restart, `StartTraceW` and `EnableTraceEx2` are not
   denied. Without the grant, `StartTraceW` is denied. Otherwise, follow
   [the ETW access step](#if-an-etw-access-check-is-denied).
 - *lab:* After `sc.exe stop`: `STOPPED`, exit code 0, and `output_errors` 0.
 - *lab:* After a kill, the next start reclaims the stale session (`stale_sessions_reclaimed=1`),
   only when its name, real-time shape, and GUID all match.
-- *lab:* After a DNS Server restart or crash, the service restarts under the recovery policy.
-  The gap was 9 to 10 seconds: the service stopped 4 to 5 seconds after the restart, and
-  capture resumed 5 seconds later.
+- After a DNS Server crash and restart by its recovery policy, capture continues without a
+  service restart: the service has no process filter, so events from the new DNS Server
+  process are accepted. A stop of DNS Server through the SCM stops EtwDnstap first (service
+  dependency); start EtwDnstap again afterward. Not yet checked in the lab.
 - A second `sc.exe start EtwDnstap` fails with error 1056 while the service runs. The service
   has no instance mutex. The identity check refuses any other process.
-- *lab:* The SCM query of `DNS` (`OpenSCManagerW`, `OpenServiceW`, `QueryServiceStatusEx`)
-  succeeds. `sc.exe sidtype EtwDnstap unrestricted` stops the service at startup with
+- *lab:* `sc.exe sidtype EtwDnstap unrestricted` stops the service at startup with
   `the process token is not restricted`.
 - *lab:* `typeperf -q EtwDnstap` lists the counters, and `typeperf "\EtwDnstap(*)\*" -sc 5`
   shows values that match the `capture stopped` counters. The instance is gone after stop.

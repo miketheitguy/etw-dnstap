@@ -499,8 +499,6 @@ const RATE_WARNING: &str = "received rate is above 22,000 events/s; the default 
     etw_lost increase, use the settings for your rate in the \"Recommended settings for higher \
     rates\" section of docs/guide/tuning.md, for example --etw-buffer-kib 128 --etw-max-buffers \
     128 for 50,000 queries per second";
-/// How often the supervisor re-reads the DNS Server service process ID.
-const TARGET_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// Rate window when counter snapshots are disabled.
 const DEFAULT_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// How often the supervisor queries ETW and publishes the performance counters.
@@ -555,7 +553,6 @@ struct Monitor<'a> {
     /// When the loss and risk check runs: the stats interval, or the rate
     /// window when snapshots are disabled.
     alerts_tick: Schedule,
-    target: Schedule,
     /// Disabled until a counter publisher starts.
     publish: Schedule,
     rate: RateMonitor,
@@ -611,7 +608,6 @@ impl<'a> Monitor<'a> {
             alerts: Alerts::new(limits, now, baseline),
             spool_dir: config.spool.as_ref().map(|spool| spool.dir.clone()),
             free_space: fsinfo::available_bytes,
-            target: Schedule::new(Some(TARGET_CHECK_INTERVAL), now),
             publish: Schedule::new(None, now),
             rate: RateMonitor::new(
                 config.stats_interval().unwrap_or(DEFAULT_RATE_WINDOW),
@@ -683,18 +679,6 @@ fn supervise(
             break Some("a capture worker exited before shutdown was requested".to_owned());
         }
         let now = Instant::now();
-        if monitor.target.poll(now)
-            && let Some(change) = capture.target_change()
-        {
-            // The PID filter and callback check now match no process. Exiting
-            // with a failure lets SCM recovery restart the service, which
-            // resolves the new PID at startup.
-            tracing::error!(
-                "{change}; stopping so the service can be restarted and re-resolve the DNS \
-                 Server process"
-            );
-            break Some(change.to_string());
-        }
         if let Some(rate) = monitor
             .rate
             .poll(now, monitor.capture.received.load(Ordering::Relaxed))
@@ -939,7 +923,6 @@ macro_rules! emit_counts {
             intake_dropped = capture.intake_dropped.load(Ordering::Relaxed),
             pool_exhausted_regular = pool_exhausted.saturating_sub(pool_exhausted_jumbo),
             pool_exhausted_jumbo,
-            foreign_pid_rejected = capture.foreign_pid_rejected.load(Ordering::Relaxed),
             receiver_disconnected = capture.receiver_disconnected.load(Ordering::Relaxed),
             etw_lost = capture.etw_lost.load(Ordering::Relaxed),
             etw_buffers_lost = capture.etw_buffers_lost.load(Ordering::Relaxed),

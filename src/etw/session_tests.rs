@@ -622,46 +622,17 @@ fn event_id_descriptor_and_parameters_describe_payload() {
 }
 
 #[test]
-fn pid_descriptor_describes_a_single_pid() {
-    let payload = PidFilterPayload::new(0x1234);
-    let descriptor = pid_descriptor(&payload);
-    assert_eq!(descriptor.Type, EVENT_FILTER_TYPE_PID);
-    assert_eq!(descriptor.Type, 0x8000_0004);
-    assert_eq!(descriptor.Size, 4);
-    assert_eq!(descriptor.Ptr, std::ptr::from_ref(&payload) as u64);
-    assert_eq!(payload.pids, [0x1234]);
-}
-
-#[test]
-fn both_filters_are_passed_to_enable_parameters() {
-    let ids = EventIdFilterPayload::new();
-    let pid = PidFilterPayload::new(7);
-    let mut descriptors = [event_id_descriptor(&ids), pid_descriptor(&pid)];
-    let parameters = enable_parameters(descriptors.as_mut_ptr(), 2);
-    assert_eq!(parameters.FilterDescCount, 2);
+fn session_enable_parameters_carry_only_the_event_id_filter() {
+    // 0x8000_0004 is EVENT_FILTER_TYPE_PID, which must not be requested.
+    const PID_FILTER_TYPE: u32 = 0x8000_0004;
+    let payload = EventIdFilterPayload::new();
+    let mut descriptors = enable_filter_descriptors(&payload);
+    assert_eq!(descriptors.len(), 1);
+    assert_eq!(descriptors[0].Type, EVENT_FILTER_TYPE_EVENT_ID);
+    assert!(descriptors.iter().all(|d| d.Type != PID_FILTER_TYPE));
+    let parameters = enable_parameters(descriptors.as_mut_ptr(), 1);
+    assert_eq!(parameters.FilterDescCount, 1);
     assert_eq!(parameters.EnableFilterDesc, descriptors.as_mut_ptr());
-}
-
-#[test]
-fn target_change_classification() {
-    assert_eq!(classify_target(10, Some(10)), None);
-    assert_eq!(classify_target(10, None), None);
-    assert_eq!(
-        classify_target(10, Some(0)),
-        Some(TargetChange::Stopped { pid: 10 })
-    );
-    assert_eq!(
-        classify_target(10, Some(11)),
-        Some(TargetChange::Restarted { old: 10, new: 11 })
-    );
-    assert_eq!(
-        TargetChange::Stopped { pid: 10 }.to_string(),
-        "the DNS Server service stopped (it ran as process ID 10)"
-    );
-    assert_eq!(
-        TargetChange::Restarted { old: 10, new: 11 }.to_string(),
-        "the DNS Server service restarted (process ID 10 -> 11)"
-    );
 }
 
 #[test]

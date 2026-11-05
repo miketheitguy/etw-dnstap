@@ -53,10 +53,8 @@ message.
 | `lacks an enabled Performance Log Users` | 1 | Service SID missing, or deny-only. |
 | `configure SCM RequiredPrivileges` or `requires only an enabled SeChangeNotifyPrivilege` | 1 | Privileges are extra, missing, or disabled. |
 | `connect/negotiation with dnstap receiver` | 1 | Startup protocol failure. |
-| `service 'DNS' is not running` | 1 | |
 | `EnableTraceEx2: access denied` | 1 | DNS provider GUID has its own descriptor, granting neither group `TRACELOG_GUID_ENABLE`. Not seen in the lab. |
 | `StartTraceW: access denied` | 1 | The service SID lacks `TRACELOG_CREATE_REALTIME` on the session GUID in the message. |
-| `OpenServiceW(DNS)`, `OpenSCManagerW`, or `QueryServiceStatusEx(DNS)` with `(code 5)` | 1 | The restricted token cannot query `DNS`. The message adds `the restricted service token needs SC_MANAGER_CONNECT and SERVICE_QUERY_STATUS`. |
 | `already exists and does not match this program's session shape` | 1 | Session cannot be reclaimed. |
 | `EtwDnstap watchdog: the startup deadline` or `shutdown deadline` | 5 | Deadline expired. Process aborted. |
 | `EtwDnstap panicked:` | 6 | |
@@ -79,7 +77,6 @@ message.
 | `dnstap spool I/O error` | 27 | |
 | `dnstap spool is refusing blocks` | 14 | No free space, and no older segment to remove. |
 | `spool in use` | 2 | |
-| `the DNS Server service restarted` or `the DNS Server service stopped` | 4, then 1 | |
 | `a capture worker exited before shutdown was requested` | 1 | |
 | `ETW consumer did not return within 5 s of STOP` | 3 | Trace handle closed to force the worker out. |
 | `received rate is above 22,000 events/s` | 3 | |
@@ -109,11 +106,9 @@ order.
 | Restricting SIDs incomplete | `restricting SIDs do not include the service SID` or `the Write Restricted SID (S-1-5-33)` | Run `sc.exe sidtype EtwDnstap restricted`. Compare the token with [SECURITY.md](../../SECURITY.md). Record any different restricting set on this OS build. |
 | Not in Performance Log Users | `lacks an enabled Performance Log Users` | Run `net localgroup "Performance Log Users" "NT SERVICE\EtwDnstap" /add`. |
 | Privileges | `configure SCM RequiredPrivileges to only SeChangeNotifyPrivilege` or `requires only an enabled SeChangeNotifyPrivilege` | Run `sc.exe privs EtwDnstap SeChangeNotifyPrivilege`. Check with `sc.exe qprivs EtwDnstap`. |
-| DNS Server not running | `service 'DNS' is not running (process ID 0)` | Start the DNS Server role service. |
 | Receiver protocol mismatch | `connect/negotiation with dnstap receiver` with `did not accept dnstap content type` | Set the collector's content type to `protobuf:dnstap.Dnstap`. |
 | Receiver certificate rejected | `connect/negotiation with dnstap receiver` with `TLS handshake`, or `received fatal alert: CertificateRequired` | Import the receiver CA into `Cert:\LocalMachine\Root`. Name the receiver IP address on its certificate, or set `--tls-server-name`. Turn off client certificate requirements. See [the receiver certificate step](receiver.md#receiver-certificate). |
 | ETW access denied | `StartTraceW: access denied` or `EnableTraceEx2: access denied` | For `StartTraceW`, run `scripts\provision\Grant-EtwDnstapEtwAccess.ps1 -SessionName <name>` with the name from the message (case-sensitive), then restart the computer. For `EnableTraceEx2`, add no grant on the DNS provider descriptor. See [install.md](install.md#if-an-etw-access-check-is-denied). |
-| SCM query of `DNS` denied | `OpenServiceW(DNS)`, `OpenSCManagerW`, or `QueryServiceStatusEx(DNS)` with `(code 5)` | Grant `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` to Everyone or the service SID. Inspect with `sc.exe sdshow DNS`. |
 | Leaked ETW session | A session with the same name cannot be reclaimed | See [Stale ETW session](#stale-etw-session-blocks-startup). |
 | Watchdog abort | No Event ID 1. Event ID 5 names the startup deadline. | See [Watchdog aborts](#watchdog-aborts-or-stop-hangs). |
 
@@ -325,9 +320,6 @@ were in the spool are lost. Their bytes count in `spool_dropped_bytes`.
 The service exits with a service-specific error in these cases. SCM restarts it under
 the [recovery policy](install.md#5-configure-scm-recovery).
 
-- **The DNS Server process changed or stopped.** Event ID 4 names the reason, for
-  example `the DNS Server service restarted (process ID 4242 -> 5151)`. Event ID 1
-  follows. The service checks every 5 seconds.
 - **A capture worker ended on its own.** Event ID 1: `a capture worker exited before
   shutdown was requested`.
 - **A receiver problem at shutdown does not fail the stop.** A STOP/FINISH exchange that does not
@@ -341,8 +333,8 @@ the [recovery policy](install.md#5-configure-scm-recovery).
 
 Restart timing and the failure-count reset are in
 [5. Configure SCM recovery](install.md#5-configure-scm-recovery). Records in flight at
-a failure are lost. After a DNS restart, the gap lasts until EtwDnstap restarts. If
-`DNS` is not running at startup, start it.
+a failure are lost. A DNS Server restart is not a failure: capture continues with the new
+DNS Server process.
 
 Check the Event ID 1 entries. Check the policy with
 `sc.exe qfailure EtwDnstap`, and check that `sc.exe qfailureflag EtwDnstap` reports the
@@ -355,8 +347,7 @@ Capture stops only for the reasons in
 exchange fails. A lost receiver connection does not stop it.
 
 1. Find the failure text in the Application log (Event ID 1).
-2. For a DNS restart, check that `foreign_pid_rejected` rose during the gap.
-3. Check the recovery policy. Without it, the service stays down until someone starts it.
+2. Check the recovery policy. Without it, the service stays down until someone starts it.
 
 ## Event IDs for data loss
 
@@ -412,7 +403,6 @@ shutdown. A restart resets every counter. The counter definitions are in
 | `queue_dropped`, `link_saturated` | See [The receiver is slow](#the-receiver-is-slow). |
 | `spool_dropped`, `spool_dropped_bytes` | See [Spool warnings](#spool-warnings). Raise `--spool-max-mib` if the outage outlasts the cap. |
 | `spool_errors` | See [Spool warnings](#spool-warnings). |
-| `foreign_pid_rejected` | Normally 0. Nonzero during a DNS restart is expected. Otherwise investigate. |
 | `callback_errors` | Check the Application log. |
 
 Do not add `etw_lost` to `etw_buffers_lost`, because the units differ. The sums and
@@ -476,12 +466,10 @@ Check the layers in order.
    In the latest `output stats` line, `receiver_connected` should be `true`.
 2. **Does the DNS Server write the events?** Event IDs 256, 257, and 258 come from
    `Microsoft-Windows-DNSServer`. Recursive traffic does not produce client records.
-3. **Is the DNS process still the one filtered?** A rising `foreign_pid_rejected`
-   shows records from a new DNS process being refused until EtwDnstap restarts.
-4. **Is the subscription the one you expect?** `capture started` shows the keyword
+3. **Is the subscription the one you expect?** `capture started` shows the keyword
    masks. A fallback warning means the subscription uses `0x8000000000000000`. See
    [configuration.md](configuration.md#subscription).
-5. **Does the collector's filter or pipeline match the example?** See
+4. **Does the collector's filter or pipeline match the example?** See
    [receiver.md](receiver.md#receiver-configuration).
 
 ## Stale ETW session blocks startup

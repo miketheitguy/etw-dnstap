@@ -2,7 +2,6 @@
 //!
 //! Module map:
 //! - `session`: `StartTrace`/`ControlTrace`, stale-session reclaim, and [`Capture`].
-//! - `target`: the DNS Server service process ID used by the PID filter.
 //! - `keywords`: provider keyword metadata and the subscription masks.
 //! - `intake`: the native callback and the deep copy into pooled storage.
 //! - `schema`: TDH schema loading, plan compilation, and [`Parser`], which
@@ -44,8 +43,6 @@ mod schema;
 mod session;
 #[allow(unsafe_code)]
 mod session_guid;
-#[allow(unsafe_code)]
-mod target;
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod test_support;
@@ -58,11 +55,11 @@ pub(crate) use intake::RawEtwEvent;
 pub(crate) use keywords::KeywordSelection;
 pub(crate) use pool::{MAX_CAPACITY, MAX_JUMBO_CAPACITY, MIN_CAPACITY, PoolManager};
 pub(crate) use schema::Parser;
-pub(crate) use session::{Capture, EventProducer, SessionConfig};
 /// Named only by the pipeline test fakes; production code reaches them through
 /// [`EventProducer`].
 #[cfg(test)]
-pub(crate) use session::{TargetChange, Win32Status};
+pub(crate) use session::Win32Status;
+pub(crate) use session::{Capture, EventProducer, SessionConfig};
 
 /// The service's ETW session GUID for `name`, as text for logs.
 pub(crate) fn session_guid_text(name: &str) -> String {
@@ -98,9 +95,6 @@ pub(crate) struct CaptureCounters {
     pub(crate) pool_exhausted: AtomicU64,
     /// The jumbo share of `pool_exhausted`.
     pub(crate) pool_exhausted_jumbo: AtomicU64,
-    /// Records whose `EventHeader.ProcessId` was not the DNS Server service
-    /// process. They are not counted as `received`.
-    pub(crate) foreign_pid_rejected: AtomicU64,
     pub(crate) receiver_disconnected: AtomicU64,
     pub(crate) etw_lost: AtomicU64,
     pub(crate) etw_buffers_lost: AtomicU64,

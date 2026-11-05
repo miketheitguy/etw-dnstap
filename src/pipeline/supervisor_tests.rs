@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    etw::{TargetChange, Win32Status},
+    etw::Win32Status,
     pipeline::{config::parse_args_from, test_support::config_from},
     spool::{
         key::SpoolKey,
@@ -803,68 +803,6 @@ fn rate_monitor_reports_once_per_window() {
         .poll(start + Duration::from_secs(20), 20_200)
         .expect("second window");
     assert!((slow - 10.0).abs() < 0.001, "{slow}");
-}
-
-/// A producer scripted for supervisor tests.
-struct ScriptedProducer {
-    moved: bool,
-}
-
-impl EventProducer for ScriptedProducer {
-    fn keywords(&self) -> KeywordSelection {
-        KeywordSelection {
-            match_any: 0,
-            match_all: 0,
-            fallback: true,
-            failed_responses: true,
-        }
-    }
-
-    fn is_finished(&self) -> bool {
-        false
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn target_change(&self) -> Option<TargetChange> {
-        self.moved
-            .then_some(TargetChange::Restarted { old: 1, new: 2 })
-    }
-}
-
-#[test]
-fn supervisor_ends_capture_when_the_dns_process_changes() {
-    let config = config_from(&[]);
-    let (capture, parse, sink) = (
-        CaptureCounters::default(),
-        ParseCounters::default(),
-        SinkStats::default(),
-    );
-    let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
-    monitor.target = Schedule::new(Some(Duration::from_millis(10)), Instant::now());
-    let done = Arc::new(AtomicBool::new(false));
-    let parser_done = Arc::clone(&done);
-    let parser = thread::spawn(move || {
-        while !parser_done.load(Ordering::Relaxed) {
-            thread::park_timeout(Duration::from_millis(10));
-        }
-        Ok(())
-    });
-    let producer = ScriptedProducer { moved: true };
-    let reason = supervise(
-        &AtomicBool::new(false),
-        None,
-        false,
-        &parser,
-        &producer,
-        &mut monitor,
-    )
-    .expect("a changed PID ends supervision");
-    assert!(reason.contains("restarted"), "{reason}");
-    done.store(true, Ordering::Relaxed);
-    parser.join().expect("parser stub exits").expect("ok");
 }
 
 #[test]

@@ -44,13 +44,11 @@ callback does these steps in order:
 
 1. Reject a record from another provider, or with an unsupported event ID. This step
    counts nothing.
-2. Reject a record whose process ID is not the DNS Server process ID. Count it in
-   `foreign_pid_rejected`.
-3. Count the record in `received`.
-4. Copy the record into a pool slot. Count a malformed record in `callback_errors`.
+2. Count the record in `received`. The callback does not check the process ID.
+3. Copy the record into a pool slot. Count a malformed record in `callback_errors`.
    Count a record with no free slot in `pool_exhausted_regular` or
    `pool_exhausted_jumbo`.
-5. Send the slot with `try_send`. A full channel drops the newest event and increments
+4. Send the slot with `try_send`. A full channel drops the newest event and increments
    `ring_dropped`. A channel with no receiver drops the event and increments
    `receiver_disconnected`. Both drops also increment `intake_dropped`.
 

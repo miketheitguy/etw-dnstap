@@ -66,7 +66,7 @@ The keyword masks, the event-ID filter, and the callback check are in [Subscript
 ## Known limitations
 
 - **Receiver outage.** The service reconnects with backoff (250 ms to 30 s). Frames go to the spool when one is in use. Without a spool, frames lost during the outage are counted in `disconnected_dropped`, and they are never resent. See [Spool](docs/guide/configuration.md#spool) and [Receiver connection](docs/guide/configuration.md#receiver-connection).
-- **DNS Server restart.** The service exits and SCM restarts it. Records from the gap are not captured.
+- **DNS Server restart.** Capture continues with the new DNS Server process. The session has no process ID filter, so it also accepts events from any other process that writes the DNS Server provider. See [SECURITY.md](SECURITY.md).
 - **Recovery.** Data in flight at a failure is lost. See the [recovery policy](docs/guide/install.md#5-configure-scm-recovery).
 - **Windows builds.** The identity profile was validated on build 26100 only. See the [validation checklist](docs/guide/install.md#validation-checklist-for-the-localservice-restricted-profile).
 - **Evidence.** Unit tests do not cover live SCM token behavior, live DNS provider delivery, or production load. The [pooled VM performance review](docs/performance/pooled-vm-performance-review.md) is not a capacity claim.

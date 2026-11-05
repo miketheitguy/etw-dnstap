@@ -75,7 +75,6 @@ The service distinguishes these loss units and the related counters:
 | `received` | Supported provider records that enter the callback, including rejected records. |
 | `dequeued` | Records the parser removes before parsing or output. |
 | `queue_backlog` | Records that remain in the channel. The live log has no such field. It reports `queue_depth_max` instead. |
-| `foreign_pid_rejected` | Live service only. Records from a process other than the DNS Server. Not counted in `received`. |
 | `etw_buffers_delivered` | Live service only. ETW buffers whose delivery finished (buffer callback calls). |
 | `parser_wake_requests` | Live service only. Delivered buffers that enqueued events and so sent the parser a wake request. |
 | `disconnected_dropped` | Live service only. Encoded frames lost in the sink: with no spool, in flight when a connection failed or received while the receiver was down. With a spool, a failed connection counts nothing here: its unsent live frames go back to the router and its unsent replay frames stay in the spool. These frames are never resent and are not part of `intake_dropped`. |

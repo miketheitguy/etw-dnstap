@@ -282,6 +282,22 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
 
 ### Changed
 
+- **Breaking.** The DNS Server process ID filter and the periodic process ID check
+  are removed. The session no longer passes an `EVENT_FILTER_TYPE_PID` filter (the
+  event-ID filter stays), the callback no longer compares `EventHeader.ProcessId`, and
+  the supervisor no longer rereads the `DNS` service process ID every 5 seconds. The
+  service accepts Microsoft-Windows-DNSServer events from any process. A DNS Server
+  restart no longer stops EtwDnstap with an error for SCM to restart, so capture follows
+  the new process with no gap for the restart. Startup no longer fails when `DNS` is
+  not running and no longer needs `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS` on
+  `DNS`. The `foreign_pid_rejected` field is removed from the `capture stats` and
+  `capture stopped` events (it was not a performance counter, so no counter ID
+  changed), and the `service 'DNS' is not running` startup error and the `the DNS
+  Server service restarted` and `stopped` errors are gone. No Event ID changed. Any
+  local process that can register the provider GUID and write events can now inject
+  records into the capture, and a normal stop of `DNS` stops EtwDnstap only through
+  the service dependency. See [SECURITY.md](SECURITY.md) and
+  [No process filter](docs/guide/configuration.md#no-process-filter).
 - **Breaking.** Spool segments are encrypted. Each block the spool stores is one
   AES-128-GCM record, and a segment starts with a 32-byte header instead of a Frame
   Streams START. Frames in memory and on the wire do not change. The installer must have

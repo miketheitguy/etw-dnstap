@@ -21,7 +21,6 @@ The session enables the DNS provider with these settings:
 - `MatchAllKeyword` set to zero.
 - `EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0`, which keeps keyword-zero events out.
 - An event-ID filter that admits only 256, 257, and 258.
-- A process-ID filter that admits only the DNS Server process ID that startup resolved.
 
 The keywords also enable events 284, 285, 287, 288, and 597 to 599. The event-ID filter
 excludes them after the provider builds them. They cost `dns.exe` CPU but never reach
@@ -31,9 +30,8 @@ The callback accepts only event 256 (client query), 257 (successful client respo
 and 258 (failed client response, for example SERVFAIL). It excludes all other IDs,
 including 260 (recursive query) and 261 (recursive response). It checks the event ID
 right after the null-record check, before any context access, counter, TLS, pool,
-copy, queue, or TDH step. Excluded records are not counted. After context access, it
-rejects a record whose `EventHeader.ProcessId` is not the DNS Server process ID, and it
-counts that record in `foreign_pid_rejected`, not `received`. These provider and
+copy, queue, or TDH step. Excluded records are not counted. It does not check
+`EventHeader.ProcessId`: a record from any process is counted in `received`. These provider and
 event-ID checks are defense in depth. The parser repeats the event allowlist before TDH
 access. This intake produces no resolver records.
 
@@ -49,7 +47,7 @@ kernel-mode application code. TLS holds the bounded channel sender, a pool refer
 `try_borrow_mut`. Missing, wrong, or reentrant TLS increments `callback_errors` without
 a panic.
 
-`native_etw_callback` filters provider and event IDs, checks the process ID, counts
+`native_etw_callback` filters provider and event IDs, counts
 each supported record, checks lengths, leases storage, and calls
 `ptr::copy_nonoverlapping` before it returns. After a successful `try_send`, it sets
 the "enqueued" flag. It never wakes the parser.
@@ -212,7 +210,7 @@ service has no JSONL metrics writer or durable metrics export. See the
 Schema 2 keeps `ring_dropped` as channel-full loss, adds explicit intake categories,
 and adds `received`, `dequeued`, and `queue_backlog`. The counter meanings and identities
 are in [Historical service loss and final ledgers](measurement-terms.md#historical-service-loss-and-final-ledgers).
-The live log also has `foreign_pid_rejected`, `etw_buffers_delivered`, and
+The live log also has `etw_buffers_delivered`, and
 `parser_wake_requests`. The full live list is in [Log events and counters](../guide/monitoring.md).
 
 Intermediate samples read separate relaxed atomics, so they can briefly differ from the

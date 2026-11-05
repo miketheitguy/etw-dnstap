@@ -26,10 +26,11 @@ This summarizes what the service trusts and protects. The authoritative behavior
 
 **Producer identity (forged provider records)**
 
-- The service admits only records whose process ID is the running `DNS` service process. The ETW session filters on that process ID (`EVENT_FILTER_TYPE_PID`), and the callback checks it again before it copies a record. Other records are counted in `foreign_pid_rejected` and not captured.
-- This narrows the earlier open item, in which a local process that registered the same provider could inject records. A nonzero `foreign_pid_rejected` shows that such records reached the callback. Whether the ETW-side filter removes them first is unverified on a live host.
-- The check does not stop code that runs inside the DNS Server process. That code can emit records the service accepts.
-- Any user can register the DNS provider GUID, so the process ID filter is the only check on the source. The process ID is read at startup and checked every 5 seconds. If the DNS Server exits and Windows gives its process ID to another process before the next check, that process can inject records. A DNS Server restart also makes the service exit for SCM restart, so records from the new process are not captured in that gap. Holding the DNS Server process open would close the window, but the restricted LocalService token is denied `OpenProcess` on it (lab, build 26100). See [the lab record](docs/history/skills-evaluation-lab-validation.md).
+- The service does not filter records by process ID. The ETW session and the callback accept Microsoft-Windows-DNSServer events from any process. Earlier builds filtered on the `DNS` service process ID (`EVENT_FILTER_TYPE_PID`) and rechecked it every 5 seconds. That filter and the check are removed so that a DNS Server restart no longer stops EtwDnstap.
+- Trade-off: any local process that can register the Microsoft-Windows-DNSServer provider GUID and write events can inject records into the capture. Any user can register a provider GUID. The service sends such records to the receiver as DNS queries and responses. The event-ID and provider checks still apply, and the parser rejects malformed records, but nothing ties a record to `dns.exe`.
+- Related behavior: the service depends on the `DNS` service, so a normal stop of the DNS Server also stops EtwDnstap. A DNS Server restart no longer stops EtwDnstap, and capture follows the new process.
+- The event-ID filter does not stop code that runs inside the DNS Server process. That code can emit records the service accepts.
+- Mitigation: treat the receiver's data as unauthenticated at the record level. Limit who can create code that runs on the DNS Server host.
 
 **Service identity**
 

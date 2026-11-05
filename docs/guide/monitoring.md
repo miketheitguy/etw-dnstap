@@ -206,7 +206,6 @@ These fields appear on `capture stats` and `capture stopped`.
 | `intake_dropped` | Records lost at admission: `ring_dropped`, `pool_exhausted_regular`, `pool_exhausted_jumbo`, and `receiver_disconnected`. |
 | `ring_dropped` | Dropped because the channel was full. Part of `intake_dropped`. |
 | `pool_exhausted_regular`, `pool_exhausted_jumbo` | Regular: no free regular slot. Jumbo (payload over 2 KiB): no free jumbo slot, or `--jumbo-capacity` is `0`. Both are part of `intake_dropped`. |
-| `foreign_pid_rejected` | From a process other than the DNS Server. Not in `received`. Normally 0. See [DNS process filter](configuration.md#dns-process-filter). |
 | `receiver_disconnected` | Parser end of the channel gone. This is the event channel, not the TCP receiver. |
 | `etw_lost` | Events ETW reports lost, as of its last successful query or stop. |
 | `etw_buffers_lost` | ETW buffers lost. Not an event count. |
@@ -269,7 +268,6 @@ or the service has not yet seen it:
 
 - `ETW consumer did not return within N s of STOP; closing the trace handle` (warning).
 - `ETW cleanup failed` (Event ID 4).
-- The error for a DNS Server process ID change, which is what triggers the stop.
 - `parser timing`, in diagnostic builds, after the two stop reports.
 
 Example:

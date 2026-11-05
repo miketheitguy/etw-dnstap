@@ -41,30 +41,14 @@ pub(super) struct CallbackContext {
     /// The process-lifetime pool; see [`PoolManager`].
     pool: &'static PoolManager,
     counters: Arc<CaptureCounters>,
-    /// The only process allowed to emit accepted records (the DNS Server service).
-    expected_pid: u32,
 }
 
 impl CallbackContext {
-    /// Requires `EventHeader.ProcessId == expected_pid` on every accepted record;
-    /// there is no way to build a context without that filter. Callers box the
-    /// context so the address handed to `OpenTraceW` stays stable.
-    pub(super) const fn new(
-        pool: &'static PoolManager,
-        counters: Arc<CaptureCounters>,
-        expected_pid: u32,
-    ) -> Self {
-        Self {
-            pool,
-            counters,
-            expected_pid,
-        }
+    /// Records are accepted whatever `EventHeader.ProcessId` they carry. Callers
+    /// box the context so the address handed to `OpenTraceW` stays stable.
+    pub(super) const fn new(pool: &'static PoolManager, counters: Arc<CaptureCounters>) -> Self {
+        Self { pool, counters }
     }
-}
-
-/// True when a record from `actual` may be accepted given the expected emitter.
-const fn pid_allowed(expected: u32, actual: u32) -> bool {
-    expected == actual
 }
 
 struct CallbackProducer {
@@ -161,15 +145,6 @@ pub(super) unsafe extern "system" fn native_etw_callback(record: *mut EVENT_RECO
     let Some(context) = (unsafe { record.UserContext.cast::<CallbackContext>().as_ref() }) else {
         return;
     };
-    // A forged provider registration in another process is rejected here even if
-    // the ETW-side PID filter was not honored. Allocation-free: one compare.
-    if !pid_allowed(context.expected_pid, record.EventHeader.ProcessId) {
-        context
-            .counters
-            .foreign_pid_rejected
-            .fetch_add(1, Ordering::Relaxed);
-        return;
-    }
     context.counters.received.fetch_add(1, Ordering::Relaxed);
     let handled = PRODUCER
         .try_with(|state| {

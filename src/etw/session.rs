@@ -22,10 +22,9 @@ use windows_sys::{
             CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, ENABLE_TRACE_PARAMETERS,
             ENABLE_TRACE_PARAMETERS_VERSION_2, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
             EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_EVENT_ID,
-            EVENT_FILTER_TYPE_EVENT_ID, EVENT_FILTER_TYPE_PID, EVENT_TRACE_BUFFERING_MODE,
-            EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FILE_MODE_APPEND,
-            EVENT_TRACE_FILE_MODE_CIRCULAR, EVENT_TRACE_FILE_MODE_NEWFILE,
-            EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW,
+            EVENT_FILTER_TYPE_EVENT_ID, EVENT_TRACE_BUFFERING_MODE, EVENT_TRACE_CONTROL_QUERY,
+            EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FILE_MODE_APPEND, EVENT_TRACE_FILE_MODE_CIRCULAR,
+            EVENT_TRACE_FILE_MODE_NEWFILE, EVENT_TRACE_FILE_MODE_SEQUENTIAL, EVENT_TRACE_LOGFILEW,
             EVENT_TRACE_PRIVATE_LOGGER_MODE, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
             EVENT_TRACE_SYSTEM_LOGGER_MODE, EnableTraceEx2, OpenTraceW,
             PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
@@ -41,7 +40,6 @@ use super::{
     keywords::{KeywordChoice, KeywordSelection, resolve_keywords},
     same_guid,
     session_guid::{format_guid, session_guid},
-    target::{DNS_SERVICE, service_process_id, service_process_id_raw},
 };
 #[cfg(feature = "diag-timing")]
 use super::{ThreadPriority, set_current_thread_priority};
@@ -410,11 +408,6 @@ pub(crate) trait EventProducer {
     fn query_statistics(&self) -> Result<(), Win32Status> {
         Ok(())
     }
-    /// Why capture can no longer be trusted (the process the source filters on
-    /// stopped or was replaced), or `None`.
-    fn target_change(&self) -> Option<TargetChange> {
-        None
-    }
 }
 
 /// Owns only the session created by its successful `StartTrace` call.
@@ -424,9 +417,6 @@ pub(crate) struct Capture {
     worker: Option<JoinHandle<u32>>,
     counters: Arc<CaptureCounters>,
     keywords: KeywordSelection,
-    /// The DNS Server service process, resolved at start. If it changes, the
-    /// supervisor ends capture so SCM can restart this service with the new PID.
-    dns_pid: u32,
 }
 
 /// A Win32 status code returned by an ETW control call. The raw code stays
@@ -446,48 +436,6 @@ impl fmt::Display for Win32Status {
 }
 
 impl std::error::Error for Win32Status {}
-
-/// Why the DNS Server process ID the session filters on is no longer valid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TargetChange {
-    /// The DNS Server service stopped. It ran as `pid`.
-    Stopped { pid: u32 },
-    /// The DNS Server service restarted under a new process ID.
-    Restarted { old: u32, new: u32 },
-}
-
-impl fmt::Display for TargetChange {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stopped { pid } => {
-                write!(
-                    f,
-                    "the DNS Server service stopped (it ran as process ID {pid})"
-                )
-            }
-            Self::Restarted { old, new } => {
-                write!(
-                    f,
-                    "the DNS Server service restarted (process ID {old} -> {new})"
-                )
-            }
-        }
-    }
-}
-
-/// What the supervisor concluded from re-reading the DNS service process ID.
-/// `observed` is `None` when the query itself failed, which proves nothing.
-const fn classify_target(expected: u32, observed: Option<u32>) -> Option<TargetChange> {
-    match observed {
-        None => None,
-        Some(pid) if pid == expected => None,
-        Some(0) => Some(TargetChange::Stopped { pid: expected }),
-        Some(pid) => Some(TargetChange::Restarted {
-            old: expected,
-            new: pid,
-        }),
-    }
-}
 
 /// Polls `done` every `poll` until it holds or `budget` elapses.
 fn wait_until(mut done: impl FnMut() -> bool, budget: Duration, poll: Duration) -> bool {
@@ -614,8 +562,6 @@ impl Capture {
             "invalid ETW session name"
         );
         let display_name = name;
-        let dns_pid = service_process_id(DNS_SERVICE)
-            .context("resolve the DNS Server service process ID for the PID filter")?;
         let mut name: Vec<u16> = name.encode_utf16().collect();
         // A backstop only. The command line and `PipelineConfig::validate` accept
         // just 1 to 128 characters from `[A-Za-z0-9_.-]`, not starting with a
@@ -653,23 +599,18 @@ impl Capture {
             worker: None,
             counters,
             keywords,
-            dns_pid,
         };
         // The payloads, descriptors, and parameters are locals that outlive the
-        // synchronous EnableTraceEx2 call below. Two filters: event IDs and the
-        // DNS Server process ID.
+        // synchronous EnableTraceEx2 call below. One filter: the event IDs. There
+        // is no process ID filter, so events from any process are delivered.
         let filter_payload = EventIdFilterPayload::new();
-        let pid_payload = PidFilterPayload::new(dns_pid);
-        let mut descriptors = [
-            event_id_descriptor(&filter_payload),
-            pid_descriptor(&pid_payload),
-        ];
-        let parameters = enable_parameters(descriptors.as_mut_ptr(), 2);
+        let mut descriptors = enable_filter_descriptors(&filter_payload);
+        let parameters = enable_parameters(descriptors.as_mut_ptr(), 1);
         // SAFETY: The successful StartTrace call owns this handle. The provider GUID
-        // is a constant GUID. `parameters` points at the two-element `descriptors`
-        // array, whose entries point at `filter_payload` and `pid_payload`; all of
-        // them are stack locals that remain alive and unmoved for this synchronous
-        // call, and ETW copies them before returning.
+        // is a constant GUID. `parameters` points at the one-element `descriptors`
+        // array, whose entry points at `filter_payload`; both are stack locals that
+        // remain alive and unmoved for this synchronous call, and ETW copies them
+        // before returning.
         let enable_status = unsafe {
             EnableTraceEx2(
                 session,
@@ -684,11 +625,7 @@ impl Capture {
         };
         check_enable_status(enable_status)?;
 
-        let mut context = Box::new(CallbackContext::new(
-            pool,
-            Arc::clone(&capture.counters),
-            dns_pid,
-        ));
+        let mut context = Box::new(CallbackContext::new(pool, Arc::clone(&capture.counters)));
         let mut logfile = EVENT_TRACE_LOGFILEW {
             LoggerName: name.as_mut_ptr(),
             Context: (&raw mut *context).cast(),
@@ -776,13 +713,6 @@ impl EventProducer for Capture {
         } else {
             Err(Win32Status(status))
         }
-    }
-
-    /// Re-reads the DNS Server service process ID. Returns the change when the
-    /// service stopped or restarted, which invalidates the PID filter. A failed
-    /// query is inconclusive and returns `None`.
-    fn target_change(&self) -> Option<TargetChange> {
-        classify_target(self.dns_pid, service_process_id_raw(DNS_SERVICE).ok())
     }
 
     /// Stops collection, waits for native callbacks to end, and reports loss.
@@ -928,27 +858,11 @@ fn event_id_descriptor(payload: &EventIdFilterPayload) -> EVENT_FILTER_DESCRIPTO
     }
 }
 
-/// An `EVENT_FILTER_TYPE_PID` payload: a packed array of process IDs (ETW allows
-/// at most 8; this program supplies one).
-#[repr(C)]
-struct PidFilterPayload {
-    pids: [u32; 1],
-}
-
-impl PidFilterPayload {
-    const fn new(pid: u32) -> Self {
-        Self { pids: [pid] }
-    }
-}
-
-/// Describes `payload` as a process-ID filter; the caller keeps `payload` alive.
-fn pid_descriptor(payload: &PidFilterPayload) -> EVENT_FILTER_DESCRIPTOR {
-    EVENT_FILTER_DESCRIPTOR {
-        Ptr: std::ptr::from_ref(payload) as u64,
-        #[expect(clippy::cast_possible_truncation, reason = "the payload is 4 bytes")]
-        Size: size_of::<PidFilterPayload>() as u32,
-        Type: EVENT_FILTER_TYPE_PID,
-    }
+/// The filter descriptors passed to `EnableTraceEx2`: the event-ID filter only.
+/// No process ID filter is applied, so a restart of the DNS Server process needs
+/// no change to the session. The caller keeps `payload` alive.
+fn enable_filter_descriptors(payload: &EventIdFilterPayload) -> [EVENT_FILTER_DESCRIPTOR; 1] {
+    [event_id_descriptor(payload)]
 }
 
 /// Builds version 2 enable parameters carrying `count` filter descriptors.

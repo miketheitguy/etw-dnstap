@@ -398,7 +398,7 @@ fn copies_payload_and_extended_data_before_callback_returns() -> Result<()> {
     Ok(())
 }
 
-/// The process ID the test callback context accepts.
+/// The process ID the test records carry. Intake accepts any process ID.
 const TEST_PID: u32 = 4242;
 
 struct Fixture {
@@ -410,7 +410,7 @@ struct Fixture {
 impl Fixture {
     fn new(capacity: usize, jumbo: usize) -> Self {
         let pool = PoolManager::new(capacity, jumbo).expect("test pool initializes");
-        let mut context = Box::new(CallbackContext::new(pool, Arc::default(), TEST_PID));
+        let mut context = Box::new(CallbackContext::new(pool, Arc::default()));
         let (sender, receive) = crossbeam_channel::bounded(capacity);
         install_producer(&context, sender, pool, std::thread::current());
         let record = EVENT_RECORD {
@@ -888,33 +888,17 @@ fn synthetic_pooled_intake_benchmark() {
 }
 
 #[test]
-fn pid_allowed_matches_only_the_expected_process() {
-    assert!(pid_allowed(7, 7));
-    assert!(!pid_allowed(7, 8));
-    assert!(!pid_allowed(7, 0));
-}
-
-#[test]
-fn callback_rejects_records_from_other_processes_without_allocating() {
-    let mut fixture = Fixture::new(2, 0);
-    assert_eq!(fixture.context.expected_pid, TEST_PID);
-    fixture.record.EventHeader.ProcessId = TEST_PID;
-    assert_no_allocations(|| fixture.invoke());
-    fixture.record.EventHeader.ProcessId = 99;
-    assert_no_allocations(|| fixture.invoke());
-    assert_no_allocations(|| fixture.invoke());
+fn callback_accepts_a_record_whatever_its_process_id() {
+    let mut fixture = Fixture::new(8, 0);
+    for pid in [TEST_PID, 0, 4, 99, u32::MAX] {
+        fixture.record.EventHeader.ProcessId = pid;
+        assert_no_allocations(|| fixture.invoke());
+    }
     let counters = &fixture.context.counters;
-    assert_eq!(counters.received.load(Ordering::Relaxed), 1);
-    assert_eq!(counters.foreign_pid_rejected.load(Ordering::Relaxed), 2);
+    assert_eq!(counters.received.load(Ordering::Relaxed), 5);
     assert_eq!(counters.callback_errors.load(Ordering::Relaxed), 0);
-    assert_eq!(fixture.receive.len(), 1, "only the genuine record queued");
-}
-
-#[test]
-fn new_stores_the_required_expected_pid() {
-    let pool = PoolManager::new(1, 0).expect("test pool");
-    let context = CallbackContext::new(pool, Arc::default(), 5);
-    assert_eq!(context.expected_pid, 5);
+    assert_eq!(counters.intake_dropped.load(Ordering::Relaxed), 0);
+    assert_eq!(fixture.receive.len(), 5);
 }
 
 #[test]

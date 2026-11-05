@@ -122,19 +122,19 @@ its query arrives as 256. See the [README message mapping](../../README.md#what-
   and DNS over HTTPS (597 to 599). They cost `dns.exe` CPU but never reach the service. The
   callback repeats the event-ID check as defense in depth.
 
-### DNS process filter
+### No process filter
 
-The subscription also filters to the running `DNS` service by process ID
-(`EVENT_FILTER_TYPE_PID`). A mismatch counts in `foreign_pid_rejected`, not `received`.
+The subscription has no process ID filter. It accepts Microsoft-Windows-DNSServer events from
+any process, so capture follows a DNS Server restart with no action: the new `dns.exe` process
+is captured as soon as it writes events. The service does not read the DNS Server process ID, and
+a DNS Server restart does not stop EtwDnstap.
 
-- Startup fails if the `DNS` service is not running.
-- Every 5 seconds the service rereads the process ID. If it changes, or the DNS service stops,
-  EtwDnstap stops with a service failure. SCM restarts it under the [recovery
-  policy](install.md#5-configure-scm-recovery). Capture does not resume for a restarted DNS Server
-  until EtwDnstap restarts. Expect a gap of at least the detection interval plus the SCM restart
-  delay.
-- The project has not verified on a live host that the ETW-side filter keeps other processes'
-  records out. A nonzero `foreign_pid_rejected` shows that they reached the callback.
+- The service depends on the `DNS` service, so a normal stop of the DNS Server also stops
+  EtwDnstap. A DNS Server restart does not stop EtwDnstap.
+- Starting EtwDnstap does not check that `DNS` is running. The event-ID filter and the keyword
+  masks are the only filters.
+- With no process ID check, any local process that can register the provider GUID can write
+  events that the service captures. See [SECURITY.md](../../SECURITY.md).
 
 ## Message and transport limits
 
