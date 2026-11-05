@@ -1,38 +1,20 @@
 # Performance lab scripts
 
-These scripts drive the etw-dnstap lab. The lab has three parts:
+These scripts drive the etw-dnstap lab: Hyper-V guest `DNSTap-WS2025` (the forwarder under test), Ubuntu receiver `DNSTap-Ubuntu2604`, and a DNS client on the Hyper-V host. Evidence goes under `target/performance/`.
 
-- A Windows Server VM, Hyper-V guest `DNSTap-WS2025`. It is the forwarder under
-  test and sends DNSTAP to the receiver.
-- A receiver on an Ubuntu VM, `DNSTap-Ubuntu2604`.
-- A DNS client on the Hyper-V host that generates load.
-
-The scripts create evidence under `target/performance/`.
-
-**These scripts change real VMs.** Some format a disk, remove DNS zones, replace the installed
-service binary or detach virtual disks. Read the [destructive steps](#destructive-steps) first.
-Nothing here is meant to be run on a machine that is not the dedicated lab host.
+**These scripts change real VMs.** Some format a disk, remove DNS zones, replace the installed service binary, or detach virtual disks. Read the [destructive steps](#destructive-steps) first. Run them only on the dedicated lab host.
 
 ## Prerequisites
 
-- A Windows host with the **Hyper-V** role and PowerShell module, run from an elevated
-  **Windows PowerShell 5.1** session. All `.ps1` files declare `#requires -Version 5.1`. The Hyper-V
-  module loads natively only in Windows PowerShell. PowerShell 7 reaches it through the implicit
-  compatibility session. That session returns deserialized VM objects, which break
-  `Remove-VMHardDiskDrive` and the identity checks. The scripts also parse under PowerShell 7.
-- The two VMs, with the names and GUIDs in [`lab.json`](lab.json). Every script verifies the VM GUID
-  before touching anything. The Windows guest has the DNS Server role, the `EtwDnstap` service,
-  and WPR/logman. The Ubuntu guest has `dnscollector`, `dnsmasq`, `nft`, `tcpdump` and `python3`.
+- Windows host with the **Hyper-V** role, in an elevated **Windows PowerShell 5.1** session. PowerShell 7 returns deserialized VM objects that break `Remove-VMHardDiskDrive` and the identity checks.
+- The two VMs, with the names and GUIDs in [`lab.json`](lab.json). Every script verifies the VM GUID first. The Windows guest needs the DNS Server role, the `EtwDnstap` service, and WPR/logman. The Ubuntu guest needs `dnscollector`, `dnsmasq`, `nft`, `tcpdump` and `python3`.
 - Windows Performance Toolkit (`xperf.exe`, `wpaexporter.exe`) on the host for the `export-*` scripts.
-- `tools/dns-stress` built for `x86_64-pc-windows-msvc` (the client the host runs).
-- Python 3.11+ on the host (`pip install -r requirements.txt`). Guest-side Python uses the Ubuntu
-  system `python3` and the standard library only. The archived `archive/ubuntu-service-stop-config.py`
-  also needs PyYAML on the guest (`apt install python3-yaml`).
+- `tools/dns-stress` built for `x86_64-pc-windows-msvc`.
+- Python 3.11+ on the host (`pip install -r requirements.txt`). Guest Python uses the system `python3` and the standard library. `archive/ubuntu-service-stop-config.py` also needs `apt install python3-yaml`.
 
 ### Guest administrator credential (`administrator.clixml`)
 
-PowerShell Direct needs a credential. Create it once, as the same Windows user that runs the scripts
-(the file is DPAPI-protected and not portable between users or machines):
+PowerShell Direct needs a credential. Create it once, as the user that runs the scripts (DPAPI-protected, per user and machine):
 
 ```powershell
 $path = 'target/lab-windows/private/administrator.clixml'
@@ -40,168 +22,107 @@ New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
 Get-Credential Administrator | Export-Clixml -LiteralPath $path
 ```
 
-`target/` is git-ignored. If the file is missing, `Get-LabSession` stops with these same instructions.
-
 ### SSH to the Ubuntu VM
 
-`measure-ubuntu-clock.py` and the Ubuntu controllers use `ssh -F target/lab-ubuntu/ssh_config dnstap-ubuntu`
-(both values come from `lab.json`). Create `target/lab-ubuntu/ssh_config` with a `Host dnstap-ubuntu`
-entry (`HostName`, `User dnstaplab`, `IdentityFile`, `IdentitiesOnly yes`, `UserKnownHostsFile` pointing
-at a lab-only known_hosts file). **Check that it does not contain `StrictHostKeyChecking no`**.
-Use `StrictHostKeyChecking yes` (or `accept-new` for the first connection only) and pin the host key.
+The Ubuntu controllers use `ssh -F target/lab-ubuntu/ssh_config dnstap-ubuntu`. Create that file with a `Host dnstap-ubuntu` entry: `HostName`, `User dnstaplab`, `IdentityFile`, `IdentitiesOnly yes`, and `UserKnownHostsFile` set to a lab-only file. Set `StrictHostKeyChecking yes` (or `accept-new` for the first connection) and pin the host key.
 
 ### Lab constants
 
-All shared constants live in [`lab.json`](lab.json): VM names/GUIDs, receiver `172.27.215.60:6000`,
-DNS server `172.27.215.163`, install paths, `EtwDnstap-Lab` session name, zones, SSH alias. It is read by
-`LabCommon.psm1` (`Get-LabConfig`), by [`lab_config.py`](lab_config.py) and, as plain data, by the shell
-scripts. Change a value there, not in the scripts. Per-campaign values (campaign IDs, binary hashes, disk
-identity) are parameters, never baked in.
+[`lab.json`](lab.json) holds VM names and GUIDs, receiver `172.27.215.60:6000`, DNS server `172.27.215.163`, install paths, the `EtwDnstap-Lab` session name, zones, and the SSH alias. `LabCommon.psm1`, [`lab_config.py`](lab_config.py), and the shell scripts read it. Per-campaign values (campaign IDs, binary hashes, disk identity) are parameters.
 
 ## Run order
 
-1. **Workload (host, once):** `Get-DnsWorkloadSource.ps1` (downloads the pinned SecLists names from GitHub, then
-   runs `New-DnsWorkload.ps1`). If you only need to regenerate the files, run `New-DnsWorkload.ps1` alone.
-2. **Inspect:** run `windows-inventory.ps1`, and optionally `windows-smoke-queries.ps1`.
-3. **Ubuntu fixture (guest, root):** copy `lab.json`, `lab_config.py`, `monitor-ubuntu-workload.py`,
-   `tune-upstream-buffer.py` and `rec-names.txt` next to the setup script, then
-   `sudo ./setup-ubuntu-workload.sh`. It first installs everything root will run into the root-owned
-   `/usr/local/lib/etw-dnstap-lab` (dirs 0755, files 0644/0755). Root never executes files from the home
-   directory. Undo with `sudo ./restore-ubuntu-workload.sh`.
-4. **Optional separate data disk:** `ubuntu-performance-data-disk.ps1 -Action Attach -CampaignId <id> -WhatIf`
-   (host), then `prepare-ubuntu-data-disk.py` (guest, dry run first), later `unmount-ubuntu-data-disk.py`
-   and `ubuntu-performance-data-disk.ps1 -Action Detach`.
-5. **Parser-ramp campaign:** `windows-parser-campaign.ps1` (`Inventory`, `Backup`, `Deploy`, `Prepare`),
-   Ubuntu `ubuntu-parser-ramp-upstream.py` / `ubuntu-parser-ramp-control.py`, one
-   `windows-parser-stage.ps1` per stage, then `windows-parser-campaign.ps1 -Action Restore`/`Fetch`,
-   `windows-final-proof.ps1`, and the verify/reconcile/report scripts below.
-   Optional, any time the service is Running or Stopped: `windows-startup-capacity.ps1 -WhatIf`, then without `-WhatIf` to
-   check that the service reaches Running at `--capacity 262144`.
-6. **Per-run helpers:** `windows-run-client.ps1` (load), `windows-capture.ps1` (counters/WPR/clock).
-7. **Analysis (host, offline):** `analyze-host.py`, `analyze-windows.py`, `summarize-pooled-broad.py`, `summarize-pooled-native.py`,
-   `summarize-pooled-stacks.py`, `summarize-pooled-stage.py`, `summarize-pooled-trace-gates.py`, `export-cpu-precise.ps1`,
-   `export-pooled-evidence.ps1`, `export-pooled-graph-data.py`, `build-parser-ramp-report.py`, `build-pooled-report.py`,
-   `plot-pooled-wpr.py`, `aggregate-cpu-precise.py`. The full list is under [Python](#python).
+1. **Workload (host, once):** `Get-DnsWorkloadSource.ps1` downloads the pinned SecLists names and runs `New-DnsWorkload.ps1`.
+2. **Inspect:** `windows-inventory.ps1`, optionally `windows-smoke-queries.ps1`.
+3. **Ubuntu fixture (guest, root):** copy `lab.json`, `lab_config.py`, `monitor-ubuntu-workload.py`, `tune-upstream-buffer.py` and `rec-names.txt` next to the script, then `sudo ./setup-ubuntu-workload.sh`. It installs into the root-owned `/usr/local/lib/etw-dnstap-lab`. Undo with `sudo ./restore-ubuntu-workload.sh`.
+4. **Optional data disk:** `ubuntu-performance-data-disk.ps1 -Action Attach -CampaignId <id> -WhatIf` (host), then `prepare-ubuntu-data-disk.py` (guest, dry run first). Later: `unmount-ubuntu-data-disk.py`, then `ubuntu-performance-data-disk.ps1 -Action Detach`.
+5. **Parser-ramp campaign:** `windows-parser-campaign.ps1` (`Inventory`, `Backup`, `Deploy`, `Prepare`), `ubuntu-parser-ramp-upstream.py` and `ubuntu-parser-ramp-control.py`, one `windows-parser-stage.ps1` per stage, then `windows-parser-campaign.ps1 -Action Restore`/`Fetch`, `windows-final-proof.ps1`, and the verify, reconcile, and report scripts. Optional: `windows-startup-capacity.ps1 -WhatIf`, then without `-WhatIf`, to check that the service reaches Running at `--capacity 262144`.
+6. **Per-run helpers:** `windows-run-client.ps1` (load), `windows-capture.ps1` (counters, WPR, clock).
+7. **Analysis (host, offline):** see [Python](#python).
 
-The service-metrics harnesses are archived, because the service has no JSONL metrics writer. They are in
-[`archive/`](archive/): `windows-1000qps-campaign.ps1`, `windows-service-campaign.ps1`, `windows-pooled-stage.ps1`,
-`windows-pooled-wpr.ps1` and `windows-control.ps1`. Their `Backup/Prepare/Deploy/Start` actions are disabled. The
-cleanup/evidence actions still work. Also archived (Python): the service-stop tools `ubuntu-service-stop-config.py` and
-`ubuntu-service-stop-pcap.py`, `count-parser-ramp-diagnostic.py`, and the JSONL-metrics analyzers `analyze-ring-fix-cpu.py`,
-`analyze-metrics-phases.py`, `analyze-send-window.py` and `summarize-receiver-results.py` (tests: `archive/test_archived_analyzers.py`).
+Archived harnesses live in [`archive/`](archive/). Their `Backup/Prepare/Deploy/Start` actions are disabled. Cleanup and evidence actions work.
 
 ## Destructive steps
 
-| Script | What it changes | Guard |
+| Script | Changes | Guard |
 | --- | --- | --- |
-| `prepare-ubuntu-data-disk.py` | `mkfs.ext4` on a disk, mounts it, rewrites the collector drop-in | Dry run by default. Use `--apply` to act. Explicit `--device`/`--mount`. Checks size, serial/WWN, label, not mounted, not the root disk, no partitions/filesystem, host receipt GUID/VHDX/slot. Aborts if `wipefs` sees a signature unless `--wipe-existing-signatures` |
-| `unmount-ubuntu-data-disk.py` | `umount` of the data filesystem | Dry run by default. Use `--apply` to act. Re-verifies UUID, serial/WWN, label, major:minor and open descriptors |
-| `remove-verified-guest-archives.py` | Deletes guest archive duplicates | Dry run by default. Use `--apply` to act. Requires host hash/count proofs and a campaign-scoped directory |
-| `ubuntu-performance-data-disk.ps1` | Creates/attaches a VHDX, or detaches it (VHDX is kept) | `SupportsShouldProcess` (`-WhatIf`/`-Confirm`, `ConfirmImpact High`). GUID, OS-disk and free-space checks |
-| zone removal (`Remove-LabOwnedZone`) | `Remove-DnsServerZone -Force` | Only for zones listed in the campaign's `owned-zones.txt`. Anything else is refused |
-| `windows-*campaign*.ps1` Deploy/Restore | Replaces the installed service binary / SCM command line | Hash and ACL checks. Backup refuses to reuse a campaign ID |
-| `windows-startup-capacity.ps1` | Changes the installed service's SCM command line (`--capacity`) and optionally the installed binary for the duration of the check, starts and stops the service | `SupportsShouldProcess` (`-WhatIf` runs the preflight only). Hash and ACL (SDDL) checks. Restore in `finally`, compared against the preflight |
-| `setup-ubuntu-workload.sh` | Edits the collector config, installs units and an nft table | Root only, refuses if a backup/drop-in/log already exists |
+| `prepare-ubuntu-data-disk.py` | `mkfs.ext4`, mount, collector drop-in | Dry run unless `--apply`. Explicit `--device`/`--mount`. Checks size, serial/WWN, label, mount state, root disk, partitions, host receipt. `--wipe-existing-signatures` to override `wipefs` |
+| `unmount-ubuntu-data-disk.py` | `umount` of the data filesystem | Dry run unless `--apply`. Re-verifies UUID, serial/WWN, label, open descriptors |
+| `remove-verified-guest-archives.py` | Deletes guest archive duplicates | Dry run unless `--apply`. Needs host hash/count proofs |
+| `ubuntu-performance-data-disk.ps1` | Creates, attaches, or detaches a VHDX | `-WhatIf`/`-Confirm`. GUID, OS-disk, free-space checks |
+| `Remove-LabOwnedZone` | `Remove-DnsServerZone -Force` | Only zones in the campaign's `owned-zones.txt` |
+| `windows-*campaign*.ps1` Deploy/Restore | Replaces the service binary and SCM command line | Hash and ACL checks. Backup refuses to reuse a campaign ID |
+| `windows-startup-capacity.ps1` | Changes the SCM command line (`--capacity`) and optionally the binary, starts and stops the service | `-WhatIf` runs the preflight only. Hash and SDDL checks. Restore in `finally` |
+| `setup-ubuntu-workload.sh` | Edits collector config, installs units and an nft table | Root only. Refuses if a backup, drop-in, or log exists |
 
-Always run the Python destructive scripts without `--apply` first and read the plan.
+Run Python destructive scripts without `--apply` first and read the plan.
 
 ## Receiver STOP/FINISH check
 
-At a requested stop the service sends a Frame Streams STOP and the receiver answers FINISH. A stop whose
-STOP/FINISH does not complete does not fail the service: it exits with code 0, logs nothing and does not
-count in `output_errors`. The SCM state and exit code must be Stopped and 0, but they do not
-prove FINISH. `windows-parser-stage.ps1` therefore asks the receiver, through `receiver_stop_finish.py`
-and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
+At a requested stop the service sends a Frame Streams STOP and the receiver answers FINISH. The service exits 0 either way, so `windows-parser-stage.ps1` asks the receiver through `receiver_stop_finish.py` and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
 
-- The check runs `sudo -n tcpdump` over ssh on the receiver, only around the stop. The filter keeps TCP port
-  6000 packets with a 1 to 16 byte payload (the 12-byte STOP and FINISH control frames) and FIN/RST packets.
-  Text goes to stdout and is stored under `stages/<run>/receiver-stop/`. It writes no pcap and no stream data
-  on the receiver, in keeping with the collector output going to null. Print the exact command with
-  `python -I scripts/performance/receiver_stop_finish.py --print-command`.
-- A preflight (`Assert-LabReceiverStopCaptureReady`) needs `python` on the host and `tcpdump` plus
-  passwordless sudo on the receiver. It fails before the load starts when either is missing.
-- The verdict is `receiver_stop_finish`: `confirmed` (STOP from the service, then FINISH from the receiver on
-  the same connection), `not-seen`, or `not-checked` (no capture). It is in
-  `completion.json`, `stage-summary.json`, the parser-ramp ledger and both reports. `not-seen` never fails the
-  stop, but it fails the strict stage pass. `not-checked` never fails anything.
-- `windows-startup-capacity.ps1` runs without a receiver and records `not-checked`.
-- Offline: `python -I scripts/performance/receiver_stop_finish.py target/performance/<id>/stages/<run>`. Test:
-  `python -I scripts/performance/test_receiver_stop_finish.py`.
+- It runs `sudo -n tcpdump` over ssh on the receiver around the stop. The filter keeps TCP port 6000 packets with a 1 to 16 byte payload and FIN/RST packets. Output goes to `stages/<run>/receiver-stop/`. Print the command with `python -I scripts/performance/receiver_stop_finish.py --print-command`.
+- `Assert-LabReceiverStopCaptureReady` needs `python` on the host, and `tcpdump` with passwordless sudo on the receiver.
+- Verdict `receiver_stop_finish`: `confirmed` (STOP, then FINISH on the same connection), `not-seen` (fails the strict stage pass), or `not-checked` (no capture; `windows-startup-capacity.ps1` records it). It appears in `completion.json`, `stage-summary.json`, the ledger, and both reports.
+- Offline: `python -I scripts/performance/receiver_stop_finish.py target/performance/<id>/stages/<run>`. Test: `python -I scripts/performance/test_receiver_stop_finish.py`.
 
 ## Campaign IDs
 
-Campaign and run IDs are never hard coded. `-CampaignId` (1-64 letters, digits, `_`, `-`) is mandatory
-for the campaign scripts. `Backup` and `Prepare` refuse to start when the host evidence directory or the
-guest campaign directory already exists. A run is therefore never overwritten.
-
-Fetches verify every file's SHA-256 after `Copy-Item -FromSession`.
-`windows-service-campaign.ps1` and the archived WPR helper keep an identical file and refuse to
-replace a different one. The control, capture, and parser fetches refresh files that legitimately
-change. Those files are still hash-verified.
+`-CampaignId` (1-64 letters, digits, `_`, `-`) is mandatory for the campaign scripts. `Backup` and `Prepare` refuse to start when the host evidence directory or guest campaign directory exists. Fetches verify each file's SHA-256.
 
 ## Script reference
 
 ### PowerShell (host)
 
-| Script | Purpose | Inputs | Outputs |
-| --- | --- | --- | --- |
-| `LabCommon.psm1` | Shared module: config, VM/session, `Invoke-LabGuest`, hash-verified `Receive-LabFile`, `Initialize-LabDnsZones`, argument helpers (`Join-LabArguments`, `Get-LabServiceCommandLine`) | `lab.json` | n/a |
-| `Get-DnsWorkloadSource.ps1` | Download pinned SecLists names and run `New-DnsWorkload.ps1` | `-OutputDirectory` | `target/performance/workload/*` |
-| `New-DnsWorkload.ps1` | Build `auth-names.txt`, `rec-names.txt`, zone file, provenance | `source-names.txt`, `source-commit.json` | workload files (UTF-8, no BOM) |
-| `windows-inventory.ps1` | Read-only guest inventory | none | JSON on stdout |
-| `windows-smoke-queries.ps1` | Resolve smoke names, check TTLs and record count | `-ProofName`, `-EvidenceRoot` | `<ProofName>.json` |
-| `windows-final-proof.ps1` | Prove service/zones/answers are back to normal | `-EvidenceRoot` | `final-query-proof.json` |
-| `windows-capture.ps1` | Counter collector, bounded WPR, clock bounds | `-Action`, `-RunId`, `-EvidenceRoot` | `<EvidenceRoot>/<RunId>/*` |
-| `windows-run-client.ps1` | Run `dns-stress` and sample it | `-Mode`, `-RunId`, `-Qps`, `-Duration` | `invocation.json`, `host-process.csv`, `exit.json` |
-| `windows-startup-capacity.ps1` | Startup check at the maximum `--capacity`. Temporarily appends `--capacity` to the installed service's `PathName`, optionally replaces the installed binary (`-CandidatePath`, `-ExpectedHash`), starts the service, samples the SCM status (state, checkpoint, wait hint) until `RUNNING`, stops it, and restores the path, binary, hash and SDDL in a `finally` block. Supports `-WhatIf` (preflight only, nothing on the guest changes). The receiver is not needed. It is the only script under `scripts/performance/` that changes the SCM command line and supports `-WhatIf`. Unlike the campaign scripts it needs no campaign ID | `-Capacity`, `-CandidatePath`, `-ExpectedHash`, `-ProofName`, `-EvidenceRoot` | `<EvidenceRoot>/<ProofName>.json` |
-| `windows-parser-campaign.ps1` | Parser-ramp Backup/Deploy/Prepare/Start/Stop/Restore/Fetch | `-Action`, `-CampaignId`, `-ExpectedHash`, `-CandidatePath`, `-UpstreamAddress` | receipts + fetched files under `target/performance/<id>/windows` |
-| `windows-parser-stage.ps1` | One isolated parser stage with guards | `-Mode`, `-CampaignId`, `-RunId`, `-Qps`, `-Duration`, `-ReceiverReadyReceipt`, `-ExpectedHash`, `-MatrixApproved` | `target/performance/<id>/stages/<run>` |
-| `ubuntu-performance-data-disk.ps1` | Attach/detach the temporary VHDX | `-Action`, `-CampaignId` | `temporary-data-disk-host.json` / `-detached.json` |
-| `export-cpu-precise.ps1`, `export-pooled-evidence.ps1` | Run `xperf`/`wpaexporter` on a trace, recording every call | `-TracePath`, window, output dir | exported tables + receipts (never overwritten) |
+| Script | Purpose | Inputs |
+| --- | --- | --- |
+| `LabCommon.psm1` | Shared module: config, sessions, `Invoke-LabGuest`, `Receive-LabFile`, `Initialize-LabDnsZones` | `lab.json` |
+| `Get-DnsWorkloadSource.ps1` | Download names, run `New-DnsWorkload.ps1` | `-OutputDirectory` |
+| `New-DnsWorkload.ps1` | Build name lists, zone file, provenance | `source-names.txt`, `source-commit.json` |
+| `windows-inventory.ps1` | Read-only guest inventory | none |
+| `windows-smoke-queries.ps1` | Resolve smoke names, check TTLs | `-ProofName`, `-EvidenceRoot` |
+| `windows-final-proof.ps1` | Prove service and zones are back to normal | `-EvidenceRoot` |
+| `windows-capture.ps1` | Counters, bounded WPR, clock bounds | `-Action`, `-RunId`, `-EvidenceRoot` |
+| `windows-run-client.ps1` | Run and sample `dns-stress` | `-Mode`, `-RunId`, `-Qps`, `-Duration` |
+| `windows-startup-capacity.ps1` | Startup check at maximum `--capacity` (no receiver or campaign ID needed) | `-Capacity`, `-CandidatePath`, `-ExpectedHash`, `-ProofName`, `-EvidenceRoot` |
+| `windows-parser-campaign.ps1` | Backup/Deploy/Prepare/Start/Stop/Restore/Fetch | `-Action`, `-CampaignId`, `-ExpectedHash`, `-CandidatePath`, `-UpstreamAddress` |
+| `windows-parser-stage.ps1` | One isolated parser stage | `-Mode`, `-CampaignId`, `-RunId`, `-Qps`, `-Duration`, `-ReceiverReadyReceipt`, `-ExpectedHash`, `-MatrixApproved` |
+| `ubuntu-performance-data-disk.ps1` | Attach or detach the temporary VHDX | `-Action`, `-CampaignId` |
+| `export-cpu-precise.ps1`, `export-pooled-evidence.ps1` | Run `xperf`/`wpaexporter` on a trace | `-TracePath`, window, output dir |
+
+`windows-startup-capacity.ps1` appends `--capacity` to the service `PathName`, can replace the binary (`-CandidatePath`, `-ExpectedHash`), samples SCM status until `RUNNING`, then restores path, binary, hash and SDDL in `finally`. It writes `<EvidenceRoot>/<ProofName>.json`.
 
 ### Shell (guest, root)
 
-| Script | Purpose |
-| --- | --- |
-| `setup-ubuntu-workload.sh` | Install the upstream dnsmasq fixture, nft counters, collector telemetry and monitor (root-owned copies under `/usr/local/lib/etw-dnstap-lab`) |
-| `restore-ubuntu-workload.sh` | Remove the fixture and restore the saved collector config |
+- `setup-ubuntu-workload.sh`: install the dnsmasq fixture, nft counters, collector telemetry and monitor.
+- `restore-ubuntu-workload.sh`: remove the fixture and restore the collector config.
 
 ### Python
 
-Guest-side (Ubuntu, root): `prepare-ubuntu-data-disk.py`, `unmount-ubuntu-data-disk.py`,
-`remove-verified-guest-archives.py`, `archive-ubuntu-run.py`, `ubuntu-storage-budget.py`,
-`tune-upstream-buffer.py`, `monitor-ubuntu-workload.py`, `receiver-evidence.py`,
-`summarize-ubuntu-workload.py`, `ubuntu-parser-ramp-control.py`, `ubuntu-parser-ramp-upstream.py`. Copy them together with `lab.json`,
-`lab_config.py`, `guest_common.py`, `parser_ramp_receipts.py` to one directory on the guest (convert
-line endings if your checkout uses CRLF, but `.gitattributes` keeps `*.sh` as LF). When running as root, run
-them from a root-owned directory, not from the home directory.
+Guest-side (root): `prepare-ubuntu-data-disk.py`, `unmount-ubuntu-data-disk.py`, `remove-verified-guest-archives.py`, `archive-ubuntu-run.py`, `ubuntu-storage-budget.py`, `tune-upstream-buffer.py`, `monitor-ubuntu-workload.py`, `receiver-evidence.py`, `summarize-ubuntu-workload.py`, `ubuntu-parser-ramp-control.py`, `ubuntu-parser-ramp-upstream.py`. Copy them with `lab.json`, `lab_config.py`, `guest_common.py`, `parser_ramp_receipts.py` to one root-owned directory. `.gitattributes` keeps `*.sh` as LF.
 
-Host-side analysis (each has argparse `--help` and a module docstring with its purpose):
+Host-side (each has `--help`):
 
-- Per-run analysis: `analyze-host.py`, `analyze-windows.py`, `aggregate-cpu-precise.py`, `measure-ubuntu-clock.py`.
-- Pooled-run summaries: `summarize-pooled-broad.py`, `summarize-pooled-native.py`, `summarize-pooled-stacks.py`,
-  `summarize-pooled-stage.py`, `summarize-pooled-trace-gates.py`, `check-pooled-summary-gates.py`,
-  `audit-pooled-management.py`, `build-pooled-report.py`, `export-pooled-graph-data.py`, `plot-pooled-wpr.py`.
-- Run graphs: `plot-tier-runs.py` draws one PNG per lab run (CPU, loss per second, queue fill) and one summary PNG per
-  QPS tier. Input is one folder per run with `run.json` and `timeseries.csv`. It needs matplotlib:
-  `python -m venv target/plot-venv`, `target/plot-venv/Scripts/pip install -r scripts/performance/requirements.txt`, then
-  `target/plot-venv/Scripts/python scripts/performance/plot-tier-runs.py --runs <runs-root> --out docs/assets/performance [--tier 10000]`.
-  Loss percent is lost events over events offered (events received plus `etw_lost`); `etw_buffers_lost` (buffers) and `spooled` (diverted) are drawn but not counted.
-  A run whose `run.json` has `"tier_summary": false` (for example a warning check with deliberately small settings) gets its run PNG but stays out of the tier PNG.
-  Test: `python -I scripts/performance/test_plot_tier_runs.py` with the same venv (fixture in `testdata/plot-tier-runs/`).
-- Parser-ramp campaign: `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `verify-parser-ramp-archive.py`.
+- Per run: `analyze-host.py`, `analyze-windows.py`, `aggregate-cpu-precise.py`, `measure-ubuntu-clock.py`.
+- Pooled runs: `summarize-pooled-broad.py`, `-native.py`, `-stacks.py`, `-stage.py`, `-trace-gates.py`, `check-pooled-summary-gates.py`, `audit-pooled-management.py`, `build-pooled-report.py`, `export-pooled-graph-data.py`, `plot-pooled-wpr.py`.
+- Parser ramp: `build-parser-ramp-report.py`, `reconcile-parser-ramp.py`, `verify-parser-ramp-archive.py`.
 - Receiver archive: `count-receiver-archive.py`, `verify-receiver-archive.py`.
-- Pooled intake benchmark: `pooled_intake_run.py` runs the private Rust callback benchmark. It, `plot-pooled-wpr.py` and
-  `export-pooled-graph-data.py` hash their own source into provenance records, so editing them changes the recorded hashes.
-- Shared code: `metrics_ledger.py` (service ledger validation), `perf_common.py` (JSON/hash/process-name/distribution
-  helpers shared by the summarizers), `parser_ramp_receipts.py`, `lab_config.py`, `guest_common.py`.
+- `pooled_intake_run.py` runs the Rust callback benchmark. It, `plot-pooled-wpr.py` and `export-pooled-graph-data.py` hash their own source into provenance records.
+- Shared: `metrics_ledger.py`, `perf_common.py`, `parser_ramp_receipts.py`, `lab_config.py`, `guest_common.py`.
+- `plot-tier-runs.py` draws a PNG per lab run and per QPS tier from folders holding `run.json` and `timeseries.csv`. Setup and run:
+
+```powershell
+python -m venv target/plot-venv
+target/plot-venv/Scripts/pip install -r scripts/performance/requirements.txt
+target/plot-venv/Scripts/python scripts/performance/plot-tier-runs.py --runs <runs-root> --out docs/assets/performance [--tier 10000]
+```
+
+Loss percent is lost events over events offered (received plus `etw_lost`). A run with `"tier_summary": false` in `run.json` stays out of the tier PNG. Test: `python -I scripts/performance/test_plot_tier_runs.py` in the same venv.
 
 ## Tests
 
-Static checks (no VM access):
-
 ```powershell
-# PowerShell parse check: prints one line per syntax error, and nothing when every file parses
+# Prints one line per syntax error
 Get-ChildItem scripts/performance -Recurse -Include *.ps1,*.psm1 | ForEach-Object {
     $errors = $null
     [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
@@ -214,10 +135,8 @@ bash -n scripts/performance/setup-ubuntu-workload.sh scripts/performance/restore
 python -I -m py_compile scripts/performance/*.py scripts/performance/archive/*.py
 python -I scripts/performance/test_metrics_ledger.py
 python -I scripts/performance/test_pooled_intake_run.py
-python -I scripts/performance/archive/test_archived_analyzers.py   # archived analyzers; also run by CI
+python -I scripts/performance/archive/test_archived_analyzers.py   # also run by CI
 ```
-
-The unit tests need no lab. Do not execute the lab scripts to "test" them.
 
 ## File moves and renames
 
@@ -229,15 +148,11 @@ The unit tests need no lab. Do not execute the lab scripts to "test" them.
 | `windows-1000qps-campaign.ps1` | `archive/windows-1000qps-campaign.ps1` |
 | `windows-pooled-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant Pooled` |
 | `windows-ring-fix-campaign.ps1` | `archive/windows-service-campaign.ps1 -Variant RingFix` |
-| `windows-pooled-stage.ps1`, `windows-pooled-wpr.ps1` | same names under `archive/` |
-| `windows-pooled-diagnostics.ps1`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | deleted (see git history) |
-| `windows-control.ps1` | `archive/windows-control.ps1` |
-| `ubuntu-service-stop-config.py`, `ubuntu-service-stop-pcap.py` | same names under `archive/` |
-| `count-parser-ramp-diagnostic.py` | `archive/count-parser-ramp-diagnostic.py` |
-| `analyze-ring-fix-cpu.py`, `analyze-metrics-phases.py`, `analyze-send-window.py`, `summarize-receiver-results.py` | same names under `archive/` (their tests moved from `test_metrics_ledger.py` to `archive/test_archived_analyzers.py`) |
+| `windows-pooled-stage.ps1`, `windows-pooled-wpr.ps1`, `windows-control.ps1` | same names under `archive/` |
+| `windows-pooled-diagnostics.ps1`, `-final-proof`, `-inventory`, `-process-check`, `-size-watch` | deleted |
+| `ubuntu-service-stop-config.py`, `ubuntu-service-stop-pcap.py`, `count-parser-ramp-diagnostic.py`, `analyze-ring-fix-cpu.py`, `analyze-metrics-phases.py`, `analyze-send-window.py`, `summarize-receiver-results.py` | same names under `archive/` |
 
 ## Known limits
 
-- The Ubuntu controllers (`ubuntu-parser-ramp-*.py` and the archived `ubuntu-service-stop-*.py`) still default `--campaign-id`
-  to their dated campaigns and embed that campaign's filesystem UUIDs. Pass the campaign explicitly.
-- `-ExpectedHash` is mandatory. `windows-service-campaign.ps1` Fetch does not overwrite a differing host file.
+- The Ubuntu controllers default `--campaign-id` to their dated campaigns and embed its filesystem UUIDs. Pass the campaign explicitly.
+- `-ExpectedHash` is mandatory. `windows-service-campaign.ps1` Fetch keeps a differing host file.

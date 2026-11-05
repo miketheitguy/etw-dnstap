@@ -466,7 +466,7 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   frame when the connection takes it, not when the service reads it. The spool holds up to
   about 9 MiB more on disk while it drains, and the size cap does not delete those
   segments. If `cursor.bin` cannot be written, replay goes on and a crash repeats more
-  frames. See [Slow receiver](docs/design/slow-receiver.md#b2-spool-rewind).
+  frames. See [Slow receiver](docs/design/slow-receiver.md#spool-rewind).
 - **Breaking.** The spool is on by default. An upgrade needs the spool folder
   and the re-registered counter manifest. See
   [Add the spool folder](docs/guide/upgrade.md#add-the-spool-folder). With a
