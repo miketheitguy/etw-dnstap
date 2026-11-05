@@ -49,6 +49,19 @@
                   Property="ProvisionUninstall"
                   Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Invoke-EtwDnstapProvisioning.ps1&quot; -Action Uninstall -SessionName &quot;[SESSION_NAME]&quot;" />
 
+    <!-- Major upgrade only, while the old product is removed: copy the WrappedKey value
+         out of the service's registry key. DeleteServices deletes that whole key, the
+         Parameters\SpoolKey subkey included. The next ProvisionInstall puts the value back. -->
+    <CustomAction Id="ProvisionPreserve"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="SetProvisionPreserve"
+                  Property="ProvisionPreserve"
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Invoke-EtwDnstapProvisioning.ps1&quot; -Action PreserveForUpgrade -SessionName &quot;[SESSION_NAME]&quot;" />
+
     <InstallExecuteSequence>
       <!-- Install only in a pass that installs the executable component, so that the
            grant moves only when InstallServices writes the same SESSION_NAME into the
@@ -68,6 +81,11 @@
            ProvisionInstall, so the rollback is scheduled only with the action it undoes. -->
       <Custom Action="SetProvisionInstallRollback" Before="ProvisionInstallRollback" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND ($EtwDnstapExe = 3)" />
       <Custom Action="ProvisionInstallRollback" Before="ProvisionInstall" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND ($EtwDnstapExe = 3)" />
+
+      <!-- Upgrade removal of the old product: keep the spool key's wrapped value. The CNG
+           key is not in the service key and survives. The script never fails this step. -->
+      <Custom Action="SetProvisionPreserve" Before="ProvisionPreserve" Condition="REMOVE=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
+      <Custom Action="ProvisionPreserve" Before="DeleteServices" Condition="REMOVE=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
 
       <!-- Uninstall only on a real removal, not while a major upgrade removes the old
            product. It runs after StopServices and before DeleteServices (and so

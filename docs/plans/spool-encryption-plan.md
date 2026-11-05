@@ -1,6 +1,6 @@
 # Spool encryption plan
 
-> **Status:** Approved 2026-11-04; Wave 1 in progress · **Describes:** `main` at commit `64b5e91` · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-04
+> **Status:** Approved 2026-11-04; Wave 1 (K, C, I) complete, Wave 2 in progress · **Describes:** `main` at commit `64b5e91` · **Evidence dated:** not applicable (design from Microsoft Learn and the source; no lab run yet) · **Reviewed:** 2026-11-04
 
 The spool writes dnstap frames to disk while the receiver is down or slow. Today they are
 plaintext Frame Streams files. This plan encrypts what the spool writes, and only that:
@@ -74,7 +74,8 @@ zeroed by `ring`.
    automatically; an administrator deletes the value to force a new key.
 
 `WrappedKey` layout (`REG_BINARY`, little-endian): version `u8` = 1, key id `[u8; 8]`,
-wrapping algorithm `u8` = 1 (RSA-OAEP-SHA256), wrapped length `u16`, wrapped key bytes.
+wrapping algorithm `u8` = 1 (RSA-OAEP-SHA256, with the key id as the OAEP label, so a
+changed key id fails the unwrap), wrapped length `u16`, wrapped key bytes.
 
 Registry (user decision, 2026-11-04: do not change the ACL of `Parameters`): the value
 `WrappedKey` lives in its own subkey,
@@ -85,6 +86,22 @@ changes the ACL of `Parameters`. It creates the `SpoolKey` subkey with a protect
 control, and the service SID query value, set value, and read control on that subkey only.
 The service runs with a restricted service SID, so its write needs this allow entry for the
 service SID. The service never creates the subkey.
+
+**Wave 1 findings (2026-11-04).**
+
+- The minimum right on the CNG key for `NCryptOpenKey` and `NCryptDecrypt` is
+  `GENERIC_READ` (stored as `0x80120089`); every narrower mask failed at `NCryptOpenKey`.
+  A caller with no access gets `NTE_BAD_KEYSET`, the same code as a missing key. With read
+  only, the service cannot change the key's DACL or delete it. SYSTEM and Administrators
+  need `GENERIC_ALL` to reapply the DACL and to delete the key.
+- The service opens `Parameters\SpoolKey` with exactly `KEY_QUERY_VALUE | KEY_SET_VALUE`;
+  with query value alone the open fails (error 5). On first start it also unwraps the new
+  key once before writing it, so a key it could not read back is never stored.
+- Deleting a service deletes its whole registry key, so a major upgrade (which removes the
+  old product first) would delete `WrappedKey`. The installer copies the value to the
+  protected key `HKLM\SOFTWARE\EtwDnstapUpgrade` before the old service is deleted, and the
+  new install restores it and deletes the copy. The copy is still wrapped. The CNG key lies
+  outside the service key and is not affected. To be confirmed in the lab.
 
 ### Segment format, version 1
 

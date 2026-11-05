@@ -127,6 +127,31 @@ not run the SID fallback.
 The grant script writes ETW descriptor snapshots under `C:\ProgramData\EtwDnstap\backup`.
 Uninstall deletes that folder. See [Uninstall with the MSI](uninstall.md#uninstall-with-the-msi).
 
+#### Spool encryption key
+
+The MSI also creates what the encrypted spool needs. The service does not create these itself.
+
+| Item | Value |
+| --- | --- |
+| CNG key | `EtwDnstap Spool Key`, RSA-3072, in the Microsoft Software Key Storage Provider, machine scope. It is not exportable. |
+| Key DACL | Protected (no inheritance). SYSTEM and `BUILTIN\Administrators`: all rights. `NT SERVICE\EtwDnstap`: read. |
+| Registry key | `HKLM\SYSTEM\CurrentControlSet\Services\EtwDnstap\Parameters\SpoolKey`. |
+| Registry DACL | Protected. SYSTEM and Administrators: full control. `NT SERVICE\EtwDnstap`: query value, set value, and read control (`0x20003`) on this subkey only. |
+
+The service writes the wrapped spool key to the `WrappedKey` value in the `SpoolKey` subkey.
+Only the service, SYSTEM, and Administrators can use the CNG key. Nobody can export it.
+
+The installer creates `Parameters` only if it is missing. It never changes the ACL of
+`Parameters`. It checks both DACLs after it sets them, and the install fails with a message
+that names the item if a DACL is not as expected. A repair or reinstall sets them again. It
+never replaces an existing CNG key or deletes an existing `WrappedKey` value.
+
+A major upgrade keeps the CNG key and the `WrappedKey` value. Deleting the old service
+deletes its registry key, so the old product copies `WrappedKey` to
+`HKLM\SOFTWARE\EtwDnstapUpgrade` first, and the new install copies it back and deletes the
+copy. Uninstall deletes the CNG key and the `SpoolKey` subkey. It leaves `Parameters` and
+any other value in it.
+
 ## Prerequisites
 
 - Windows x64 with the **DNS Server role**, and the `DNS` service running. The service

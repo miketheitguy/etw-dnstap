@@ -64,6 +64,8 @@
     <CustomActionRef Id="SetProvisionInstallRollback" />
     <CustomActionRef Id="ProvisionUninstall" />
     <CustomActionRef Id="SetProvisionUninstall" />
+    <CustomActionRef Id="ProvisionPreserve" />
+    <CustomActionRef Id="SetProvisionPreserve" />
 
     <Feature Id="Main" Title="EtwDnstap" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
