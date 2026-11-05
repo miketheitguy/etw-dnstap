@@ -1,6 +1,6 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** the code at commit `66c3de4` · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the code on `main` at commit `592a040` · **Reviewed:** 2026-11-05
 
 ### Quick Start
 

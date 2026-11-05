@@ -1,6 +1,6 @@
 # Single-pass decoder: current contract
 
-> **Status:** Current · **Describes:** `src/etw/decode.rs`, `src/etw/schema.rs`, and the encoder bounds in `src/dnstap.rs` on branch `spool-encryption` as of 2026-11-05 · **Evidence dated:** not applicable (reference, local tests only) · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** `src/etw/decode.rs`, `src/etw/schema.rs`, and the encoder bounds in `src/dnstap.rs` on `main` at commit `592a040` as of 2026-11-05 · **Evidence dated:** not applicable (reference, local tests only) · **Reviewed:** 2026-11-05
 
 ### Quick Start
 

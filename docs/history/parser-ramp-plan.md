@@ -1,6 +1,6 @@
 # Parser optimization DNS ramp plan
 
-> **Status:** Superseded (the parser ramp was aborted by the user and must not be resumed). Its capture contract predates the current defaults. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01 · See [filtered DNS ramp plan](../plans/filtered-ramp-plan.md) for the current ramp design.
+> **Status:** Superseded (the parser ramp was aborted by the user and must not be resumed). Its capture contract predates the current defaults. · **Evidence dated:** not recorded · **Commit:** not recorded · **Reviewed:** 2026-11-01 · See [filtered DNS ramp plan](filtered-ramp-plan.md), itself superseded, and the [tuning guide](../guide/tuning.md#low-rate-defaults) for current settings.
 
 This plan is for the deployment operator and evidence reviewer. It defines a bounded DNS load ramp to compare client sends and responses with collector observations after deploying the parser and encoder optimization. It does not plan service durable metrics, a Windows Performance Recorder (WPR) or CPU campaign, production Rust changes, historical guard changes, or a commit or push.
 
@@ -14,7 +14,7 @@ and Windows DNS settings and retained candidate `487FFD…A1AE` Running; see
 `cleanup/normal-receiver-ready.json`, and
 `windows/cleanup-Restore-20261030T032912664Z.json` under that campaign root.
 The procedures below record the canceled plan. The separately authorized
-[filtered ramp plan](../plans/filtered-ramp-plan.md) starts a different campaign.
+[filtered ramp plan](filtered-ramp-plan.md) starts a different campaign.
 
 ## Roles and build artifact
 

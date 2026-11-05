@@ -1,6 +1,6 @@
 # Ring capacity and shutdown
 
-> **Status:** Current · **Describes:** `src/etw/` and the parser thread on branch `spool-encryption` as of 2026-11-05 · **Evidence dated:** 2026-11-01 for the buffer wake and flush validations · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** `src/etw/` and the parser thread on `main` at commit `592a040` as of 2026-11-05 · **Evidence dated:** 2026-11-01 for the buffer wake and flush validations · **Reviewed:** 2026-11-05
 
 ### Quick Start
 

@@ -71,5 +71,5 @@ Do not run additional stages under this campaign. Preserve existing evidence
 and keep missing or incomplete finalization receipts visible. Any derived
 report must identify the status as aborted by user and must not imply that
 the planned ramp or high-rate confirmations completed. The separately
-authorized [filtered ramp](../plans/filtered-ramp-plan.md) uses a different artifact
+authorized [filtered ramp](filtered-ramp-plan.md) uses a different artifact
 and evidence root.

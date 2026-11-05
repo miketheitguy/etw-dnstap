@@ -117,8 +117,8 @@ Per-commit diffs were not reviewed for this section. Do not remove the headings.
   sent again. A crash or kill can send again the frames that the connection had not yet taken, so
   delivery across a crash is at least once. The folder must exist and pass the service's trust check.
   Without it, the service logs one warning and runs without a spool. The install
-  and upgrade guides have the folder step. The spool holds DNS data unencrypted,
-  so see [SECURITY.md](SECURITY.md). New options are `--spool-dir`,
+  and upgrade guides have the folder step. The spool holds DNS data; its segments are encrypted (see Changed below)
+  and [SECURITY.md](SECURITY.md) states the limits. New options are `--spool-dir`,
   `--no-spool`, `--spool-max-mib` (default 4096), and `--spool-min-free-mib`
   (default 2048). A `dnstap-sender` thread now owns the receiver connection and
   the spool. New performance counters 52 to 60 are appended, and the updated

@@ -1,6 +1,6 @@
 # MSI package sources
 
-> **Status:** Current · **Describes:** the code on branch `spool-encryption` · **Evidence dated:** 2026-11-03 (lab run on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the code on `main` at commit `592a040` · **Evidence dated:** 2026-11-03 (lab run on Windows Server 2025, build 26100) · **Reviewed:** 2026-11-05
 
 WiX v7 sources for the EtwDnstap MSI. User steps: [Install](../../docs/guide/install.md#install-with-the-msi), [Upgrade, repair, or change settings](../../docs/guide/upgrade.md#upgrade-repair-or-change-settings-with-the-msi), [Uninstall](../../docs/guide/uninstall.md#uninstall-with-the-msi), [Build](../../docs/guide/build.md#build-the-msi).
 

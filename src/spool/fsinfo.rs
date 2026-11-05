@@ -1,5 +1,6 @@
 //! Win32 calls the spool needs: free space on the spool volume and a trust check
-//! on the spool folder. This is the spool's only `unsafe` code.
+//! on the spool folder. The other `unsafe` code of the spool is in `key.rs`, `key_tests.rs`, `locked.rs`,
+//! and `protected.rs`.
 
 use std::{
     ffi::{OsStr, c_void},

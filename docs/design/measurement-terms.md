@@ -1,6 +1,6 @@
 # Measurement terms and result gates
 
-> **Status:** Current · **Describes:** the live counter names in `src/pipeline/supervisor.rs` on branch `spool-encryption` as of 2026-11-05. · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the live counter names in `src/pipeline/supervisor.rs` on `main` at commit `592a040` as of 2026-11-05. · **Evidence dated:** not applicable (reference) · **Reviewed:** 2026-11-05
 
 ### Quick Start
 

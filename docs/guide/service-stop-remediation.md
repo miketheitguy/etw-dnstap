@@ -25,7 +25,7 @@ The Ubuntu receiver in the bounded comparison runs it (configuration SHA-256 `28
 When the test owner authorizes load testing:
 
 1. Save the active receiver configuration. Record its checksum.
-2. Regenerate the [filtered ramp plan](../plans/filtered-ramp-plan.md) from the commit you deploy.
+2. Take the capture settings from the commit you deploy: [low-rate defaults](tuning.md#low-rate-defaults) and [subscription](configuration.md#subscription).
 3. Use the same binaries, the same console output pipeline and mode, and the workload that reproduced the failure, [`parser-filtered-auth-80000-60s-1`](../history/guide-lab-results-2026-11.md#stop-failure-workload-parser-filtered-auth-80000-60s-1).
 4. Compare the current receiver policy with an explicit `reset-conn: false`.
 5. Per run, capture the TCP STOP, FINISH, and close sequence, including any RST.
