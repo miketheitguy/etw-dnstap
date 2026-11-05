@@ -60,8 +60,8 @@ identity) are parameters, never baked in.
 
 ## Run order
 
-1. **Workload (host, once):** `Get-DnsWorkloadSource.ps1` (downloads the pinned SecLists names, and is the only
-   networked script) then, if you only need to regenerate, `New-DnsWorkload.ps1`.
+1. **Workload (host, once):** `Get-DnsWorkloadSource.ps1` (downloads the pinned SecLists names from GitHub, then
+   runs `New-DnsWorkload.ps1`). If you only need to regenerate the files, run `New-DnsWorkload.ps1` alone.
 2. **Inspect:** run `windows-inventory.ps1`, and optionally `windows-smoke-queries.ps1`.
 3. **Ubuntu fixture (guest, root):** copy `lab.json`, `lab_config.py`, `monitor-ubuntu-workload.py`,
    `tune-upstream-buffer.py` and `rec-names.txt` next to the setup script, then
@@ -117,7 +117,7 @@ and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
   6000 packets with a 1 to 16 byte payload (the 12-byte STOP and FINISH control frames) and FIN/RST packets.
   Text goes to stdout and is stored under `stages/<run>/receiver-stop/`. It writes no pcap and no stream data
   on the receiver, in keeping with the collector output going to null. Print the exact command with
-  `python receiver_stop_finish.py --print-command`.
+  `python -I scripts/performance/receiver_stop_finish.py --print-command`.
 - A preflight (`Assert-LabReceiverStopCaptureReady`) needs `python` on the host and `tcpdump` plus
   passwordless sudo on the receiver. It fails before the load starts when either is missing.
 - The verdict is `receiver_stop_finish`: `confirmed` (STOP from the service, then FINISH from the receiver on
@@ -125,8 +125,8 @@ and the `*-LabReceiverStopCapture` functions in `LabCommon.psm1`.
   `completion.json`, `stage-summary.json`, the parser-ramp ledger and both reports. `not-seen` never fails the
   stop, but it fails the strict stage pass. `not-checked` never fails anything.
 - `windows-startup-capacity.ps1` runs without a receiver and records `not-checked`.
-- Offline: `python receiver_stop_finish.py target/performance/<id>/stages/<run>`. Tests:
-  `python test_receiver_stop_finish.py`.
+- Offline: `python -I scripts/performance/receiver_stop_finish.py target/performance/<id>/stages/<run>`. Test:
+  `python -I scripts/performance/test_receiver_stop_finish.py`.
 
 ## Campaign IDs
 
@@ -201,9 +201,12 @@ Host-side analysis (each has argparse `--help` and a module docstring with its p
 Static checks (no VM access):
 
 ```powershell
-# PowerShell parse check
+# PowerShell parse check: prints one line per syntax error, and nothing when every file parses
 Get-ChildItem scripts/performance -Recurse -Include *.ps1,*.psm1 | ForEach-Object {
-    $e = $null; [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$e); $e }
+    $errors = $null
+    [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+    $errors | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+}
 ```
 
 ```bash

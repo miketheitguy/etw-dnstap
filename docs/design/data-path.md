@@ -1,252 +1,230 @@
 # Data path: from an ETW event to a TCP frame
 
-> **Status:** Current · **Describes:** the code on branch `spool-encryption`, 2026-11-05 · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-05
+> **Status:** Current · **Describes:** the code on branch `spool-encryption` as of 2026-11-05 · **Evidence dated:** not applicable (reference, from the source and the local tests) · **Reviewed:** 2026-11-05
 
-This reference follows one DNS Server event through the service. It names the
-thread, code, and counters of each stage. Maintainers use it to find the stage that
-changes or loses an event. Operators use it to match a counter to a stage.
+This page follows one DNS Server event from ETW to the receiver. For each stage it
+names the thread, the code, and the counters. Maintainers use it to find the stage
+that changes or loses an event. Operators use it to match a counter to a stage.
 
 ![Animation of the data path in six stages. An ETW event moves through intake, a pool slot, a bounded channel, the parser, and the sender to the TCP receiver. In the fifth stage a slow receiver fills the link FIFO, the router spills blocks to the disk spool, and the spool replays them. In the last stage the receiver is down. Frames go to the disk spool, encrypted, and replay decrypts each record, oldest first, after the reconnect.](../assets/pipeline/etw-to-tcp-pipeline.gif)
 
-The animation slows the events and shows illustrative counter values. It splits stage
-5 in two. Tab 05 shows normal sending and a slow receiver: the link FIFO fills, the
-router spills to the spool as AES-128-GCM records, and the spool replays them. Tab 06 shows
-a receiver outage, the encrypted spool, and the replay, which decrypts each record. The link
-thread writes without blocking: it waits for the socket to become writable for a bounded time. The [stage table](#stages) gives the same information as text.
+The animation slows the events and shows sample counter values. It splits stage 5 into
+two tabs. Tab 05 shows normal sending and a slow receiver. Tab 06 shows a receiver
+outage, the encrypted spool, and the replay. The [stage table](#stages) gives the same
+information as text.
 
 ## Stages
 
-An event passes through five stages. The table names the thread and code of each.
-Stage 3 spans two threads. Stage 5 spans three: `dnstap-parser`, `dnstap-sender`
-(the router), and `dnstap-link`. The `dnstap-reconnect` helper runs reconnects.
+An event passes through five stages. Stages 3 and 5 span more than one thread.
 
 | # | Stage | Thread | Code |
 | --- | --- | --- | --- |
-| 1 | Produce | `dns.exe`, ETW | `Capture::start` |
-| 2 | Intake | `etw-consumer` | `native_etw_callback`, `copy_record` |
-| 3 | Buffer | Both | `PoolManager`, the bounded channel, `native_buffer_callback` |
-| 4 | Parse | `dnstap-parser` | `Parser::parse`, `Encoder::encode` |
-| 5 | Queue and send | `dnstap-parser`, `dnstap-sender`, `dnstap-link` | `QueuedSink`, `Router` (`src/sender/router.rs`), `LinkThread` (`src/sender/link.rs`), `Spool`, `NetworkSink` |
+| 1 | Produce | `dns.exe` (ETW provider) | `Capture::start` (`src/etw/session.rs`) |
+| 2 | Intake | `etw-consumer` | `native_etw_callback`, `copy_record` (`src/etw/intake.rs`) |
+| 3 | Buffer | `etw-consumer` (writes), `dnstap-parser` (reads) | `PoolManager` (`src/etw/pool.rs`), the bounded event channel, `native_buffer_callback` |
+| 4 | Parse | `dnstap-parser` | `etw::Parser::parse` (`src/etw/schema.rs`), `Encoder::encode` (`src/dnstap.rs`) |
+| 5 | Queue and send | `dnstap-parser`, `dnstap-sender`, `dnstap-link`, `dnstap-reconnect` | `QueuedSink` and `Router` (`src/sender.rs`, `src/sender/router.rs`), `LinkThread` (`src/sender/link.rs`), `Spool` (`src/spool.rs`), `NetworkSink` (`src/network.rs`) |
 
 Decoding happens in stage 4, after the buffer. The intake callback only copies bytes.
 
 ### 1. Produce
 
-The service creates a real-time ETW session and enables the DNS Server provider with
-a keyword mask and an event-ID filter. The filters admit only events 256, 257, and 258.
-There is no process filter, so the events of any process that writes them are accepted.
-ETW delivers them about once per
-`--etw-flush-seconds`. The
-[Subscription](../guide/configuration.md#subscription) section lists the filters.
+The service starts a real-time ETW session and enables the DNS Server provider. The
+session admits only events 256, 257, and 258. It has no process filter, so events from
+any process that writes them are accepted. ETW delivers events about once per
+`--etw-flush-seconds` (default 1). The [Subscription](../guide/configuration.md#subscription)
+section lists the filters. The exact provider settings are in
+[Subscription and event selection](pooled-intake.md#subscription-and-event-selection).
 
 ### 2. Intake
 
 ETW calls `native_etw_callback` on the `etw-consumer` thread for each event. The
-callback does these steps in order:
+callback runs these steps in order:
 
-1. Reject a record from another provider, or with an unsupported event ID. This step
-   counts nothing.
+1. Drop a record from another provider or with an unsupported event ID. A dropped
+   record counts nothing.
 2. Count the record in `received`. The callback does not check the process ID.
-3. Copy the record into a pool slot. Count a malformed record in `callback_errors`.
-   Count a record with no free slot in `pool_exhausted_regular` or
-   `pool_exhausted_jumbo`.
-4. Send the slot with `try_send`. A full channel drops the newest event and increments
-   `ring_dropped`. A channel with no receiver drops the event and increments
-   `receiver_disconnected`. Both drops also increment `intake_dropped`.
+3. Copy the record into a pool slot. A malformed record counts in `callback_errors`.
+   If no slot of the needed class is free, the record counts in
+   `pool_exhausted_regular` or `pool_exhausted_jumbo`.
+4. Send the slot with `try_send`. If the channel is full, the callback drops the newest
+   event and counts `ring_dropped`. If the channel has no receiver, it counts
+   `receiver_disconnected`.
 
-The callback never waits and never allocates. The
-[pooled intake](pooled-intake.md#ownership-and-callback-lifecycle) reference explains
-the ownership rules.
+Each admission loss also counts in `intake_dropped`. The callback never waits and never
+allocates. [Ownership and callback lifecycle](pooled-intake.md#ownership-and-callback-lifecycle)
+gives the ownership rules.
 
 ### 3. Buffer
 
-The pool holds preallocated 2 KiB slots, plus `--jumbo-capacity` slots for records over
-2 KiB. The channel holds at most `--capacity` slots, 131,072 by default. Neither part
-grows after startup.
+The pool holds preallocated 2 KiB regular slots (`--capacity` + 2 of them) and
+`--jumbo-capacity` slots (default 64) for records that do not fit in 2 KiB. The event
+channel holds up to `--capacity` events (default 131,072). Nothing grows after startup.
+The sizes and the memory formula are in
+[Memory budget and configuration](pooled-intake.md#memory-budget-and-configuration).
 
-After each delivered ETW buffer, `native_buffer_callback` increments
-`etw_buffers_delivered`. If that buffer enqueued an event, it also increments
-`parser_wake_requests` and unparks the parser. The per-event callback never wakes the
-parser. See [Parser wake and polling](ring-buffer.md#parser-wake-and-polling).
+After each delivered ETW buffer, `native_buffer_callback` counts `etw_buffers_delivered`.
+If that buffer enqueued an event, the callback also counts `parser_wake_requests` and
+wakes the parser. The per-event callback never wakes the parser. See
+[Parser wake and polling](ring-buffer.md#parser-wake-and-polling).
 
 ### 4. Parse
 
-The parser takes slots with `try_recv`. For each slot:
+The parser takes slots with `try_recv`. For each slot, it:
 
-1. Increment `dequeued`.
-2. Decode the record with a compiled plan that reads each field once. A schema that
-   does not compile, or a malformed payload, increments `rejected`. A schema failure
-   also increments `schema_rejected`.
-3. Encode the record as dnstap. Event 256 becomes `CLIENT_QUERY`. Events 257 and 258
-   become `CLIENT_RESPONSE`. The encoder rejects a record that has any of these
-   properties, and counts it in `rejected`:
-   - An unsupported event ID.
-   - A DNS message outside 12 to 65,535 bytes.
-   - A QR bit that disagrees with the event.
-   - Addresses of two families.
-   - A timestamp before the Unix epoch.
-   - An encoded size over 70 KiB.
+1. Counts `dequeued`.
+2. Decodes the record with a compiled plan that reads each field once. A schema that
+   does not compile, or a malformed payload, counts in `rejected`. A schema failure also
+   counts in `schema_rejected`. The [single-pass decoder](single-pass-decoder.md) has the rules.
+3. Encodes the record as dnstap. Event 256 becomes `CLIENT_QUERY`. Events 257 and 258
+   become `CLIENT_RESPONSE`. The encoder rejects the record, and counts it in `rejected`,
+   when any of these is true:
+   - The event ID is unsupported.
+   - The DNS message is outside 12 to 65,535 bytes.
+   - The DNS QR bit disagrees with the event.
+   - The local and peer addresses are in different families.
+   - The timestamp is before the Unix epoch.
+   - The identity is longer than 1,024 bytes.
+   - The encoded frame is larger than 70 KiB (71,680 bytes).
+4. Releases the slot to the pool.
+5. Hands the frame to the sink, then counts `encoded`.
 
-   The [dnstap fields](../guide/configuration.md#message-and-transport-limits) are in
-   the configuration reference.
-4. Release the slot to the pool.
-5. Pass the frame to the sink.
-
-The parser increments `encoded` after it hands the frame to the sink. When the channel
-is empty, the parser polls briefly and then parks. See the
-[single-pass decoder](single-pass-decoder.md) for the decoding rules.
+When the channel is empty, the parser polls briefly and then parks. The
+[dnstap field limits](../guide/configuration.md#message-and-transport-limits) are in the
+configuration reference.
 
 ### 5. Queue and send
 
-Three threads take part. The `dnstap-parser` thread queues frames. The `dnstap-sender`
-thread, the router, routes blocks and owns the spool. The `dnstap-link` thread owns the
-socket. The parser never does socket or disk I/O, and the router never waits on the
-socket.
+Three threads share this stage. The parser (`dnstap-parser`) queues frames. The router
+(`dnstap-sender`) routes blocks and owns the spool. The link (`dnstap-link`) owns the
+socket. The parser never does socket or disk I/O, and the router never waits on the socket.
 
-On the parser thread, `QueuedSink::write_frame` appends each frame to a block of
-complete dnstap frames. The parser sends a block at 64 KiB. It sends a partial block on
-its idle and busy timers: 100 ms after the last send when the parser is idle, and at
-least once a second when it is busy. The channel to the router holds 256 blocks. A block
-that arrives at a full channel is discarded, and its frames count in `queue_dropped`.
-The block pool of 516 blocks, 68.5 MiB, is allocated at startup, so the parser does not
-allocate per frame.
+**Blocks.** `QueuedSink::write_frame` appends each frame to a block of whole dnstap
+frames. The parser sends a block when it holds 64 KiB. It also sends a partial block
+after 100 ms of idle time, and at least once a second while it is busy. The channel to
+the router holds 256 blocks. If that channel is full, the block is dropped and its
+frames count in `queue_dropped`. The block pool of 516 blocks (136 KiB each, 68.5 MiB in
+all) is allocated at startup.
 
-On the router thread, `Router` takes each block and sends it to one of three places:
+**Routing.** The router sends each block to one of three places:
 
-1. The link FIFO, a queue of 256 blocks (about 16 MiB) that the link thread takes from.
-   The router uses it while the link is up and the spool holds no backlog.
+1. The link FIFO, which holds 256 blocks (about 16 MiB of frames). The router uses it
+   while the link is up and the spool has no backlog.
 2. The spool, while the link is down, while the spool holds a backlog or a replay batch
    is out (so frames keep their order), and when the FIFO is full.
 3. Nowhere, when no spool is in use and the link is down. The frames count in
    `disconnected_dropped`.
 
-When the FIFO is full, the router spills passively. It takes every block out of the FIFO
-and appends them to the spool, oldest first, then the block that did not fit. Only a
-full FIFO causes a spill. No routing decision reads the state of the socket.
+**Spill.** A full FIFO causes a spill. The router moves every block in the FIFO to the
+spool, oldest first, and then the block that did not fit. Routing never reads the state
+of the socket.
 
-The link thread takes one block at a time from the FIFO and writes it with non-blocking
-sends. When the socket accepts no more bytes, the thread waits for the socket to become
-writable for at most 50 ms. Then it checks the stall timer and writes again. A session
-ends only when the socket accepts no byte for `--receiver-stall-seconds` (15 by default)
-while data waits. No data send has a socket timeout, and the service does not set
-`SO_SNDBUF`.
+**Link.** The link thread takes one block at a time from the FIFO and writes it with
+non-blocking sends. When the socket accepts no more bytes, the thread waits up to 50 ms
+for the socket to become writable. Then it checks the stall timer and writes again. A
+session ends only when the socket accepts no bytes for `--receiver-stall-seconds`
+(default 15, range 2 to 300) while data waits. No data send has a socket timeout, and the
+service does not set `SO_SNDBUF`.
 
-While the link is up and the spool holds a backlog, the router replays the oldest frames.
-It reads batches of up to 64 KiB from the spool head and sends them into the FIFO. Up to
-127 batches can be out at once, and one router pass reads at most 1 MiB. The spool holds
-each batch until the link thread reports how much of it the socket accepted. A segment is
-deleted only after the link has taken all of its frames. See
-[Spool](../guide/configuration.md#spool).
+**Replay.** While the link is up and the spool holds a backlog, the router reads batches
+of up to 64 KiB from the head of the spool and sends them to the FIFO. At most 127 batches
+can be out at once. One router pass reads at most 1 MiB. The spool keeps each batch until
+the link reports how much of it the socket accepted. It deletes a segment only after the
+link has taken all of its frames. See [Spool](../guide/configuration.md#spool).
 
-**Spool encryption.** The spool encrypts what it writes, and only that: blocks in memory, in
-the send queue, in the FIFO, and on the wire are not changed. `SegmentWriter`
-(`src/spool/segment.rs`) writes a 32-byte file header with a random nonce prefix for each
-segment, then seals each appended block as one AES-128-GCM record (`src/spool/crypt.rs`). It
-builds the record header, the plaintext copy, and the tag in one reused buffer, encrypts in
-place, and writes the record with one call, so a warm writer allocates nothing per append. A
-sealed segment ends with an end record. `SegmentReader` reads records while the writer may
-still append, decrypts each one in place in a reused buffer, and hands out its frames. Batch
-sizes, frame counts, and `replayed` count plaintext frames. The cap, the segment size, the
-free-space floor, `spool_bytes`, and `spool_dropped_bytes` count file bytes, which include the
-header and 28 bytes for each record. Read and delivered positions, and `cursor.bin`, are
-logical: byte offsets in the segment's plaintext frame stream. To resume, the reader walks the
-record headers without decrypting, decrypts the record that holds the position, and starts at
-the frame boundary inside it. A record that does not authenticate ends the segment: its rest
-is counted in `spool_dropped_bytes` and never replayed.
+**Reconnects.** The `dnstap-reconnect` helper makes connection attempts. The backoff
+runs from 250 ms to 30 s. See [Receiver connection](../guide/configuration.md#receiver-connection).
 
-The key is unwrapped once for each start (`src/spool/key.rs`, one `NCryptDecrypt`), when the
-spool opens. The 16 key bytes go straight into one page of their own (`src/spool/locked.rs`).
-No buffer the service allocates holds them. With key isolation, the reply of `NCryptDecrypt`
-also passes through an RPC receive buffer in the process, which the service does not zero.
-`CryptProtectMemory` with `CRYPTPROTECTMEMORY_SAME_PROCESS` encrypts the bytes in place at
-once. The page is locked with `VirtualLock`, so it is never written to the pagefile, and
-registered with `WerRegisterExcludedMemoryBlock`, so Windows Error Reporting leaves it out of
-WER crash dumps. Every writer and reader shares the page through an `Arc`; nothing copies it.
-When the spool closes, the page is zeroed, unlocked, and freed.
+### Spool encryption
 
-For each record, the service takes a mutex, calls `CryptUnprotectMemory`, builds the `ring`
-AES-GCM key schedule in a scratch area of the same page, and calls `CryptProtectMemory` on the
-raw bytes at once. It then encrypts or decrypts that one record and zeroes the schedule. The
-expanded schedule holds the key for the whole seal or open: about 5 µs for a 64 KiB record,
-longer for larger records (up to about 70 µs for a 1 MiB record). Between records, the key
-bytes in the page are ciphertext. A guard does the re-protect and the zeroing, so in a build
-that unwinds, a panic does not leave the schedule behind. The shipped release build uses
-`panic = "abort"`, so a panic aborts the process: the page is excluded from WER dumps, and the
-stack is not. After each use, the service overwrites 16 KiB of stack in the caller's frame, which
-covers the frames that held the `ring` key. Each seal or open also checks the decrypted bytes
-against a SHA-256 check value taken when the key was loaded. A record costs about 2.5 µs for
-the protect/unprotect pair and the check, which is about 75 µs of CPU a second at 10,000
-queries per second.
+The spool encrypts only what it writes to disk. Blocks in memory, in the send queue, in
+the FIFO, and on the wire are not changed by the spool. TLS, when configured, protects
+the wire.
 
-If `CryptUnprotectMemory` fails, nothing changes and the service keeps the key. That append
-fails as an ordinary spool I/O error: it counts in `spool_errors`, logs Event ID 27
-(`dnstap spool I/O error`), and pauses the spool for 10 seconds. That read fails as a transient
-read error: it is counted, reads pause for 10 seconds, and the segment and cursor are kept. A
-later operation tries again.
+**File format.** Each segment starts with a 32-byte file header that holds a random
+nonce prefix (`src/spool/segment.rs`). Each appended block is sealed as one AES-128-GCM
+record (`src/spool/crypt.rs`). A record adds 28 bytes: a 12-byte record header and a
+16-byte tag. A sealed segment ends with an end record.
 
-If `CryptProtectMemory` fails, the service tries it once more. If it fails again, or the
-decrypted bytes fail the key check, the service zeroes the key bytes and suspends the spool
-until it restarts:
+**Units.** The size cap, the free-space floor, `spool_bytes`, and `spool_dropped_bytes`
+count file bytes, which include the header and the record overhead. Read and delivered
+positions, and `cursor.bin`, use offsets in the plaintext frame stream. Batch sizes,
+frame counts, and `replayed` count plaintext frames.
 
-- Every append is refused, and the refused frames count in `spool_dropped` only. An append
-  seals its block before it evicts a segment or creates one, so the append that finds the loss
-  deletes and creates nothing. Only a roll comes first: the end record of a full segment is
-  itself a use of the key, and the segment is sealed normally if that use succeeds. In one
-  rare case an eviction can come first: the size cap evicts the active segment, and the key
-  fails when the block is sealed again for the new segment.
-- Reads stop and drop nothing.
-- The loss deletes no segment and does not move the cursor. Replay batches already handed to
-  the link before the loss are still acknowledged as usual: a segment they finish is deleted
-  and the cursor moves past it. A batch the link gives back stays on disk. The active segment
-  closes without its end record, so the next start reads it as an unsealed leftover.
-- `spool_available` becomes false.
-- The service logs one warning, Event ID 26: `the spool key is unusable after a memory protection failure (CryptProtectMemory, Win32 error N); the spool is suspended until the service restarts; spooled files are kept`, or with `(CryptUnprotectMemory
-  returned bytes that fail the key check)` instead of the call and its error. It does not log
-  it once shutdown has begun.
-- While the key is lost, live frames go straight to the receiver when it is up. This relaxes
-  the strict-order rule in this case only. When the receiver is down, they are refused and
-  counted in `spool_dropped`. A full send queue then stops intake as with no spool (the parser
-  counts `queue_dropped`), instead of spilling the queue to a spool that refuses it.
-- `link_saturated` clears at once, with the reason `the spool is suspended until the service
-  restarts`, and does not set again in this run: the frozen backlog says nothing about the
-  link.
-- The next start unwraps the key again and replays the whole kept backlog, after the frames
-  already sent in this run.
+**Reading.** `SegmentReader` decrypts each record in a reused buffer. It can read while
+the writer still appends. To resume at a saved position, it walks the record headers
+without decrypting, decrypts the record that holds the position, and starts at the frame
+boundary inside it. A record that does not authenticate ends its segment. The rest of
+that segment is counted in `spool_dropped_bytes` and never replayed.
 
-This protects the idle key bytes in the page in a user-mode process dump, the pagefile, and a
-memory-disclosure bug, and it blocks casual inspection of the process. It does not protect
-against code in the service process, which can call `CryptUnprotectMemory`; against SYSTEM and
-Administrators, who can inject code; or against a full kernel memory capture (a complete
-memory dump, `hiberfil.sys`, or a VM saved state or memory checkpoint). The system holds the
-protection key, so such a capture likely lets an analyst recover the key. Microsoft's
-documentation does not say where that key lives, so this is the likely behavior, not a
-documented one. Register contents are not cleared: AES-NI leaves round keys in XMM registers,
-and a dump captures them in thread contexts. Stack below the 16 KiB scrub is not cleared, and a
-dump taken during a seal or open can hold the schedule. The WER exclusion covers WER crash
-dumps only. If the key cannot be loaded or locked at start, the run continues without a spool,
-with one warning; the spool never writes plaintext.
+**Key handling.** The key is unwrapped once per start by one `NCryptDecrypt` call
+(`src/spool/key.rs`). The unwrap runs on the `spool-key-load` helper thread, and the
+start waits at most 3 seconds (`KEY_LOAD_TIMEOUT`). If the key store does not answer,
+the run continues without a spool, with one warning. The key bytes go straight into a
+locked page (`src/spool/locked.rs`). The page is never written to the pagefile, and
+Windows Error Reporting (WER) leaves it out of crash dumps. The bytes are encrypted in
+place with `CryptProtectMemory` (`CRYPTPROTECTMEMORY_SAME_PROCESS`) at all times except
+during a seal or an open (`src/spool/protected.rs`). The installer makes the service
+depend on `KeyIso`.
 
-The key is loaded on a helper thread (`spool-key-load`) and the start waits at most 3 seconds
-for it (`KEY_LOAD_TIMEOUT`). The CNG calls must not hold the service start: Microsoft Learn warns
-that a service which calls them from its start routine can deadlock, and a hung call would end
-in the startup watchdog, which aborts the process. If the key store does not answer, the run
-continues without a spool, with the same one warning, and the helper's late answer is dropped,
-which zeroes it. The installer also makes the service depend on `KeyIso`.
+**Per use.** Each seal or open takes a mutex and calls `CryptUnprotectMemory`. It checks
+the result against a SHA-256 check value taken when the key loaded. It builds the `ring`
+AES-128-GCM key in a scratch area of the same page, and re-protects the key bytes. It
+then seals or opens the record and zeroes the scratch area. A guard does the re-protect
+and the zeroing when a panic unwinds. The release profile sets `panic = "abort"`, so no
+unwind happens there. After each use, the service overwrites 16 KiB of stack below the
+caller's frame. The [spool encryption plan](../plans/spool-encryption-plan.md) records the
+per-record costs.
 
-What the encryption protects against: a copy or backup of the spool folder alone, other local
-accounts, and a disk or image of a volume that BitLocker protects. What it does not protect
-against: an offline copy of a system volume without BitLocker, because the machine key file is
-protected by machine DPAPI, whose secret is in the SECURITY and SYSTEM hives on the same volume,
-and `WrappedKey` is in the SOFTWARE hive; SYSTEM and Administrators; and the memory copies above.
-See [SECURITY.md](../../SECURITY.md).
+**Failures.**
 
-At open, the spool reads the header of each leftover segment. It deletes the plaintext
-segments of earlier versions, other files, and segments sealed with another key, counts their
-bytes in `spool_dropped_bytes`, and logs one warning with the counts. When the key was made at
-this start, it deletes every segment and resets `cursor.bin`.
+- If `CryptUnprotectMemory` fails, nothing changes and the service keeps the key. An
+  append fails as an I/O error. It counts in `spool_errors`, logs Event ID 27
+  (`dnstap spool I/O error`), and pauses the spool for 10 seconds. A failed read is
+  counted, reads pause for 10 seconds, and the segment and cursor are kept. A later
+  operation tries again.
+- If `CryptProtectMemory` fails, the service tries once more. If that also fails, or the
+  decrypted bytes fail the check, the key bytes are zeroed and the spool suspends until
+  the service restarts:
+  - Appends are refused. Their frames count in `spool_dropped`. In rare cases a segment is
+    evicted before the failure is seen.
+  - Reads stop. Nothing is dropped.
+  - No segment is deleted and the cursor does not move. Replay batches that the link
+    already has are still acknowledged in the usual way.
+  - `spool_available` becomes false. The service logs one warning, Event ID 26, unless
+    shutdown has begun.
+  - Live frames go straight to the receiver while it is up. This relaxes the strict-order
+    rule in this case only. While the receiver is down, live frames are refused and count
+    in `spool_dropped`. A full send queue then stops intake, and the parser counts
+    `queue_dropped`.
+  - `link_saturated` clears with the reason `the spool is suspended until the service
+    restarts`. It does not set again in this run.
+  - The next start unwraps the key again and replays the kept backlog.
 
-At a link failure, the link thread ends the session and gives back what it did not send.
-The router takes the FIFO back and sorts the frames by how far the socket got:
+**Limits.** The encryption protects a copy of the spool folder on its own, other local
+accounts, and a disk or image of a BitLocker-protected volume. It does not protect:
+
+- An offline copy of an unencrypted system volume. The machine key material sits on the
+  same volume.
+- SYSTEM and Administrators, or code running in the service process.
+- A full kernel memory capture. Such a capture may let an analyst recover the key. This
+  is likely, but Microsoft does not document where the key lives.
+- Register contents, round keys left in XMM registers, and stack below the 16 KiB scrub.
+  A dump taken during a seal or open can contain these.
+
+The WER exclusion covers WER crash dumps only. If the key cannot be loaded or locked at
+start, the run continues without a spool. The spool never writes plaintext. See
+[SECURITY.md](../../SECURITY.md).
+
+**At open.** The spool reads the header of each leftover segment. It deletes segments of
+earlier versions, other files, and segments sealed with another key. It counts their
+bytes in `spool_dropped_bytes` and logs one warning. If the key was created at this
+start, the spool deletes every segment and resets `cursor.bin`.
+
+### Link failure
+
+At a link failure, the link thread ends the session and returns the data it did not send.
+The router takes back the FIFO and sorts the frames by how far the socket got:
 
 - Live frames that the socket did not fully accept go back to the router. These are the
   cut frame, every later frame, and, with TLS, the frames of the piece whose delivery
@@ -258,96 +236,91 @@ The router takes the FIFO back and sorts the frames by how far the socket got:
   again.
 - Frames that the socket fully accepted are not sent again.
 
-**Allocation on the TLS path.** Every stage up to the socket reuses its buffers, so the data
-path makes no heap allocation per event. TLS is the one exception: rustls allocates one buffer
-for each record it encrypts (up to 16 KiB of plaintext), and frees it after `write_tls` sends
-it. That is about 2,500 allocations a second at 41 MB/s. The rustls unbuffered API
-(`UnbufferedClientConnection`) does not remove it: in rustls 0.23.46 its `encrypt` still has
-the cipher allocate the record, then copies the record into the caller's buffer, so it adds a
-copy and saves nothing. Only a record layer outside rustls (traffic secrets taken with
-`dangerous_extract_secrets`, records sealed in place with `ring`) would remove the allocation.
-That means writing record framing, nonces, sequence numbers, and key updates ourselves, for an
-expected gain below 1 % of one CPU. It was evaluated and dropped on 2026-11-04. The buffered
-`ClientConnection` stays.
+### Allocation on the TLS path
 
-The sender owns the reconnect logic. Reconnects run on the `dnstap-reconnect` helper,
-with a backoff from 250 ms to 30 s. See
-[Receiver connection](../guide/configuration.md#receiver-connection).
+Every stage up to the socket reuses its buffers, so the data path makes no heap
+allocation per event. TLS is the exception. rustls allocates one buffer for each record it
+encrypts (up to 16 KiB of plaintext), and frees it after the record is sent. That is
+about 2,500 allocations a second at 41 MB/s. The unbuffered rustls API does not avoid
+this: in rustls 0.23.46 its `encrypt` still allocates the record and then copies it.
+Removing the allocation would mean writing a record layer outside rustls, for an expected
+gain below 1 % of one CPU. That was evaluated and dropped on 2026-11-04. The buffered
+`ClientConnection` stays.
 
 ## Startup and shutdown order
 
-The service starts the stages from the receiver back to the source. The link, spool,
-queue, and event channel exist before the first event arrives:
+The services start from the receiver back toward the source. Each step must succeed
+before the next one starts.
 
-1. Connect the link. A refused connection does not stop the service. A TLS or protocol
-   failure does.
-2. Check the spool folder, load and unwrap the spool key once, and open the spool. A
-   failed check or key load logs one warning, and the run continues without a spool.
-3. Allocate the block pool and the send channel. Start the `dnstap-link` thread, then
-   the `dnstap-sender` router thread. The router starts after the link thread has
-   published its first state.
+1. Connect the link. A refused connection does not stop the service, because the link
+   retries with backoff. A TLS or protocol failure does stop it.
+2. Check the spool folder, unwrap the spool key once, and open the spool. A failed check or
+   key load logs one warning, and the run continues without a spool.
+3. Create the send queue and the block pool. Start `dnstap-link`, then `dnstap-sender`.
+   The router starts after the link thread publishes its first state.
 4. Create the event channel and the slot pool.
-5. Start the parser thread.
-6. Start the ETW session and the `etw-consumer` thread.
+5. Start `dnstap-parser`.
+6. Start the ETW session and `etw-consumer`.
 
-Shutdown runs from the source forward:
+Shutdown runs from the source toward the receiver:
 
-1. Stop the ETW session and join the `etw-consumer` thread.
+1. Stop the ETW session and join `etw-consumer`. No callback can enqueue after this point.
 2. Publish `producer_done` and wake the parser.
-3. The parser sends its last partial block, waiting up to 100 ms for room, closes the
-   channel, and waits for the router thread.
-4. The router routes the blocks still in the channel and the FIFO to the spool, then
-   seals the spool segment. Replay data that the link did not take stays on disk for the
-   next run. `cursor.bin` records the delivered position. The link thread stops writing
-   1 second after shutdown starts, and hands back its unsent data. It then runs STOP and
-   FINISH, within 2 seconds, if the socket is at a frame boundary.
+3. The parser sends its last partial block, waiting up to 100 ms for room. It then closes
+   the channel and waits for the router.
+4. The router routes the blocks still in the channel and the FIFO to the spool, then seals
+   the spool segment. Replay data that the link did not take stays on disk for the next
+   run. `cursor.bin` records the delivered position.
+5. The link stops writing 1 second after shutdown starts, and hands back its unsent
+   data. If the deadline did not interrupt a block, it then sends STOP and FINISH, within
+   2 seconds.
 
-A watchdog ends the process if shutdown takes more than 10 seconds. The sender threads
-finish within about 3.2 seconds. See
+A 10-second watchdog ends the process if shutdown takes longer. The sender threads finish
+in about 3.2 s: the last partial block (0.1 s), the link budget (1 s), one link poll, and
+the STOP/FINISH exchange (2 s), which overlaps the spool seal. See
 [Startup and shutdown deadlines](../guide/configuration.md#startup-and-shutdown-deadlines)
 and [Completion and resource ownership](ring-buffer.md#completion-and-resource-ownership).
 
 ## Where events are lost
 
-Each stage has its own loss counters. Use the counter to find the stage.
+Each loss counter names one stage. Find the stage where the event disappeared, then read
+its counter. [Loss counters](measurement-terms.md#loss-counters-live-service) define each
+counter. The [Tune capture for load](../guide/tuning.md) guide explains how to reduce each loss.
 
 | Stage | Loss | Counter |
 | --- | --- | --- |
 | 1 | ETW reports lost events or lost buffers. | `etw_lost`, `etw_buffers_lost` |
-| 2 | The record is malformed. | `callback_errors` |
-| 2 | The pool has no free slot. | `pool_exhausted_regular`, `pool_exhausted_jumbo` |
-| 3 | The channel is full. | `ring_dropped` |
-| 3 | The channel has no receiver. | `receiver_disconnected` |
-| 4 | The record does not decode or encode. | `rejected`, `schema_rejected` |
+| 2 | The record is malformed, or its TLS state is missing or wrong. | `callback_errors` |
+| 2 | The pool has no free slot of the record's class. | `pool_exhausted_regular`, `pool_exhausted_jumbo` |
+| 3 | The event channel is full. | `ring_dropped` |
+| 3 | The event channel has no receiver. | `receiver_disconnected` |
+| 4 | The record does not decode or encode. | `rejected` (and `schema_rejected` for a schema failure) |
 | 5 | The channel to the router is full. | `queue_dropped` |
-| 5 | No spool is in use, and the receiver is down or the connection fails with live frames the socket did not accept. | `disconnected_dropped` |
-| 5 | The spool refuses a block, evicts a segment, cannot read or authenticate a record, or deletes at startup a segment it cannot decrypt. | `spool_dropped`, `spool_dropped_bytes` |
-| 5 | A spool I/O error. The block is also counted in `spool_dropped`. | `spool_errors` |
+| 5 | No spool is in use, and the receiver is down or a connection fails with live frames it did not accept. | `disconnected_dropped` |
+| 5 | The spool refuses or evicts a frame, or cannot read or authenticate a record. | `spool_dropped`, `spool_dropped_bytes` |
+| 5 | A spool I/O error. | `spool_errors` |
 
-Each frame lost in stage 5 is in at most one of `queue_dropped`,
-`disconnected_dropped`, and `spool_dropped`.
+A frame lost in stage 5 counts in at most one of `queue_dropped`, `disconnected_dropped`,
+and `spool_dropped`. `intake_dropped` is the sum of the stage 2 and stage 3 admission
+losses. Do not add it to those counters. The
+[counter relationships](../guide/monitoring.md#counter-relationships) list the identities.
 
 With a spool, a link failure counts no frame. The frames go back to the router or stay in
-the spool, and they are sent again. At a shutdown that follows a spill, the one live
-block that comes back from the link is older than the spool backlog, so it cannot go in
-front of it. The router counts it in `disconnected_dropped`.
+the spool, and they are sent again. At a shutdown that follows a spill, the one live block
+that comes back from the link is older than the spool backlog. It cannot go ahead of the
+backlog, so the router counts it in `disconnected_dropped`.
 
-`disconnected_dropped` counts frames that the link did not hand to the socket in full,
-and that no spool kept. A cut frame reaches the receiver only as a truncated copy, which
-the receiver discards. So a counted frame did not arrive whole. The one exception is the
-TLS 1.3 key update window (risk 19 in the slow-receiver design). If the socket took the
-whole data record and the connection then failed while a key update was still pending,
-the receiver holds that record, and the counter includes its frames. Bytes that the kernel
-accepted before a failure are not counted, even when the connection then fails before the
-kernel sends them. So the counter can miss loss. It is not an upper bound on loss.
+`disconnected_dropped` counts frames that the link did not hand to the socket in full and
+that no spool kept. A cut frame reaches the receiver only as a truncated copy, which the
+receiver discards. The one exception is the TLS 1.3 key update window (risk 19 in the
+[slow-receiver design](slow-receiver.md)). If the socket took a whole data record and the
+connection then failed while a key update was pending, the receiver holds that record, and
+the counter includes its frames. Bytes that the kernel accepted before a failure are not
+counted, even if the kernel never sent them. So the counter can miss loss, and it is not an
+upper bound on loss.
 
-`replayed` and `bytes_sent` count the bytes that the socket accepted. The same kernel
-loss applies to them, so `replayed` is not a delivery count.
-
-`intake_dropped` is the sum of the stage 2 and stage 3 admission losses. Do not add it
-to those counters. The [Log events and counters](../guide/monitoring.md#counter-relationships)
-guide gives the full relationships. The [Tune capture for load](../guide/tuning.md)
-guide explains how to reduce each loss.
+`replayed` and `bytes_sent` count bytes the socket accepted. The same kernel loss applies
+to them, so `replayed` is not a delivery count.
 
 ## Regenerate the animation
 

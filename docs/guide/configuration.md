@@ -1,18 +1,19 @@
 # Configuration reference
 
-> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `66c3de4` · **Reviewed:** 2026-11-05
 
-Set every option in the service binary path. The service ignores arguments to `sc.exe start`.
-An MSI install builds the path from MSI properties. See
-[Install with the MSI](install.md#install-with-the-msi).
+This page lists every option, its default, and its allowed range. Set options in the service
+binary path. The service ignores arguments to `sc.exe start`. An MSI install builds the path
+from MSI properties. See [Install with the MSI](install.md#install-with-the-msi).
 
 Related: [install.md](install.md), [troubleshooting.md](troubleshooting.md),
 [tuning.md](tuning.md), [monitoring.md](monitoring.md).
 
 ## Options
 
-Defaults and ranges come from `CaptureArgs` in `src/pipeline/config.rs`. An out-of-range value
-fails at startup. Repeating an option is an error, so the last value does not win.
+The defaults and ranges are set in `CaptureArgs` in `src/pipeline/config.rs`. A value outside
+its range stops the service from starting. Repeating an option is also an error. The service
+does not use the last value.
 
 | Option | Default | Range or format | Meaning |
 | --- | --- | --- | --- |
@@ -23,10 +24,10 @@ fails at startup. Repeating an option is an error, so the last value does not wi
 | `--capacity N` | `131072` | 1,024 to 524,288 events | Event channel size. A full channel drops the newest event and counts it in `ring_dropped` and `intake_dropped`. |
 | `--jumbo-capacity N` | `64` | 0 to 256 | Pool slots for padded payloads over 2 KiB. `0` disables jumbo capture. |
 | `--duration SECONDS` | none | 1 to 604,800 | Stop after this many seconds. Otherwise capture runs until SCM stops the service or a failure occurs. |
-| `--session-name NAME` | `EtwDnstap` | 1 to 128 ASCII letters, digits, underscore, dot, or hyphen. Case-sensitive. The first character must not be a hyphen. | Real-time ETW session name. The ETW grant must use the same spelling, or the start fails with access denied. A new name needs a grant run and a restart. See [Session reclaim](#session-reclaim) and [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
+| `--session-name NAME` | `EtwDnstap` | 1 to 128 ASCII letters, digits, underscore, dot, or hyphen. The first character must not be a hyphen. | Name of the real-time ETW session. The session GUID is derived from the exact spelling, although ETW itself ignores case. Use the same spelling in the ETW grant, or the start fails with access denied. A new name needs a new grant and a restart. See [Session reclaim](#session-reclaim) and [install.md](install.md#4-set-the-service-identity-privileges-etw-access-and-event-source). |
 | `--identity TEXT` | `etw-dnstap` | At most 1,024 UTF-8 bytes | dnstap producer identity. Empty text omits the field. |
 | `--etw-buffer-kib KIB` | `32` | 4 to 128, a multiple of 4 | ETW session buffer size. See [Defaults](tuning.md#defaults). |
-| `--etw-min-buffers N` | `12` | 0 to 4,096, at most `--etw-max-buffers` | Minimum buffer count, reserved at session start. ETW raises it to at least two per logical processor. `0` lets ETW choose. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
+| `--etw-min-buffers N` | `12` | 0 to 4,096, at most `--etw-max-buffers` | Buffers reserved when the session starts. `0` lets ETW choose. See [ETW buffer minimums](tuning.md#etw-buffer-minimums). |
 | `--etw-max-buffers N` | `64` | 4 to 4,096 | Maximum buffer count, allocated on demand. See [Defaults](tuning.md#defaults) and [Recommended settings for higher rates](tuning.md#recommended-settings-for-higher-rates). |
 | `--etw-flush-seconds SECONDS` | `1` | 1 to 60 | Delivery interval, which bounds latency. Longer values use less CPU and make each batch larger. See [Defaults](tuning.md#defaults). |
 | `--spool-dir PATH` | `C:\ProgramData\EtwDnstap\spool` | An absolute path that starts with a drive letter, with no `.` or `..` part. Cannot be combined with `--no-spool`. | Folder for frames that wait for the receiver. The service never creates it. A failed trust check runs without a spool. A malformed value fails parsing. See [Requirements](#requirements). |
@@ -35,17 +36,17 @@ fails at startup. Repeating an option is an error, so the last value does not wi
 | `--spool-min-free-mib N` | `2048` | 0 to 1,048,576 MiB. Cannot be combined with `--no-spool`. | Free space to keep on the spool volume. The oldest segments go first below it. See [Size limits and eviction](#size-limits-and-eviction). |
 | `--stats-interval-seconds N` | `60` | 0 to 86,400 | Seconds between `capture stats` and `output stats` events. `0` disables them. Final stop events are always written. See [Log events and counters](monitoring.md). |
 
-The binary has no help or version output. Starting it from a console exits with code 1 and
-prints nothing. For the file version, see [build.md](build.md#build-the-executable). For the
-running version, see the `version` field of `capture started` in
+The binary has no help or version output. Run from a console, it exits with code 1 and prints
+nothing. For the file version, see [build.md](build.md#build-the-executable). For the running
+version, see the `version` field of `capture started` in
 [monitoring.md](monitoring.md#periodic-and-final-reports).
 
 ### Removed options
 
-The service rejects `--output`/`-o`, `--max-output-bytes`, `--metrics`, `--help`, `-h`,
-`--version`, `-V`, and `--etw-flush-ms` at parsing. This build removes `--etw-flush-ms`. A binary
-path with a rejected option does not start. The service writes no capture or metrics files, except
-spool segments.
+The service rejects these options during parsing: `--output` (`-o`), `--max-output-bytes`,
+`--metrics`, `--etw-flush-ms`, `--help` (`-h`), and `--version` (`-V`). A service path that
+contains a rejected option does not start. The service writes no capture or metrics files. The
+only files it writes are the spool files.
 
 ### Diagnostic flags (`diag-timing` builds only)
 
@@ -245,19 +246,19 @@ during the handshake is a network failure, and the service retries.
 
 - **Versions and library:** TLS 1.2 and TLS 1.3 only, through rustls with the `ring` provider.
   Schannel does not handle the record layer.
-- **Verification:** Windows CryptoAPI checks the certificate through `rustls-platform-verifier`,
-  against the machine store, including roots pushed by Group Policy. The certificate must match
-  `--tls-server-name`, or the receiver IP when that flag is unset. SNI is sent only for a DNS name,
-  so the default name and an IP literal send none. For an IP address, the certificate should carry
-  an `iPAddress` SAN. Whether a `dNSName` SAN or the common name also matches an IP address is not
-  verified.
-- **Revocation:** The verifier checks only the receiver (end-entity) certificate, on a best-effort
-  basis. If the status cannot be retrieved, the connection proceeds. Causes include an unreachable
-  Online Certificate Status Protocol (OCSP) responder or certificate revocation list (CRL)
-  distribution point. A certificate that names neither is not checked. A certificate that
-  CryptoAPI reports as revoked is rejected. Network retrieval has a cumulative 10-second limit. A
-  late verifier fails the next socket write with a timeout, which is a network failure and is
-  retried. The service does not provide hard-fail revocation.
+- **Verification:** Windows CryptoAPI checks the certificate through `rustls-platform-verifier`.
+  It uses the machine store, including roots that Group Policy adds. The certificate must match
+  `--tls-server-name`, or the receiver IP address when that flag is unset. The service sends SNI
+  (the server name in the TLS handshake) only for a DNS name. For an IP address, the certificate
+  should carry an `iPAddress` SAN (subject alternative name). Whether a `dNSName` SAN or the common
+  name also matches an IP address is not verified.
+- **Revocation:** The verifier checks only the receiver (end-entity) certificate, and it does so
+  on a best-effort basis. If it cannot get the status, the connection continues. Common causes are
+  an unreachable Online Certificate Status Protocol (OCSP) responder or a certificate revocation
+  list (CRL) endpoint. A certificate that names neither is not checked. CryptoAPI rejects a
+  certificate that it reports as revoked. This code sets no separate time limit on these requests.
+  A verifier that runs late fails the next socket write with a timeout. That counts as a network
+  failure, and the service retries. The service does not enforce hard-fail revocation.
 - **Failure class:** A failed certificate check is a protocol failure. On the first connection it
   stops the service with Event ID 1. On a reconnect it is a counted failed attempt, and the service
   keeps retrying. A TLS alert after the handshake follows the same rule, with `cause` `tls`. A
@@ -279,7 +280,7 @@ The handshake runs under the 2-second deadline. See
 
 ## Spool
 
-The spool keeps frames on disk while the receiver is down or slow. It is on by default. On
+The spool keeps frames on disk while the receiver is down or slow. It is on by default. After a
 reconnect, the service sends stored frames first, oldest first. The spool needs a protected folder
 that the service does not create. See [Create the spool folder](install.md#create-the-spool-folder).
 
@@ -331,7 +332,7 @@ The key:
   record, and zeroes the schedule. The expanded schedule holds the key for the whole seal or
   open: about 5 µs for a 64 KiB record, longer for larger records (up to about 70 µs for a
   1 MiB record). Between records, the key bytes in the page are ciphertext. The cost is about
-  75 µs of CPU a second at 10,000 queries per second (about 2.5 µs for each record). Each seal or
+  75 µs of CPU a second at 10,000 queries per second. At that rate the spool seals about 30 records a second, so each record costs about 2.5 µs on average. Each seal or
   open checks the decrypted bytes against a SHA-256 check value taken when the key was loaded.
   The service zeroes the page at stop.
 - If `CryptUnprotectMemory` fails, nothing changes and the service keeps the key. That write
@@ -473,11 +474,20 @@ not send it before exit. For the receiver write cutoff, see
 
 ## Startup and shutdown deadlines
 
-- **Startup:** The deadline is 10 seconds, plus 1 second per 16,384 `--capacity` slots, rounded up.
-  The default 131,072 gives 18 seconds, 262,144 gives 26 seconds, and 524,288 gives 42 seconds. The previous default 65,536
-  gave 14 seconds, the one before it (24,576) gave 12 seconds, and 8,192 gave 11 seconds. The deadline covers identity checks, argument validation, receiver connection,
-  spool open, pool allocation, and capture start. Capture start has its own inner 10-second
-  deadline.
+- **Startup:** The deadline is 10 seconds, plus 1 second for each 16,384 `--capacity` slots,
+  rounded up. Examples:
+
+  | `--capacity` | Startup deadline |
+  | --- | --- |
+  | 8,192 | 11 seconds |
+  | 24,576 | 12 seconds |
+  | 65,536 | 14 seconds |
+  | 131,072 (default) | 18 seconds |
+  | 262,144 | 26 seconds |
+  | 524,288 | 42 seconds |
+
+  The deadline covers identity checks, argument validation, the receiver connection, spool open,
+  pool allocation, and capture start. Capture start has its own inner 10-second deadline.
 - **SCM progress:** The first `START_PENDING` report has a 10-second wait hint. After the arguments
   are read, the service reports the full startup deadline, and it advances the checkpoint after
   every 16,384 allocated pool slots. `sc.exe query EtwDnstap` shows `CHECKPOINT` and `WAIT_HINT`.

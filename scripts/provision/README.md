@@ -1,6 +1,6 @@
 # Provisioning scripts
 
-> **Status:** Current · **Describes:** the grant script at commit `58fde72` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100), and 2026-11-03 (run by the MSI) · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the grant script on branch `spool-encryption` · **Evidence dated:** 2026-11-01 (validated on Windows Server 2025, build 26100), and 2026-11-03 (run by the MSI) · **Reviewed:** 2026-11-05
 >
 > See [the validation record](../../docs/history/localservice-restricted-validation.md).
 
@@ -86,17 +86,12 @@ The MSI runs the script as SYSTEM with `-Confirm:$false`. See
 [packaging/msi/README.md](../../packaging/msi/README.md).
 
 Every run also strips ACEs for the service SID from every other descriptor
-under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. This removes two
-kinds of grant:
-
-- Grants that earlier versions of the script made on the default GUID and on
-  the DNS provider GUID.
-- Copies of those grants that other components made.
-
-A non-default
-descriptor that equals the default once those ACEs are gone is removed, so ETW
-falls back to the default exactly as before. Nothing else is changed. `-Remove`
-does the same for every descriptor, the session GUIDs included.
+under `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Security`. This removes grants
+that earlier script versions made on the default GUID and on the DNS provider
+GUID, and copies of those grants that other components made. A non-default
+descriptor that equals the default once those ACEs are gone is deleted, so ETW
+falls back to the default exactly as before. Nothing else changes. `-Remove`
+does the same for every descriptor, including the session GUIDs.
 
 The script is idempotent. It does not change group membership. Add the service
 SID to Performance Log Users separately:

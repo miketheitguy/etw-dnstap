@@ -1,6 +1,6 @@
 # Diagnose and remediate receiver shutdown resets
 
-> **Status:** Current (operator guide) · **Evidence dated:** the recorded failure is undated in text · **Commit:** not recorded · **Reviewed:** 2026-11-03
+> **Status:** Current (operator guide) · **Evidence dated:** the recorded failure is undated in text · **Commit:** not recorded · **Reviewed:** 2026-11-05
 
 This guide is for maintainers of the documented DNS-collector lab receiver. It covers an
 intermittent Windows service stop failure during the Frame Streams STOP/FINISH exchange,
@@ -77,7 +77,9 @@ If the change causes a regression, follow these steps:
 2. Check that its checksum matches the recorded value.
 3. Apply the restored configuration with the same receiver procedure.
 
-Do not change the sender to add automatic resend or to extend the shutdown timer. A passing local test or a clean record count does not prove that the live problem is
+Do not change the sender to add automatic resend or to extend the shutdown timer.
+
+A passing local test or a clean record count does not prove that the live problem is
 solved.
 
 ## Source versions

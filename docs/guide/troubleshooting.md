@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-04
+> **Status:** Current · **Describes:** the code at commit `66c3de4` · **Reviewed:** 2026-11-05
 
 Use this guide to find the cause of a failed start, restarts, drops, or missing
 records. Start with the Application event log and the SCM state.
@@ -12,11 +12,11 @@ Find the heading that matches the symptom. For a log message, use
 
 ## Read the diagnostics
 
-The service writes diagnostics only to the Application log, source `EtwDnstap`.
-It writes nothing to stdout or stderr. A failed log write never stops capture.
-The event IDs are listed in [Log event IDs](monitoring.md#log-event-ids). Event ID 1
-is a fatal failure, 5 is a watchdog abort, and 6 is a panic. IDs 10 to 16 report data
-loss, and IDs 20 to 28 report a risk of it. See
+The service writes diagnostics only to the Application log, source `EtwDnstap`. It
+writes nothing to stdout or stderr. A failed log write never stops capture. For the
+meaning of each Event ID, see [Log event IDs](monitoring.md#log-event-ids). Event ID 1
+is a fatal failure. Event ID 5 is a watchdog abort, and 6 is a panic. IDs 10 to 16
+report data loss. IDs 20 to 28 report a risk of loss. See
 [Event IDs for data loss](#event-ids-for-data-loss).
 
 Read the stored failure text:
@@ -40,8 +40,9 @@ A console start exits with code 1 and prints nothing, whatever arguments you pas
 
 ## Event log messages
 
-Search the Application log for the message. Each row matches the start of the
-message.
+Search the Application log for the text in the first column. A fatal failure (Event ID 1)
+starts with `EtwDnstap failed:`, and the text follows it. Other rows are whole messages
+or parts of one.
 
 | Message | Event ID | Meaning |
 | --- | --- | --- |
@@ -183,7 +184,7 @@ peaks cover the last 60 seconds ([definitions](monitoring.md#output-counters)).
 | `bytes_sent` | Rate below the capture byte rate | The link takes less than arrives. No counter reports the capture byte rate: it is the `bytes_sent` rate plus the growth of `spool_bytes` plus the `spool_dropped_bytes` rate. |
 | `spool_oldest_age_ms` | Large, and rising | The data that the link takes now is at most this old. At the cap, the spool deletes its oldest segments, which hold the oldest data. |
 | `send_queue_depth_max` | Near 256 | The router falls behind: the spool disk is slow, the router thread did not run, or late ETW events arrived in one burst. It is not the receiver. At 256 the parser drops frames. |
-| `write_max_recent_us` | 1,000,000 or more | A socket write blocks now. A write that stalls for 2 seconds ends the session. `write_max_us` is the maximum since the start, so it cannot show this. |
+| `write_max_recent_us` | 1,000,000 or more | A socket write blocks now. The session ends when the receiver accepts no bytes for `--receiver-stall-seconds` (default 15) while data waits. `write_max_us` is the maximum since the start, so it cannot show this. |
 | `router_wait_max_recent_us` | Far above 50,000 | The router thread woke late from its wait of at most 50 ms. The thread did not get a processor in time: look for CPU contention in the guest or on the host. |
 | `router_pass_max_recent_us` | Large | A call in a router pass blocked or ran long, such as a spool disk write. |
 
@@ -391,10 +392,9 @@ exchange fails. A lost receiver connection does not stop it.
 
 ## Event IDs for data loss
 
-The service checks its loss counters on the stats tick and writes one warning for each
-cause that rose. Each event has its own ID, so an alert can act on the ID alone. The
-fields and the rules are in [Loss and risk warnings](monitoring.md#loss-and-risk-warnings).
-A restart resets every counter.
+Each cause of loss or risk has its own Event ID. The fields and the rules are in
+[Loss and risk warnings](monitoring.md#loss-and-risk-warnings). A restart resets every
+counter.
 
 Loss, written after the data is gone:
 
@@ -538,9 +538,10 @@ The deadlines and their values are in
 [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
 
 If a deadline passes, the service writes Event ID 5 and aborts the process. The
-message names the phase, for example `the startup deadline of 12 s expired`. Before
-the service reads its arguments, the message says `the startup deadline of 10 s
-expired`.
+message names the phase. For example, with the default `--capacity` of 131072, the
+startup deadline is 18 s, and the message says `the startup deadline of 18 s expired`.
+The startup deadline grows with `--capacity`. Before the service reads its arguments,
+the deadline is 10 s.
 
 The abort does not free resources that native calls still use, so the capture can be
 incomplete and a real-time ETW session can remain. Check `logman query -ets`, then stop

@@ -1,11 +1,12 @@
 # Log events and counters
 
-> **Status:** Current · **Describes:** the code at commit `13972d8` · **Reviewed:** 2026-11-04
+> **Status:** Current · **Describes:** the code at commit `66c3de4` · **Reviewed:** 2026-11-05
 
-The service writes diagnostics to the Application event log under source `EtwDnstap`.
-It writes no stdout, stderr, capture, or metrics files, except the spool, which stores
-unsent frames in segment files. See [Spool](configuration.md#spool). The
-[performance counters](#performance-counters) show many of the same values.
+The service writes diagnostics to the Application event log, under the source
+`EtwDnstap`. It writes no stdout, stderr, capture, or metrics files. The only other
+files it writes are the spool segments, which hold unsent frames. See
+[Spool](configuration.md#spool). The [performance counters](#performance-counters)
+report many of the same values.
 
 ## Log event IDs
 
@@ -37,12 +38,12 @@ IDs 10 to 16 say that data was lost. IDs 20 to 28 say that loss is likely or pos
 Each is a Warning, so a filter on the type still finds them; a filter on Event ID 3 does
 not. See [Loss and risk warnings](#loss-and-risk-warnings).
 
-The messages of every ID are in [Spool messages](#spool-messages),
+The messages for each ID are in [Spool messages](#spool-messages),
 [Receiver, schema, and rate messages](#receiver-schema-and-rate-messages), and
 [Loss and risk warnings](#loss-and-risk-warnings).
 
-The service logs information level and above, with no debug events. Event text is cut
-at 8,192 UTF-16 code units. Capture never stops because an event cannot be written.
+The service logs information level and above. It writes no debug events. Event text is
+cut at 8,192 UTF-16 code units. Capture never stops because an event cannot be written.
 
 ## Periodic and final reports
 
@@ -58,8 +59,8 @@ Each snapshot first asks ETW for its loss counters. Shutdown always writes
   `tls_server_name` when set.
 - `capacity`, `etw_buffer_kib`, `etw_flush_seconds`, and the requested
   `etw_min_buffers` and `etw_max_buffers`.
-- `receiver_stall_seconds`: how long the receiver may accept no bytes, while the service
-  has data to send, before the service ends the session. See
+- `receiver_stall_seconds`: how long the receiver may accept no bytes while the service
+  has data to send. After that, the service ends the session. The default is 15. See
   [`--receiver-stall-seconds`](configuration.md#options).
 - `match_any_keyword` and `match_all_keyword` (hexadecimal), `keyword_fallback`, and
   `failed_responses_captured`.
@@ -232,7 +233,7 @@ These fields appear on `output stats` and `output stopped`. The three fields in
 | `receiver_reconnects` | Successful reconnects after the first session. |
 | `receiver_reconnect_failures` | Failed reconnect attempts at connect, handshake, or protocol. Also counts a reconnect thread that did not start or ended without a result. |
 | `disconnected_dropped` | Frames lost in the sink. With no spool: the live frames that the link did not hand to the socket in full when a connection failed (the cut frame and every later frame of the block in hand, and the frames in the link queue), and every live frame that arrives while the receiver is down. With a spool: only the one live block that comes back from the link at a shutdown that follows a spill, because it is older than the spool backlog and cannot go in front of it. A failed connection with a spool counts nothing here: its unsent live frames go back to the spool, and its unsent replay frames stay in it. This is not an upper bound on loss. Bytes that the kernel accepted before a failure are not counted, even if the connection then loses them. A counted frame did not reach the receiver whole, except in the TLS 1.3 key update window, where the receiver may hold it. Not in `intake_dropped`. |
-| `slow_writes`, `write_max_us` | The link thread never blocks in a send. It writes without waiting, and when the socket takes no more it waits for the socket to become writable. For each block (about 64 KiB, or one replay batch) it adds up those waits. `slow_writes` counts blocks whose wait reached 5 ms, and `write_max_us` is the longest wait of one block, in microseconds. Both count since the service started. A wait that goes on is added to `write_max_us` while it lasts. |
+| `slow_writes`, `write_max_us` | Log-report fields only. They are not performance counters. The link thread never blocks in a send. It writes without waiting, and when the socket takes no more it waits for the socket to become writable. For each block (about 64 KiB, or one replay batch) it adds up those waits. `slow_writes` counts blocks whose wait reached 5 ms, and `write_max_us` is the longest wait of one block, in microseconds. Both count since the service started. A wait that goes on is added to `write_max_us` while it lasts. |
 | `write_max_recent_us` | Gauge: the longest wait of one block for the socket to become writable, in microseconds, in the last 60 seconds. Use it, not `write_max_us`, to see whether the receiver is slow now. See [Windows of the recent peaks](#windows-of-the-recent-peaks). |
 | `router_wait_max_recent_us` | Gauge: the longest single call of the router thread's wait for work, from entry to return, in microseconds, in the last 60 seconds. The wait ends after at most 50 ms, so a value far above 50,000 means the thread woke late: it did not get a processor in time, because of CPU contention in the guest or on the host, or because the whole process was held. The wait that the router does for the link thread during a hand-back is in `router_pass_max_recent_us`. See [Windows of the recent peaks](#windows-of-the-recent-peaks). |
 | `router_pass_max_recent_us` | Gauge: the longest router pass outside its wait, in microseconds, in the last 60 seconds. A pass takes the link thread's messages, follows the link, saves the delivered position, routes and replays blocks, and takes the monitor sample. A large value means a call in the pass blocked or ran long, for example a disk write or the hand-back wait. Read it with `router_wait_max_recent_us`: together they tell a late wake from a blocking call when `queue_dropped` rises. |
@@ -420,8 +421,9 @@ field in [Capture counters](#capture-counters) or [Output counters](#output-coun
 | Bytes Sent/sec | 62 | Bytes per second that the socket of the receiver connection accepted (with TLS, including record headers and tags). Add the growth of `spool_bytes` to get the capture rate in bytes ([relationships](#counter-relationships)). | `bytes_sent` |
 
 The `/sec` values are computed by the reader from the change over time. All values are
-64-bit with scale 0. IDs 1 to 3 and 62 are `PERF_COUNTER_BULK_COUNT`. IDs 33 and 43 are
-`PERF_LARGE_RAW_FRACTION`, each with a hidden `PERF_LARGE_RAW_BASE` counter. The other
+64-bit with scale 0. IDs 1 to 3 and 62 are `PERF_COUNTER_BULK_COUNT`. IDs 33, 43, 69,
+71, 73, and 75 are `PERF_LARGE_RAW_FRACTION` counters. Each has a hidden
+`PERF_LARGE_RAW_BASE` counter next to it (IDs 34, 44, 70, 72, 74, and 76). The other
 totals and gauges are `PERF_COUNTER_LARGE_RAWCOUNT`.
 
 #### Totals since the service started
@@ -452,8 +454,9 @@ How the totals relate:
 - Events Dropped (12) includes IDs 13 and 14. Jumbo Pool Exhausted Drops (15) is part of
   ID 14, so do not add them. Events Dropped also includes drops when the channel's parser
   end is gone. Those have no counter of their own.
-- IDs 18, 52, and 55 are sink losses, and a frame is in at most one. A frame in 18 did not reach the receiver whole, except in the TLS 1.3 key update window. Frames Replayed (54) is not a loss.
-  have reached the receiver. Frames Replayed (54) is not a loss.
+- IDs 18, 52, and 55 are sink losses, and a frame is in at most one. A frame in 18 did not
+  reach the receiver whole, except in the TLS 1.3 key update window. Frames Replayed (54)
+  is not a loss.
 - To count every frame and event lost, add 12, 16, 18, 52, and 55. Leave out 17, which counts buffers. The sum misses bytes that the kernel accepted before a connection failed, because they are lost without a count.
 
 #### Gauges

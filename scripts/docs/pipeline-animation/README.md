@@ -14,7 +14,7 @@ frames go to the disk spool and are replayed after the reconnect.
 
 ## Build the GIF
 
-You need PowerShell 7 on Windows and Python 3. The build needs no other
+You need PowerShell 7 on Windows and Python 3. The build needs no extra
 package.
 
 1. Run the build script from the repository root:
@@ -23,7 +23,7 @@ package.
    .\scripts\docs\pipeline-animation\Build-Animation.ps1
    ```
 
-2. Check that the last line says `all verified`.
+2. Check that the last line contains `all verified`.
 
 The script writes the raw frames and PNG previews to `target\pipeline-animation\`.
 Git ignores that folder. Open the previews to check the layout before you commit

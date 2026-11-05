@@ -1,21 +1,26 @@
 # Set up the dnstap receiver
 
-> **Status:** Current · **Describes:** the code at commit `58fde72` · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the code at commit `66c3de4` · **Reviewed:** 2026-11-05
 
-Prepare the collector before you start the service. The service also reconnects if the
-receiver starts later.
+Set up the dnstap receiver (the collector that accepts the service's data) before you start
+the service. The service also reconnects if the receiver starts later.
 
 ## Receiver configuration
 
-The service keeps one outbound TCP connection to `--receiver`. It negotiates the content
-type `protobuf:dnstap.Dnstap` with READY, ACCEPT, and START, then sends data frames. On
-shutdown, it sends STOP and waits for FINISH. After a failure, it reconnects and
-negotiates again. Frames in flight at a failure are counted, not resent. While the receiver
-is down, frames go to the spool if one is in use. See [Spool](configuration.md#spool).
+The service keeps one outbound TCP connection to `--receiver`. The connection uses Frame
+Streams, a framing protocol for dnstap. The service negotiates the content type
+`protobuf:dnstap.Dnstap` with the control messages READY, ACCEPT, and START, and then sends
+data frames. When connected at shutdown, the service sends STOP and waits up to 2 seconds for
+FINISH.
 
-TLS is the default. The service checks the receiver certificate and presents no client
-certificate, so the receiver must not require one. With `--plaintext`, the connection has
-no peer authentication.
+After a failure, the service reconnects and negotiates again. Frames the socket did not fully
+accept go back for retry. With a spool, they are stored and sent after reconnect. Without a
+spool, they are counted as dropped. Frames the socket fully accepted are not sent again. While
+the receiver is down, new frames go to the spool if one is in use. See [Spool](configuration.md#spool).
+
+TLS (Transport Layer Security, the encryption used by HTTPS) is the default. The service
+checks the receiver certificate and presents no client certificate, so the receiver must not
+require one. With `--plaintext`, the connection has no peer authentication.
 
 This example is for DNS-collector 3.2.3. It listens for dnstap and writes text to the
 console. Replace the listen IP with your collector's address:
@@ -72,9 +77,9 @@ are met:
   that you pass to `--tls-server-name`. The Windows platform verifier does the name
   matching. Whether a `dNSName` SAN or the common name also works is not verified.
 
-Revocation endpoints need not be reachable. The service proceeds when a revocation status
-cannot be obtained. A slow endpoint can push the handshake past its 2-second deadline. See
-[TLS](configuration.md#tls).
+Revocation endpoints do not need to be reachable. If the revocation status cannot be
+obtained, the service continues. A slow endpoint can push the handshake past its 2-second
+deadline. See [TLS](configuration.md#tls).
 
 To import a private CA into the machine root store, run:
 
@@ -82,13 +87,12 @@ To import a private CA into the machine root store, run:
 Import-Certificate -FilePath '.\receiver-ca.cer' -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-A certificate rejected on the first connection at startup stops the service with Event ID 1.
-So does a receiver that answers the handshake with plaintext.
+If the first connection at startup fails the certificate check, the service stops with
+Event ID 1. It also stops if the receiver answers the handshake with plaintext.
 
-If the receiver is down at startup, the service retries. It logs one Event ID 4 error that
-names the trust store, the server name, and the client-certificate requirement as checks.
-A receiver that stays silent or closes the connection during the handshake is an outage,
-and the service retries. See [TLS](configuration.md#tls).
+If the receiver is down at startup, the service retries. It logs one Event ID 4 error. A
+receiver that stays silent or closes the connection during the handshake counts as an outage,
+and the service retries. For the full list of TLS failure cases, see [TLS](configuration.md#tls).
 
 ## Next steps
 

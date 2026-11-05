@@ -1,10 +1,10 @@
 # Tune capture for load
 
-> **Status:** Current · **Describes:** the code at commit `13972d8` · **Reviewed:** 2026-11-04
+> **Status:** Current · **Describes:** the code at commit `66c3de4` · **Reviewed:** 2026-11-05
 
-Use this guide to read the defaults, change `--etw-*` and `--capacity` for your query rate, and
-`--spool-max-mib` for the outage you must cover. Option details are in the
-[configuration reference](configuration.md#options). Loss counters are in
+Use this guide to choose capture settings for your query rate. It covers the `--etw-*` options,
+`--capacity`, and `--spool-max-mib`. For each option's range and syntax, see the
+[configuration reference](configuration.md#options). For loss counters, see
 [Log events and counters](monitoring.md).
 
 Lab results are in [Guide lab results, 2026-11](../history/guide-lab-results-2026-11.md) and
@@ -41,8 +41,6 @@ ETW can apply other values than the requested ones. The service then writes
 ## Defaults
 
 <a id="settings-for-200000-queries-per-second"></a>
-
-This is the canonical statement of the default limits. Other documents link here.
 
 The defaults are `--etw-buffer-kib 32 --etw-min-buffers 12 --etw-max-buffers 64
 --capacity 131072`: 32 KiB buffers, at least 12 of them and at most 64, and a channel of
@@ -100,12 +98,10 @@ Costs:
   more than 32 logical processors. The previous defaults allowed 16 MiB (128 buffers of
   128 KiB). The minimum reserves 12 × 32 KiB = 384 KiB at start, or 768 KiB on a 12-vCPU guest,
   where ETW's own minimum is 24.
-- Counted storage is 283.03 MiB at the default capacity. See [Storage](configuration.md#storage).
+- Counted storage at the default capacity is 283.03 MiB. See [Storage](configuration.md#storage).
   The working set at 131,072 is about 356 to 400 MB.
-- The startup deadline is 18 seconds (26 seconds at `--capacity 262144`, 42 seconds at
-  `--capacity 524288`). See
+- The startup deadline grows with `--capacity`. See
   [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
-- The sender's block pool is 68.5 MiB. It does not depend on an option.
 
 The sender queues are sized for the same rate. See [Spool sizing](#spool-sizing).
 
@@ -232,9 +228,9 @@ At 65,536 the channel came close to full even on an idle guest. See
   factor.
 - Larger ETW buffers reduce `etw_lost`. In the lab, 64 KiB × 256 buffers removed the
   `etw_lost` that earlier defaults had at 30,000 queries per second and above.
-- The largest `--capacity` is 524,288. It uses 1,108.03 MiB of counted storage at 64 jumbo
-  slots, and the startup deadline is 42 seconds. 262,144 uses 558.03 MiB and a 26-second
-  deadline.
+- The largest `--capacity` is 524,288. Its storage and startup deadline are in
+  [Storage](configuration.md#storage) and
+  [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
 - If `ring_dropped` rises at a rate well below the tier, check the delivery gaps in the lab
   write-up before you raise `--capacity` further.
 
@@ -338,12 +334,12 @@ including the 4-byte length prefix. Each query makes two frames: event 256 and e
 These are calculations from the 103-byte average. The lab has not run a spool outage, so no
 figure here is a measured result.
 
-While the receiver connection drains a backlog, the service holds up to about 8.7 MiB (127 batches
-each of at most 71,684 bytes) that it has read and the connection has not yet taken. The segments that hold any of it
-stay on disk whole and count in the cap and in `spool_bytes`, and the cap does not delete them.
-Those segments can hold more than that: that data plus two segments, which is 24.7 MiB at the
-smallest cap (64 MiB, with 8 MiB segments) and about 137 MiB with 64 MiB segments (caps of 512 MiB
-and above). The smallest cap always has other segments to delete.
+While the receiver drains a backlog, the service holds up to about 8.7 MiB of data it has read but
+the receiver has not yet accepted. That is 127 batches of at most 71,684 bytes each. The segments
+that hold this data stay on disk whole. They count toward the cap and in `spool_bytes`, and the
+cap does not delete them. Including those segments, the total can reach about 8.7 MiB plus two
+segments: 24.7 MiB at the smallest cap (64 MiB, with 8 MiB segments), and about 137 MiB with 64 MiB
+segments (caps of 512 MiB and above).
 
 - Size the cap for the longest outage you must cover. Multiply MiB per hour by the hours, and
   add a margin. For 10,000 queries per second and a two-hour outage, the spool needs about

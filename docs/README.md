@@ -1,8 +1,8 @@
 # Documentation index
 
-> **Status:** Current · **Describes:** the repository at commit `58fde72` for the layout, conventions, and file list · **Reviewed:** 2026-11-03
+> **Status:** Current · **Describes:** the `spool-encryption` branch at commit `66c3de4` for the layout, conventions, and file list · **Reviewed:** 2026-11-05
 
-This index lists every document in `docs/`. Each status block gives its status, evidence date, commit, and review date.
+This index lists every Markdown and diagram file in `docs/`, except `docs/assets/`. Each status block gives its status, evidence date, commit, and review date.
 
 ## Where to start
 
@@ -19,7 +19,7 @@ This index lists every document in `docs/`. Each status block gives its status, 
 | [`guide/`](guide/) | Operator guides | Current |
 | [`design/`](design/) | Architecture and reference | Current |
 | [`performance/`](performance/) | Latest native performance record and its support | Current review. Supporting records are Historical |
-| [`plans/`](plans/) | Plans and analyses not yet executed | Proposed |
+| [`plans/`](plans/) | Plans and analyses that are not executed, or only partly | Proposed, Approved, or In progress |
 | [`history/`](history/) | Finished campaigns, reviews, completed plans, superseded documents | Historical, Superseded |
 | [`assets/performance/`](assets/performance/) | Graph SVGs, CSV copies, provenance manifests | Generated |
 | [`assets/pipeline/`](assets/pipeline/) | Animated GIF of the data path | Current |
@@ -27,13 +27,13 @@ This index lists every document in `docs/`. Each status block gives its status, 
 
 Graph assets stay in `docs/assets/performance/` because [`plot-pooled-wpr.py`](../scripts/performance/plot-pooled-wpr.py) writes there by default. The pooled plan, graphs, and trace analysis stay in `performance/` because [`build-pooled-report.py`](../scripts/performance/build-pooled-report.py) links to them.
 
-Each Current document has one type: procedure, reference, diagnosis, or design. See [Document types](../CONTRIBUTING.md#document-types) and [Writing style](../CONTRIBUTING.md#writing-style).
+Each Current document has one type: procedure, reference, diagnosis, design, or record. See [Document types](../CONTRIBUTING.md#document-types) and [Writing style](../CONTRIBUTING.md#writing-style).
 
 ## Status values
 
 | Status | Meaning |
 | --- | --- |
-| **Current** | Describes the code and procedures on `main`. Kept up to date with the code. |
+| **Current** | Describes the code and procedures at the commit it names, normally `main`. Kept up to date with the code. |
 | **Historical** | A dated campaign, review, or plan. Its results and hashes apply to its recorded binaries and are not edited. |
 | **Superseded** | Replaced by a later implementation or document. The status block links the replacement. |
 | **Proposed** | A design or plan that is not implemented or not yet executed. |
@@ -82,11 +82,12 @@ Maintainer documents in [`design/`](design/):
 | [Ring capacity and shutdown](design/ring-buffer.md) | Channel bounds, parser wake, delivery batches, shutdown order |
 | [Single-pass decoder](design/single-pass-decoder.md) | Decoder grammar, schema rejection rule, bounds |
 | [Measurement terms and result gates](design/measurement-terms.md) | Units, counters, and gates for performance reports |
+| [Slow and saturated receiver](design/slow-receiver.md) | Routing and link design for a slow or saturated receiver |
 | [Code-architecture diagram](design/diagrams/code-architecture.drawio) | Editable architecture diagram. See the [diagram note](#diagram-note) |
 
 ### Diagram note
 
-The labels match `main` at `a2ae289`, and the layout is from October 28, 2026. It is out of date. It omits the single-pass decoder (`etw/decode.rs`, `ee94de6`), the parser wake callback (`7f91264`), TLS in `network.rs`, `QueuedSink` and `dnstap-sender` (`sender.rs`), and the disk spool (`src/spool/`). Its supervisor box lists "flush", but the parser thread flushes. For the current design, use [Data path](design/data-path.md), [Pooled ETW intake](design/pooled-intake.md), and [Single-pass decoder](design/single-pass-decoder.md).
+The diagram title cites `a2ae289`, but some labels describe later changes: the module split (`55fdbe5`) and the LocalService restricted token (`1a54272`). Its layout is from October 28, 2026. The diagram is out of date. It omits the single-pass decoder (`src/etw/decode.rs`, added in `e59425f`), the parser wake callback (`7f91264`), TLS in `network.rs`, `QueuedSink` and `dnstap-sender` (`sender.rs`), and the disk spool (`src/spool/`). Its supervisor box lists "flush", and that is correct: the parser thread does the flushing. For the current design, use [Data path](design/data-path.md), [Pooled ETW intake](design/pooled-intake.md), and [Single-pass decoder](design/single-pass-decoder.md).
 
 ## Performance
 
@@ -107,7 +108,8 @@ Plans in [`plans/`](plans/) are not executed, or only partly. A plan moves to `h
 
 | Document | Contents |
 | --- | --- |
-| [Spool encryption plan](plans/spool-encryption-plan.md) | AES-128-GCM spool records, the CNG-wrapped key, and the key held in memory. Implemented on the `spool-encryption` branch; lab run open |
+| [Spool encryption plan](plans/spool-encryption-plan.md) | AES-128-GCM spool records, the CNG-wrapped key, and the key held in memory. Approved. Implemented on the `spool-encryption` branch. The lab run is recorded in [its validation record](history/spool-encryption-validation.md) |
+| [Slow and saturated receiver plan](plans/slow-receiver-plan.md) | Slow-receiver handling. In progress. Waves 1 to 4 are complete, and findings L-7 and L-8 are open |
 | [Filtered DNS ramp plan](plans/filtered-ramp-plan.md) | Client-event filter ramp. Regenerate before the next campaign |
 | [Parser and TCP threading analysis](plans/parser-tcp-threading-analysis.md) | Parallel parsing and TCP threading. Partly out of date |
 | [Parallel parser workers plan](plans/parallel-parser-workers-plan.md) | Bottleneck diagnosis and parallel workers. Partly executed |
@@ -124,11 +126,13 @@ Dated records in [`history/`](history/). Do not use their commands as procedures
 | [LocalService restricted-SID validation](history/localservice-restricted-validation.md) | ETW rights the restricted token needs |
 | [Skills evaluation lab validation](history/skills-evaluation-lab-validation.md) | Lab checks: reclaim, pinned SDDL, backup, SCM recovery |
 | [Cleanup validation](history/cleanup-validation.md) | Gates per wave, cleaned-build lab run, review results |
-| [ETW buffer wake validation](history/buffer-wake-validation.md) | Cause of the 1 s burst loss; per-buffer wake results |
+| [ETW buffer wake validation](history/buffer-wake-validation.md) | Cause of the 1 s burst loss, and per-buffer wake results |
 | [ETW flush removal validation](history/flush-removal-validation.md) | Results without the explicit flush |
 | [200,000 QPS validation](history/200k-qps-validation.md) | Two runs with 128 KiB buffers and a 262,144-slot channel |
 | [Guide lab results, 2026-11](history/guide-lab-results-2026-11.md) | Lab results stated in the guides before the trim: 10,000 and 200,000 QPS, flush-era loss |
 | [TCP sink spool lab validation](history/tcp-sink-spool-lab-validation.md) | Receiver outages, restart with leftovers, spool grant |
+| [Spool encryption lab validation](history/spool-encryption-validation.md) | First lab run of the encrypted spool, 2026-11-04. 10,000 QPS only |
+| [Slow receiver validation](history/slow-receiver-validation.md) | Before and after runs of the slow-receiver change (`a06f6fd`, `13972d8`), 2026-11-04 |
 | [Live load validation plan](history/live-load-validation-plan.md) | Stages L1 to L5. L4 not done |
 
 ### Performance campaigns

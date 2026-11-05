@@ -20,7 +20,8 @@ cargo build --locked --release
 - `Cargo.toml` denies rustc warnings and the Clippy lints `unwrap_used`, `undocumented_unsafe_blocks`, `print_stdout`, `print_stderr`, and `dbg_macro`. CI treats every Clippy warning, including `pedantic`, as an error. Do not add `#[allow]` without a comment that says why.
 - `multiple_unsafe_ops_per_block`, `missing_const_for_fn`, and `shadow_unrelated` also fail CI. Put one unsafe operation in each `unsafe` block, and give each one a `// SAFETY:` comment. A test module that rebinds a name in many sequential cases can carry one `#![expect(clippy::shadow_unrelated, reason = "...")]` at the top of its file. Do not use `allow`.
 - The first build rebuilds the standard library (`build-std`), so it is slow.
-- Expected results: `cargo test --locked` reports 443 passed, 0 failed, and 7 ignored (441 library tests plus the `console_output` and `version_resource` integration tests). `--features diag-timing` reports 448 passed, and `--features bench` reports 447 passed. Both report 7 ignored. Five ignored tests need an elevated session, the DNS Server role, or the production performance-counter provider. Two are manual benchmarks (`synthetic_pooled_intake_benchmark` and `parse_encode_benchmark`). The `lab.yml` workflow runs all ignored tests on the self-hosted `etw-lab` runner. Do not un-ignore them in a pull request.
+- Expected results at commit `66c3de4` (2026-11-05). `cargo test --locked` reports 790 passed, 0 failed, and 9 ignored. That total is 788 library unit tests, plus the `console_output` and `version_resource` integration tests. `--features diag-timing` reports 795 passed, and `--features bench` reports 794 passed. Both report 9 ignored. The counts change as tests are added, so check the failed count first.
+- Five ignored tests need an elevated session, the DNS Server role, or the production performance-counter provider. Four are manual benchmarks: `synthetic_pooled_intake_benchmark`, `parse_encode_benchmark`, `bench_seal_and_open_64_kib_records`, and `with_aead_cost_benchmark`. The `lab.yml` workflow runs all ignored tests on the self-hosted `etw-lab` runner. Do not un-ignore them in a pull request.
 
 ### Continuous integration
 
@@ -28,20 +29,21 @@ CI (`.github/workflows/ci.yml`, `windows-latest`) runs these checks:
 
 | Check | Command or script |
 | --- | --- |
-| Format | `cargo fmt --check`, in the root and in `fuzz/` |
+| Format | `cargo fmt --check`, in the root, `fuzz/`, and `tools/dns-stress/` |
 | Clippy | `-D warnings`, for the default, `diag-timing`, `fuzzing`, and `bench` feature sets |
 | Tests | The default, `diag-timing`, and `bench` feature sets |
 | Release build | Output in `release-build.log` |
-| Link exceptions | `scripts/ci/verify-link-exceptions.ps1` on that log. It fails when an LNK2047 object (ring's prebuilt NASM objects, which lack EH-continuation metadata) is missing from `scripts/ci/link-exceptions.txt`, or when a listed object is no longer reported. |
-| PE hardening | `scripts/ci/verify-pe.ps1` on the release executable: hardening flags, no PDB entry, no ASan or dynamic CRT imports |
-| Other | `tools/dns-stress` checks; Python tests in `scripts/performance` (including `archive/`); `cargo deny` on the root, `fuzz/`, and `tools/dns-stress/` lockfiles; the markdown link check, `python -I scripts/ci/linkcheck.py` |
+| Link exceptions | `scripts/ci/verify-link-exceptions.ps1` checks that log. It fails when an LNK2047 object is missing from `scripts/ci/link-exceptions.txt`. LNK2047 objects are ring's prebuilt NASM objects, which lack EH-continuation metadata. The script also fails when a listed object is no longer reported. |
+| PE hardening | `scripts/ci/verify-pe.ps1` on the release executable. It checks the hardening flags, and it fails on a PDB entry or an ASan or dynamic CRT import. |
+| Other | `tools/dns-stress` checks. Three Python test files in `scripts/performance` run: `test_metrics_ledger.py`, `test_pooled_intake_run.py`, and `archive/test_archived_analyzers.py`. `cargo deny` runs on the root, `fuzz/`, and `tools/dns-stress/` lockfiles. The Markdown link check runs with `python -I scripts/ci/linkcheck.py .` |
 
-Two jobs are advisory and do not block a merge:
+Four jobs are advisory. They do not block a merge:
 
-- `sanitizers` runs `cargo test-release` and `cargo asan`. It does not block a merge until it passes on hosted runners.
+- `sanitizers` runs `cargo test-release` and `cargo asan`. It stays advisory until it passes on hosted runners.
 - `miri` runs `cargo miri test` on `etw::decode`, `framestream`, `dnstap`, and `etw::keywords`. Its name filters skip every test that calls a `windows-sys` function, and three slow tests. To run it locally, run `rustup component add miri`, then `cargo miri setup` from a directory outside the repository, which holds a copy of `rust-toolchain.toml` (the sysroot build fails inside the repository). Then run the job's command with its `MIRIFLAGS`, `PROPTEST_CASES`, and `PROPTEST_DISABLE_FAILURE_PERSISTENCE` settings.
 
-Coverage and a 60-second fuzz smoke run (`fuzz/`) are report-only. The smoke run covers `decoder`, `control_frame`, and `plan_compiler`, not `spool_segment`. Local `cargo fuzz run` fails at build on MSVC with an LLVM COMDAT error, so the smoke run is advisory.
+- `coverage` is report only. It has no threshold.
+- `fuzz-smoke` runs each of `decoder`, `control_frame`, and `plan_compiler` for 60 seconds. It does not run `spool_segment`. A local `cargo fuzz run` fails at build on MSVC with an LLVM COMDAT error, so `fuzz-smoke` stays advisory.
 
 Property tests use `proptest`. Golden byte vectors in `src/dnstap/golden_tests.rs` compare the encoder with the upstream `dnstap.proto`. The fuzz targets (`decoder`, `control_frame`, `plan_compiler`, and `spool_segment`) live in the separate `fuzz/` workspace. They build with the `fuzzing` feature, which exposes internal entry points and is never enabled in a shipped build. Install the runner with `cargo install cargo-fuzz --version 0.13.2 --locked`. CI pins cargo-fuzz 0.13.2, cargo-deny 0.20.2, and cargo-llvm-cov 0.9.1 by hand in `.github/workflows/ci.yml`. Dependabot does not update these pins.
 
@@ -49,7 +51,7 @@ Property tests use `proptest`. Golden byte vectors in `src/dnstap/golden_tests.r
 
 ### Benchmarks
 
-The criterion benchmark in `benches/hot_path.rs` measures the per-event hot path on deterministic DNS records: slot copy, loopback socket write, decode, encode, `parse_and_encode`, and a two-thread producer and consumer. It needs the `bench` feature, which is never enabled in a shipped build. Without it, `cargo bench` runs nothing and reports no error, because the target declares `required-features`. Run the alias instead. It adds the feature and builds the standard library for unwinding:
+The criterion benchmark in `benches/hot_path.rs` measures the per-event hot path on deterministic DNS records. It covers slot copy, loopback socket write, decode, encode, `parse_and_encode`, and a two-thread producer and consumer. It needs the `bench` feature, which is never enabled in a shipped build. Without that feature, `cargo bench` runs nothing and reports no error, because the target declares `required-features`. Run the alias instead. It adds the feature and builds the standard library for unwinding:
 
 ```powershell
 cargo bench-hot-path
@@ -150,7 +152,7 @@ Passive-voice and tense findings from the linter are advisory. Do not apply this
 
 Use short imperative subjects in sentence case, such as `Add single-pass decoding, ETW flush control, and low-rate defaults`. Keep the subject under about 72 characters, and describe the behavior change in the body. Do not commit build output, captures, ETL files, or anything under `target/`.
 
-A pull request should state the behavior that changed and any default that changed, the commands you ran and their results, and whether it affects `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). If it does, add an entry there. Unit tests do not cover live ETW and DNS Server behavior, so say so if your change needs a live check.
+A pull request should state the behavior that changed and any default that changed. It should list the commands you ran and their results. Say whether it affects `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md), and if it does, add an entry there. Unit tests do not cover live ETW and DNS Server behavior. Say so if your change needs a live check.
 
 ## Scope
 
