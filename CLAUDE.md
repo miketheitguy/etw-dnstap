@@ -22,6 +22,9 @@ Write these instead:
   `C:\Program Files\EtwDnstap\` for the documented install location.
 - The generic form `C:\Users\` only where the text describes the trim-paths
   check itself (`scripts/ci/verify-pe.ps1`, `docs/guide/install.md`).
+- Vendored third-party files under `.agents/skills/` are outside this rule. Do
+  not edit them. The CI check (`No host directory paths` in
+  `.github/workflows/ci.yml`) skips them.
 
 Before a commit, check the staged changes and the commit message:
 
