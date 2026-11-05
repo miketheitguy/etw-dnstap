@@ -17,6 +17,9 @@
 //!   socket did not take inside rustls, so `WouldBlock` never cuts a record.
 //!   Neither `write_all`, `StreamOwned::write`, nor a `BufWriter` is used on
 //!   the data path: each hides how much of a write was accepted.
+//!   rustls allocates one buffer per encrypted record. Its unbuffered API does
+//!   not avoid that (it copies the allocated record into the caller's buffer);
+//!   see "Allocation on the TLS path" in `docs/design/data-path.md`.
 //!
 //! Two cases leave a piece in doubt, and the rule that an unconfirmed piece
 //! cannot have reached the receiver whole has one exception.

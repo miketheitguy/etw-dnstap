@@ -151,6 +151,18 @@ The router takes the FIFO back and sorts the frames by how far the socket got:
   again.
 - Frames that the socket fully accepted are not sent again.
 
+**Allocation on the TLS path.** Every stage up to the socket reuses its buffers, so the data
+path makes no heap allocation per event. TLS is the one exception: rustls allocates one buffer
+for each record it encrypts (up to 16 KiB of plaintext), and frees it after `write_tls` sends
+it. That is about 2,500 allocations a second at 41 MB/s. The rustls unbuffered API
+(`UnbufferedClientConnection`) does not remove it: in rustls 0.23.46 its `encrypt` still has
+the cipher allocate the record, then copies the record into the caller's buffer, so it adds a
+copy and saves nothing. Only a record layer outside rustls (traffic secrets taken with
+`dangerous_extract_secrets`, records sealed in place with `ring`) would remove the allocation.
+That means writing record framing, nonces, sequence numbers, and key updates ourselves, for an
+expected gain below 1 % of one CPU. It was evaluated and dropped on 2026-11-04. The buffered
+`ClientConnection` stays.
+
 The sender owns the reconnect logic. Reconnects run on the `dnstap-reconnect` helper,
 with a backoff from 250 ms to 30 s. See
 [Receiver connection](../guide/configuration.md#receiver-connection).
