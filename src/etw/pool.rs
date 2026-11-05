@@ -24,7 +24,7 @@ const _: () = {
     assert!(size_of::<EVENT_HEADER_EXTENDED_DATA_ITEM>() == 16);
     assert!(REGULAR_BYTES >= ITEM_TABLE_BYTES * MAX_EXTENDED_ITEMS);
 };
-pub(crate) const MAX_CAPACITY: usize = 262_144;
+pub(crate) const MAX_CAPACITY: usize = 524_288;
 /// Smallest capacity accepted on the command line (`PoolManager::new` accepts 1).
 pub(crate) const MIN_CAPACITY: usize = 1_024;
 /// Largest `--jumbo-capacity`; the command line and `PoolManager::new` both enforce it.
@@ -508,11 +508,11 @@ mod tests {
 
     #[test]
     fn progress_matches_the_startup_budget_at_the_maximum_capacity() {
-        // 262_144 + 2 regular slots and 256 jumbo slots: 16 reports, one per
-        // budgeted second (the budget allows 16 s of allocation at this size).
+        // 524_288 + 2 regular slots and 256 jumbo slots: 32 reports, one per
+        // budgeted second (the budget allows 32 s of allocation at this size).
         let slots = MAX_CAPACITY + 2 + usize::from(MAX_JUMBO_CAPACITY);
-        assert_eq!(slots / PoolManager::PROGRESS_INTERVAL, 16);
-        assert_eq!(MAX_CAPACITY.div_ceil(PoolManager::PROGRESS_INTERVAL), 16);
+        assert_eq!(slots / PoolManager::PROGRESS_INTERVAL, 32);
+        assert_eq!(MAX_CAPACITY.div_ceil(PoolManager::PROGRESS_INTERVAL), 32);
     }
 
     #[test]

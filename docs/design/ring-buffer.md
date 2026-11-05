@@ -18,7 +18,7 @@ It calls `crossbeam_channel::Sender::try_send` on a bounded event channel. It ne
 waits or allocates. A full channel drops the newest event and increments `ring_dropped`
 and `intake_dropped`. The default capacity is 131,072 events. It was 65,536, and 24,576 before that, until the
 defaults moved to 200,000 queries per second, and 8192 until 2026-11-01.
-`--capacity` accepts 1,024 to 262,144.
+`--capacity` accepts 1,024 to 524,288.
 
 ### Parser wake and polling
 

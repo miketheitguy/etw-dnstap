@@ -83,15 +83,16 @@ Why these values:
   | 65,536 | 24,223 to 61,903 (94%), 0 dropped in 3 runs | 63,940 (98%), 0 dropped | Full. One run dropped 12,264 events | 241 MB |
   | 131,072 | 27,385 and 28,129, 0 dropped in 2 runs | 61,239 (47%), 0 dropped | Not run | 356 MB |
   | 262,144 | Not run at 200,000 queries per second | Not run | Not run | 812 MB |
+| 524,288 | Not run | Not run | Not run | Not measured (expected near 1.6 GB) |
 
   At 65,536 the channel came close to full even on an idle guest. At 131,072 the busiest run
   used 47% of the channel and no run dropped an event. The step from 65,536 to 131,072 costs
-  115 MB of working set. The step to 262,144 would cost another 456 MB.
+  115 MB of working set. The step to 262,144 would cost another 456 MB. The step to 524,288 is expected to bring the working set near 1.6 GB. That is not measured.
 
 Costs:
 
 - Counted storage is 283.03 MiB at the default capacity. See [Storage](configuration.md#storage).
-- The startup deadline is 18 seconds (26 seconds at `--capacity 262144`). See
+- The startup deadline is 18 seconds (26 seconds at `--capacity 262144`, 42 seconds at `--capacity 524288`). See
   [Startup and shutdown deadlines](configuration.md#startup-and-shutdown-deadlines).
 - ETW buffer memory is at most 16 MiB (128 buffers of 128 KiB), plus what ETW adds on a host
   with more than 64 logical processors. The minimum reserves 12 × 128 KiB = 1.5 MiB at start,
@@ -107,9 +108,10 @@ above 200,000 queries per second. The window is `--stats-interval-seconds`, or 6
 that is `0`. The message reads `received rate is above 440,000 events/s; the default buffer
 settings were validated at about 400,000 events/s (200,000 queries per second)`. The warning does
 not mean events were lost. Watch `ring_dropped` and `etw_lost`. If they rise, raise `--capacity`
-and `--etw-max-buffers`, for example to `--etw-max-buffers 256 --capacity 262144`, the largest
-`--capacity`. An earlier lab load of 200,000 queries per second ran without loss at that value, but it
-uses 558.03 MiB of counted storage and about 812 MB of working set.
+and `--etw-max-buffers`, for example to `--etw-max-buffers 256 --capacity 262144`. An earlier lab load of 200,000 queries per second ran without loss at that
+value, but it uses 558.03 MiB of counted storage and about 812 MB of working set. The largest
+`--capacity` is 524,288. It uses 1,108.03 MiB of counted storage at 64 jumbo slots, and its
+working set is expected near 1.6 GB (not measured yet). The startup deadline is 42 seconds.
 
 The lab also found a case that the channel size does not fix. At 100,000 queries per second on
 the idle 12-vCPU guest, ETW delivered events late, in gaps of 1 to 3 seconds followed by a

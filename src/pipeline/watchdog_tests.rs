@@ -69,6 +69,12 @@ fn startup_budget_scales_with_capacity() {
         STARTUP_BASE_BUDGET + Duration::from_secs(16)
     );
     assert_eq!(budget("262144"), Duration::from_secs(26));
+    assert_eq!(
+        budget("524288"),
+        STARTUP_BASE_BUDGET + Duration::from_secs(32)
+    );
+    assert_eq!(budget("524288"), Duration::from_secs(42));
+    assert!(budget("524288") > budget("262144"));
     assert!(budget("262144") > budget("1024"));
     // One budgeted second per progress report, so the service refreshes its
     // SCM checkpoint inside every second of the allocation budget.

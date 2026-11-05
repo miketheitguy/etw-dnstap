@@ -60,7 +60,7 @@ pub(crate) struct CaptureArgs {
     #[arg(long, conflicts_with = "plaintext", value_parser = parse_tls_server_name)]
     tls_server_name: Option<String>,
 
-    /// Event channel capacity, 1024–262144; full channels drop the newest event.
+    /// Event channel capacity, 1024–524288; full channels drop the newest event.
     #[arg(long, default_value = "131072", value_parser = parse_capacity)]
     pub(super) capacity: usize,
 

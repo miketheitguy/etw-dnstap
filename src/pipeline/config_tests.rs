@@ -40,9 +40,10 @@ fn pipeline_config_validation_matches_the_command_line() -> Result<()> {
 
 #[test]
 fn validates_memory_and_cli_bounds() {
-    for rejected in ["0", "-1", "1023", "262145"] {
+    for rejected in ["0", "-1", "1023", "524289", "1048576"] {
         assert!(parse_capacity(rejected).is_err(), "{rejected}");
     }
+    assert_eq!(parse_capacity("524288"), Ok(524_288));
     assert_eq!(parse_capacity("262144"), Ok(262_144));
     assert_eq!(parse_capacity("65536"), Ok(65_536));
     assert_eq!(parse_capacity("1024"), Ok(1024));

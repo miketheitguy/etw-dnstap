@@ -6,7 +6,7 @@ Starts the lab service with a large --capacity and records the SCM start progres
 
 .DESCRIPTION
 Checks that the service reaches Running when the event pool is large (default --capacity
-262144, the maximum). The pool allocation takes longer than the fixed 15-second wait hint that
+262144; the maximum is 524288). The pool allocation takes longer than the fixed 15-second wait hint that
 builds before the checkpointed startup reported, so the SCM must see the checkpoint advance.
 
 The script appends --capacity to the service binary path, starts the service without waiting,
@@ -24,7 +24,7 @@ and retried, it does not fail startup.
 Use -WhatIf to run the preflight and print the planned changes without touching the guest.
 
 .PARAMETER Capacity
-Value for --capacity (default 262144, the maximum).
+Value for --capacity (default 262144; the maximum is 524288).
 .PARAMETER CandidatePath
 Host path of a release build to install for the check. The original executable is restored.
 .PARAMETER ExpectedHash
@@ -39,7 +39,7 @@ Repository-relative evidence directory (default target/performance/windows); mus
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateRange(1024, 262144)][int]$Capacity = 262144,
+    [ValidateRange(1024, 524288)][int]$Capacity = 262144,
     [string]$CandidatePath,
     [ValidatePattern('^(|[A-Fa-f0-9]{64})$')][string]$ExpectedHash = '',
     [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$ProofName = 'startup-capacity-proof',

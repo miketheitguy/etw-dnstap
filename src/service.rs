@@ -927,23 +927,23 @@ mod tests {
     fn startup_reports_advance_one_checkpoint_per_progress_report() {
         // The sequence run_registered produces at the maximum capacity: the base
         // report, the budget report, one progress report per allocated
-        // interval (16 at 262,144 + 2 regular and 256 jumbo slots), Running.
+        // interval (32 at 524,288 + 2 regular and 256 jumbo slots), Running.
         let counter = AtomicU32::new(0);
-        let budget = Duration::from_secs(26);
+        let budget = Duration::from_secs(42);
         let report = |state: u32, wait_budget: Duration| {
             status_record(state, false, checkpoint_for(&counter, state), wait_budget)
         };
         let base = report(SERVICE_START_PENDING, pipeline::STARTUP_BASE_BUDGET);
         assert_eq!((base.dwCheckPoint, base.dwWaitHint), (1, 10_000));
         let budgeted = report(SERVICE_START_PENDING, budget);
-        assert_eq!((budgeted.dwCheckPoint, budgeted.dwWaitHint), (2, 26_000));
+        assert_eq!((budgeted.dwCheckPoint, budgeted.dwWaitHint), (2, 42_000));
         let slots = crate::etw::MAX_CAPACITY + 2 + usize::from(crate::etw::MAX_JUMBO_CAPACITY);
         let progress_reports = slots / crate::etw::PoolManager::PROGRESS_INTERVAL;
-        assert_eq!(progress_reports, 16);
+        assert_eq!(progress_reports, 32);
         for expected in 3..=u32::try_from(progress_reports + 2).expect("small count") {
             let progress = report(SERVICE_START_PENDING, budget);
             assert_eq!(progress.dwCheckPoint, expected);
-            assert_eq!(progress.dwWaitHint, 26_000);
+            assert_eq!(progress.dwWaitHint, 42_000);
         }
         let running = report(SERVICE_RUNNING, Duration::ZERO);
         assert_eq!((running.dwCheckPoint, running.dwWaitHint), (0, 0));
