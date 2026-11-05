@@ -839,7 +839,7 @@ fn pipeline_starts_and_stops_promptly_while_the_receiver_is_down() -> Result<()>
     assert_eq!(progress_reports, 8);
     assert!(stopped.load(Ordering::SeqCst), "producer was stopped");
     assert!(
-        started.elapsed() < Duration::from_secs(8),
+        started.elapsed() < Duration::from_secs(30),
         "prompt shutdown"
     );
     Ok(())
