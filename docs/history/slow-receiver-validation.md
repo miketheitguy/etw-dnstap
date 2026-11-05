@@ -931,3 +931,210 @@ never ran all 24 logical processors flat out, and no run shows contention time.
   and the collector process is the one that was running.
 - **Checkpoints:** `sizing-200k-pre-2026-11-04` on both guests, kept, with all earlier checkpoints.
   Restoring any checkpoint on `DNSTap-WS2025` returns the guest to 6 vCPUs and 4 GiB.
+
+## ETW buffer size 64 KiB at 100,000 QPS (2026-11-04)
+
+A fourth lab run on the same day, on the same installed build (`6c8dd65`, same MSI file). The
+200,000 QPS sizing run left one loss open. At 100,000 QPS on the idle 12-vCPU guest, ETW delivered
+events 1 to 3 s late and then in a burst, and the event channel overflowed (`intake_dropped` equal to
+`ring_dropped`, `etw_lost` 0, at most 15 ETW buffers in use). The loss was 8 to 12 % of events at
+`--capacity 65536` and about 4 % at `--capacity 131072`, with the default `--etw-buffer-kib 128`.
+
+**Hypothesis.** ETW delivers events in timestamp order across the per-processor buffers. A quiet
+processor's partly filled buffer holds back delivery until its 1 s flush. Smaller buffers fill and
+are handed off sooner, so `--etw-buffer-kib 64` (65,536-byte buffers) should reduce the late
+delivery and the loss.
+
+**Result in one line: the hypothesis is not supported.** 64 KiB buffers did not remove the late
+delivery and did not reduce the loss beyond the run-to-run spread. At 200,000 QPS they were safe
+(`etw_lost` 0) and cost about 3 to 4 points of service CPU.
+
+The raw data is lab evidence under `target/performance/etw64k-20261104/`. It is not in the
+repository. The driver and analysis scripts are copies of those of the sizing run, plus one added
+script for the ETW buffer, channel, and stall columns.
+
+### Method differences from the sizing run
+
+| Item | Sizing run | This run |
+| --- | --- | --- |
+| Guest | 12 vCPUs, 8 GiB static | The same. The guest was not resized. |
+| Checkpoints | `sizing-200k-pre-2026-11-04` | New `etw64k-pre-2026-11-04` on both guests, taken before any change. It holds the 12 vCPU, 8 GiB guest. All earlier checkpoints kept. |
+| Build | `6c8dd65`, MSI SHA-256 `25AA22E06D9DA34C7922C12AA146840B39AC0D3CA2F149DC37C48C5153E0ED6B` | The same MSI file (hash checked before the first install). The repository HEAD has since changed the default `--capacity` (`6577c35`). Every option was set explicitly, so that change does not affect these runs. |
+| Options | Defaults, and `--capacity` | Every option set explicitly through `SERVICE_ARGS` for each configuration: `--etw-min-buffers 12 --etw-max-buffers 128 --etw-flush-seconds 1`, plus `--etw-buffer-kib` and `--capacity` as named. Each change used `REINSTALL=ALL REINSTALLMODE=vomus` with the three MSI properties, then a restart. |
+| ETW buffer size | 128 KiB | 64 KiB in runs `a`, `b`, and `s`. The control `k01` kept 128 KiB. |
+| Shaping, busy load | none, and busy 6 to 24 in some runs | No `tc` shaping (the receiver had no qdisc and no filters before the first run). No busy load. |
+| Load | 60 s load, 20 s tail | The same. 8 client threads for 100,000 QPS and 16 for 200,000 QPS. |
+| Stall seconds | not counted as such | A stall second is a 1 s sample, from 3 s into the load to its end, with `Events Received/sec` below half of the nominal rate. Each query and each response is one event, so the nominal rate is 200,000 events/s at 100,000 QPS and 400,000 events/s at 200,000 QPS. The 128 KiB baselines were recounted with the same rule. |
+
+Applied buffer size: the `capture started` line logged `etw_buffer_kib=64` in every 64 KiB run (and
+`etw_buffer_kib=128` in `k01`), followed by
+`etw_min_buffers_applied=24 etw_max_buffers_applied=128 etw_buffers_allocated=24`.
+`Get-EtwTraceSession` showed `BufferSize 64`, `MinimumBuffers 24`, `MaximumBuffers 128`, and
+`FlushTimer 1`, and `logman query EtwDnstap-Lab -ets` showed `Buffer Size: 64` and
+`Buffer Flush Timer: 1`. The 64 KiB size did apply.
+
+Receiver checks: the collector config has only the `devnull` logger, and the unit has
+`StandardOutput=null` and `StandardError=null`. Delivery was counted from `ss -tin` `bytes_received`
+(103.015 bytes a frame). The collector wrote nothing. No build ran on the host during a measured run.
+
+Run IDs: `k01` is the control (128 KiB, `--capacity 131072`, as `c04` and `c05`). `a01` to `a03` are
+64 KiB at `--capacity 65536`. `b01` to `b03` are 64 KiB at `--capacity 131072`. `s01` and `s02` are
+64 KiB at `--capacity 131072` and 200,000 QPS. All runs are idle (no busy load).
+
+### Tables
+
+Link unshaped, 60 s load. `intake_dropped` equals `ring_dropped` in every run. The gap is the
+delivered frames less the encoded frames (the handshake and a few frames in flight at the stop).
+
+| Run | Load | Busy | Encoded | Delivered (gap) | `queue_dropped` | Spooled | `intake_dropped` | `ring_dropped` | `etw_lost` | Events/s mean (min) | Rx MB/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| k01-ctl128-cap131k-idle-100k | 100k | 0 | 11,688,522 | 11,688,741 (+219) | 0 | 0 | 311,161 | 311,161 | 0 | 205,046 (0) | 19.5 |
+| a01-buf64-cap65k-idle-100k | 100k | 0 | 10,690,189 | 10,690,638 (+449) | 0 | 0 | 1,309,319 | 1,309,319 | 0 | 195,226 (0) | 17.7 |
+| a02-buf64-cap65k-idle-100k-r2 | 100k | 0 | 10,511,564 | 10,511,722 (+158) | 0 | 0 | 1,488,376 | 1,488,376 | 0 | 203,389 (0) | 17.5 |
+| a03-buf64-cap65k-idle-100k-r3 | 100k | 0 | 11,303,298 | 11,303,623 (+325) | 0 | 0 | 696,654 | 696,654 | 0 | 195,668 (168) | 18.6 |
+| b01-buf64-cap131k-idle-100k | 100k | 0 | 11,368,549 | 11,368,512 (-37) | 0 | 0 | 426,233 | 426,233 | 0 | 196,129 (0) | 19.3 |
+| b02-buf64-cap131k-idle-100k-r2 | 100k | 0 | 11,352,478 | 11,352,502 (+24) | 0 | 0 | 387,011 | 387,011 | 0 | 198,911 (598) | 19.2 |
+| b03-buf64-cap131k-idle-100k-r3 | 100k | 0 | 11,911,508 | 11,911,515 (+7) | 0 | 0 | 87,595 | 87,595 | 0 | 199,854 (0) | 20.1 |
+| s01-buf64-cap131k-idle-200k | 200k | 0 | 23,998,636 | 23,998,676 (+40) | 0 | 0 | 0 | 0 | 0 | 400,006 (392,482) | 40.7 |
+| s02-buf64-cap131k-idle-200k-r2 | 200k | 0 | 23,999,264 | 23,999,257 (-7) | 0 | 0 | 0 | 0 | 0 | 399,979 (395,399) | 40.7 |
+
+| Run | Peak send queue (blocks) | Router wait peak (ms) | Router pass peak (ms) | Write wait peak (ms) | `link_saturated` | Guest CPU % mean (max) | Proc. queue mean (max) | Service CPU % | Min available MB | Host CPU % mean (max) | Host LP run % mean (max) | VP wait/dispatch mean (max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| k01-ctl128-cap131k-idle-100k | 138 | 78.1 | 45.2 | 2.5 | 0 | 55.9 (66.5) | 1.3 (6) | 13.5 | 5,669 | 50.8 (62.2) | 57.4 (67.8) | 1,776 (3,016) |
+| a01-buf64-cap65k-idle-100k | 211 | 94.8 | 40.5 | 2.3 | 0 | 55.1 (66.8) | 2.1 (6) | 13.3 | 5,812 | 50.9 (59.8) | 57.6 (66.2) | 1,765 (3,166) |
+| a02-buf64-cap65k-idle-100k-r2 | 204 | 91.7 | 20.1 | 8.4 | 0 | 54.4 (66.9) | 1.9 (8) | 11.5 | 5,788 | 48.8 (59.3) | 56.1 (63.9) | 1,766 (3,155) |
+| a03-buf64-cap65k-idle-100k-r3 | 223 | 67.9 | 28.9 | 0.7 | 0 | 55.6 (68.0) | 2.0 (7) | 13.5 | 5,801 | 50.6 (59.8) | 57.2 (64.1) | 1,801 (3,062) |
+| b01-buf64-cap131k-idle-100k | 48 | 67.4 | 54.5 | 0.4 | 0 | 55.0 (68.8) | 1.4 (6) | 14.1 | 5,694 | 48.8 (60.9) | 55.8 (62.9) | 1,788 (3,033) |
+| b02-buf64-cap131k-idle-100k-r2 | 44 | 75.7 | 20.1 | 0.9 | 0 | 57.6 (73.2) | 1.3 (5) | 15.3 | 5,668 | 51.2 (61.6) | 57.4 (65.3) | 1,752 (2,967) |
+| b03-buf64-cap131k-idle-100k-r3 | 28 | 76.7 | 29.1 | 0.6 | 0 | 59.3 (68.4) | 1.7 (9) | 15.8 | 5,724 | 52.2 (61.1) | 58.8 (67.3) | 1,756 (3,598) |
+| s01-buf64-cap131k-idle-200k | 14 | 75.1 | 13.2 | 0.8 | 0 | 82.7 (88.3) | 2.7 (7) | 34.0 | 5,790 | 72.7 (79.0) | 77.2 (82.6) | 1,929 (3,139) |
+| s02-buf64-cap131k-idle-200k-r2 | 16 | 97.1 | 17.2 | 2.6 | 0 | 82.1 (89.7) | 2.8 (7) | 33.1 | 5,778 | 72.0 (77.9) | 76.8 (80.3) | 1,936 (3,016) |
+
+Every run: `spool_dropped` 0, `disconnects` 0, `link_saturated` 0, stop and FINISH confirmed.
+
+Loss, stall seconds, peak channel depth, and the ETW buffer counters (1 s samples). Loss is
+`intake_dropped` as a share of the events the service received (encoded plus dropped).
+
+| Run | Loss (% of events) | Stall seconds (events/s) | Peak channel depth | ETW buffers allocated / in use, peak | `% ETW Buffers Used`, peak |
+| --- | --- | --- | --- | --- | --- |
+| k01-ctl128-cap131k-idle-100k | 2.59 | 7: 17.4 s (5,907), 30.5 s (2,684), 42.6 s (1,867), 43.6 s (0), 53.7 s (50,805), 54.7 s (71,248), 55.7 s (61,630) | 131,073 | 38 / 13 | 10.2 |
+| a01-buf64-cap65k-idle-100k | 10.91 | 8: 7.0 s (10,779), 10.0 s (0), 23.2 s (2,269), 43.4 s (42,735), 44.4 s (43,902), 54.4 s (44,717), 55.4 s (0), 59.5 s (893) | 65,537 | 44 / 14 | 10.9 |
+| a02-buf64-cap65k-idle-100k-r2 | 12.40 | 15: 4.0 s (94,419), 5.0 s (1,014), 7.0 s (14,724), 17.1 s (31,829), 24.2 s (359), 33.2 s (1,025), 34.3 s (36,452), 43.4 s (68,404), 44.4 s (34,829), 47.4 s (1,035), 49.4 s (0), 50.4 s (32,459), 52.4 s (1,299), 56.5 s (70,069), 57.5 s (60,250) | 65,537 | 41 / 14 | 10.9 |
+| a03-buf64-cap65k-idle-100k-r3 | 5.81 | 7: 7.0 s (66,864), 8.0 s (1,126), 15.1 s (4,712), 38.3 s (891), 46.4 s (168), 47.4 s (37,601), 59.5 s (35,026) | 65,537 | 52 / 26 | 20.3 |
+| b01-buf64-cap131k-idle-100k | 3.61 | 12: 7.3 s (47,449), 14.4 s (50,155), 15.4 s (22,100), 17.4 s (20,475), 18.4 s (1,141), 20.4 s (906), 32.5 s (43,194), 33.5 s (1,007), 39.6 s (15,497), 40.6 s (0), 43.6 s (6,729), 44.7 s (28) | 131,073 | 38 / 15 | 11.7 |
+| b02-buf64-cap131k-idle-100k-r2 | 3.30 | 11: 4.0 s (443), 5.0 s (75,692), 7.0 s (10,263), 8.0 s (96,697), 20.1 s (34,124), 22.2 s (598), 23.2 s (90,077), 36.3 s (43,649), 37.3 s (16,793), 40.4 s (46,815), 41.4 s (1,119) | 131,073 | 40 / 15 | 11.7 |
+| b03-buf64-cap131k-idle-100k-r3 | 0.73 | 4: 30.3 s (5,046), 40.4 s (0), 49.4 s (366), 53.5 s (51,371) | 131,073 | 49 / 13 | 10.2 |
+| s01-buf64-cap131k-idle-200k | 0.00 | 0: none | 40,333 | 69 / 13 | 10.2 |
+| s02-buf64-cap131k-idle-200k-r2 | 0.00 | 0: none | 40,225 | 70 / 14 | 10.9 |
+
+Comparison with the 128 KiB runs of the sizing run, with the stall seconds recounted by the same
+rule:
+
+| Capacity | 128 KiB: `intake_dropped` (loss %), stall seconds | 64 KiB: `intake_dropped` (loss %), stall seconds |
+| --- | --- | --- |
+| 65,536 | `m01` 892,932 (7.6 %), 13. `m09` 1,403,492 (12.4 %), 15. `m10` 945,037 (7.9 %), 7. Mean 9.3 %. | `a01` 1,309,319 (10.9 %), 8. `a02` 1,488,376 (12.4 %), 15. `a03` 696,654 (5.8 %), 7. Mean 9.7 %. |
+| 131,072 | `c04` 443,994 (3.7 %), 12. `c05` 464,402 (3.9 %), 10. `k01` 311,161 (2.6 %), 7. Mean 3.4 %. | `b01` 426,233 (3.6 %), 12. `b02` 387,011 (3.3 %), 11. `b03` 87,595 (0.7 %), 4. Mean 2.5 %. |
+
+At 200,000 QPS and `--capacity 131072`, 128 KiB (`c01`, `c02`) and 64 KiB (`s01`, `s02`) all had
+`intake_dropped` 0 and `etw_lost` 0. Stall seconds were 3 and 0 at 128 KiB, and 0 and 0 at 64 KiB.
+
+Cost at 200,000 QPS, idle, `--capacity 131072`, means over the load, two runs each:
+
+| Item | 128 KiB (`c01`, `c02`) | 64 KiB (`s01`, `s02`) |
+| --- | --- | --- |
+| Service CPU % | 29.8, 29.9 | 34.0, 33.1 |
+| Guest CPU % | 77.4, 81.1 | 82.7, 82.1 |
+| Host CPU % | 69.4, 70.7 | 72.7, 72.0 |
+| ETW buffers allocated, peak | 42, 40 | 69, 70 |
+| ETW memory allocated, peak | 5.3 MiB, 5.0 MiB | 4.3 MiB, 4.4 MiB |
+| ETW buffers in use, peak | 15, 14 | 13, 14 |
+| `% ETW Buffers Used`, peak | 11.7, 10.9 | 10.2, 10.9 |
+| `etw_lost` | 0, 0 | 0, 0 |
+| Service working set, peak (MB) | 356, 355 | 354, 354 |
+
+#### Findings
+
+1. **64 KiB did not remove the late delivery.** Every 100,000 QPS run at 64 KiB had stall seconds: 8,
+   15, 7 at `--capacity 65536` and 12, 11, 4 at `--capacity 131072`. The 128 KiB runs had 13, 15, 7
+   and 12, 10, 7. No 64 KiB run is free of stalls. The stalls have the same shape as before: one or
+   two sampled seconds at 0 to a fraction of the nominal rate, then a burst. The longest run of
+   consecutive stall samples was 2 s (3 s in the control).
+2. **64 KiB did not reduce the loss beyond the spread between runs.** At `--capacity 65536`, 64 KiB
+   lost 5.8 to 12.4 % (mean 9.7 %) and 128 KiB lost 7.6 to 12.4 % (mean 9.3 %). At
+   `--capacity 131072`, 64 KiB lost 0.7 to 3.6 % (mean 2.5 %) and 128 KiB lost 2.6 to 3.9 % (mean
+   3.4 %). The three runs of one configuration differ from each other by more than the two
+   configurations differ. `b03` (0.7 %) is the lowest loss seen at 100,000 QPS with 131,072, but
+   the same size gave 3.6 % and 3.3 % in `b01` and `b02`. Three runs a configuration cannot show a
+   small effect.
+3. **The control matched the earlier runs.** `k01` (128 KiB, 131,072) lost 311,161 events and had 7
+   stall seconds, near `c04` and `c05` (443,994 and 464,402 events, 12 and 10 stall seconds). Today's
+   conditions match the sizing run.
+4. **The ETW buffer counters did not change with the size.** Buffers in use peaked at 13 to 15 in
+   every run but `a03` (26), the same as at 128 KiB (12 to 15). That is about one buffer for each
+   processor. `% ETW Buffers Used` peaked at 10.2 to 11.7 % (20.3 % in `a03`). With the smaller
+   buffer, ETW allocated more of them: 38 to 52 at 100,000 QPS and 69 and 70 at 200,000 QPS, against
+   32 to 39 and 40 to 51 at 128 KiB. `etw_lost` and `ETW Buffers Lost` stayed at 0 in all nine runs.
+5. **Some dips show in the client.** `b01` had one client second of 3,280 queries at 43 s, next to the
+   stalls at 43.6 s and 44.7 s. `b02` had client seconds of 89,931, 7,249, and 73,213 at 21 to 23 s,
+   next to the stalls at 22.2 s and 23.2 s. So a part of the stalls in those two runs come from the
+   client (the query-ID wrap noted earlier), not from ETW. The other 64 KiB runs had no client second
+   below 90 % of the rate, and kept their stalls.
+6. **`a01` to `a03` pushed more into the send queue.** The peak send queue was 204 to 223 blocks of
+   256, against 111, 122, and 27 in `m01`, `m09`, and `m10`. No run spilled or dropped a block
+   (`spooled` 0, `queue_dropped` 0). The cause is not known. It may only reflect which bursts the
+   channel kept. It leaves little margin in the 256-block FIFO at 65,536, and is one more reason to
+   prefer 131,072.
+7. **Cost at 200,000 QPS.** `etw_lost` was 0 in both runs, with `% ETW Buffers Used` at 10.2 and
+   10.9 % and 69 and 70 of 128 buffers allocated (4.4 MiB of the 8 MiB maximum). There was no
+   `intake_dropped` and no stall second, and the channel peaked at 40,333 and 40,225 events. The
+   service CPU was 3 to 4 points higher than at 128 KiB (34.0 and 33.1 % against 29.8 and 29.9 %),
+   and the guest and host CPU 1 to 5 points higher. That is a small, consistent cost of twice as
+   many buffer hand-offs. It rests on two runs a configuration.
+
+### Verdict on the hypothesis
+
+**Not supported.** If a quiet processor's large, partly filled buffer were the cause, halving the
+buffer would have shortened the holds and cut the stalls and the loss. It did not. The stall count
+and the loss at 64 KiB sit inside the spread of the 128 KiB runs, at both channel sizes. The ETW
+counters show the same number of buffers in use (about one for each processor) at both sizes. This
+run does not say why the delivery is late. It shows only that the buffer size is not the lever.
+The other candidates are untested: the 1 s flush timer, the consumer thread being descheduled on the
+guest, and the producer (the DNS Server) delaying its own writes.
+
+Recommendation for the defaults: **keep `--etw-buffer-kib 128`.** 64 KiB gives no gain at 100,000 QPS
+and costs 3 to 4 points of service CPU at 200,000 QPS. `--capacity 131072` still about halves the
+loss at 100,000 QPS, and no setting tried removes it.
+
+### Deviations and limits
+
+- **No busy 12 run at 200,000 QPS.** The brief asked for it only if 64 KiB with 131,072 removed the
+  loss. It did not, so the run was skipped.
+- **Three runs a configuration at 100,000 QPS.** The spread between runs of one configuration (for
+  example 5.8 to 12.4 %) is as large as any difference between configurations. A smaller effect of
+  the buffer size than about 3 points of loss is not excluded.
+- **One control run.** `k01` is a single run. It agrees with `c04` and `c05` of the sizing run.
+- **Stall rule.** The stall count starts 3 s into the load. The sizing run text says 7 to 15 sampled
+  seconds for the 128 KiB runs. The recount with this rule gives 7 to 15 as well.
+- **Counters are 1 s samples.** A dip under a second does not show.
+- **Restarts.** Each `SERVICE_ARGS` change ended with a guest restart (MSI exit 3010). The guest
+  restarted four times, three for the configurations and one for the final restore.
+- The 100,000 QPS runs sat at 49 to 52 % host CPU, as in the sizing run (second table).
+
+### Lab state after
+
+- **Guest:** 12 vCPUs, 8 GiB static memory (Dynamic Memory off). The MSI of `6c8dd65` is installed
+  with exactly the three properties `RECEIVER=172.27.215.60:6000`, `SESSION_NAME=EtwDnstap-Lab`, and
+  `SERVICE_ARGS="--plaintext --stats-interval-seconds 5"`, and no extra argument. The last reinstall
+  used `REINSTALL=ALL REINSTALLMODE=vomus`, then a restart. ProductCode
+  `{6AE10CB8-0685-478E-AAF6-4D1B7CEBC372}`, executable SHA-256
+  `8A800E01244D8E3B1E9128890BAFA2F112D3E6B5CC53117624E8DEDDABE2C5D1`. The service is running as
+  `NT AUTHORITY\LocalService`, SID type restricted, recovery `restart/5000`, connected to the
+  receiver. The spool holds only `cursor.bin`. The busy processes (none were started), the samplers,
+  WPR, and the staging folder are gone.
+- **Receiver:** the record of `tc qdisc show`, the `eth0` ingress filters, `iptables -S` (filter and
+  mangle), `ip6tables -S`, `nft list ruleset`, the link list, the loaded traffic-control modules, the
+  collector config SHA-256, the null-output drop-in SHA-256, and the unit output settings is
+  identical to the record taken before the first run (compared with `diff`). The collector process
+  is the one that was running.
+- **Checkpoints:** `etw64k-pre-2026-11-04` on both guests, kept, with all earlier checkpoints.
+  Restoring any checkpoint on `DNSTap-WS2025` returns the guest to 6 vCPUs and 4 GiB.
