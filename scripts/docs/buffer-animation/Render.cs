@@ -7,8 +7,8 @@
 // it use the transparent index. It also writes frames.sha256, one hash per composited
 // frame, which verify_animation.py checks against its own decode of the GIF.
 //
-// The static scenery of a step is drawn once and copied under every frame of that step,
-// so only the moving parts cost rendering time, and only changed pixels cost GIF bytes.
+// The backdrop of a step is drawn once and copied under every frame of that step; the
+// elements are drawn on top of it every frame, and only changed pixels cost GIF bytes.
 
 using System;
 using System.Collections.Generic;
@@ -27,7 +27,7 @@ public static partial class Watershed
 
     static readonly Color[] Reserved = {
         Ivory, Ink, Slate, SlateLight, PureWhite, PureBlack, OptionGold, Warn, Muted,
-        BrassLight, BrassMid, BrassDark, Foam, WaterTop, WaterMid, WaterDeep, SteelLight, SteelMid, SteelDark, ZincLight, ZincMid, ZincDark };
+        BrassLight, BrassMid, BrassDark, Foam, WaterTop, WaterMid, WaterDeep, GlassTop, GlassMid, GlassDeep, SteelLight, SteelMid, SteelDark, ZincLight, ZincMid, ZincDark };
 
     // ------------------------------------------------------------------ frames
 
@@ -232,7 +232,7 @@ public static partial class Watershed
 
         // Pass 2: render, index, delta, write.
         var previews = new List<int>();
-        for (int i = 0; i < Steps.Length; i++) { previews.Add((int)((StepStart(i) + 0.25 * Steps[i].Seconds) * Fps)); previews.Add((int)((StepStart(i) + 0.7 * Steps[i].Seconds) * Fps)); }
+        for (int i = 0; i < Steps.Length; i++) foreach (double f in new[] { 0.06, 0.5, 0.94 }) previews.Add((int)((StepStart(i) + f * Steps[i].Seconds) * Fps));
         var hashes = new StringBuilder();
         hashes.Append(Width).Append(' ').Append(Height).Append(' ').Append(frames).Append(' ').Append(Fps).Append('\n');
         int[] prevArgb = null; byte[] prevIdx = null;
@@ -280,7 +280,8 @@ public static partial class Watershed
                 hashes.Append(BitConverter.ToString(sha.ComputeHash(idx)).Replace("-", "").ToLowerInvariant()).Append('\n');
                 if (previews.Contains(f)) SavePreview(idx, Path.Combine(previewDir, "frame-" + f.ToString("D3") + ".png"));
                 prevArgb = argb; prevIdx = idx;
-                if (f % 60 == 0) Console.WriteLine("Rendered " + f + " / " + frames + ", " + gif.Length.ToString("#,0") + " bytes so far");
+                double uNext; int stepNow = StepAt(f / (double)Fps, out uNext), stepNext = StepAt((f + 1) / (double)Fps, out uNext);
+                if (stepNext != stepNow || f == frames - 1) Console.WriteLine("Step " + (stepNow + 1) + " done at frame " + f + ", " + gif.Length.ToString("#,0") + " bytes so far");
             }
             gif.WriteByte(0x3B);
             bytes = gif.Length;

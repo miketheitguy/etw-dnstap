@@ -3,11 +3,13 @@
 // Light comes from the top left. Every shape gets a highlight on its top and left
 // edges, a shade on its bottom and right edges, and a soft drop shadow to the bottom
 // right. Water is a gradient from a light surface to a deep floor with a slow sine
-// surface. The rain barrels are galvanised and corrugated, with a lid, a sight window,
-// a brass tap and an overflow spout.
+// surface. The rain barrels are galvanised, open at the top, with a glass front panel
+// that shows the water, a brass tap at the foot and an overflow spout at the rim.
 //
 // Everything here is a pure function of its arguments, so a frame rendered twice is
-// identical. The speckle textures use a fixed seed.
+// identical. Motion (0..1) scales every wave, streak and foam fleck: an element that is
+// not part of the current step is drawn with Motion 0, so its water stands still and
+// its pixels do not change from frame to frame.
 
 using System;
 using System.Collections.Generic;
@@ -19,6 +21,8 @@ using System.Drawing.Text;
 public static partial class Watershed
 {
     static Graphics g;
+    static double Motion = 1;
+    static bool Glass;
 
     // ------------------------------------------------------------------ colours
 
@@ -41,6 +45,7 @@ public static partial class Watershed
         IronLight = C(110, 112, 118), IronMid = C(64, 66, 72), IronDark = C(30, 32, 36),
         ConcreteLight = C(186, 184, 176), ConcreteDark = C(120, 118, 110),
         WaterTop = C(112, 184, 228), WaterMid = C(44, 120, 190), WaterDeep = C(18, 60, 120), Foam = C(236, 246, 252),
+        GlassTop = C(150, 216, 252), GlassMid = C(40, 156, 234), GlassDeep = C(14, 96, 186),
         SkyTop = C(132, 168, 205), SkyLow = C(206, 218, 228), GrassLight = C(118, 160, 84), GrassDark = C(74, 112, 56),
         EarthLight = C(128, 98, 64), EarthDark = C(72, 54, 36), StoneLight = C(166, 160, 148), StoneDark = C(96, 92, 84),
         WoodLight = C(170, 120, 68), WoodDark = C(96, 62, 30), WoodMid = C(134, 92, 48);
@@ -70,11 +75,16 @@ public static partial class Watershed
         Text(s, cx - w / 2, y, family, px, color, bold);
     }
 
-    // Engraved type: a light copy one pixel down and right, then the dark letters.
-    static void Engrave(string s, float x, float y, string family, float px, bool bold = false)
+    // A sign: large cream type straight on the scene with a soft dark shadow. alpha fades it.
+    static void Sign(string s, float cx, float y, double alpha, float px = 32)
     {
-        Text(s, x + 1, y + 1, family, px, A(150, PureWhite), bold);
-        Text(s, x, y, family, px, Ink, bold);
+        if (alpha <= 0.01) return;
+        float w = Measure(s, Sans, px, true).Width, x = cx - w / 2;
+        int sh = (int)(26 * alpha);
+        for (int dx = -1; dx <= 2; dx++)
+            for (int dy = 1; dy <= 3; dy++)
+                Text(s, x + dx, y + dy, Sans, px, A(sh, PureBlack), true);
+        Text(s, x, y, Sans, px, A((int)(255 * alpha), Ivory), true);
     }
 
     // ------------------------------------------------------------------ shapes
@@ -136,25 +146,42 @@ public static partial class Watershed
             g.DrawPath(pen, p);
     }
 
-    // Speckle: seeded dots for concrete and earth. Static layer only.
-    static void Speckle(GraphicsPath clip, RectangleF r, int seed, int count, int alpha)
+    static void Modes()
     {
-        var rnd = new Random(seed);
-        var old = g.Clip;
-        g.SetClip(clip);
-        for (int i = 0; i < count; i++)
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+    }
+
+    // Draws through an offscreen bitmap and composites it at the given opacity. Every
+    // element of the scene goes through here, so a fade and a full draw share one code
+    // path and one rounding, and a fade ends without a visible step.
+    static void Layer(RectangleF r, double opacity, Action draw)
+    {
+        if (opacity <= 0.004) return;
+        int x0 = (int)Math.Floor(r.X) - 6, y0 = (int)Math.Floor(r.Y) - 6;
+        int w = (int)Math.Ceiling(r.Width) + 12, h = (int)Math.Ceiling(r.Height) + 12;
+        using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
         {
-            float px = r.X + (float)(rnd.NextDouble() * r.Width), py = r.Y + (float)(rnd.NextDouble() * r.Height);
-            float s = 1 + rnd.Next(3);
-            using (var b = new SolidBrush(A(rnd.Next(alpha), rnd.Next(2) == 0 ? PureWhite : PureBlack)))
-                g.FillEllipse(b, px, py, s, s);
+            var outer = g;
+            using (g = Graphics.FromImage(bmp))
+            {
+                Modes();
+                g.TranslateTransform(-x0, -y0);
+                draw();
+            }
+            g = outer;
+            using (var ia = new ImageAttributes())
+            {
+                ia.SetColorMatrix(new ColorMatrix { Matrix33 = (float)Math.Min(1, opacity) });
+                g.DrawImage(bmp, new Rectangle(x0, y0, w, h), 0, 0, w, h, GraphicsUnit.Pixel, ia);
+            }
         }
-        g.Clip = old;
     }
 
     // ------------------------------------------------------------------ materials
 
-    // A plain steel panel: gradient, a soft sheen, a bevel. No rivets.
+    // A plain steel panel: gradient, a soft sheen, a bevel.
     static void SteelPanel(float x, float y, float w, float h, float r)
     {
         Shadow(x, y, w, h, r);
@@ -174,46 +201,16 @@ public static partial class Watershed
         Bevel(x + 1.5f, y + 1.5f, w - 3, h - 3, r - 1, 120);
     }
 
-    // A brass name plate with engraved type. One line, or a second smaller line under it.
-    static void Label(float cx, float y, string text, string second = null, float px = 22)
-    {
-        float tw = Measure(text, Sans, px, true).Width;
-        float sw = second == null ? 0 : Measure(second, Sans, px * 0.82f, true).Width;
-        float w = Math.Max(tw, sw) + 36, h = px + 16 + (second == null ? 0 : px * 0.82f + 6);
-        BrassPlateBox(cx - w / 2, y, w, h);
-        Engrave(text, cx - tw / 2, y + 7, Sans, px, true);
-        if (second != null) Engrave(second, cx - sw / 2, y + px + 14, Sans, px * 0.82f, true);
-    }
-
-    static void BrassPlateBox(float x, float y, float w, float h, float r = 5)
-    {
-        Shadow(x, y, w, h, r, 3, 4, 70);
-        using (var p = Round(x, y, w, h, r))
-        {
-            using (var br = new LinearGradientBrush(new RectangleF(x, y, w, h), BrassLight, BrassDark, 70f))
-            {
-                br.InterpolationColors = new ColorBlend(5)
-                {
-                    Colors = new[] { BrassMid, BrassLight, BrassMid, BrassDark, BrassMid },
-                    Positions = new[] { 0f, 0.25f, 0.5f, 0.8f, 1f }
-                };
-                g.FillPath(br, p);
-            }
-            Stroke(p, A(170, BrassDark), 1f);
-        }
-        Bevel(x + 1, y + 1, w - 2, h - 2, r - 1, 120, 1f);
-    }
-
     // A dark plate with a brass rim for the one option or counter that a step is about.
     // Each line is a pair of texts: the left part in gold, the right part in ivory.
-    static void Plate(float cx, float y, string[] gold, string[] ivory, float px = 22, string tag = null)
+    static void Plate(float cx, float y, string[] gold, string[] ivory, float px = 22, string tag = null, bool warn = false)
     {
         float w = 0;
         for (int i = 0; i < gold.Length; i++) w = Math.Max(w, Measure(gold[i] + ivory[i], Mono, px, true).Width);
-        if (tag != null) w = Math.Max(w, Measure(tag, Sans, 15, true).Width);
+        if (tag != null) w = Math.Max(w, Measure(tag, Sans, 16, true).Width);
         w += 44;
         float lineH = px + 8;
-        float h = gold.Length * lineH + 14 + (tag == null ? 0 : 22);
+        float h = gold.Length * lineH + 14 + (tag == null ? 0 : 24);
         float x = cx - w / 2;
         Shadow(x, y, w, h, 7, 4, 5, 80);
         using (var p = Round(x, y, w, h, 7))
@@ -229,7 +226,7 @@ public static partial class Watershed
             Text(gold[i], tx, ty, Mono, px, OptionGold, true);
             Text(ivory[i], tx + gw, ty, Mono, px, Ivory, true);
         }
-        if (tag != null) TextCenter(tag, cx, y + 9 + gold.Length * lineH + 2, Sans, 15, Warn, true);
+        if (tag != null) TextCenter(tag, cx, y + 9 + gold.Length * lineH + 3, Sans, 16, warn ? Warn : Muted, true);
     }
 
     // A steel pipe. Cylinder shading runs across the axis; plain rings at both ends.
@@ -285,17 +282,28 @@ public static partial class Watershed
         }
     }
 
-    // Cast concrete block with a light speckle.
-    static void Concrete(float x, float y, float w, float h, int seed)
+    // Cast concrete block.
+    static void Concrete(float x, float y, float w, float h)
     {
         Shadow(x, y, w, h, 2, 4, 6, 60);
         using (var p = Round(x, y, w, h, 2))
         {
             FillGrad(p, new RectangleF(x, y, w, h), ConcreteLight, ConcreteDark, 20f);
-            Speckle(p, new RectangleF(x, y, w, h), seed, (int)(w * h / 60), 45);
             Stroke(p, A(160, StoneDark), 1f);
         }
         Bevel(x + 1, y + 1, w - 2, h - 2, 1, 90, 1f);
+    }
+
+    // A channel cut into the earth: a dark cavity with stone walls and a stone floor. A pit
+    // is the same cut in lighter earth, for the large bodies that are often nearly empty.
+    static void Pit(float x, float y, float w, float h) { Cavity(x, y, w, h, true); }
+    static void Cavity(float x, float y, float w, float h, bool pit = false)
+    {
+        using (var p = Round(x, y, w, h, 3))
+            FillGrad(p, new RectangleF(x, y, w, h), pit ? C(104, 84, 58) : C(52, 46, 40), pit ? C(58, 44, 30) : C(26, 24, 22), 90f);
+        FillGradRect(new RectangleF(x - 4, y, 4, h), StoneDark, StoneLight, 0f);
+        FillGradRect(new RectangleF(x + w, y, 4, h), StoneLight, StoneDark, 0f);
+        FillGradRect(new RectangleF(x - 4, y + h - 3, w + 8, 6), StoneLight, StoneDark, 90f);
     }
 
     // A wooden water-mill wheel. angle in radians.
@@ -353,6 +361,8 @@ public static partial class Watershed
     static void Water(float x, float w, float surfaceY, float bottomY, double t, double amp = 1.2, double speed = 1.0, int alpha = 255, bool highlights = true, float gradTop = float.NaN)
     {
         if (bottomY - surfaceY < 1.5f || w < 2) return;
+        amp *= Motion;
+        Color top_ = Glass ? GlassTop : WaterTop, mid = Glass ? GlassMid : WaterMid, deep = Glass ? GlassDeep : WaterDeep;
         float top = float.IsNaN(gradTop) ? surfaceY - 4 : Math.Min(gradTop, surfaceY - 4);
         using (var body = new GraphicsPath())
         {
@@ -367,25 +377,25 @@ public static partial class Watershed
             pts.Add(new PointF(x + w, bottomY));
             body.AddPolygon(pts.ToArray());
             var r = new RectangleF(x, top, w, bottomY - top + 4);
-            using (var br = new LinearGradientBrush(r, A(alpha, WaterTop), A(alpha, WaterDeep), 90f))
+            using (var br = new LinearGradientBrush(r, A(alpha, top_), A(alpha, deep), 90f))
             {
                 br.InterpolationColors = new ColorBlend(3)
                 {
-                    Colors = new[] { A(alpha, WaterTop), A(alpha, WaterMid), A(alpha, WaterDeep) },
+                    Colors = new[] { A(alpha, top_), A(alpha, mid), A(alpha, deep) },
                     Positions = new[] { 0f, 0.35f, 1f }
                 };
                 g.FillPath(br, body);
             }
             var old = g.Clip;
             g.SetClip(body);
-            float band = Math.Min(14, bottomY - surfaceY);
-            if (band > 3) FillGradRect(new RectangleF(x, surfaceY - 3, w, band + 3), A(90, WaterTop), A(0, WaterTop), 90f);
-            using (var pen = new Pen(A(200, Foam), 1.6f))
+            float band = Math.Min(Glass ? 22 : 14, bottomY - surfaceY);
+            if (band > 3) FillGradRect(new RectangleF(x, surfaceY - 3, w, band + 3), A(Glass ? 150 : 90, Glass ? PureWhite : WaterTop), A(0, WaterTop), 90f);
+            using (var pen = new Pen(A(Glass ? 240 : 200, Foam), Glass ? 3f : 1.6f))
             {
                 var line = pts.GetRange(1, pts.Count - 2).ToArray();
                 if (line.Length > 1) g.DrawLines(pen, line);
             }
-            if (highlights && bottomY - surfaceY > 10 && w > 40)
+            if (highlights && Motion > 0.01 && bottomY - surfaceY > 10 && w > 40)
             {
                 for (int i = 0; i < 2; i++)
                 {
@@ -397,7 +407,7 @@ public static partial class Watershed
                         hp.AddEllipse(hx - hw / 2, surfaceY + 4 + i * 3, hw, hh);
                         using (var br = new PathGradientBrush(hp))
                         {
-                            br.CenterColor = A(60, PureWhite);
+                            br.CenterColor = A((int)(60 * Motion), PureWhite);
                             br.SurroundColors = new[] { A(0, PureWhite) };
                             g.FillPath(br, hp);
                         }
@@ -415,11 +425,12 @@ public static partial class Watershed
         int alpha = (int)(120 + 100 * Clamp01(flow));
         var r = new RectangleF(x, y, w, h);
         using (var br = new LinearGradientBrush(r, A(alpha, WaterTop), A(alpha, WaterMid), horizontal ? 90f : 0f)) g.FillRectangle(br, r);
+        if (Motion <= 0.01) return;
         var old = g.Clip;
         g.SetClip(r);
         float spacing = 32;
         float shift = (float)Frac(t * speedPx / spacing) * spacing;
-        using (var pen = new Pen(A(140, Foam), 1.4f))
+        using (var pen = new Pen(A((int)(140 * Motion), Foam), 1.4f))
         {
             if (horizontal)
                 for (float cx = x - spacing + shift; cx < x + w; cx += spacing)
@@ -442,11 +453,12 @@ public static partial class Watershed
             br.InterpolationColors = new ColorBlend(3) { Colors = new[] { A(alpha, WaterMid), A(alpha, Foam), A(alpha, WaterMid) }, Positions = new[] { 0f, 0.4f, 1f } };
             g.FillRectangle(br, r);
         }
+        if (Motion <= 0.01) return;
         var old = g.Clip;
         g.SetClip(r);
         float spacing = 16;
         float shift = (float)Frac(t * 1.3) * spacing;
-        using (var pen = new Pen(A(170, Foam), 1.3f))
+        using (var pen = new Pen(A((int)(170 * Motion), Foam), 1.3f))
             for (float cy = yTop - spacing + shift; cy < yBottom; cy += spacing)
                 g.DrawLine(pen, x + w * 0.3f, cy, x + w * 0.3f, cy + spacing * 0.45f);
         g.Clip = old;
@@ -455,6 +467,7 @@ public static partial class Watershed
 
     static void FoamBlobs(float x, float y, float w, double t, double flow)
     {
+        if (Motion <= 0.01) return;
         int n = (int)(2 + 4 * Clamp01(flow));
         for (int i = 0; i < n; i++)
         {
@@ -462,7 +475,7 @@ public static partial class Watershed
             float fx = x + (float)((i + 0.5) / n * w) + (float)(Math.Sin(t * 0.7 + i) * 1.5);
             float fy = y - (float)(ph * 4);
             float r = 2 + (float)(Math.Sin(ph * Math.PI) * 2.2);
-            using (var b = new SolidBrush(A((int)(200 * Math.Sin(ph * Math.PI)), Foam))) g.FillEllipse(b, fx - r, fy - r, 2 * r, 2 * r);
+            using (var b = new SolidBrush(A((int)(200 * Motion * Math.Sin(ph * Math.PI)), Foam))) g.FillEllipse(b, fx - r, fy - r, 2 * r, 2 * r);
         }
     }
 
@@ -498,17 +511,18 @@ public static partial class Watershed
 
     // ------------------------------------------------------------------ rain barrel
 
-    // A galvanised, corrugated rain barrel. (x, yBase) is the bottom left of the body, w its
-    // width, h its full height with the lid. The sight window on the front shows the level.
-    // tap (0..1) opens the brass tap at the bottom right and runs its stream down to troughY;
-    // overflow (0..1) runs the overflow spout at the top left down to the ground.
-    static void Barrel(float x, float yBase, float w, float h, double level, double t, double tap, double overflow, float troughY)
+    // A galvanised rain barrel, open at the top, with a glass front panel. (x, yBase) is
+    // the bottom left of the body, w its width, h its height. level (0..1) is the water
+    // behind the glass. inflow runs the downspout from spoutY into the rim and the fall
+    // inside the glass. tap (0..1) opens the brass tap at the foot and runs its stream down
+    // to troughY. overflow (0..1) brims the rim, sheets down both sides and runs the
+    // overflow spout at the top left down to the ground.
+    static void Barrel(float x, float yBase, float w, float h, double level, double t, double tap, double inflow, double overflow, float troughY, float spoutY)
     {
-        float lidH = w * 0.18f;
         float top = yBase - h;
-        float bodyTop = top + lidH * 0.5f;
-        using (var b = new SolidBrush(A(60, PureBlack))) g.FillEllipse(b, x + 3, yBase - 4, w + 10, 9);
-        var body = new RectangleF(x, bodyTop, w, yBase - bodyTop);
+        float rim = w * 0.09f, band = w * 0.08f;
+        using (var b = new SolidBrush(A(70, PureBlack))) g.FillEllipse(b, x + 4, yBase - 5, w + 14, 11);
+        var body = new RectangleF(x, top + rim * 0.5f, w, yBase - top - rim * 0.5f);
         using (var br = new LinearGradientBrush(body, ZincLight, ZincDark, 0f))
         {
             br.InterpolationColors = new ColorBlend(5)
@@ -520,85 +534,78 @@ public static partial class Watershed
         }
         var old = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.None;
-        for (float yy = bodyTop + 10; yy < yBase - 10; yy += 7)
+        for (float yy = top + rim + 12; yy < yBase - band - 10; yy += 12)
         {
-            Line(x + 1, yy, x + w - 1, yy, A(80, PureWhite), 1f);
-            Line(x + 1, yy + 3, x + w - 1, yy + 3, A(70, PureBlack), 1f);
+            Line(x + 1, yy, x + w - 1, yy, A(70, PureWhite), 1f);
+            Line(x + 1, yy + 4, x + w - 1, yy + 4, A(60, PureBlack), 1f);
         }
         g.SmoothingMode = old;
-        FillRect(new RectangleF(x - 1, bodyTop, w + 2, 5), A(60, PureBlack));
-        Line(x - 1, bodyTop + 1, x + w + 1, bodyTop + 1, A(120, PureWhite), 1f);
-        FillRect(new RectangleF(x - 1, yBase - 5, w + 2, 5), A(70, PureBlack));
-        Line(x - 1, yBase - 4, x + w + 1, yBase - 4, A(90, PureWhite), 1f);
-        using (var pen = new Pen(A(180, IronDark), 1f)) g.DrawRectangle(pen, x, bodyTop, w, yBase - bodyTop);
-        // Lid: a shallow dome seen edge on, a little wider than the body, with a knob.
-        var lid = new RectangleF(x - 2, top, w + 4, lidH);
-        using (var br = new LinearGradientBrush(lid, ZincLight, ZincDark, 90f)) g.FillEllipse(br, lid);
-        using (var pen = new Pen(A(180, IronDark), 1f)) g.DrawEllipse(pen, lid);
-        using (var pen = new Pen(A(140, PureWhite), 1.2f)) g.DrawArc(pen, lid.X + 3, lid.Y + 1.5f, lid.Width - 6, lid.Height - 3, 190, 110);
-        Sphere(x + w * 0.78f, top + lidH * 0.4f, 2.5f, ZincLight, ZincDark);
-        // Sight window with the water level behind glass.
-        float wx = x + w * 0.36f, wy = bodyTop + 13, ww = w * 0.28f, wh = yBase - 22 - wy;
-        using (var p = Round(wx, wy, ww, wh, 3)) { FillGrad(p, new RectangleF(wx, wy, ww, wh), C(34, 40, 48), C(14, 18, 24), 0f); Stroke(p, SteelMid, 1.5f); }
-        if (level > 0.01)
+        // Rim: a rolled band, a little wider than the body, with the dark inside edge of the open top.
+        var rimR = new RectangleF(x - 3, top, w + 6, rim);
+        using (var br = new LinearGradientBrush(rimR, ZincLight, ZincDark, 90f)) g.FillRectangle(br, rimR);
+        Line(x - 3, top + 1.5f, x + w + 3, top + 1.5f, A(170, PureWhite), 1.5f);
+        FillRect(new RectangleF(x - 3, top + rim - 2, w + 6, 3), A(110, PureBlack));
+        using (var pen = new Pen(A(180, IronDark), 1f)) g.DrawRectangle(pen, rimR.X, rimR.Y, rimR.Width, rimR.Height);
+        // Foot band.
+        FillGradRect(new RectangleF(x - 1, yBase - band, w + 2, band), ZincMid, Mix(ZincDark, PureBlack, 0.25), 90f);
+        Line(x - 1, yBase - band + 1, x + w + 1, yBase - band + 1, A(110, PureWhite), 1f);
+        using (var pen = new Pen(A(180, IronDark), 1f)) g.DrawRectangle(pen, x, top + rim * 0.5f, w, yBase - top - rim * 0.5f);
+
+        // The glass panel with the water behind it.
+        float wx = x + w * 0.15f, ww = w * 0.70f, wy = top + rim + 10, wh = yBase - band - w * 0.2f - wy;
+        using (var p = Round(wx - 4, wy - 4, ww + 8, wh + 8, 7)) { FillGrad(p, new RectangleF(wx - 4, wy - 4, ww + 8, wh + 8), SteelMid, SteelDark, 90f); Stroke(p, A(200, IronDark), 1.2f); }
+        using (var p = Round(wx, wy, ww, wh, 4)) { FillGrad(p, new RectangleF(wx, wy, ww, wh), C(28, 36, 46), C(10, 14, 20), 0f); }
+        float surface = wy + 3 + (wh - 6) * (float)(1 - Clamp01(level));
+        var clip = g.Clip;
+        using (var p = Round(wx + 1, wy + 1, ww - 2, wh - 2, 3))
         {
-            float surface = wy + 2 + (wh - 4) * (float)(1 - Clamp01(level));
-            var clip = g.Clip;
-            using (var p = Round(wx + 2, wy + 2, ww - 4, wh - 4, 2))
+            g.SetClip(p);
+            if (level > 0.01)
             {
-                g.SetClip(p);
-                Water(wx + 2, ww - 4, surface, wy + wh - 2, t, 0.5, 1.0, 255, false, wy);
-                g.Clip = clip;
+                Glass = true;
+                Water(wx, ww, surface, wy + wh, t, 0.6, 1.0, 255, true, wy);
+                Glass = false;
             }
+            if (inflow > 0.01 && level < 0.985) Fall(wx + ww * 0.5f - 3, 6, wy - 2, Math.Max(wy + 2, surface + 1), t, inflow);
+            g.Clip = clip;
         }
-        FillGradRect(new RectangleF(wx + 2, wy + 2, Math.Max(2, ww * 0.28f), wh - 4), A(100, PureWhite), A(0, PureWhite), 0f);
-        // Overflow spout at the top left: a short pipe with an elbow that points down.
-        float tl = w * 0.2f, tt = w * 0.11f;
-        float oy = bodyTop + 12;
+        FillGradRect(new RectangleF(wx + 2, wy + 2, Math.Max(2, ww * 0.2f), wh - 4), A(120, PureWhite), A(0, PureWhite), 0f);
+        FillRect(new RectangleF(wx + ww - 5, wy + 6, 2, wh - 12), A(60, PureWhite));
+        Bevel(wx - 3, wy - 3, ww + 6, wh + 6, 6, 100, 1f);
+
+        // The downspout water into the open top.
+        if (inflow > 0.01) Fall(x + w * 0.5f - 3, 6, spoutY, top + 3, t, inflow);
+
+        // Overflow: the brim, the sheets down both sides, and the spout at the top left.
+        float tl = w * 0.17f, tt = w * 0.10f;
+        float oy = top + rim + 4;
         FillGradRect(new RectangleF(x - tl * 0.8f, oy, tl * 0.8f + 2, tt), ZincLight, ZincDark, 90f);
         FillGradRect(new RectangleF(x - tl * 0.8f, oy, tt, tt * 1.9f), ZincLight, ZincDark, 0f);
-        if (overflow > 0.01) Fall(x - tl * 0.8f - 1, tt + 1, oy + tt * 1.9f, yBase + 8, t, overflow);
-        // Tap at the bottom right: a brass pipe, a spout, and a handle that turns when the tap is open.
-        float ty = yBase - w * 0.38f;
-        FillGradRect(new RectangleF(x + w - 1, ty, tl, tt), BrassLight, BrassDark, 90f);
-        FillGradRect(new RectangleF(x + w + tl - tt - 1, ty, tt, tt * 1.9f), BrassLight, BrassDark, 0f);
-        float hx = x + w + tl * 0.4f, hy = ty - 1, hl = w * 0.16f;
-        double ang = -Math.PI / 2 * (1 - Clamp01(tap));
-        Line(hx, hy, hx + (float)(Math.Cos(ang) * hl), hy + (float)(Math.Sin(ang) * hl), BrassDark, Math.Max(2.5f, tt * 0.45f));
-        Sphere(hx, hy, Math.Max(2.2f, tt * 0.4f), BrassLight, BrassDark);
-        if (tap > 0.01) Fall(x + w + tl - tt, tt - 2, ty + tt * 1.9f, troughY, t, tap);
-    }
-
-    // A barrel being set down on its pad: drawn through an offscreen bitmap so it fades in
-    // as a whole while it settles the last few pixels.
-    static void BarrelArriving(float x, float yBase, float w, float h, double level, double t, double present)
-    {
-        if (present <= 0.01) return;
-        if (present >= 0.999) { Barrel(x, yBase, w, h, level, t, 0, 0, yBase); return; }
-        float drop = (float)((1 - Smooth(0, 1, present)) * 26);
-        int bw = (int)w + 44, bh = (int)h + 44;
-        using (var bmp = new Bitmap(bw, bh, PixelFormat.Format32bppArgb))
+        if (overflow > 0.01)
         {
-            var outer = g;
-            using (g = Graphics.FromImage(bmp))
-            {
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                Barrel(22, 22 + h, w, h, level, t, 0, 0, 22 + h);
-            }
-            g = outer;
-            using (var ia = new ImageAttributes())
-            {
-                ia.SetColorMatrix(new ColorMatrix { Matrix33 = (float)Clamp01(present) });
-                g.DrawImage(bmp, new Rectangle((int)Math.Round(x - 22), (int)Math.Round(yBase - h - 22 - drop), bw, bh), 0, 0, bw, bh, GraphicsUnit.Pixel, ia);
-            }
+            int a = (int)(220 * overflow);
+            FillGradRect(new RectangleF(x - 5, top - 5, w + 10, rim + 4), A(a, GlassTop), A(a, GlassMid), 90f);
+            Line(x - 5, top - 4, x + w + 5, top - 4, A(a, Foam), 2.5f);
+            Fall(x - 7, 6, top - 2, yBase + 8, t, overflow);
+            Fall(x + w + 1, 6, top - 2, yBase + 8, t, overflow);
+            Fall(x - tl * 0.8f - 1, tt + 1, oy + tt * 1.9f, yBase + 10, t, overflow);
         }
+
+        // Tap at the foot: a brass spout under the glass, a handle that turns when the tap is open.
+        float ty = yBase - band - w * 0.18f, tx = x + w * 0.5f - tt * 0.8f;
+        FillGradRect(new RectangleF(tx, ty, tt * 1.6f, w * 0.14f), BrassLight, BrassDark, 0f);
+        FillGradRect(new RectangleF(tx - 3, ty, tt * 1.6f + 6, tt * 0.6f), BrassLight, BrassDark, 90f);
+        float hx = tx + tt * 1.6f + 3, hy = ty + tt * 0.6f, hl = w * 0.15f;
+        double ang = -Math.PI / 2 * (1 - Clamp01(tap));
+        Line(hx, hy, hx + (float)(Math.Cos(ang) * hl), hy + (float)(Math.Sin(ang) * hl), BrassDark, Math.Max(3f, tt * 0.5f));
+        Sphere(hx, hy, Math.Max(2.5f, tt * 0.45f), BrassLight, BrassDark);
+        if (tap > 0.01) Fall(tx + tt * 0.3f, tt, ty + w * 0.14f, troughY, t, tap);
     }
 
     // A concrete pad for a barrel. The top face catches the light; the front face is in shade.
     static void Pad(float x, float y, float w)
     {
-        float px = x - 7, pw = w + 14;
+        float px = x - 5, pw = w + 10;
         Shadow(px, y, pw, 10, 2, 3, 4, 50);
         FillGradRect(new RectangleF(px, y, pw, 4), Mix(ConcreteLight, PureWhite, 0.25), ConcreteLight, 90f);
         FillGradRect(new RectangleF(px, y + 4, pw, 6), ConcreteDark, Mix(ConcreteDark, PureBlack, 0.3), 90f);

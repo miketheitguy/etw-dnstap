@@ -39,7 +39,7 @@ Microsoft documents this behavior for `EVENT_TRACE_PROPERTIES`. ETW raises the m
 
 #### The seven steps
 
-The animation runs for 92 seconds. Each step stays on screen for 12 to 14 seconds, and a caption under the picture states the step in one sentence. Steps 1 to 3 are one continuous run. Steps 4 and 5 restart the service with new settings, because ETW buffer settings and `--capacity` apply at the next start. Steps 6 and 7 continue step 5.
+The animation runs for 130 seconds and builds the picture up one element at a time. Each step stays on screen for 18 to 20 seconds, and a caption under the picture states the step in one sentence. Steps 1 to 3 are one continuous run. Steps 4 and 5 restart the service with new settings, because ETW buffer settings and `--capacity` apply at the next start. Steps 6 and 7 continue step 5.
 
 1. **Light rain:** the defaults at a calm rate. Rain from a roof gutter fills the ETW barrels, the taps pass it on, and no counter moves.
 2. **More barrels:** the rain outpaces the taps, so ETW sets down more barrels, up to `--etw-max-buffers`.
