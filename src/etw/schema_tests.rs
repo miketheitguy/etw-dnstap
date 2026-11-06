@@ -1081,3 +1081,46 @@ fn parse_encode_benchmark() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn native_name_bounds_and_property_lookup_errors() -> Result<()> {
+    let property = EVENT_PROPERTY_INFO::default();
+    let overlong_name = vec![b'A'; 257 * 2];
+    assert!(normalize_fields(&[property], &overlong_name)?.is_none());
+    let error =
+        normalize_fields(&[property], b"A\0B\0").expect_err("short unterminated name is an error");
+    assert!(format!("{error:#}").contains("unterminated TDH property name"));
+
+    let fixture = decode::tests::fixture(256, false, false, 0);
+    let (mut properties, bytes) = native_properties(&fixture.fields)?;
+    let port = fixture
+        .fields
+        .iter()
+        .position(|field| field.name == "Port")
+        .expect("Port field");
+    find_property(&properties, &bytes, "Port")?;
+    let message = |result: Result<PropertyType>| format!("{:#}", result.err().expect("error"));
+
+    assert!(message(find_property(&properties, &bytes, "Nope")).contains("missing property Nope"));
+    for flags in [PropertyStruct, PropertyParamCount] {
+        let original = properties[port].Flags;
+        properties[port].Flags = flags;
+        assert!(
+            message(find_property(&properties, &bytes, "Port"))
+                .contains("unsupported structured property Port")
+        );
+        properties[port].Flags = original;
+    }
+    properties[port].NameOffset |= 1;
+    assert!(
+        message(find_property(&properties, &bytes, "Port"))
+            .contains("invalid TDH property name offset")
+    );
+    let unterminated: Vec<u8> = "Port".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let lone = [EVENT_PROPERTY_INFO::default()];
+    assert!(
+        message(find_property(&lone, &unterminated, "Port"))
+            .contains("unterminated TDH property name")
+    );
+    Ok(())
+}

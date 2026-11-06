@@ -2685,3 +2685,82 @@ fn the_append_that_finds_the_key_lost_neither_evicts_nor_creates() {
         "the cap evicted"
     );
 }
+
+/// A rewind that finds the key lost, with a reader open on the first segment,
+/// suspends the spool and leaves every file and the cursor alone. Later reads
+/// return nothing and delete nothing.
+#[test]
+fn a_rewind_after_the_key_is_lost_suspends_the_spool_and_keeps_every_file() {
+    let dir = TestDir::new("spool-key-lost-rewind");
+    let key = breakable_key();
+    let (mut spool, stats) = open_with_key(&dir, MIB, Arc::clone(&key));
+    // Three records, so that the rewind has to cross into the next record and
+    // use the key; inside the buffered record it would not.
+    for b in 0..3 {
+        assert_eq!(
+            append_numbers(&mut spool, b * 10..b * 10 + 10, 100),
+            Appended::Stored
+        );
+    }
+    let mut out = Vec::new();
+    assert!(spool.read_batch(&mut out, 30_000).expect("read") > 0);
+    spool.delivered(prefix_bytes(&out, 5), 5);
+    assert!(!spool.is_suspended());
+    let before = folder_contents(&dir);
+    let cursor = read_cursor(&dir);
+    let errors = get(&stats.spool_errors);
+
+    key.zero_for_test();
+    spool.rewind();
+
+    assert!(spool.is_suspended());
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    assert_eq!(folder_contents(&dir), before, "no file is touched");
+    assert_eq!(read_cursor(&dir), cursor, "the cursor is unchanged");
+    assert_eq!(
+        get(&stats.spool_errors),
+        errors,
+        "a key loss is not an I/O error"
+    );
+    let mut later = Vec::new();
+    assert_eq!(spool.read_batch(&mut later, 30_000).expect("no error"), 0);
+    assert_eq!(later, Vec::<u8>::new());
+    assert_eq!(
+        folder_contents(&dir),
+        before,
+        "a later read deletes nothing"
+    );
+    assert_eq!(get(&stats.spool_errors), errors, "still no I/O error");
+}
+
+/// A new key deletes every leftover segment. One that another process holds
+/// open stays as a pending delete: it is counted as an error and still counts
+/// in the gauge until a later pass removes it.
+#[test]
+fn a_new_key_with_a_locked_leftover_keeps_it_pending_until_the_lock_ends() {
+    let dir = TestDir::new("spool-new-key-locked");
+    let size = leftover_segment(&dir, 1, &numbered(0..3, 0).0, true);
+    let hold = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(dir.path().join(segment_name(1)))
+        .expect("segment is held");
+    let (mut spool, stats) = open_keyed(&dir, MIB, 0, KeyOrigin::Created);
+    assert_eq!(get(&stats.spool_errors), 1);
+    assert_eq!(
+        get(&stats.spool_bytes),
+        size,
+        "the locked file still counts"
+    );
+    assert_eq!(segment_files(dir.path()), [segment_name(1)]);
+
+    drop(hold);
+    let (block, frames) = numbered(10..12, 0);
+    assert_eq!(spool.append(&block, frames), Appended::Stored);
+    assert_eq!(segment_files(dir.path()), [segment_name(2)]);
+    assert_eq!(
+        get(&stats.spool_bytes),
+        HEADER_LEN + block.len() as u64 + RECORD_EXTRA,
+        "only the new segment remains in the gauge"
+    );
+}

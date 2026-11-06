@@ -891,6 +891,68 @@ fn a_seal_with_no_spool_records_no_backlog() {
     assert_eq!(stats.spool_seal_error(), None);
 }
 
+#[test]
+fn a_seal_appends_the_blocks_left_in_the_parser_channel_in_order() {
+    let dir = TestDir::new("seal-parser-blocks");
+    let stats = Arc::new(SinkStats::default());
+    let rig = rig(Some(open_spool(&dir, 64 * MIB, &stats)), &stats, true);
+    let (input, parser) = bounded::<Block>(8);
+    for number in 10..13 {
+        input.send(block(number)).expect("block is queued");
+    }
+    input.send(Block::default()).expect("empty block is queued");
+    let Rig {
+        router, returns, ..
+    } = rig;
+    drop(returns);
+    router.seal(&parser).expect("seal");
+    assert_eq!(get(&stats.spooled), 3);
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+    assert_eq!(get(&stats.spool_dropped), 0);
+
+    let next = Arc::new(SinkStats::default());
+    let mut spool = open_spool(&dir, 64 * MIB, &next);
+    assert_eq!(drain_spool(&mut spool), vec![10, 11, 12]);
+}
+
+#[test]
+fn a_seal_without_a_spool_counts_the_parser_channel_blocks_once() {
+    let stats = Arc::new(SinkStats::default());
+    let rig = rig(None, &stats, true);
+    let (input, parser) = bounded::<Block>(8);
+    for number in 0..3 {
+        input.send(block(number)).expect("block is queued");
+    }
+    input.send(Block::default()).expect("empty block is queued");
+    let Rig {
+        router, returns, ..
+    } = rig;
+    drop(returns);
+    router.seal(&parser).expect("seal");
+    assert_eq!(get(&stats.disconnected_dropped), 3);
+    assert_eq!(get(&stats.spooled), 0);
+    assert_eq!(get(&stats.spool_dropped), 0);
+    assert_eq!(get(&stats.queue_dropped), 0);
+}
+
+#[test]
+fn route_live_releases_an_empty_block_and_counts_nothing() {
+    let stats = Arc::new(SinkStats::default());
+    let mut rig = rig(None, &stats, true);
+    let before = rig.router.free.len();
+    rig.router.route_live(Block::default());
+    assert_eq!(rig.router.free.len(), before + 1);
+    assert!(rig.fifo.try_recv().is_err(), "nothing went to the link");
+    for counter in [
+        &stats.disconnected_dropped,
+        &stats.queue_dropped,
+        &stats.spooled,
+        &stats.spool_dropped,
+    ] {
+        assert_eq!(get(counter), 0);
+    }
+}
+
 // ---- the deterministic batching test ----
 
 /// Blocks that arrive between two runs of the router.

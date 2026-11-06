@@ -498,3 +498,7 @@ fn to_wide(text: &OsStr) -> io::Result<Vec<u16>> {
     wide.push(0);
     Ok(wide)
 }
+
+#[cfg(test)]
+#[path = "fsinfo_tests.rs"]
+mod fsinfo_tests;

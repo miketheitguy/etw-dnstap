@@ -817,3 +817,64 @@ fn write_frame_rejects_bad_lengths_without_changing_the_block() {
 
 #[path = "e2e_tests.rs"]
 mod e2e;
+
+#[test]
+fn finish_sends_a_partial_block_that_was_never_flushed() {
+    let server = FakeServer::up();
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = start_sink(&server, no_retry(), None, &stats);
+    for number in 0..5 {
+        sink.write_frame(&frame(number)).expect("frame is queued");
+    }
+    sink.finish().expect("clean STOP/FINISH");
+    wait_until("STOP", || server.received.stopped.load(Ordering::Acquire));
+    assert_eq!(server.received.frames(), (0..5).collect::<Vec<_>>());
+    assert_eq!(get(&stats.queue_dropped), 0);
+    assert_eq!(get(&stats.disconnected_dropped), 0);
+}
+
+#[test]
+fn finish_counts_an_unflushed_last_block_as_dropped_when_the_queue_stays_full() {
+    let server = FakeServer::up();
+    server.received.paused.store(true, Ordering::Release);
+    let stats = Arc::new(SinkStats::default());
+    let mut sink = start_sink(&server, no_retry(), None, &stats);
+    // One frame of this size fills a block, so each write sends a block. With no
+    // spool and a stalled link the queue fills and stays full.
+    let payload = vec![0x5a; MAX_ENCODED_LENGTH];
+    let mut offered = 0_u32;
+    while get(&stats.queue_dropped) == 0 {
+        assert!(offered < 3000, "buffering absorbed {offered} large frames");
+        sink.write_frame(&payload)
+            .expect("a full queue is not an error");
+        offered += 1;
+    }
+    // A full queue does not show a stopped link: wait until the link has been
+    // blocked on the socket for real, then offer large frames until the queue
+    // drops once more. From then on it stays full.
+    wait_until("a real stall", || get(&stats.write_max_us) >= REAL_STALL_US);
+    let full = get(&stats.queue_dropped);
+    while get(&stats.queue_dropped) == full {
+        assert!(offered < 3000, "buffering absorbed {offered} large frames");
+        sink.write_frame(&payload)
+            .expect("a full queue is not an error");
+        offered += 1;
+    }
+    let before = get(&stats.queue_dropped);
+    for number in 0..3 {
+        sink.write_frame(&frame(number)).expect("frame is held");
+    }
+    assert_eq!(get(&stats.queue_dropped), before, "nothing was sent yet");
+
+    let started = Instant::now();
+    let result = sink.finish();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "shutdown took {elapsed:?}"
+    );
+    result.expect("shutdown with a stalled link is clean");
+    // The wait lasts FINAL_SEND_TIMEOUT, then the 3 frames of the last block are
+    // counted. Later drops may not add to it: the queue was full and stays so.
+    assert_eq!(get(&stats.queue_dropped), before + 3);
+}

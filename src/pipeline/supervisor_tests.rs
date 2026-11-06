@@ -1537,3 +1537,214 @@ fn loss_counted_before_supervision_starts_is_reported_by_the_first_check() {
         "a startup ETW error alone raises no risk: {text}"
     );
 }
+
+#[test]
+fn supervise_reports_a_parser_that_finished_before_shutdown() {
+    let config = config_from(&[]);
+    let (capture, parse, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let mut monitor = Monitor::new(&config, &capture, &parse, &sink, Instant::now());
+    let parser = thread::spawn(|| Ok(()));
+    let producer = QueryCountingProducer {
+        queries: Arc::new(AtomicU64::new(0)),
+    };
+    let reason = supervise(
+        &AtomicBool::new(false),
+        Some(Instant::now() + Duration::from_secs(60)),
+        false,
+        &parser,
+        &producer,
+        &mut monitor,
+    );
+    assert_eq!(
+        reason.as_deref(),
+        Some("a capture worker exited before shutdown was requested")
+    );
+    parser.join().expect("parser stub exits").expect("ok");
+}
+
+/// A producer whose capture thread has already ended.
+struct FinishedProducer {
+    stopped: Arc<AtomicBool>,
+}
+
+impl EventProducer for FinishedProducer {
+    fn keywords(&self) -> KeywordSelection {
+        KeywordSelection {
+            match_any: 0,
+            match_all: 0,
+            fallback: true,
+            failed_responses: true,
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        true
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        self.stopped.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn run_pipeline_fails_with_the_reason_when_a_worker_ends_before_shutdown() {
+    let config = config_from(&[]);
+    let stopped = Arc::new(AtomicBool::new(false));
+    let producer_stopped = Arc::clone(&stopped);
+    let result = run_pipeline(
+        &config,
+        |_target, _stats| Ok(NullSink),
+        |_start| {
+            Ok(FinishedProducer {
+                stopped: producer_stopped,
+            })
+        },
+        &AtomicBool::new(false),
+        Lifecycle {
+            progress: || Ok(()),
+            running: || Ok(()),
+            stopping: || Ok(()),
+        },
+        |_name, _sources| None,
+    );
+    let error = result.expect_err("an early worker exit is a failure");
+    assert_eq!(
+        error.to_string(),
+        "a capture worker exited before shutdown was requested"
+    );
+    assert!(stopped.load(Ordering::SeqCst), "producer was still stopped");
+}
+
+#[test]
+fn the_rate_warning_is_logged_once_per_run_however_many_windows_pass() {
+    let config = config_from(&[]);
+    let (capture, parse, sink) = (
+        CaptureCounters::default(),
+        ParseCounters::default(),
+        SinkStats::default(),
+    );
+    let now = Instant::now();
+    let mut monitor = Monitor::new(&config, &capture, &parse, &sink, now);
+    assert!(monitor.defaults_in_use);
+    monitor.rate = RateMonitor::new(Duration::from_millis(10), now, 0);
+    capture.received.store(10_000_000, Ordering::Relaxed);
+    let done = Arc::new(AtomicBool::new(false));
+    let parser_done = Arc::clone(&done);
+    let parser = thread::spawn(move || {
+        while !parser_done.load(Ordering::Relaxed) {
+            thread::park_timeout(Duration::from_millis(10));
+        }
+        Ok(())
+    });
+    let producer = QueryCountingProducer {
+        queries: Arc::new(AtomicU64::new(0)),
+    };
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        thread::scope(|scope| {
+            // Keep the received count rising so every window is over the limit.
+            scope.spawn(|| {
+                while !done.load(Ordering::Relaxed) {
+                    capture.received.fetch_add(1_000_000, Ordering::Relaxed);
+                    thread::sleep(Duration::from_millis(5));
+                }
+            });
+            let reason = supervise(
+                &AtomicBool::new(false),
+                Some(Instant::now() + Duration::from_millis(400)),
+                false,
+                &parser,
+                &producer,
+                &mut monitor,
+            );
+            done.store(true, Ordering::Relaxed);
+            assert_eq!(reason, None);
+        });
+    });
+    assert!(monitor.rate_warned);
+    let text = lines.text();
+    assert_eq!(text.matches("received rate is above").count(), 1, "{text}");
+    assert!(text.contains("events_per_second"), "{text}");
+    parser.join().expect("parser stub exits").expect("ok");
+}
+
+#[test]
+fn a_spool_folder_that_is_a_file_logs_one_warning_and_returns_no_spool() {
+    let base = crate::spool::test_support::TestDir::new("spool-is-a-file");
+    let file = base.path().join("not-a-folder");
+    std::fs::write(&file, b"x").expect("create the file");
+    let settings = SpoolSettings {
+        dir: file,
+        max_mib: 64,
+        min_free_mib: 0,
+    };
+    let stats = Arc::new(SinkStats::default());
+    let mut spool = None;
+    let lines = capture_logs_at(tracing::Level::INFO, || {
+        spool = open_spool(&settings, &stats, deps(accept_any_folder, plenty_of_space));
+    });
+    assert!(spool.is_none());
+    assert!(!stats.spool_available.load(Ordering::Relaxed));
+    let text = lines.text();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("WARN"), "{text}");
+    assert_eq!(text.matches("etw_dnstap::event::26").count(), 1, "{text}");
+    assert!(text.contains("spool could not be opened"), "{text}");
+    assert!(text.contains("without a spool"), "{text}");
+}
+
+#[test]
+fn tls_sink_start_fails_with_invalid_data_against_a_plaintext_receiver() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("sender connects");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .expect("read timeout");
+        // Consume the ClientHello, answer in plaintext, then wait for the close
+        // so the reply is not lost to a reset.
+        let mut buffer = [0; 4096];
+        let hello = stream.read(&mut buffer).expect("ClientHello");
+        assert!(hello > 0);
+        let mut reply = [0; 42];
+        reply[8..12].copy_from_slice(&1_u32.to_be_bytes());
+        stream.write_all(&reply).expect("plaintext reply");
+        while matches!(stream.read(&mut buffer), Ok(count) if count > 0) {}
+    });
+    let config = config_from(&[]);
+    assert!(config.tls);
+    let error = build_sink_with(
+        &config,
+        address,
+        Arc::new(SinkStats::default()),
+        deps(accept_any_folder, plenty_of_space),
+    )
+    .err()
+    .expect("a plaintext reply is not TLS");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    receiver.join().expect("receiver ends");
+}
+
+#[test]
+fn combine_results_keeps_both_failures_when_both_workers_fail() {
+    let error = combine_results(
+        Err(anyhow::anyhow!("capture stop failed")),
+        Err(anyhow::anyhow!("parser broke")),
+    )
+    .expect_err("both failed");
+    let text = format!("{error:#}");
+    assert!(text.contains("capture stop failed"), "{text}");
+    assert!(text.contains("parser also failed: parser broke"), "{text}");
+    assert_eq!(
+        combine_results(Ok(()), Err(anyhow::anyhow!("parser broke")))
+            .expect_err("parser failed")
+            .to_string(),
+        "parser broke"
+    );
+    combine_results(Ok(()), Ok(())).expect("both fine");
+}

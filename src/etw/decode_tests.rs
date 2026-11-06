@@ -723,3 +723,34 @@ mod properties {
         }
     }
 }
+
+#[test]
+fn uint16_packet_length_prefix_compiles_to_fixed_two_bytes() {
+    for length in [0_u16, 2] {
+        let mut fixture = fixture(256, false, false, 0);
+        fixture.fields[9].input = TDH_INTYPE_UINT16;
+        fixture.fields[9].length = length;
+        // Re-encode the 32-bit length prefix as a little-endian u16.
+        let at = fixture.length_offset;
+        fixture.payload.splice(at..at + 4, 17_u16.to_le_bytes());
+        let plan = compile(&fixture);
+        let decoded = plan
+            .decode(&fixture.payload)
+            .expect("u16 length prefix decodes");
+        assert_eq!(decoded.packet.len(), 17);
+        assert_eq!(decoded.packet[0..2], [0x12, 0x34]);
+        assert_eq!(decoded.port, 53000_u32.to_le_bytes());
+        // One byte short of the declared packet length is truncated.
+        let short = &fixture.payload[..at + 2 + 16];
+        assert!(plan.decode(short).is_err());
+    }
+}
+
+#[test]
+fn parameter_and_fixed_length_flags_together_reject_compilation() {
+    let mut fixture = fixture(256, false, false, 0);
+    fixture.fields[10].flags = (PropertyParamLength | PropertyParamFixedLength).cast_unsigned();
+    assert!(DecodePlan::compile(&fixture.fields, "Source").is_none());
+    fixture.fields[10].flags = PropertyParamLength.cast_unsigned();
+    assert!(DecodePlan::compile(&fixture.fields, "Source").is_some());
+}
