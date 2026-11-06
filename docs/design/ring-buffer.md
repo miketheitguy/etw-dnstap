@@ -10,6 +10,7 @@
 
 Sizes: [Memory budget and configuration](pooled-intake.md#memory-budget-and-configuration).
 Full shutdown: [Startup and shutdown order](data-path.md#startup-and-shutdown-order).
+Buffer analogy, with an animation: [Buffers as a watershed](buffer-watershed.md).
 
 ### Steps / Configuration
 

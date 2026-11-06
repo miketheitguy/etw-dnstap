@@ -84,7 +84,7 @@ A 10-second watchdog ends a longer shutdown ([deadlines](../guide/configuration.
 
 #### Regenerate the animation
 
-Edit the [animation sources](../../scripts/docs/pipeline-animation/README.md) when a stage changes, and rebuild the GIF.
+Edit the [animation sources](../../scripts/docs/pipeline-animation/README.md) when a stage changes, and rebuild the GIF. The buffers have their own animation: [Buffers as a watershed](buffer-watershed.md).
 
 ### Common Gotchas
 

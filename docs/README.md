@@ -29,6 +29,7 @@ Find the document for your task. Operators install and run the service. Maintain
 | How an ETW event becomes a TCP frame | [Data path](design/data-path.md) |
 | How memory is budgeted and loss is counted | [Pooled ETW intake](design/pooled-intake.md) |
 | How the parser wakes and the service shuts down | [Ring capacity and shutdown](design/ring-buffer.md) |
+| How each buffer works, with lakes and dams | [Buffers as a watershed](design/buffer-watershed.md) |
 | How events are decoded | [Single-pass decoder](design/single-pass-decoder.md) |
 | What each counter and gate means | [Measurement terms and result gates](design/measurement-terms.md) |
 | How the service handles a slow receiver | [Slow and saturated receiver](design/slow-receiver.md) |
@@ -49,7 +50,7 @@ Find the document for your task. Operators install and run the service. Maintain
 | [`design/`](design) | How the code works | Current |
 | [`plans/`](plans) | Plans not yet executed | Proposed |
 | [`history/`](history) | Dated records of finished and superseded work, with their diagrams and assets | Historical, Superseded |
-| [`assets/pipeline/`](assets/pipeline) | Data-path animation | Current |
+| [`assets/pipeline/`](assets/pipeline) | Data-path and buffer animations | Current |
 
 [CONTRIBUTING.md](../CONTRIBUTING.md#document-types) defines the document types and writing style.
 

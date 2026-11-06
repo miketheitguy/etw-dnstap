@@ -14,7 +14,7 @@ The defaults fit up to 10,000 queries per second. Above that, pass tier settings
 --etw-buffer-kib 128 --etw-min-buffers 12 --etw-max-buffers 128 --capacity 524288
 ```
 
-Watch `ring_dropped` and `etw_lost` ([monitoring.md](monitoring.md)). Ranges: [configuration reference](configuration.md#options). Lab results: [docs/history/](../history).
+Watch `ring_dropped` and `etw_lost` ([monitoring.md](monitoring.md)). To see how each buffer works, read [Buffers as a watershed](../design/buffer-watershed.md). Ranges: [configuration reference](configuration.md#options). Lab results: [docs/history/](../history).
 
 ### Steps / Configuration
 

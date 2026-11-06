@@ -82,7 +82,7 @@ Current uses **Describes** (`main` at commit `abc1234`) for **Commit**. Historic
 - `guide/`, `design/`: Current.
 - `plans/`: Proposed. Move a plan to `history/` when it's executed.
 - `history/`: Historical and Superseded, with their diagrams (`history/diagrams/`) and assets (`history/assets/`, including the `plot-pooled-wpr.py` graphs).
-- `assets/pipeline/`: the Current data-path GIF (`scripts/docs/pipeline-animation/Build-Animation.ps1`).
+- `assets/pipeline/`: the Current data-path GIF (`scripts/docs/pipeline-animation/Build-Animation.ps1`) and `buffers-as-a-watershed.gif` (`scripts/docs/buffer-animation/Build-Animation.ps1`).
 
 Rules:
 
