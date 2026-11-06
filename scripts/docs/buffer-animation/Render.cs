@@ -1,7 +1,7 @@
 // Render.cs - frame loop, palette, and the delta-frame GIF writer.
 //
 // Render(outDir, gif) draws every frame with GDI+, builds a 256-colour palette by median
-// cut over sample frames (with exact entries reserved for type, needles and lamps), maps
+// cut over sample frames (with exact entries reserved for type and the key materials), maps
 // each frame to palette indexes without dithering, and writes a GIF89a in which every
 // frame after the first holds only the rectangle that changed; unchanged pixels inside
 // it use the transparent index. It also writes frames.sha256, one hash per composited
@@ -26,8 +26,8 @@ public static partial class Watershed
     static readonly Dictionary<int, byte> lookup = new Dictionary<int, byte>();
 
     static readonly Color[] Reserved = {
-        Ivory, Ink, Paper, NeedleRed, LampGreen, LampRed, LampAmber, LampOff, Slate, SlateLight, PureWhite, PureBlack, OptionGold, Warn, Muted,
-        C(26, 26, 30), BrassLight, BrassMid, BrassDark, Foam, WaterTop, WaterMid, WaterDeep, SteelLight, SteelMid, SteelDark };
+        Ivory, Ink, Slate, SlateLight, PureWhite, PureBlack, OptionGold, Warn, Muted,
+        BrassLight, BrassMid, BrassDark, Foam, WaterTop, WaterMid, WaterDeep, SteelLight, SteelMid, SteelDark, ZincLight, ZincMid, ZincDark };
 
     // ------------------------------------------------------------------ frames
 
@@ -209,6 +209,7 @@ public static partial class Watershed
         Directory.CreateDirectory(outDir);
         string previewDir = Path.Combine(outDir, "previews");
         Directory.CreateDirectory(previewDir);
+        foreach (var stale in Directory.GetFiles(previewDir, "frame-*.png")) File.Delete(stale);
         int frames = (int)Math.Round(Loop * Fps);
 
         // Pass 1: a histogram over three sample frames per step.
